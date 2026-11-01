@@ -334,4 +334,17 @@ describe("resolveApiKey precedence", () => {
     expect(getOAuthToken("openai-codex")?.access).toBe("access-1");
     expect(getOAuthToken("openai-codex")?.refresh).toBe("refresh-1");
   });
+
+  it("a throwing mutator on a corrupt credentials file leaves the file and cache unchanged", () => {
+    setApiKey("openrouter", "sk-keep");
+    const path = getCredentialsFilePath();
+    const bytes = Buffer.from("{not-json");
+    writeFileSync(path, bytes);
+    expect(() => mutateCredentialsForTests(() => {
+      throw new Error("boom");
+    })).toThrow("boom");
+    expect(readFileSync(path)).toEqual(bytes);
+    expect(readdirSync(dirname(path)).some((name) => name.includes(".corrupt-"))).toBe(false);
+    expect(getApiKey("openrouter")).toBe("sk-keep");
+  });
 });

@@ -21,6 +21,11 @@ const MIN_POLL_MS = 100;
 const MAX_POLL_MS = 250;
 /** A brand-new lock file can report this briefly. A corrupt file does not get the whole wait. */
 const NOTADB_ATTEMPTS = 3;
+/**
+ * Short streaks reset when the inode changes. This total does not, so a
+ * process recreating a garbage lock file cannot spin forever.
+ */
+const NOTADB_TOTAL_ATTEMPTS = (NOTADB_ATTEMPTS + 1) * 2;
 
 export class CredentialLockTimeoutError extends Error {
   readonly path: string;
@@ -124,7 +129,11 @@ interface LockFileIdentity {
   ino: number;
 }
 
+/** @internal Replaced by tests that need a scripted inode sequence. */
+let lockFileIdentityForTests: ((path: string) => LockFileIdentity | undefined) | undefined;
+
 function lockFileIdentity(path: string): LockFileIdentity | undefined {
+  if (lockFileIdentityForTests) return lockFileIdentityForTests(path);
   try {
     const stat = statSync(path);
     if (!stat.isFile()) return undefined;
@@ -132,6 +141,13 @@ function lockFileIdentity(path: string): LockFileIdentity | undefined {
   } catch {
     return undefined;
   }
+}
+
+/** @internal */
+export function setLockFileIdentityForTests(
+  fn: ((path: string) => LockFileIdentity | undefined) | undefined,
+): void {
+  lockFileIdentityForTests = fn;
 }
 
 function sameLockFile(left: LockFileIdentity | undefined, right: LockFileIdentity | undefined): boolean {
@@ -169,12 +185,14 @@ export function lockFileIsReplaceableForTests(path: string, seen?: LockFileIdent
 
 interface NotADatabaseState {
   streak: number;
+  total: number;
   recreated: boolean;
 }
 
 /**
  * Retry a few times for a file another process is still creating.
  * Then delete a non-database file once, if it is still the same file, and try again.
+ * A changed inode resets the short streak only. The total does not reset.
  * A further failure, or a file we cannot replace, throws.
  */
 function recoverNotADatabase(
@@ -183,6 +201,8 @@ function recoverNotADatabase(
   state: NotADatabaseState,
   seen: LockFileIdentity | undefined,
 ): void {
+  state.total += 1;
+  if (state.total > NOTADB_TOTAL_ATTEMPTS) throw corruptLockError(path, err);
   state.streak += 1;
   if (state.streak <= NOTADB_ATTEMPTS) return;
   const current = lockFileIdentity(path);
@@ -340,7 +360,7 @@ function pollMsOf(pollMs: number | undefined): number {
 export function acquireSync(path: string, opts: AcquireSyncOptions): CredentialLock {
   const waitMs = Math.min(MAX_SYNC_WAIT_MS, Math.max(0, Math.trunc(opts.waitMs) || 0));
   const deadline = Date.now() + waitMs;
-  const notadb: NotADatabaseState = { streak: 0, recreated: false };
+  const notadb: NotADatabaseState = { streak: 0, total: 0, recreated: false };
   for (;;) {
     if (held.has(path)) {
       if (Date.now() >= deadline) throw new CredentialLockTimeoutError(path);
@@ -354,7 +374,8 @@ export function acquireSync(path: string, opts: AcquireSyncOptions): CredentialL
     } catch (err) {
       if (isNotADatabase(err)) {
         recoverNotADatabase(path, err, notadb, seen);
-        sleepSync(20);
+        if (Date.now() >= deadline) throw new CredentialLockTimeoutError(path);
+        sleepSync(Math.min(20, Math.max(1, deadline - Date.now())));
         continue;
       }
       if (!isRetryableLockError(err)) throw err;
@@ -369,7 +390,7 @@ async function acquireFromOs(path: string, opts: AcquireAsyncOptions): Promise<C
   const waitMs = Math.min(MAX_ASYNC_WAIT_MS, Math.max(0, Math.trunc(opts.waitMs) || 0));
   const pollMs = pollMsOf(opts.pollMs);
   const deadline = Date.now() + waitMs;
-  const notadb: NotADatabaseState = { streak: 0, recreated: false };
+  const notadb: NotADatabaseState = { streak: 0, total: 0, recreated: false };
   for (;;) {
     if (opts.signal?.aborted) throw abortError(opts.signal);
     if (!held.has(path)) {
@@ -419,6 +440,7 @@ export async function acquireAsync(path: string, opts: AcquireAsyncOptions): Pro
 
 /** @internal Drop every lock this process holds. Test isolation only. */
 export function resetCredentialLocksForTests(): void {
+  lockFileIdentityForTests = undefined;
   for (const [path, db] of [...held.entries()]) releaseDatabase(path, db);
   for (const slot of slots.values()) {
     slot.held = false;

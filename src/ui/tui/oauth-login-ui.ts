@@ -165,7 +165,11 @@ function openBrowserBestEffort(
   openBrowser: (url: string) => void | Promise<boolean>,
   url: string,
 ): void {
-  void Promise.resolve(openBrowser(url)).catch(() => {});
+  void Promise.resolve()
+    .then(async () => {
+      await openBrowser(url);
+    })
+    .catch(() => {});
 }
 
 function deviceCodeContext(

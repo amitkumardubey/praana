@@ -192,6 +192,17 @@ describe("Responses stream termination", () => {
     expect(events.some((event) => event.type === "done")).toBe(false);
   });
 
+  it("Codex errors when a delta-only tool call is cut off and publishes no tool call", async () => {
+    const events = await run(req, { bearerToken: jwt() }, [
+      { type: "response.function_call_arguments.delta", delta: '{"path":"a.t' },
+      { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } },
+    ]);
+    expect(events.map((event) => event.type)).toEqual(["tool_call_start", "tool_call_delta", "error"]);
+    const error = events[2];
+    expect(error?.type === "error" && error.error.message).toBe("The response was cut off while the model was calling a tool");
+    expect(events.some((event) => event.type === "tool_call_end" || event.type === "done")).toBe(false);
+  });
+
   it.each(["failed", "cancelled"] as const)("Codex treats response.done status %s as a failure", async (status) => {
     const events = await run(req, { bearerToken: jwt() }, [
       { type: "response.output_text.delta", delta: "partial" },

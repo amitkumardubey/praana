@@ -124,6 +124,40 @@ it("keeps login going when the browser opener rejects", async () => {
   }
 });
 
+it("keeps login going when the browser opener throws synchronously", async () => {
+  const home = mkdtempSync(join(tmpdir(), "praana-oauth-ui-browser-sync-"));
+  const previousHome = process.env.PRAANA_HOME;
+  process.env.PRAANA_HOME = home;
+  resetCredentialStoreForTests();
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+  process.on("unhandledRejection", onUnhandled);
+  const access = `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "ui-account" } })).toString("base64url")}.sig`;
+  const callback = Promise.resolve("callback-code");
+  resetOAuthProvidersForTests({
+    fetch: (async () => Response.json({ access_token: access, refresh_token: "synthetic-refresh", expires_in: 3600 })) as typeof fetch,
+    callbackServer: async () => ({ wait: () => callback, close() {} }),
+  });
+  try {
+    const credential = await runOAuthLoginWithUi("openai-codex", {
+      signal: new AbortController().signal,
+      showStatus() {},
+      promptSelect: async () => "browser",
+      promptText: async () => "unused",
+    }, () => { throw new Error("browser failed"); });
+    await Bun.sleep(20);
+    expect(unhandled).toEqual([]);
+    expect(credential.accountId).toBe("ui-account");
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+    resetOAuthProvidersForTests();
+    resetCredentialStoreForTests();
+    if (previousHome === undefined) delete process.env.PRAANA_HOME;
+    else process.env.PRAANA_HOME = previousHome;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
 it("keeps device-code login going when the browser opener rejects", async () => {
   const home = mkdtempSync(join(tmpdir(), "praana-oauth-ui-device-"));
   const previousHome = process.env.PRAANA_HOME;
@@ -152,6 +186,47 @@ it("keeps device-code login going when the browser opener rejects", async () => 
       promptSelect: async () => "device_code",
       promptText: async () => "unused",
     }, async () => { throw new Error("browser failed"); });
+    await Bun.sleep(20);
+    expect(unhandled).toEqual([]);
+    expect(credential.accountId).toBe("device-account");
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+    resetOAuthProvidersForTests();
+    resetCredentialStoreForTests();
+    if (previousHome === undefined) delete process.env.PRAANA_HOME;
+    else process.env.PRAANA_HOME = previousHome;
+    rmSync(home, { recursive: true, force: true });
+  }
+});
+
+it("keeps device-code login going when the browser opener throws synchronously", async () => {
+  const home = mkdtempSync(join(tmpdir(), "praana-oauth-ui-device-sync-"));
+  const previousHome = process.env.PRAANA_HOME;
+  process.env.PRAANA_HOME = home;
+  resetCredentialStoreForTests();
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+  process.on("unhandledRejection", onUnhandled);
+  const access = `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "device-account" } })).toString("base64url")}.sig`;
+  resetOAuthProvidersForTests({
+    fetch: (async (url: string | URL | Request) => {
+      const target = String(url);
+      if (target.endsWith("/usercode")) {
+        return Response.json({ device_auth_id: "device", user_code: "ABCD", interval: 1 });
+      }
+      if (target.endsWith("/deviceauth/token")) {
+        return Response.json({ authorization_code: "device-code", code_verifier: "device-verifier" });
+      }
+      return Response.json({ access_token: access, refresh_token: "synthetic-refresh", expires_in: 3600 });
+    }) as typeof fetch,
+  });
+  try {
+    const credential = await runOAuthLoginWithUi("openai-codex", {
+      signal: new AbortController().signal,
+      showStatus() {},
+      promptSelect: async () => "device_code",
+      promptText: async () => "unused",
+    }, () => { throw new Error("browser failed"); });
     await Bun.sleep(20);
     expect(unhandled).toEqual([]);
     expect(credential.accountId).toBe("device-account");

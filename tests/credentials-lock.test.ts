@@ -9,6 +9,7 @@ import {
   acquireSync,
   CredentialLockTimeoutError,
   lockFileIsReplaceableForTests,
+  setLockFileIdentityForTests,
   type CredentialLock,
 } from "../src/credential-lock.js";
 import {
@@ -232,6 +233,29 @@ describe("credential advisory locks", () => {
       expect(Date.now() - started).toBeLessThan(500);
     } finally {
       chmodSync(dir, 0o700);
+    }
+  });
+
+  it("stops NOTADB retries when the lock file identity changes on every attempt", () => {
+    const path = pathFor("store");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "this is not a sqlite database");
+    let n = 0;
+    setLockFileIdentityForTests(() => {
+      n += 1;
+      // The old streak reset spun here. Fail the test instead of hanging.
+      if (n > 40) throw new Error(`lock identity was queried ${n} times`);
+      return { dev: -1, ino: n };
+    });
+    try {
+      const started = Date.now();
+      expect(() => acquireSync(path, { waitMs: 1_500 })).toThrow(/corrupt/i);
+      expect(Date.now() - started).toBeLessThan(1_000);
+      expect(n).toBeGreaterThan(3);
+      expect(n).toBeLessThanOrEqual(24);
+      expect(readFileSync(path, "utf8")).toBe("this is not a sqlite database");
+    } finally {
+      setLockFileIdentityForTests(undefined);
     }
   });
 

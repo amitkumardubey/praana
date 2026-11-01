@@ -182,26 +182,28 @@ function quarantineCorruptCredentials(credPath: string): void {
   );
 }
 
-/** Invalid JSON is moved aside so login can start fresh. Other read errors still throw. */
-function readCredentialsForMutation(): CredentialsFile {
+/**
+ * Invalid JSON is an empty store for this mutation. The unreadable file is
+ * moved aside only after the mutator returns, so a throw leaves the cache
+ * and the file in place. Other read errors still throw.
+ */
+function readCredentialsForMutation(): { creds: CredentialsFile; corruptPath: string | null } {
   try {
-    return readCredentialsFromDisk();
+    return { creds: readCredentialsFromDisk(), corruptPath: null };
   } catch (err) {
     if (!(err instanceof Error) || err.name !== "CredentialStoreReadError") throw err;
     const cause = (err as { cause?: unknown }).cause;
     if (!(cause instanceof SyntaxError)) throw err;
-    const credPath = credentialsFilePath();
-    quarantineCorruptCredentials(credPath);
-    memoryCache = {};
-    credentialsIdentity = null;
-    return memoryCache;
+    return { creds: {}, corruptPath: credentialsFilePath() };
   }
 }
 
 function runCredentialMutation<T>(mutator: (creds: CredentialsFile) => T): T {
   return withStoreLockSync(() => {
-    const creds = cloneCredentials(readCredentialsForMutation());
+    const loaded = readCredentialsForMutation();
+    const creds = cloneCredentials(loaded.creds);
     const result = mutator(creds);
+    if (loaded.corruptPath) quarantineCorruptCredentials(loaded.corruptPath);
     persistCredentials(creds);
     return result;
   });

@@ -330,6 +330,12 @@ export class OpenAIResponsesDriver implements LlmDriver {
             index,
             argsDelta: String(parsed.delta ?? ""),
           });
+          // A delta can open a call without output_item.added. Track it so an
+          // incomplete response cannot flush a repaired, never-closed call.
+          if (res.started) {
+            openFunctionCalls.add(index);
+            yield { type: "tool_call_start", id: res.started.id, name: res.started.name };
+          }
           if (res.delta) {
             yield { type: "tool_call_delta", id: res.delta.id, argsDelta: res.delta.argsDelta };
           }
