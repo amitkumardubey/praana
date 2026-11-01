@@ -1,5 +1,5 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { existsSync, writeFileSync, mkdirSync } from "node:fs";
 
 /** Product identity — single source of truth for rename-sensitive strings. */
@@ -32,6 +32,28 @@ export function markInitialized(): boolean {
   } catch {
     return false;
   }
+}
+
+/** Minimal path module surface — injectable so Windows paths can be tested on any host. */
+export interface PathResolver {
+  isAbsolute(path: string): boolean;
+  join(...paths: string[]): string;
+}
+
+const defaultPathResolver: PathResolver = { isAbsolute, join };
+
+/**
+ * Join a configured path onto `cwd` unless it is already absolute.
+ * Uses the host path module by default so Windows drive (`C:\...`) and UNC
+ * (`\\server\share\...`) paths are recognized as absolute.
+ */
+export function resolveAgainstCwd(
+  p: string,
+  cwd: string,
+  pathImpl: PathResolver = defaultPathResolver,
+): string {
+  if (p === ":memory:") return p;
+  return pathImpl.isAbsolute(p) ? p : pathImpl.join(cwd, p);
 }
 
 export function resolveDefaultMemoryDbPath(): string {

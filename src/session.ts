@@ -64,7 +64,13 @@ import {
   resolveContextWindowSync,
 } from "./model-context.js";
 import { formatActiveModelLabel } from "./model-resolver.js";
-import { APP_HOME_DIR, APP_AGENT_ID, appHomePath, resolveDefaultMemoryDbPath } from "./app-identity.js";
+import {
+  APP_HOME_DIR,
+  APP_AGENT_ID,
+  appHomePath,
+  resolveAgainstCwd,
+  resolveDefaultMemoryDbPath,
+} from "./app-identity.js";
 import { createSessionLogger, getAppLogger, type PraanaLogger } from "./logger.js";
 import { estimateTokens } from "./token-estimate.js";
 import { createEmptyCheckpoint } from "./context-engine/checkpoint.js";
@@ -330,12 +336,7 @@ export class Session {
           },
         });
       } catch (err) {
-        const msg = (err as Error).message;
-        if (msg.includes("EACCES") || msg.includes("permission")) {
-          session.memoryInitError = `Cannot write to ~/.praana/. Check permissions or set PRAANA_HOME.`;
-        } else {
-          session.memoryInitError = msg;
-        }
+        session.memoryInitError = memoryInitErrorMessage(err, session.getMemoryDbPath());
         session.getLogger().child("memory").warn("Failed to initialize, continuing without memory", {
           code: "MEMORY_INIT_FAILED",
           cause: err as Error,
@@ -495,12 +496,7 @@ export class Session {
           },
         });
       } catch (err) {
-        const msg = (err as Error).message;
-        if (msg.includes("EACCES") || msg.includes("permission")) {
-          session.memoryInitError = `Cannot write to ~/.praana/. Check permissions or set PRAANA_HOME.`;
-        } else {
-          session.memoryInitError = msg;
-        }
+        session.memoryInitError = memoryInitErrorMessage(err, session.getMemoryDbPath());
         session.getLogger().child("memory").warn("Failed to initialize for resumed session", {
           code: "MEMORY_INIT_FAILED",
           cause: err as Error,
@@ -921,8 +917,7 @@ export class Session {
   getMemoryDbPath(): string | null {
     const configuredPath = this.config.memory?.db_path;
     if (configuredPath) {
-      const p = expandHome(configuredPath);
-      return p === ":memory:" || p.startsWith("/") ? p : join(this.cwd, p);
+      return resolveAgainstCwd(expandHome(configuredPath), this.cwd);
     }
     return resolveDefaultMemoryDbPath();
   }
@@ -1586,8 +1581,7 @@ export class Session {
     let dbPath: string;
 
     if (configuredPath) {
-      dbPath = expandHome(configuredPath);
-      if (dbPath !== ":memory:" && !dbPath.startsWith("/")) dbPath = join(this.cwd, dbPath);
+      dbPath = resolveAgainstCwd(expandHome(configuredPath), this.cwd);
     } else {
       dbPath = resolveDefaultMemoryDbPath();
     }
@@ -1698,6 +1692,15 @@ function basename(p: string): string {
 
 function expandHome(p: string): string {
   return p.startsWith("~/") ? p.replace(/^~\//, `${homedir()}/`) : p;
+}
+
+/** One-line user-facing reason for a failed memory DB open, including its path. */
+function memoryInitErrorMessage(err: unknown, dbPath: string | null): string {
+  const msg = (err as Error).message;
+  if (msg.includes("EACCES") || msg.includes("permission")) {
+    return "Cannot write to ~/.praana/. Check permissions or set PRAANA_HOME.";
+  }
+  return dbPath && !msg.includes(dbPath) ? `${msg} (${dbPath})` : msg;
 }
 
 async function waitForCompletion(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {

@@ -1,7 +1,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { loadConfig } from "./config.js";
-import { resolveDefaultMemoryDbPath } from "./app-identity.js";
+import { resolveAgainstCwd, resolveDefaultMemoryDbPath } from "./app-identity.js";
 import { createEmbedder, MemoryStore, resolveEmbeddingBackend } from "./memory/index.js";
 import type { PraanaConfig } from "./types.js";
 
@@ -22,8 +22,7 @@ export async function runMemoryDedupe(
   const configuredPath = config.memory.db_path;
   let dbPath: string;
   if (configuredPath) {
-    dbPath = expandHome(configuredPath);
-    if (!dbPath.startsWith("/")) dbPath = join(cwd, dbPath);
+    dbPath = resolveAgainstCwd(expandHome(configuredPath), cwd);
   } else {
     dbPath = resolveDefaultMemoryDbPath();
   }
