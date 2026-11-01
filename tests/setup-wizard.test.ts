@@ -410,6 +410,45 @@ describe("setup wizard", () => {
       expect(configContent).toContain('base_url = "http://localhost:8080/v1"');
     });
 
+    it("reports configWritten=false when the config write failed", async () => {
+      const fs = await import("node:fs");
+      const spy = spyOn(fs, "writeFileSync").mockImplementation(() => {
+        throw new Error("disk full");
+      });
+      try {
+        const result = finalizeProviderSetup("openrouter", "write", {
+          model: "test-model",
+        });
+        expect(result.success).toBe(true);
+        expect(result.configWritten).toBe(false);
+        expect(result.message).toContain("Failed to write config");
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("reports configWritten=false when the inner write is refused (already exists)", async () => {
+      // The inner writeProviderConfig(force:false) returns written:false with
+      // a "Config already exists" message; finalize must report that the
+      // config was NOT written so consent recording is skipped.
+      const writer = await import("../src/setup/config-writer.js");
+      const spy = spyOn(writer, "writeProviderConfig").mockReturnValue({
+        written: false,
+        path: getSetupConfigPath(),
+        message: `Config already exists at ${getSetupConfigPath()}`,
+      });
+      try {
+        const result = finalizeProviderSetup("openrouter", "write", {
+          model: "test-model",
+        });
+        expect(result.success).toBe(true);
+        expect(result.configWritten).toBe(false);
+        expect(result.message).toContain("already exists");
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it("patches [llm] on an existing config instead of overwriting the file", () => {
       writeProviderConfig("openrouter", { model: "old-model" });
       writeFileSync(
@@ -508,10 +547,14 @@ describe("setup wizard", () => {
   // ── provider-options: buildProviderSelectItems ──
 
   describe("buildProviderSelectItems", () => {
-    it("includes custom provider entry at top", () => {
+    it("includes custom provider entry last, with the self-hosted description", () => {
       const items = buildProviderSelectItems();
-      expect(items[0].value).toBe(CUSTOM_PROVIDER_VALUE);
-      expect(items[0].label).toContain("Custom");
+      const last = items[items.length - 1];
+      expect(last.value).toBe(CUSTOM_PROVIDER_VALUE);
+      expect(last.label).toContain("Custom");
+      expect(last.description).toBe(
+        "Local or self-hosted server (Ollama, LM Studio, vLLM, llama.cpp)",
+      );
     });
 
     it("includes known providers after custom entry", () => {

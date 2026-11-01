@@ -12,7 +12,7 @@ import { SpinnerHost } from "./spinner-host.js";
 import { LaunchCanvas } from "./launch-canvas.js";
 import { TranscriptView, shouldRestorePromptFocus } from "./transcript/view.js";
 import { OverlayHost } from "./overlays/host.js";
-import type { OverlayUi } from "./overlays/state.js";
+import { launchCanvasHiddenForOverlay, type OverlayUi } from "./overlays/state.js";
 import type { TranscriptStoreApi } from "./transcript/store.js";
 import type { TranscriptRenderOpts } from "./transcript/opts.js";
 import type { ExpandedContentResult, IndexedTranscriptEntry } from "./transcript/index.js";
@@ -79,7 +79,15 @@ export function App(props: AppProps) {
     props.ui.chrome.setWidth(dimensions().width || 80);
   });
 
-  const showLaunch = createMemo(() => props.transcript.entries.length === 0);
+  // Launch canvas (and its first-screen hint) only while the transcript is
+  // empty AND no full-screen modal (setup wizard, consent, login) is open.
+  // Transient overlays (palette / slash / model) keep the canvas visible so
+  // the logo does not vanish and flicker back on every keystroke.
+  const showLaunch = createMemo(
+    () =>
+      props.transcript.entries.length === 0 &&
+      !launchCanvasHiddenForOverlay(props.overlay.kind()),
+  );
 
   /**
    * Safety net for the prompt focus papercut: OpenTUI auto-focuses the nearest

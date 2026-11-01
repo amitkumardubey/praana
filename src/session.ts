@@ -273,7 +273,9 @@ export class Session {
     session.noticeCapture = opts?.captureNotice;
     session.suppressLoggerStderr = opts?.suppressLoggerStderr ?? false;
     await session.initLogger();
-    session.agentsContext = loadAgentsContext(cwd);
+    session.agentsContext = loadAgentsContext(cwd, {
+      logger: session.getLogger(),
+    });
     if (session.agentsContext) {
       const tokEst = estimateTokens(session.agentsContext);
       session.getLogger().notice(`context ${tokEst} tok`, { domain: "session" });
@@ -385,7 +387,9 @@ export class Session {
     session.noticeCapture = opts?.captureNotice;
     session.suppressLoggerStderr = opts?.suppressLoggerStderr ?? false;
     await session.initLogger();
-    session.agentsContext = loadAgentsContext(cwd);
+    session.agentsContext = loadAgentsContext(cwd, {
+      logger: session.getLogger(),
+    });
     if (session.agentsContext) {
       const tokEst = estimateTokens(session.agentsContext);
       session.getLogger().notice(`context ${tokEst} tok`, { domain: "session" });
@@ -1712,6 +1716,27 @@ async function waitForCompletion(promise: Promise<unknown>, timeoutMs: number): 
 }
 
 /**
+ * Shared marker for the AGENTS.md truncation notice. The producer
+ * (session.ts) composes its log/capture lines from it and the consumer
+ * (app-controller.ts) matches with `isAgentsTruncationNotice`, so a
+ * rewording propagates to both sides.
+ */
+export const AGENTS_TRUNCATION_MARKER = "AGENTS.md content truncated";
+
+/** App-log message emitted when project instructions are truncated. */
+export const AGENTS_TRUNCATION_LOG_MESSAGE =
+  `${AGENTS_TRUNCATION_MARKER} to ~4000 tokens`;
+
+/** Capture-hook line produced for the truncation notice (TUI). */
+export const AGENTS_TRUNCATION_LOG_LINE =
+  `[session] ${AGENTS_TRUNCATION_LOG_MESSAGE}`;
+
+/** True when `line` is a truncation notice produced by `loadAgentsContext`. */
+export function isAgentsTruncationNotice(line: string): boolean {
+  return line.includes(AGENTS_TRUNCATION_MARKER);
+}
+
+/**
  * Load project context from AGENTS.md / CLAUDE.md files.
  *
  * Load order (all non-empty results are merged):
@@ -1721,8 +1746,19 @@ async function waitForCompletion(promise: Promise<unknown>, timeoutMs: number): 
  *   4. CLAUDE.md fallback      — if no AGENTS.md found at project root
  *
  * Combined content is capped at ~4000 tokens (16000 chars).
+ *
+ * When truncation happens, the notice is emitted through `opts.logger`
+ * (the session logger, when provided) so one code path handles both the
+ * TUI capture hook and the historical headless stderr write; the log-file
+ * entry is kept either way.
  */
-export function loadAgentsContext(cwd: string): string | null {
+export function loadAgentsContext(
+  cwd: string,
+  opts?: {
+    /** Logger that emits the truncation notice; defaults to the app logger. */
+    logger?: PraanaLogger;
+  },
+): string | null {
   const MAX_CHARS = 16_000; // ~4000 tokens
   const parts: string[] = [];
 
@@ -1758,9 +1794,14 @@ export function loadAgentsContext(cwd: string): string | null {
 
   const combined = parts.join("\n\n");
   if (combined.length > MAX_CHARS) {
-    getAppLogger().child("session").notice("AGENTS.md content truncated to ~4000 tokens", {
-      details: { tokenEstimate: estimateTokens(combined) },
-    });
+    const details = { tokenEstimate: estimateTokens(combined) };
+    // One code path: notice() keeps the log-file entry and routes stderr
+    // through the capture hook (TUI) or the historical stderr write
+    // (headless) depending on how the logger was configured.
+    (opts?.logger ?? getAppLogger().child("session")).notice(
+      AGENTS_TRUNCATION_LOG_MESSAGE,
+      { details },
+    );
     return combined.slice(0, MAX_CHARS) + "\n\n<!-- [truncated] -->";
   }
   return combined;
