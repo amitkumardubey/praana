@@ -16,6 +16,7 @@ import {
   BUN_URL,
   INSTALL_PS1_URL,
   INSTALL_SH_URL,
+  defaultWriteToTerminal,
   findOnPath,
   noticeText,
   run,
@@ -276,6 +277,64 @@ describe("writeNotice", () => {
     });
     expect(via).toBe("stdout");
     expect(chunks.join("")).toBe(noticeText());
+  });
+});
+
+describe("defaultWriteToTerminal", () => {
+  it("opens /dev/tty without O_CREAT/O_TRUNC and writes through the fd", () => {
+    const calls: string[] = [];
+    const fd = 42;
+    const ok = defaultWriteToTerminal("notice", "linux", {
+      openSync: (path: string, flags: string) => {
+        calls.push(`open:${path}:${flags}`);
+        return fd;
+      },
+      writeSync: (gotFd: number, chunk: string) => {
+        calls.push(`write:${gotFd}:${chunk}`);
+      },
+      closeSync: (gotFd: number) => {
+        calls.push(`close:${gotFd}`);
+      },
+    });
+    expect(ok).toBe(true);
+    expect(calls).toEqual([
+      "open:/dev/tty:r+",
+      "write:42:notice",
+      "close:42",
+    ]);
+  });
+
+  it("falls back to stdout when the terminal device is missing", () => {
+    const ops: string[] = [];
+    const ok = defaultWriteToTerminal("notice", "linux", {
+      openSync: (path: string) => {
+        ops.push(`open:${path}`);
+        throw new Error("ENOENT: open '/dev/tty'");
+      },
+      writeSync: () => {
+        ops.push("write");
+      },
+      closeSync: () => {
+        ops.push("close");
+      },
+    });
+    expect(ok).toBe(false);
+    expect(ops).toEqual(["open:/dev/tty"]);
+  });
+
+  it("closes the fd when the write fails", () => {
+    const closed: number[] = [];
+    const ok = defaultWriteToTerminal("notice", "linux", {
+      openSync: () => 99,
+      writeSync: () => {
+        throw new Error("EWRITE");
+      },
+      closeSync: (fd: number) => {
+        closed.push(fd);
+      },
+    });
+    expect(ok).toBe(false);
+    expect(closed).toEqual([99]);
   });
 });
 

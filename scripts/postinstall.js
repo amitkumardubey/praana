@@ -20,7 +20,6 @@ import {
   openSync,
   realpathSync,
   statSync,
-  writeFileSync,
   writeSync,
 } from "node:fs";
 import { delimiter, dirname, join, resolve, win32 } from "node:path";
@@ -107,32 +106,51 @@ export function findOnPath(command, options = {}) {
  * person running `npm i -g praana`. Returns false when there is no terminal
  * (CI, piped install, no controlling tty), so the caller falls back to stdout.
  */
-function defaultWriteToTerminal(text, platform = process.platform) {
+export function defaultWriteToTerminal(text, platform = process.platform, io = {}) {
+  const {
+    openSync: open = openSync,
+    writeSync: write = writeSync,
+    closeSync: close = closeSync,
+  } = io;
   if (platform === "win32") {
     // writeFileSync("CONOUT$") opens with O_TRUNC, which Windows rejects for a
     // console device. Open for write and writeSync instead.
     let fd;
     try {
-      fd = openSync("CONOUT$", "w");
-      writeSync(fd, text);
+      fd = open("CONOUT$", "w");
+      write(fd, text);
       return true;
     } catch {
       return false;
     } finally {
       if (fd !== undefined) {
         try {
-          closeSync(fd);
+          close(fd);
         } catch {
           // Nothing to do: the console handle is process-owned.
         }
       }
     }
   }
+  // writeFileSync would open with O_CREAT|O_TRUNC: when /dev/tty is missing
+  // (minimal container or chroot) and the install runs as root, that creates a
+  // regular file in /dev. Open the existing device only; r+ avoids
+  // O_CREAT/O_TRUNC.
+  let fd;
   try {
-    writeFileSync("/dev/tty", text);
+    fd = open("/dev/tty", "r+");
+    write(fd, text);
     return true;
   } catch {
     return false;
+  } finally {
+    if (fd !== undefined) {
+      try {
+        close(fd);
+      } catch {
+        // Nothing to do: a failed close must not mask the original result.
+      }
+    }
   }
 }
 
