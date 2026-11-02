@@ -9,6 +9,7 @@ import {
 } from "../src/context-engine/index.js";
 import { TurnRecorder } from "../src/context-engine/turn-recorder.js";
 import { getArtifactById } from "../src/context-engine/db.js";
+import { rmForce } from "./helpers/platform.js";
 import type { ContextEngineConfig } from "../src/types.js";
 
 const TEST_CONFIG: ContextEngineConfig = {
@@ -30,7 +31,7 @@ describe("event lineage", () => {
 
   afterEach(() => {
     engine?.close();
-    rmSync(dbPath, { force: true });
+    rmForce(dbPath);
   });
 
   function openEngine(): ContextEngine {

@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ContextEngine } from "../src/context-engine/index.js";
+import { rmForce } from "./helpers/platform.js";
 import { insertDistillerStat } from "../src/context-engine/db.js";
 import { renderSessionTelemetrySummary } from "../src/context-engine/telemetry.js";
 import type { ContextEngineConfig } from "../src/types.js";
@@ -26,7 +27,7 @@ describe("context engine telemetry", () => {
 
   afterEach(() => {
     engine?.close();
-    rmSync(dbPath, { force: true });
+    rmForce(dbPath);
   });
 
   function openEngine(): ContextEngine {

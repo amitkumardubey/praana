@@ -3,10 +3,30 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Session } from "../src/session.js";
+import { rmForce } from "./helpers/platform.js";
 import type { PraanaConfig } from "../src/types.js";
 
 const testRoot = mkdtempSync(join(tmpdir(), "praana-test-session-end-"));
 const testLogDir = join(testRoot, "sessions");
+// Track real sessions so cleanup ends any session left open by a failed
+// assertion before removing the temp tree (Windows cannot delete directories
+// that still hold open file handles).
+const liveSessions = new Set<Session>();
+function tracked<T extends Session>(session: T): T {
+  liveSessions.add(session);
+  return session;
+}
+
+async function endTrackedSessions(): Promise<void> {
+  for (const session of liveSessions) {
+    try {
+      if (!session.ended) await session.end("aborted");
+    } catch {
+      // cleanup must not fail the run
+    }
+  }
+}
+
 const testConfig: PraanaConfig = {
   llm: { provider: "openrouter", model: "anthropic/claude-sonnet-4" },
   memory: { enabled: false, summarizer: "disabled", db_path: join(testRoot, "memory.db") },
@@ -16,12 +36,14 @@ const testConfig: PraanaConfig = {
 };
 
 describe("Session end timeout behavior", () => {
-  afterEach(() => {
-    rmSync(testLogDir, { recursive: true, force: true });
+  afterEach(async () => {
+    await endTrackedSessions();
+    rmForce(testLogDir);
   });
 
-  afterAll(() => {
-    rmSync(testRoot, { recursive: true, force: true });
+  afterAll(async () => {
+    await endTrackedSessions();
+    rmForce(testRoot);
   });
 
   function expectMemory(status: { memory: string }, expected: string) {
@@ -29,7 +51,7 @@ describe("Session end timeout behavior", () => {
   }
 
   it("returns quickly when memory sessionEnd exceeds timeout", async () => {
-    const s = await Session.create(process.cwd(), testConfig);
+    const s = tracked(await Session.create(process.cwd(), testConfig));
 
     (s as unknown as { memoryEnabled: boolean }).memoryEnabled = true;
     (s as unknown as { memoryStore: { sessionEnd: () => Promise<{ learningsStored: number }> } }).memoryStore = {
@@ -47,7 +69,7 @@ describe("Session end timeout behavior", () => {
   });
 
   it("waits for memory sessionEnd when timeout is not provided", async () => {
-    const s = await Session.create(process.cwd(), testConfig);
+    const s = tracked(await Session.create(process.cwd(), testConfig));
 
     (s as unknown as { memoryEnabled: boolean }).memoryEnabled = true;
     (s as unknown as { memoryStore: { sessionEnd: () => Promise<{ learningsStored: number }> } }).memoryStore = {
@@ -67,7 +89,7 @@ describe("Session end timeout behavior", () => {
   });
 
   it("returns 'completed' when summarizer finishes within timeout", async () => {
-    const s = await Session.create(process.cwd(), testConfig);
+    const s = tracked(await Session.create(process.cwd(), testConfig));
     (s as unknown as { memoryEnabled: boolean }).memoryEnabled = true;
     (s as unknown as { memoryStore: { sessionEnd: () => Promise<{ learningsStored: number }> } }).memoryStore = {
       sessionEnd: () => new Promise((resolve) => setTimeout(() => resolve({ learningsStored: 1 }), 5)),
@@ -79,7 +101,7 @@ describe("Session end timeout behavior", () => {
   });
 
   it("returns 'skipped' when memory is disabled", async () => {
-    const s = await Session.create(process.cwd(), testConfig);
+    const s = tracked(await Session.create(process.cwd(), testConfig));
     // memoryEnabled is false by default in testConfig
     const status = await s.end("clean");
     expectMemory(status, "skipped");
@@ -88,7 +110,7 @@ describe("Session end timeout behavior", () => {
   });
 
   it("returns 'failed' when summarizer throws", async () => {
-    const s = await Session.create(process.cwd(), testConfig);
+    const s = tracked(await Session.create(process.cwd(), testConfig));
     (s as unknown as { memoryEnabled: boolean }).memoryEnabled = true;
     (s as unknown as { memoryStore: { sessionEnd: () => Promise<{ learningsStored: number }> } }).memoryStore = {
       sessionEnd: () => Promise.reject(new Error("summarizer down")),
@@ -100,7 +122,7 @@ describe("Session end timeout behavior", () => {
   });
 
   it("snapshots recallUsed before sessionEnd flush so epilogue stays accurate", async () => {
-    const s = await Session.create(process.cwd(), testConfig);
+    const s = tracked(await Session.create(process.cwd(), testConfig));
     (s as unknown as { memoryEnabled: boolean }).memoryEnabled = true;
     let countCalls = 0;
     (s as unknown as {
@@ -124,13 +146,13 @@ describe("Session end timeout behavior", () => {
   });
 
   it("tracks session start metadata and uptime", async () => {
-    const s = await Session.create(process.cwd(), testConfig);
+    const s = tracked(await Session.create(process.cwd(), testConfig));
     expect(s.getStartedAt()).toBeGreaterThan(0);
     expect(s.getUptimeMs()).toBeGreaterThanOrEqual(0);
   });
 
   it("returns Cognitive Memory entry count from memory store when enabled", async () => {
-    const s = await Session.create(process.cwd(), testConfig);
+    const s = tracked(await Session.create(process.cwd(), testConfig));
     (s as unknown as { memoryEnabled: boolean }).memoryEnabled = true;
     (s as unknown as { memoryStore: { getEntryCount: () => number } }).memoryStore = {
       getEntryCount: () => 42,
@@ -139,7 +161,7 @@ describe("Session end timeout behavior", () => {
   });
 
   it("passes agentsContext to memoryStore.sessionEnd", async () => {
-    const s = await Session.create(process.cwd(), testConfig);
+    const s = tracked(await Session.create(process.cwd(), testConfig));
     (s as unknown as { memoryEnabled: boolean }).memoryEnabled = true;
 
     let capturedAgentsContext: string | null | undefined = "not-called";

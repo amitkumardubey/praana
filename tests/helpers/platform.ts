@@ -7,9 +7,28 @@
  */
 
 import { createHash } from "node:crypto";
+import { rmSync } from "node:fs";
 
 /** True when the test process is running on Windows. */
 export const isWindows = process.platform === "win32";
+
+/**
+ * Remove a temp file/dir, retrying briefly on Windows.
+ *
+ * Windows cannot delete a file/dir while a handle is still open (EBUSY).
+ * Tests close what they can before cleanup; for handles that have no close
+ * API from tests (e.g. the pino-roll session log stream), retry a few times
+ * so the removal still succeeds once the OS releases them. No-op behaviour on
+ * POSIX (maxRetries 0, same as plain rmSync).
+ */
+export function rmForce(path: string): void {
+  rmSync(path, {
+    recursive: true,
+    force: true,
+    maxRetries: isWindows ? 5 : 0,
+    retryDelay: 100,
+  });
+}
 
 /**
  * Normalise CRLF → LF line endings in text read from a git checkout.
