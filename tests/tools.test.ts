@@ -12,6 +12,7 @@ import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { setUiWriters } from '../src/ui.js';
+import { isWindows } from './helpers/platform.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -1238,7 +1239,8 @@ describe('System Tools (createSystemTools)', () => {
     });
   });
 
-  describe('shell', () => {
+  // POSIX-only: shell tests spawn `sh` (or bash), which is not present on Windows.
+  describe.skipIf(isWindows)('shell', () => {
     it('should execute a command and return output', async () => {
       const result = await tools.shell.execute({ command: 'echo hello' });
       expect(result.ok).toBe(true);
@@ -1600,7 +1602,8 @@ import path from 'path';
     });
   });
 
-  describe('shell sandbox', () => {
+  // POSIX-only: shell sandbox tests spawn `sh` for the command under test.
+  describe.skipIf(isWindows)('shell sandbox', () => {
     describe('dangerous command detection', () => {
       it('should block sudo', async () => {
         const tools = createSystemTools({
