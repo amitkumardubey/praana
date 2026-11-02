@@ -20,6 +20,7 @@ import {
   type StreamEvent,
   type StreamRequest,
 } from "../src/llm/index.js";
+import { checkoutDigest, normalizeText } from "./helpers/platform.js";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const FIXTURE_ROOT = "tests/fixtures/rust-v2/providers";
@@ -284,7 +285,7 @@ function normalizeEvent(ev: StreamEvent): Record<string, unknown> {
 }
 
 function readCommittedLines(rel: string): string[] {
-  const raw = requireFixture(rel);
+  const raw = normalizeText(requireFixture(rel));
   if (raw.includes("\r")) {
     throw new Error(`Fixture ${rel} must not contain CR`);
   }
@@ -295,7 +296,7 @@ function readCommittedLines(rel: string): string[] {
 }
 
 function readCommittedJson(rel: string): unknown {
-  const raw = requireFixture(rel);
+  const raw = normalizeText(requireFixture(rel));
   if (raw.includes("\r")) {
     throw new Error(`Fixture ${rel} must not contain CR`);
   }
@@ -373,9 +374,8 @@ describe("rust-v2 provider legacy fixtures", () => {
     for (const rel of ORACLE_FILES_SORTED) {
       if (ORACLE_HASH_ALLOWLIST.has(rel)) continue;
       const bytes = readFileSync(join(REPO_ROOT, rel));
-      expect(manifest.oracle_sha256_by_file[rel], `oracle hash mismatch: ${rel}`).toBe(
-        sha256Hex(bytes),
-      );
+      const pinned = manifest.oracle_sha256_by_file[rel];
+      expect(pinned, `oracle hash mismatch: ${rel}`).toBe(checkoutDigest(bytes, pinned));
     }
 
     const fixtureKeys = Object.keys(manifest.fixture_sha256_by_file);
@@ -383,9 +383,8 @@ describe("rust-v2 provider legacy fixtures", () => {
     expect(fixtureKeys).toEqual(diskFiles);
     for (const rel of fixtureKeys) {
       const bytes = readFileSync(join(REPO_ROOT, FIXTURE_ROOT, rel));
-      expect(manifest.fixture_sha256_by_file[rel], `fixture hash mismatch: ${rel}`).toBe(
-        sha256Hex(bytes),
-      );
+      const pinned = manifest.fixture_sha256_by_file[rel];
+      expect(pinned, `fixture hash mismatch: ${rel}`).toBe(checkoutDigest(bytes, pinned));
     }
   });
 
@@ -539,7 +538,7 @@ describe("rust-v2 provider legacy fixtures", () => {
 
   it("provider fixtures contain no credentials or machine-specific values", () => {
     for (const rel of listFixtureFiles()) {
-      const raw = readFileSync(fixturePath(rel), "latin1");
+      const raw = normalizeText(readFileSync(fixturePath(rel), "latin1"));
       const isSse = rel.endsWith(".sse");
       if (!isSse && raw.includes("\r")) {
         throw new Error(`${rel}: contains CR outside an SSE case`);

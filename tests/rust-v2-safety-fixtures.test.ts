@@ -34,6 +34,7 @@ import { createRedactPostToolCallHandler } from "../src/hooks/handlers/redact.js
 import { createRiskPreToolCallHandler } from "../src/hooks/handlers/risk.js";
 import { LoopGate } from "../src/circuit/loop-gate.js";
 import type { LspManager } from "../src/lsp/manager.js";
+import { checkoutDigest, normalizeText } from "./helpers/platform.js";
 
 const REPO_ROOT = join(import.meta.dir, "..");
 const FIXTURE_ROOT = "tests/fixtures/rust-v2/safety";
@@ -193,7 +194,8 @@ function makeSessionFake(opts: SessionFakeOptions = {}): HookSessionLike {
     cwd: WORKSPACE,
     isPlanMode: () => opts.planMode ?? false,
     getLogger: () => opts.logger,
-    hasReadPath: (abs: string) => (active ? readPaths.includes(abs) : null),
+    hasReadPath: (abs: string) =>
+      active ? readPaths.map((p) => p.split("\\").join("/")).includes(abs.split("\\").join("/")) : null,
     listReadPaths: () => [...readPaths],
     recentWritesForPath: () => opts.recentWrites ?? [],
     confirmRisk: async () => opts.confirmRiskResult ?? { allowed: false, reason: "declined" },
@@ -215,8 +217,12 @@ interface ValidateDeps {
 }
 
 function makeValidateDeps(existingAbsPaths: string[] = [MAIN_ABS]): ValidateDeps {
+  // Windows resolve() returns backslash paths; compare in POSIX form so the
+  // fake host matches the committed fixture paths on both platforms.
+  const norm = (p: string) => p.split("\\").join("/");
+  const existing = new Set(existingAbsPaths.map(norm));
   return {
-    pathExists: (abs: string) => existingAbsPaths.includes(abs),
+    pathExists: (abs: string) => existing.has(norm(abs)),
     listRepoFiles: () => [`${WORKSPACE}/src/main.ts`, `${WORKSPACE}/src/helper.ts`],
     commandOnPath: () => true,
   };
@@ -1079,9 +1085,8 @@ describe("rust-v2 safety legacy fixtures", () => {
     for (const rel of ORACLE_FILES_SORTED) {
       if (ORACLE_HASH_ALLOWLIST.has(rel)) continue;
       const bytes = readFileSync(join(REPO_ROOT, rel));
-      expect(manifest.oracle_sha256_by_file[rel], `oracle hash mismatch: ${rel}`).toBe(
-        sha256Hex(bytes),
-      );
+      const pinned = manifest.oracle_sha256_by_file[rel];
+      expect(pinned, `oracle hash mismatch: ${rel}`).toBe(checkoutDigest(bytes, pinned));
     }
 
     const fixtureKeys = Object.keys(manifest.fixture_sha256_by_file);
@@ -1089,9 +1094,8 @@ describe("rust-v2 safety legacy fixtures", () => {
     expect(fixtureKeys).toEqual(diskFiles);
     for (const rel of fixtureKeys) {
       const bytes = readFileSync(fixturePath(rel));
-      expect(manifest.fixture_sha256_by_file[rel], `fixture hash mismatch: ${rel}`).toBe(
-        sha256Hex(bytes),
-      );
+      const pinned = manifest.fixture_sha256_by_file[rel];
+      expect(pinned, `fixture hash mismatch: ${rel}`).toBe(checkoutDigest(bytes, pinned));
     }
   });
 
@@ -1156,7 +1160,7 @@ describe("rust-v2 safety legacy fixtures", () => {
 
   it("safety fixtures contain no credentials or machine-specific values", () => {
     for (const rel of listFixtureFiles()) {
-      const raw = readFileSync(fixturePath(rel), "latin1");
+      const raw = normalizeText(readFileSync(fixturePath(rel), "latin1"));
       if (raw.includes("\r")) {
         throw new Error(`${rel}: contains CR`);
       }

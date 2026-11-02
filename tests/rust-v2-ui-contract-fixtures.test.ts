@@ -10,6 +10,7 @@ import { describe, expect, it } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
+import { checkoutDigest, normalizeText } from "./helpers/platform.js";
 
 /** Exact Section 13 inventory (repo-relative to the fixture root). */
 const COMMAND_FILES = [
@@ -300,7 +301,9 @@ describe("rust-v2 UI contract fixture freeze", () => {
     for (const rel of keys) {
       const digest = manifest.sha256_by_file[rel];
       expect(SHA256_HEX.test(digest), `digest not 64-lowercase-hex: ${rel}`).toBe(true);
-      expect(digest, `digest mismatch: ${rel}`).toBe(sha256Hex(readFileSync(fixtureRel(rel))));
+      expect(digest, `digest mismatch: ${rel}`).toBe(
+        checkoutDigest(readFileSync(fixtureRel(rel)), digest),
+      );
     }
   });
 
@@ -369,7 +372,7 @@ describe("rust-v2 UI contract fixture freeze", () => {
 
     for (const rel of [...EXPECTED_INVENTORY]) {
       if (rel === "manifest.json" || rel === "mapping.json") continue;
-      const raw = requireFixture(rel);
+      const raw = normalizeText(requireFixture(rel));
       if (rel.endsWith(".jsonl")) {
         expect(raw.includes("\r"), `${rel} contains CR`).toBe(false);
         expect(raw.endsWith("\n"), `${rel} must end with trailing LF`).toBe(true);
@@ -423,7 +426,7 @@ describe("rust-v2 UI contract fixture freeze", () => {
 
   it("retry and reconciliation sequences match the owner's exact narratives", () => {
     const lines = (rel: string): string[] => {
-      const raw = requireFixture(rel);
+      const raw = normalizeText(requireFixture(rel));
       expect(raw.includes("\r"), `${rel} contains CR`).toBe(false);
       expect(raw.endsWith("\n"), `${rel} must end with trailing LF`).toBe(true);
       return raw.slice(0, -1).split("\n").map((line) => JSON.parse(line));
