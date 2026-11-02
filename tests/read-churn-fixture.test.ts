@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { isWindows } from "./helpers/platform.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -43,7 +44,8 @@ describe("read-churn acceptance fixture (#571)", () => {
     });
   }
 
-  it("emits exactly one recovery hint by the 3rd cross-channel access of the same file", async () => {
+  // POSIX-only: the shell channel uses `cat`, which has no Windows executable.
+  it.skipIf(isWindows)("emits exactly one recovery hint by the 3rd cross-channel access of the same file", async () => {
     writeFileSync(join(testDir, "run.tsx"), "export function run() {}\n".repeat(20));
     const tools = makeTools();
 
@@ -70,7 +72,8 @@ describe("read-churn acceptance fixture (#571)", () => {
     expect(scorecard.getCounters().churnInterventions).toBeLessThan(2);
   });
 
-  it("alternating shell + read_file of the same path counts toward one intervention", async () => {
+  // POSIX-only: uses `cat` (see above).
+  it.skipIf(isWindows)("alternating shell + read_file of the same path counts toward one intervention", async () => {
     writeFileSync(join(testDir, "alt.ts"), "export const alt = 1;\n".repeat(20));
     const tools = makeTools();
 

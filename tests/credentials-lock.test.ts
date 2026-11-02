@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { isWindows } from "./helpers/platform.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -221,7 +222,9 @@ describe("credential advisory locks", () => {
     again.release();
   });
 
-  it("fails clearly when a corrupt lock database cannot be replaced", () => {
+  // POSIX-only: makes the lock directory non-writable with chmod, which NTFS
+  // does not honour, so replacement succeeds and no error is raised.
+  it.skipIf(isWindows)("fails clearly when a corrupt lock database cannot be replaced", () => {
     const path = pathFor("store");
     const dir = dirname(path);
     mkdirSync(dir, { recursive: true });

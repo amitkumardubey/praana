@@ -1,4 +1,5 @@
 import { describe, it, expect } from "bun:test";
+import { isWindows } from "./helpers/platform.js";
 import {
   TurnAbortedError,
   TurnController,
@@ -120,7 +121,9 @@ describe("TurnAbortedError", () => {
 });
 
 describe("shell abort", () => {
-  it("kills a running command when the turn is aborted", async () => {
+  // POSIX-only: spawns `sleep` and asserts the SIGINT exit code (130);
+  // Windows has no signals and no sleep executable.
+  it.skipIf(isWindows)("kills a running command when the turn is aborted", async () => {
     const controller = new AbortController();
     const tools = createSystemTools({
       cwd: process.cwd(),

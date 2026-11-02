@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "bun:test";
+import { isWindows } from "./helpers/platform.js";
 import { formatSha256Sums } from "../scripts/package-release-binaries.js";
 import { SIDECAR_ADDON_FILENAME } from "../src/native/sidecar.js";
 
@@ -70,6 +71,41 @@ echo fixture-praana
 `;
 }
 
+/**
+ * Pack `files` (relative to `staging`) into a zip at `archivePath`.
+ * POSIX uses the `zip` CLI; Windows has no `zip` executable, so PowerShell's
+ * Compress-Archive is used there instead.
+ */
+function packFixtureZip(
+  archivePath: string,
+  staging: string,
+  files: string[],
+): void {
+  let packed: { exitCode: number | null; stdout: Buffer; stderr: Buffer };
+  if (isWindows) {
+    if (!POWERSHELL) {
+      throw new Error("PowerShell not found on PATH");
+    }
+    const list = files.map((f) => JSON.stringify(f)).join(",");
+    packed = Bun.spawnSync(
+      [
+        POWERSHELL,
+        "-NoProfile",
+        "-Command",
+        `Compress-Archive -Path @(${list}) -DestinationPath ${JSON.stringify(archivePath)} -Force`,
+      ],
+      { cwd: staging, stdout: "pipe", stderr: "pipe" },
+    );
+  } else {
+    packed = Bun.spawnSync(["zip", "-j", archivePath, ...files], {
+      cwd: staging,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+  }
+  expect(packed.exitCode).toBe(0);
+}
+
 async function buildRelease(root: string, praanaSource: string) {
   const releaseDir = join(root, "release");
   const prefix = join(root, "bin");
@@ -83,12 +119,7 @@ async function buildRelease(root: string, praanaSource: string) {
 
   const archiveName = "praana-windows-x64.zip";
   const archivePath = join(releaseDir, archiveName);
-  const packed = Bun.spawnSync(["zip", "-j", archivePath, "praana.exe", SIDECAR_ADDON_FILENAME], {
-    cwd: staging,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  expect(packed.exitCode).toBe(0);
+  packFixtureZip(archivePath, staging, ["praana.exe", SIDECAR_ADDON_FILENAME]);
 
   const hash = await sha256File(archivePath);
   writeFileSync(
@@ -165,11 +196,11 @@ echo fixture-praana
 
     const archiveName = "praana-windows-x64.zip";
     const archivePath = join(releaseDir, archiveName);
-    const packed = Bun.spawnSync(
-      ["zip", "-j", archivePath, "praana.exe", SIDECAR_ADDON_FILENAME, "praana-natives.json"],
-      { cwd: staging, stdout: "pipe", stderr: "pipe" },
-    );
-    expect(packed.exitCode).toBe(0);
+    packFixtureZip(archivePath, staging, [
+      "praana.exe",
+      SIDECAR_ADDON_FILENAME,
+      "praana-natives.json",
+    ]);
 
     const hash = await sha256File(archivePath);
     writeFileSync(
