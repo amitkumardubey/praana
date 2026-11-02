@@ -4,7 +4,8 @@
  * printHelp is the CLI help; the key lines below are guarded against drift.
  */
 import { describe, expect, it } from "bun:test";
-import { printHelp } from "../src/app-banner.js";
+import { printHelp, SLASH_COMMANDS_HELP_BLOCK } from "../src/app-banner.js";
+import { SLASH_COMMAND_METADATA } from "../src/slash-commands.js";
 
 function capturePrintHelp(): string {
   const logs: string[] = [];
@@ -19,6 +20,20 @@ function capturePrintHelp(): string {
 }
 
 describe("printHelp", () => {
+  it("lists every command in SLASH_COMMAND_METADATA", () => {
+    const block = SLASH_COMMANDS_HELP_BLOCK.join("\n");
+    for (const meta of SLASH_COMMAND_METADATA) {
+      expect(block).toContain(meta.name);
+    }
+  });
+
+  it("mentions /quit as an alias of /exit", () => {
+    const block = SLASH_COMMANDS_HELP_BLOCK.join("\n");
+    const exitLine = block.split("\n").find((line) => line.includes("/exit"));
+    expect(exitLine).toBeDefined();
+    expect(exitLine).toContain("/quit");
+  });
+
   it("prints usage, slash command table, keys, status hint, and the tip", () => {
     const out = capturePrintHelp();
 
