@@ -1,7 +1,8 @@
 import { describe, expect, it, mock } from "bun:test";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { request as httpRequest, Agent, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { createServer, request as httpRequest, Agent, type IncomingMessage, type Server, type ServerResponse } from "node:http";
+import { connect as tcpConnect, type Socket } from "node:net";
 import { buildAuthorizeUrl, createOpenAICodexOAuth, extractAccountId, generatePKCE, parseManualInput } from "../src/oauth-codex.js";
 import { OAuthCallbackDeniedError } from "../src/oauth-callback-server.js";
 import { startOAuthCallbackServer, type OAuthCallbackServer } from "../src/oauth-callback-server.js";
@@ -118,6 +119,63 @@ describe("Codex callback listener", () => {
       .rejects.toMatchObject({ code: "EACCES" });
     expect(denied.close).toHaveBeenCalled();
   });
+  it("serves an in-flight request to completion after close() and only then tears down", async () => {
+    const order: string[] = [];
+    const factory = (handler: (req: IncomingMessage, res: ServerResponse) => void) => {
+      const server = createServer(handler) as Server & {
+        closeIdleConnections?: () => void;
+        closeAllConnections?: () => void;
+      };
+      server.closeIdleConnections = () => { order.push("idle"); };
+      server.closeAllConnections = () => { order.push("all"); };
+      return server;
+    };
+    const callback = await startOAuthCallbackServer({ state: "s", signal: new AbortController().signal }, factory);
+    expect(callback).toBeDefined();
+    const waitSettled = callback!.wait().then(
+      () => ({ ok: true as const }),
+      (err: unknown) => ({ ok: false as const, message: String((err as Error).message) }),
+    );
+    // Send the request headers without the terminating CRLF so the request
+    // is still pending when the server closes. The old close() destroyed
+    // the socket immediately (blank/reset page); the new one lets in-flight
+    // requests finish and flush before tearing anything down.
+    const socket: Socket = tcpConnect({ host: "127.0.0.1", port: 1455 });
+    let body = "";
+    const received = new Promise<void>((resolve, reject) => {
+      socket.setEncoding("utf8");
+      socket.on("data", (chunk: string) => { body += chunk; });
+      socket.on("end", () => resolve());
+      socket.on("error", reject);
+    });
+    await new Promise<void>((resolve) => socket.on("connect", () => resolve()));
+    socket.write(
+      "GET /auth/callback?code=abc&state=s HTTP/1.1\r\n" +
+      "Host: 127.0.0.1:1455\r\n" +
+      "Connection: close\r\n",
+    );
+    // Give the server a moment to accept and start parsing, then close.
+    await Bun.sleep(50);
+    callback!.close();
+    // close() settles the wait immediately (no waiting on the grace timer).
+    const outcome = await waitSettled;
+    expect(outcome.ok).toBe(false);
+    // Complete the request. The server is closed but the in-flight
+    // connection must still be served and its response flushed in full.
+    socket.write("\r\n");
+    await Promise.race([received, Bun.sleep(3_000).then(() => { throw new Error("timed out waiting for socket data"); })]);
+    expect(body).toContain("HTTP/1.1 409");
+    expect(body).toContain("This authorization has already been handled");
+    expect(body).toContain("</body></html>");
+    socket.destroy();
+    // Sequencing: idle connections are closed first; the remaining-connection
+    // destroy only happens once the server has stopped (grace timer cleared).
+    expect(order[0]).toBe("idle");
+    expect(order).toContain("all");
+    expect(order.indexOf("idle")).toBeLessThan(order.indexOf("all"));
+    callback?.close();
+  });
+
   it("releases port 1455 immediately after close when the client used keep-alive", async () => {
     const callback = await startOAuthCallbackServer({ state: "s", signal: new AbortController().signal });
     expect(callback).toBeDefined();
