@@ -425,6 +425,114 @@ describe("serialized OAuth refresh", () => {
     }
   });
 
+  it("reports a credential lock timeout as a retryable error instead of sending an unauthenticated request", async () => {
+    seedExpiredCodex();
+    const lock = holdLock("store");
+    try {
+      const events: StreamEvent[] = [];
+      for await (const event of streamLlmResponse({
+        provider: "openai-codex",
+        model: "gpt-6.1-sol",
+        messages: [{ role: "user", content: "hi" }],
+      })) events.push(event);
+      expect(events).toHaveLength(1);
+      const error = events[0];
+      expect(error?.type === "error" && error.error).toBeInstanceOf(CredentialLockTimeoutError);
+      expect(error?.type === "error" && error.retryable).toBe(true);
+      expect(error?.type === "error" && error.error.message).toContain("Timed out waiting for the credential lock");
+    } finally {
+      lock.release();
+    }
+  }, { timeout: 10_000 });
+
+  it("reports an unreadable credential store as a non-retryable error", async () => {
+    seedExpiredCodex();
+    const urls: string[] = [];
+    resetOAuthProvidersForTests({
+      fetch: (async () => {
+        // Corrupt the store mid-refresh so the post-refresh disk read fails.
+        writeFileSync(getCredentialsFilePath(), "{not-json");
+        throw new Error("token endpoint down");
+      }) as typeof fetch,
+    });
+    globalThis.fetch = (async (url) => {
+      urls.push(String(url));
+      return new Response(`data: ${JSON.stringify({ type: "response.completed", response: { status: "completed" } })}\n\n`);
+    }) as typeof fetch;
+    const events: StreamEvent[] = [];
+    for await (const event of streamLlmResponse({
+      provider: "openai-codex",
+      model: "gpt-6.1-sol",
+      messages: [{ role: "user", content: "hi" }],
+    })) events.push(event);
+    // No request may go out without credentials; the read error must surface.
+    expect(urls).toEqual([]);
+    expect(events).toHaveLength(1);
+    const error = events[0];
+    expect(error?.type === "error" && error.error.name).toBe("CredentialStoreReadError");
+    expect(error?.type === "error" && error.retryable).toBe(false);
+  });
+
+  it("surfaces an unexpected auth error instead of swallowing it", async () => {
+    // A fresh token makes resolveOAuthModelAuth return through oauth.toAuth;
+    // a crash there is an unexpected error that must surface, not be dropped.
+    setOAuthToken("anthropic", {
+      type: "oauth",
+      access: "ant-fresh",
+      refresh: "refresh-fresh",
+      expires: Date.now() + 3_600_000,
+    });
+    resetOAuthProvidersForTests({}, {
+      anthropic: {
+        name: "Anthropic",
+        async login() { throw new Error("unused"); },
+        async refresh() { throw new Error("unused"); },
+        async toAuth() { throw new Error("toAuth exploded"); },
+      },
+    });
+    const events: StreamEvent[] = [];
+    for await (const event of streamLlmResponse({
+      provider: "anthropic",
+      model: "claude-3-7-sonnet",
+      messages: [{ role: "user", content: "hi" }],
+    })) events.push(event);
+    expect(events).toHaveLength(1);
+    const error = events[0];
+    expect(error?.type === "error" && error.retryable).toBe(false);
+    expect(error?.type === "error" && error.error.message).toBe("toAuth exploded");
+  });
+
+  it("does not treat an unrelated error containing 'abort' as a user abort", async () => {
+    // A raw unexpected error whose message merely contains "abort" (no
+    // AbortError name, no aborted signal) must surface as an error, not as
+    // a user abort.
+    setOAuthToken("anthropic", {
+      type: "oauth",
+      access: "ant-fresh",
+      refresh: "refresh-fresh",
+      expires: Date.now() + 3_600_000,
+    });
+    resetOAuthProvidersForTests({}, {
+      anthropic: {
+        name: "Anthropic",
+        async login() { throw new Error("unused"); },
+        async refresh() { throw new Error("unused"); },
+        async toAuth() { throw new Error("network abort in proxy"); },
+      },
+    });
+    const events: StreamEvent[] = [];
+    for await (const event of streamLlmResponse({
+      provider: "anthropic",
+      model: "claude-3-7-sonnet",
+      messages: [{ role: "user", content: "hi" }],
+    })) events.push(event);
+    expect(events.some((event) => event.type === "done")).toBe(false);
+    expect(events).toHaveLength(1);
+    const error = events[0];
+    expect(error?.type === "error" && error.retryable).toBe(false);
+    expect(error?.type === "error" && error.error.message).toContain("network abort");
+  });
+
   it("does not return an expired access token when a refresh rotates only the refresh token", async () => {
     seedExpiredCodex("refresh-old", jwt("stale-account"));
     resetOAuthProvidersForTests({
@@ -537,6 +645,76 @@ describe("serialized OAuth refresh", () => {
       expect(session.eventLog.readAll().some((event) => event.kind === "user_message")).toBe(true);
       const history = buildFullConversationHistory(session.eventLog.readAllUncompressed());
       expect(history).not.toContain("hello");
+    } finally {
+      await session.end("clean", [], { memoryTimeoutMs: 1 });
+    }
+  });
+
+  it("shows the credential-lock message from a turn when the store lock is busy", async () => {
+    seedExpiredCodex();
+    const lock = holdLock("store");
+    let chatCalls = 0;
+    globalThis.fetch = (async () => {
+      chatCalls += 1;
+      throw new Error("should not be called");
+    }) as typeof fetch;
+    const logDir = join(praanaHome, "sessions");
+    mkdirSync(logDir, { recursive: true });
+    const config = turnConfig(logDir, praanaHome);
+    const session = await Session.create(praanaHome, config, { incognito: true });
+    const errors: string[] = [];
+    let postTurns = 0;
+    session.hooks.onPostTurn(() => { postTurns += 1; });
+    const turnsBefore = session.getTurnCount();
+    try {
+      const text = await runTurn(session, "hello", undefined, {
+        sink: {
+          onError: (entry) => { errors.push(entry.message); },
+          onFallback: () => {},
+        },
+      });
+      expect(chatCalls).toBe(0);
+      expect(text).toBe("");
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain("Timed out waiting for the credential lock");
+      expect(session.getTurnCount()).toBe(turnsBefore);
+      expect(postTurns).toBe(0);
+    } finally {
+      lock.release();
+      await session.end("clean", [], { memoryTimeoutMs: 1 });
+    }
+  }, { timeout: 10_000 });
+
+  it("shows the credential-store read error from a turn when the store is corrupt", async () => {
+    seedExpiredCodex();
+    writeFileSync(getCredentialsFilePath(), "{not-json");
+    resetCredentialStoreForTests();
+    let chatCalls = 0;
+    globalThis.fetch = (async () => {
+      chatCalls += 1;
+      throw new Error("should not be called");
+    }) as typeof fetch;
+    const logDir = join(praanaHome, "sessions");
+    mkdirSync(logDir, { recursive: true });
+    const config = turnConfig(logDir, praanaHome);
+    const session = await Session.create(praanaHome, config, { incognito: true });
+    const errors: string[] = [];
+    let postTurns = 0;
+    session.hooks.onPostTurn(() => { postTurns += 1; });
+    const turnsBefore = session.getTurnCount();
+    try {
+      const text = await runTurn(session, "hello", undefined, {
+        sink: {
+          onError: (entry) => { errors.push(entry.message); },
+          onFallback: () => {},
+        },
+      });
+      expect(chatCalls).toBe(0);
+      expect(text).toBe("");
+      expect(errors).toHaveLength(1);
+      expect(errors[0]).toContain("Failed to read the credentials store");
+      expect(session.getTurnCount()).toBe(turnsBefore);
+      expect(postTurns).toBe(0);
     } finally {
       await session.end("clean", [], { memoryTimeoutMs: 1 });
     }

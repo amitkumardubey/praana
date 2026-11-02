@@ -480,7 +480,25 @@ describe("Responses stream termination", () => {
     ]);
     expect(merged.filter((event) => event.type === "usage")).toEqual([
       { type: "usage", usage: { input: 10, output: 1, totalTokens: 11 } },
-      { type: "usage", usage: { input: 10, output: 4, totalTokens: 11 } },
+      // The later event reports output but no total: total must be recomputed
+      // as input + output instead of carrying the stale previous total.
+      { type: "usage", usage: { input: 10, output: 4, totalTokens: 14 } },
+    ]);
+  });
+
+  it("recomputes total tokens when a later event reports input/output without a total", async () => {
+    const events = await run(req, { bearerToken: jwt() }, [
+      {
+        type: "response.output_text.delta",
+        delta: "Hi",
+        usage: { input_tokens: 100, output_tokens: 5, total_tokens: 105 },
+      },
+      { usage: { input_tokens: 100, output_tokens: 900 } },
+      completed,
+    ]);
+    expect(events.filter((event) => event.type === "usage")).toEqual([
+      { type: "usage", usage: { input: 100, output: 5, totalTokens: 105 } },
+      { type: "usage", usage: { input: 100, output: 900, totalTokens: 1000 } },
     ]);
   });
 

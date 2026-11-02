@@ -49,10 +49,20 @@ function usageFrom(raw: Record<string, unknown>, previous: ProviderUsage | null)
   const output = finiteToken(raw.output_tokens) ?? finiteToken(raw.completion_tokens);
   const totalTokens = finiteToken(raw.total_tokens);
   if (input === undefined && output === undefined && totalTokens === undefined) return null;
+  const resolvedInput = input ?? previous?.input ?? 0;
+  const resolvedOutput = output ?? previous?.output ?? 0;
+  // When this event reports input or output but no total, the previous total
+  // would be stale: recompute it from the resolved counts. Keep the previous
+  // total only when neither was reported in this event.
+  const resolvedTotal =
+    totalTokens ??
+    (input !== undefined || output !== undefined
+      ? resolvedInput + resolvedOutput
+      : previous?.totalTokens ?? 0);
   return {
-    input: input ?? previous?.input ?? 0,
-    output: output ?? previous?.output ?? 0,
-    totalTokens: totalTokens ?? previous?.totalTokens ?? 0,
+    input: resolvedInput,
+    output: resolvedOutput,
+    totalTokens: resolvedTotal,
   };
 }
 

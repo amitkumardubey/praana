@@ -90,9 +90,21 @@ export async function startOAuthCallbackServer(
   const close = () => {
     signal.removeEventListener("abort", onAbort);
     finish(undefined, new Error("OAuth callback server closed"));
-    const sockets = server as Server & { closeAllConnections?: () => void };
-    sockets.closeAllConnections?.();
-    server.close();
+    let destroyed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const destroyRemaining = () => {
+      if (destroyed) return;
+      destroyed = true;
+      if (timer) clearTimeout(timer);
+      const sockets = server as Server & { closeAllConnections?: () => void };
+      sockets.closeAllConnections?.();
+    };
+    // Stop accepting new connections and let in-flight responses flush to the
+    // client first; destroy anything still around only after a short grace.
+    server.close(() => destroyRemaining());
+    (server as Server & { closeIdleConnections?: () => void }).closeIdleConnections?.();
+    timer = setTimeout(destroyRemaining, 1_000);
+    timer.unref?.();
   };
   const onAbort = () => {
     finish(undefined, new Error("OpenAI Codex login cancelled or timed out"));

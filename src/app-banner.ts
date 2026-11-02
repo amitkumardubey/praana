@@ -185,8 +185,8 @@ function usageLines(): string[] {
 }
 
 /** Slash-command help block shared by printHelp (and previously getHelpLines). */
-const SLASH_COMMANDS_HELP_BLOCK = [
-  "  /exit                    End session and save",
+export const SLASH_COMMANDS_HELP_BLOCK = [
+  "  /exit (/quit)           End session and save",
   "  /state                   List all state objects for this session",
   "  /stats                   Show session, working-memory, and Cognitive Memory stats",
   "  /scorecard               Show per-session telemetry scorecard (issue #488)",
@@ -197,6 +197,7 @@ const SLASH_COMMANDS_HELP_BLOCK = [
   "  /login [provider]        Add or update a provider",
   "  /logout [provider]       Remove a provider's credentials",
   "  /model [provider] <id>   Switch model (bare /model opens selector)",
+  "  /plan [on|off|execute|go]  Toggle plan mode",
   "  /sessions                List recent sessions",
   "  /shell <command>         Run a shell command directly",
   "  !<command>               Shortcut for /shell <command>",
