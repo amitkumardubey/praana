@@ -213,12 +213,21 @@ function readCredentialsForMutation(): { creds: CredentialsFile; corruptPath: st
  * and the file stay as they were. If persisting the new store throws, the
  * original path is untouched and the cache is unchanged; the backup copy is
  * left in place. Other read errors still throw.
+ *
+ * When `shouldPersist` is given and returns false for the mutator's result,
+ * nothing is persisted, copied, or cache-refreshed — used for no-op
+ * mutations (e.g. removing an absent provider) that must leave the file
+ * byte-for-byte untouched.
  */
-function runCredentialMutation<T>(mutator: (creds: CredentialsFile) => T): T {
+function runCredentialMutation<T>(
+  mutator: (creds: CredentialsFile) => T,
+  shouldPersist?: (result: T) => boolean,
+): T {
   return withStoreLockSync(() => {
     const loaded = readCredentialsForMutation();
     const creds = cloneCredentials(loaded.creds);
     const result = mutator(creds);
+    if (shouldPersist && !shouldPersist(result)) return result;
     if (loaded.corruptPath) copyCorruptCredentials(loaded.corruptPath);
     persistCredentials(creds);
     return result;
@@ -510,11 +519,14 @@ export function hasOAuthToken(provider: string): boolean {
  * Returns true if an entry was removed, false if none existed.
  */
 export function removeCredentials(provider: string): boolean {
-  return runCredentialMutation((creds) => {
-    if (!(provider in creds)) return false;
-    delete creds[provider];
-    return true;
-  });
+  return runCredentialMutation(
+    (creds) => {
+      if (!(provider in creds)) return false;
+      delete creds[provider];
+      return true;
+    },
+    (removed) => removed,
+  );
 }
 
 /** @deprecated Alias for {@link removeCredentials}. */

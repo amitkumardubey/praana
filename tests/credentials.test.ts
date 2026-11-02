@@ -316,6 +316,39 @@ describe("resolveApiKey precedence", () => {
     expect(resolveApiKey("provider-z", "UNSET_KEY")).toBe("");
   });
 
+  it("removeCredentials of an absent provider returns false and never touches the file", () => {
+    setApiKey("openrouter", "sk-or");
+    const path = getCredentialsFilePath();
+    const before = readFileSync(path);
+    const statBefore = statSync(path);
+    const removed = removeCredentials("no-such-provider");
+    expect(removed).toBe(false);
+    const after = readFileSync(path);
+    const statAfter = statSync(path);
+    expect(after).toEqual(before);
+    expect(statAfter.mtimeMs).toBe(statBefore.mtimeMs);
+    expect(statAfter.ino).toBe(statBefore.ino);
+    expect(statAfter.size).toBe(statBefore.size);
+    // The store still holds the provider that was there.
+    expect(getApiKey("openrouter")).toBe("sk-or");
+  });
+
+  it("removeCredentials of an absent provider leaves a corrupt store untouched (no backup copy)", () => {
+    const path = getCredentialsFilePath();
+    mkdirSync(dirname(path), { recursive: true });
+    const bytes = Buffer.from("{not-json");
+    writeFileSync(path, bytes);
+    resetCredentialStoreForTests();
+    const statBefore = statSync(path);
+    const removed = removeCredentials("no-such-provider");
+    expect(removed).toBe(false);
+    expect(readFileSync(path)).toEqual(bytes);
+    const statAfter = statSync(path);
+    expect(statAfter.mtimeMs).toBe(statBefore.mtimeMs);
+    expect(statAfter.ino).toBe(statBefore.ino);
+    expect(readdirSync(dirname(path)).some((name) => name.includes(".corrupt-"))).toBe(false);
+  });
+
   it("a throwing mutator leaves the credential cache and file unchanged", () => {
     setOAuthToken("openai-codex", {
       access: "access-1",
