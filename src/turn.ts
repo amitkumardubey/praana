@@ -26,6 +26,7 @@ import { buildSkillMetadataCatalog } from "./skills/index.js";
 import { createAllTools, describeTools } from "./tools/index.js";
 import { createProvider, resolveModel, getReasoningEffort } from "./llm.js";
 import { OAuthRefreshBusyError, OAuthRefreshError, resolveOAuthModelAuth } from "./oauth.js";
+import { CredentialLockTimeoutError } from "./credential-lock.js";
 import {
   formatCompactionBanner,
   maybeAutoCompactClassic,
@@ -759,7 +760,9 @@ export async function runTurn(
   } catch (err) {
     if (err instanceof OAuthRefreshError || err instanceof OAuthRefreshBusyError) {
       credentialError = err.message;
-    } else if (!(err instanceof Error && (err.name === "AbortError" || /abort/i.test(err.message)))) {
+    } else if (err instanceof CredentialLockTimeoutError || (err instanceof Error && err.name === "CredentialStoreReadError")) {
+      credentialError = err.message;
+    } else if (!(err instanceof Error && (options?.signal?.aborted || err.name === "AbortError"))) {
       session.getLogger().child("credentials").warn("OAuth token refresh failed", {
         cause: err as Error,
         code: "UNKNOWN",
