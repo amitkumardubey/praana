@@ -35,6 +35,38 @@ export const SUBMIT_BINDINGS: KeyBinding[] = [
  * end of the buffer or immediately before a newline (end of the current
  * line). A backslash elsewhere mid-line submits as before.
  */
+/**
+ * Display columns occupied by `text`. OpenTUI's `cursorOffset` (and the
+ * logical/visual cursor `.offset`) counts display columns — not string
+ * indexes — with a newline counting as 1. Walk the text by grapheme and
+ * sum each grapheme's width; a zero-width grapheme still counts as at
+ * least 1 so the walk always progresses.
+ */
+export function displayWidth(text: string): number {
+  let width = 0;
+  for (const g of new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)) {
+    width += g.segment === "\n" ? 1 : Math.max(1, Bun.stringWidth(g.segment));
+  }
+  return width;
+}
+
+/**
+ * String index where the cumulative display width reaches `displayOffset`,
+ * clamped to text.length. Used to convert OpenTUI's display-column caret into
+ * a string index for buffer logic.
+ */
+export function displayOffsetToIndex(text: string, displayOffset: number): number {
+  if (!Number.isFinite(displayOffset) || displayOffset <= 0) return 0;
+  let width = 0;
+  let index = 0;
+  for (const g of new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(text)) {
+    width += g.segment === "\n" ? 1 : Math.max(1, Bun.stringWidth(g.segment));
+    index += g.segment.length;
+    if (width >= displayOffset) return index;
+  }
+  return text.length;
+}
+
 export function shouldContinueLine(text: string, caret: number): boolean {
   if (caret < text.length && text[caret] !== "\n") return false;
   let backslashes = 0;

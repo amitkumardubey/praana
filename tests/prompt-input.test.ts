@@ -4,6 +4,8 @@ import { TextareaRenderable } from "@opentui/core";
 import {
   SUBMIT_BINDINGS,
   applyBackslashContinue,
+  displayOffsetToIndex,
+  displayWidth,
   shouldContinueLine,
 } from "../src/ui/tui/prompt/keys.js";
 import { PromptHistory } from "../src/ui/tui/prompt/history.js";
@@ -246,6 +248,66 @@ describe("cursorOffset is a UTF-16 index into plainText", () => {
     } finally {
       setup.renderer.destroy();
     }
+  });
+});
+
+describe("display-width helpers (OpenTUI cursorOffset counts display columns)", () => {
+  it("displayWidth matches the verified table", () => {
+    expect(displayWidth("中文\\")).toBe(5);
+    expect(displayWidth("中\n文\\")).toBe(6);
+    expect(displayWidth("a中b\\c")).toBe(6);
+    expect(displayWidth("😀x\\")).toBe(4);
+    expect(displayWidth("abc\\")).toBe(4);
+    expect(displayWidth("é\\")).toBe(2);
+  });
+
+  it("displayOffsetToIndex maps display offsets back to string indexes", () => {
+    expect(displayOffsetToIndex("中文\\", 5)).toBe(3);
+    expect(displayOffsetToIndex("中\n文\\", 6)).toBe(4);
+    expect(displayOffsetToIndex("a中b\\c", 6)).toBe(5);
+    expect(displayOffsetToIndex("😀x\\", 4)).toBe(4);
+    expect(displayOffsetToIndex("abc\\", 4)).toBe(4);
+    expect(displayOffsetToIndex("é\\", 2)).toBe(2);
+  });
+
+  it("treats a combining mark and a ZWJ emoji as single graphemes", () => {
+    // é built from e + combining acute accent; the cluster is one grapheme.
+    const combining = `e\u0301\\`;
+    expect(Bun.stringWidth(`e\u0301`)).toBe(1);
+    expect(displayWidth(combining)).toBe(2);
+    expect(displayOffsetToIndex(combining, 2)).toBe(3);
+
+    // ZWJ family emoji sequence + backslash.
+    const family = "👨👩👧👦\\";
+    expect(displayOffsetToIndex(family, displayWidth(family))).toBe(family.length);
+  });
+
+  it("never stalls on a zero-width grapheme", () => {
+    // A lone combining mark has display width 0; width must still progress.
+    expect(displayWidth("\u0301")).toBe(1);
+    expect(displayOffsetToIndex("\u0301", 1)).toBe(1);
+  });
+
+  it("clamps to text.length and handles the zero/negative bounds", () => {
+    expect(displayOffsetToIndex("中文\\", 99)).toBe(3);
+    expect(displayOffsetToIndex("中文\\", 0)).toBe(0);
+    expect(displayOffsetToIndex("中文\\", -1)).toBe(0);
+  });
+});
+
+describe("shouldContinueLine with display-column carets", () => {
+  it("continues after a CJK trailing backslash at end of buffer", () => {
+    const text = "中文\\";
+    const caret = displayOffsetToIndex(text, displayWidth(text));
+    expect(caret).toBe(3);
+    expect(shouldContinueLine(text, caret)).toBe(true);
+  });
+
+  it("continues when the caret sits before an existing newline after CJK", () => {
+    const text = "中\\\n文";
+    const caret = displayOffsetToIndex(text, 3); // caret before the newline
+    expect(caret).toBe(2);
+    expect(shouldContinueLine(text, caret)).toBe(true);
   });
 });
 
