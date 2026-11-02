@@ -26,16 +26,6 @@ export const SUBMIT_BINDINGS: KeyBinding[] = [
 ];
 
 /**
- * True when pressing Enter at `caret` should continue the line instead of
- * submitting: an odd run of backslashes immediately before the caret (a
- * single trailing `\` escapes the newline). Even runs (`\\`, `\\\\`, …)
- * submit normally.
- *
- * Continuation only fires at the end of a line: the caret must be at the
- * end of the buffer or immediately before a newline (end of the current
- * line). A backslash elsewhere mid-line submits as before.
- */
-/**
  * Display columns occupied by `text`. OpenTUI's `cursorOffset` (and the
  * logical/visual cursor `.offset`) counts display columns — not string
  * indexes — with a newline counting as 1. Walk the text by grapheme and
@@ -67,6 +57,16 @@ export function displayOffsetToIndex(text: string, displayOffset: number): numbe
   return text.length;
 }
 
+/**
+ * True when pressing Enter at `caret` should continue the line instead of
+ * submitting: an odd run of backslashes immediately before the caret (a
+ * single trailing `\` escapes the newline). Even runs (`\\`, `\\\\`, …)
+ * submit normally.
+ *
+ * Continuation only fires at the end of a line: the caret must be at the
+ * end of the buffer or immediately before a newline (end of the current
+ * line). A backslash elsewhere mid-line submits as before.
+ */
 export function shouldContinueLine(text: string, caret: number): boolean {
   if (caret < text.length && text[caret] !== "\n") return false;
   let backslashes = 0;

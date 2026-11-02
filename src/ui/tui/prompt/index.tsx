@@ -102,7 +102,8 @@ export function Prompt(props: PromptProps) {
     },
     setText(text: string) {
       textarea?.setText(text);
-      if (textarea) textarea.cursorOffset = text.length;
+      // cursorOffset is in display columns, not a string index.
+      if (textarea) textarea.cursorOffset = displayWidth(text);
       prevText = text;
       syncHeight(text);
     },
@@ -146,7 +147,8 @@ export function Prompt(props: PromptProps) {
       item,
     );
     textarea.setText(text);
-    textarea.cursorOffset = caret;
+    // caret is a string index; cursorOffset wants display columns.
+    textarea.cursorOffset = displayWidth(text.slice(0, caret));
     setAc(null);
     syncHeight(text);
     renderer.requestRender();
