@@ -174,13 +174,14 @@ async function expectMatchesMainGolden(cases: GoldenCase[]): Promise<void> {
   }
 }
 
+// response-failed.sse stays in the golden file and is not compared: a failed
+// response is an error for every strictness, which main accepted as done.
 const OPENAI_MAIN_STREAMS = [
   "incomplete-length.sse",
   "incomplete-content-filter.sse",
   "incomplete-tool-arguments.sse",
   "disconnect-before-created.sse",
   "disconnect-after-reasoning.sse",
-  "response-failed.sse",
 ];
 
 describe("Responses stream termination", () => {
@@ -651,20 +652,18 @@ describe("Responses stream guard", () => {
     }
   });
 
-  it("maps a strict non-Codex error frame and leaves the lenient path unchanged", async () => {
+  it("maps response.failed to an error for both strict and lenient non-Codex streams", async () => {
     const frame = { type: "response.failed", response: { status: "failed", error: { message: "boom" } } };
-    const strict = await run(
-      { provider: "openai", model: "gpt-5.4", messages: [{ role: "user", content: "hi" }], strictStreamEnd: true },
-      { apiKey: "synthetic-openai-key" },
-      [frame],
-    );
-    expect(strict.at(-1)?.type).toBe("error");
-    const lenient = await run(
-      { provider: "openai", model: "gpt-5.4", messages: [{ role: "user", content: "hi" }] },
-      { apiKey: "synthetic-openai-key" },
-      [frame],
-    );
-    expect(lenient.at(-1)?.type).toBe("done");
+    for (const strictStreamEnd of [true, false] as const) {
+      const events = await run(
+        { provider: "openai", model: "gpt-5.4", messages: [{ role: "user", content: "hi" }], strictStreamEnd },
+        { apiKey: "synthetic-openai-key" },
+        [frame],
+      );
+      const error = events.at(-1);
+      expect(error?.type === "error" && error.error.message).toBe("boom");
+      expect(events.some((event) => event.type === "done")).toBe(false);
+    }
   });
 
   it("completes a non-Codex tool call announced only at output_item.done", async () => {

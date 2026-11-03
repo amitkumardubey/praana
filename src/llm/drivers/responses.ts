@@ -262,7 +262,9 @@ export class OpenAIResponsesDriver implements LlmDriver {
         }
 
         const type = String(event.event || parsed.type || "");
-        if ((codex || req.strictStreamEnd === true) && (type === "error" || type === "response.failed")) {
+        // In-stream failures are errors for every provider. Strictness only
+        // decides a clean close that never sent a terminal event.
+        if (type === "error" || type === "response.failed") {
           return fail(responsesErrorMessage(parsed, type));
         }
         const applyCodexIncomplete = (): "cutoff" | "length" | "error" => {
@@ -424,12 +426,17 @@ export class OpenAIResponsesDriver implements LlmDriver {
           return { events };
         }
 
-        if (codex && type === "response.done") {
+        if (type === "response.done" || type === "response.completed") {
           const resp = parsed.response as Record<string, unknown> | undefined;
           const status = typeof resp?.status === "string" ? resp.status : "";
           if (status === "failed" || status === "cancelled" || parsed.error != null || resp?.error != null) {
             return fail(responsesErrorMessage(parsed, type));
           }
+        }
+
+        if (codex && type === "response.done") {
+          const resp = parsed.response as Record<string, unknown> | undefined;
+          const status = typeof resp?.status === "string" ? resp.status : "";
           terminalReceived = true;
           if (status === "incomplete") {
             const outcome = applyCodexIncomplete();

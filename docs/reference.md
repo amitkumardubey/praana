@@ -312,8 +312,10 @@ arguments. If that `done` never arrives, the stream ends with the same
 non-retryable error and no assistant `done`. Those providers share the
 connect and idle guard. A clean close with no terminal event stays a normal
 finish unless `stream_end_check` resolves to strict; a strict close is
-`kind: "premature_end"`. `response.failed` is an error when the check is
-strict, and a lenient stream still finishes normally.
+`kind: "premature_end"`. An `error` frame, `response.failed`, and a
+`response.done` or `response.completed` whose status is `failed` or
+`cancelled` are errors for every provider and every strictness. Strictness
+does not turn a failed response into a normal finish.
 
 ## Slash command palette
 

@@ -16,6 +16,7 @@ const completed = { type: "response.completed", response: { status: "completed" 
 async function collectResponses(
   provider: string,
   frames: unknown[],
+  extra: Partial<StreamRequest> = {},
 ): Promise<StreamEvent[]> {
   globalThis.fetch = (async () => {
     const sse = frames
@@ -27,6 +28,7 @@ async function collectResponses(
     provider,
     model: "gpt-5.4",
     messages: [{ role: "user", content: "hi" }],
+    ...extra,
   };
   const auth: ResolvedAuth = provider === "openai-codex" ? { bearerToken: jwt() } : { apiKey: "synthetic-openai-key" };
   const events: StreamEvent[] = [];
@@ -120,6 +122,62 @@ function expectExactToolArgs(events: StreamEvent[], calls: CallSpec[]): void {
   expect(done.message.toolCalls?.map((call) => call.rawArgs)).toEqual(calls.map((call) => call.args));
   expect(done.message.toolCalls?.map((call) => call.id)).toEqual(calls.map((call) => call.callId));
 }
+
+const lenient = { strictStreamEnd: false as const };
+
+function expectStreamError(events: StreamEvent[], message: string): void {
+  expect(events.some((event) => event.type === "done")).toBe(false);
+  expect(events.some((event) => event.type === "tool_call_end")).toBe(false);
+  const error = events.at(-1);
+  expect(error?.type === "error" && error.error.message).toBe(message);
+}
+
+describe("Responses failures are errors on the lenient path", () => {
+  const finishedTool = [
+    {
+      type: "response.output_item.added",
+      output_index: 0,
+      item: { type: "function_call", call_id: "call-1", name: "read_file" },
+    },
+    { type: "response.function_call_arguments.delta", output_index: 0, delta: '{"path":"a.ts"}' },
+    { type: "response.function_call_arguments.done", output_index: 0 },
+  ];
+
+  it("does not publish a completed tool call when response.failed arrives", async () => {
+    const events = await collectResponses("openai", [
+      ...finishedTool,
+      { type: "response.failed", response: { status: "failed", error: { message: "boom" } } },
+    ], lenient);
+    expectStreamError(events, "boom");
+  });
+
+  it("reports an error frame instead of a normal finish", async () => {
+    const events = await collectResponses("openai", [
+      { type: "response.output_text.delta", delta: "partial" },
+      { type: "error", error: { message: "Backend unavailable" } },
+    ], lenient);
+    expectStreamError(events, "Backend unavailable");
+  });
+
+  it.each(["failed", "cancelled"] as const)("reports response.done status %s instead of stop", async (status) => {
+    const events = await collectResponses("openai", [
+      ...finishedTool,
+      { type: "response.done", response: { status, error: { message: "Backend unavailable" } } },
+    ], lenient);
+    expectStreamError(events, "Backend unavailable");
+  });
+
+  it("still accepts a lenient clean close that never sends a terminal event", async () => {
+    const events = await collectResponses("openai", [
+      { type: "response.output_text.delta", delta: "partial" },
+    ], lenient);
+    expect(events.at(-1)).toEqual({
+      type: "done",
+      reason: "stop",
+      message: { role: "assistant", content: "partial" },
+    });
+  });
+});
 
 describe("Responses argument deltas that arrive before the call is announced", () => {
   it("merges delta, delta, added, done into the original JSON", async () => {
