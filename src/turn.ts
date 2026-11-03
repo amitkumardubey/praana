@@ -1279,7 +1279,7 @@ export async function runTurn(
     fullResponse += streamResult.fullResponse;
     providerUsage = streamResult.providerUsage;
     recordedProviderUsage = streamResult.recordedProviderUsage;
-    if (streamResult.interrupted) {
+    if (streamResult.interrupted || options?.signal?.aborted) {
       interrupted = true;
       break;
     }
