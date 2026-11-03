@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { BedrockDriver } from "../src/llm/drivers/bedrock.js";
+import { OpenAICompatibleDriver } from "../src/llm/drivers/openai.js";
 import { OpenAIResponsesDriver } from "../src/llm/drivers/responses.js";
 import { runGuardedProviderStream, streamGuardPendingTimers } from "../src/llm/stream-guard.js";
 import type { ResolvedAuth, StreamEvent, StreamRequest } from "../src/llm/types.js";
@@ -192,6 +193,102 @@ async function collectBedrock(
   return { events, cancelled: cancelled, ms: Date.now() - started };
 }
 
+const OPENAI_FINISH =
+  'data: {"choices":[{"index":0,"delta":{"content":"Hi"},"finish_reason":"stop"}]}\n\n';
+const OPENAI_USAGE =
+  'data: {"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":1,"total_tokens":4}}\n\n';
+const OPENAI_DONE = "data: [DONE]\n\n";
+
+async function collectOpenAI(
+  parts: Array<{ text: string; delayMs?: number }>,
+  opts: { hang: boolean; idleTimeoutMs: number },
+): Promise<{ events: StreamEvent[]; cancelled: boolean; ms: number }> {
+  let cancelled = false;
+  let index = 0;
+  const enc = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (index >= parts.length) {
+        if (opts.hang) return new Promise(() => {});
+        controller.close();
+        return;
+      }
+      const part = parts[index];
+      index += 1;
+      if (part?.delayMs) await new Promise((resolve) => setTimeout(resolve, part.delayMs));
+      if (part) controller.enqueue(enc.encode(part.text));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  globalThis.fetch = (async () => new Response(stream)) as typeof fetch;
+  const events: StreamEvent[] = [];
+  const started = Date.now();
+  const finished = (async () => {
+    for await (const event of new OpenAICompatibleDriver().stream(
+      {
+        model: "m",
+        provider: "openai",
+        messages: [{ role: "user", content: "hi" }],
+        connectTimeoutMs: 0,
+        idleTimeoutMs: opts.idleTimeoutMs,
+      },
+      { apiKey: "test-key" },
+    )) events.push(event);
+  })();
+  await Promise.race([
+    finished,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("OpenAI stream hung")), 4_000)),
+  ]);
+  return { events, cancelled, ms: Date.now() - started };
+}
+
+describe("OpenAI usage trailer after finish_reason", () => {
+  it("keeps a usage chunk that arrives 30ms after finish_reason, then [DONE]", async () => {
+    const { events, cancelled, ms } = await collectOpenAI(
+      [
+        { text: OPENAI_FINISH },
+        { text: OPENAI_USAGE, delayMs: 30 },
+        { text: OPENAI_DONE },
+      ],
+      { hang: true, idleTimeoutMs: 60_000 },
+    );
+    expect(events.filter((event) => event.type === "usage")).toEqual([
+      { type: "usage", usage: { input: 3, output: 1, totalTokens: 4, cacheReadTokens: 0, cacheWriteTokens: 0 } },
+    ]);
+    const usageAt = events.findIndex((event) => event.type === "usage");
+    const doneAt = events.findIndex((event) => event.type === "done");
+    expect(doneAt).toBeGreaterThan(usageAt);
+    expect(events.at(-1)).toMatchObject({ type: "done", reason: "stop", message: { content: "Hi" } });
+    expect(cancelled).toBe(true);
+    expect(ms).toBeLessThan(1_000);
+  });
+
+  it("keeps usage that arrives in the same read as finish_reason", async () => {
+    const { events, ms } = await collectOpenAI(
+      [{ text: OPENAI_FINISH + OPENAI_USAGE + OPENAI_DONE }],
+      { hang: true, idleTimeoutMs: 0 },
+    );
+    expect(events.some((event) => event.type === "usage")).toBe(true);
+    expect(events.at(-1)?.type).toBe("done");
+    expect(ms).toBeLessThan(1_000);
+  });
+
+  it("finishes after the trailer grace when the body stays open after finish_reason", async () => {
+    const { events, cancelled, ms } = await collectOpenAI(
+      [{ text: OPENAI_FINISH }],
+      { hang: true, idleTimeoutMs: 0 },
+    );
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(events.at(-1)).toMatchObject({ type: "done", reason: "stop", message: { content: "Hi" } });
+    expect(cancelled).toBe(true);
+    expect(ms).toBeGreaterThan(1_000);
+    expect(ms).toBeLessThan(4_000);
+    expect(streamGuardPendingTimers()).toBe(0);
+  });
+});
+
 describe("stream guard closes a pull that is still waiting", () => {
   async function releaseAndHang(idleTimeoutMs: number): Promise<{ cancelled: boolean; ms: number; done: boolean }> {
     let cancelled = false;
@@ -246,7 +343,7 @@ describe("stream guard closes a pull that is still waiting", () => {
     })();
     await Promise.race([
       finished,
-      new Promise((_, reject) => setTimeout(() => reject(new Error(`hung with idleTimeoutMs ${idleTimeoutMs}`)), 1_500)),
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`hung with idleTimeoutMs ${idleTimeoutMs}`)), 4_000)),
     ]);
     return {
       cancelled,
@@ -259,7 +356,9 @@ describe("stream guard closes a pull that is still waiting", () => {
     const result = await releaseAndHang(idleTimeoutMs);
     expect(result.done).toBe(true);
     expect(result.cancelled).toBe(true);
-    expect(result.ms).toBeLessThan(1_000);
+    // The trailer grace is 2s. Idle 0 must not wait forever, and a long idle must not be used up.
+    expect(result.ms).toBeGreaterThan(1_000);
+    expect(result.ms).toBeLessThan(4_000);
     expect(streamGuardPendingTimers()).toBe(0);
   });
 });

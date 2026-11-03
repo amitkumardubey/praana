@@ -92,14 +92,13 @@ export async function* runGuardedProviderStream<T>(opts: {
   request: (guard: LlmFetchGuard) => Promise<Response>;
   frames: (body: ReadableStream<Uint8Array>) => AsyncIterable<T>;
   /**
-   * `stop` ends the read now. `releaseIfIdle` reads one more frame if it is
-   * already buffered (a usage trailer or `[DONE]`), and otherwise finishes
-   * without waiting out the idle budget.
+   * `stop` ends the read now. `awaitTrailer` and `releaseIfIdle` keep reading
+   * until the driver stops, the body ends, or {@link trailerGraceMs} elapses.
    */
   onFrame: (frame: T) => {
     events: StreamEvent[];
     stop?: boolean;
-    /** One already-buffered frame, then finish. Used until the trailer grace replaces it. */
+    /** Same trailer wait as `awaitTrailer`. OpenAI-compatible drivers set this after `finish_reason`. */
     releaseIfIdle?: boolean;
     /** Keep reading until the driver stops, the body ends, or {@link trailerGraceMs}. */
     awaitTrailer?: boolean;
@@ -179,7 +178,7 @@ export async function* runGuardedProviderStream<T>(opts: {
       const step = opts.onFrame(nxt.value);
       for (const ev of step.events) yield ev;
       if (step.stop) return;
-      if (step.awaitTrailer) {
+      if (step.awaitTrailer || step.releaseIfIdle) {
         const deadline = Date.now() + trailerGraceMs(timeouts.idleTimeoutMs);
         while (Date.now() < deadline) {
           const remaining = deadline - Date.now();
@@ -212,29 +211,6 @@ export async function* runGuardedProviderStream<T>(opts: {
         const afterTrailer = yieldHalt();
         if (afterTrailer) {
           yield afterTrailer;
-          return;
-        }
-        for (const ev of opts.onComplete()) yield ev;
-        return;
-      }
-      if (step.releaseIfIdle) {
-        const pending = pullFrame();
-        const raced = await Promise.race([
-          pending.then((r) => ({ idle: false as const, r })),
-          new Promise<{ idle: true }>((resolve) => {
-            setTimeout(() => resolve({ idle: true }), 0);
-          }),
-        ]);
-        if (!raced.idle && !raced.r.done) {
-          const more = opts.onFrame(raced.r.value);
-          for (const ev of more.events) yield ev;
-          if (more.stop) return;
-        } else if (raced.idle) {
-          pending.catch(() => {});
-        }
-        const after = yieldHalt();
-        if (after) {
-          yield after;
           return;
         }
         for (const ev of opts.onComplete()) yield ev;
