@@ -727,6 +727,51 @@ describe("timeout history", () => {
     expect(response.match(/Hello/g)?.length).toBe(1);
     expect(errors).toContain(IDLE_TIMEOUT_ERROR);
   });
+
+  it("does not fall back when the second attempt already streamed text", async () => {
+    const session = makeMockSession();
+    session.config.llm.stream_idle_timeout_ms = 5_000;
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    const texts: string[] = [];
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      if (callCount === 1) {
+        return (async function* () {
+          yield { type: "done", reason: "timeout", message: { role: "assistant", content: "" } };
+        })();
+      }
+      if (callCount === 2) {
+        return (async function* () {
+          yield { type: "text_delta", delta: "Partial" };
+          yield {
+            type: "done",
+            reason: "timeout",
+            message: { role: "assistant", content: "Partial" },
+          };
+        })();
+      }
+      return (async function* () {
+        yield { type: "text_delta", delta: "fallback should not run" };
+        yield {
+          type: "done",
+          reason: "stop",
+          message: { role: "assistant", content: "fallback should not run" },
+        };
+      })();
+    });
+
+    const response = await runTurn(session, "hello", undefined, {
+      sink: { onTextDelta: (delta) => texts.push(delta) },
+    });
+
+    expect(callCount).toBe(2);
+    expect(texts).toEqual(["Partial"]);
+    expect(response).toContain("Partial");
+    expect(response).not.toContain("fallback should not run");
+    expect(session.getEffectiveProvider()).toBe("umans");
+  });
 });
 
 function prematureEnd(retryable: boolean, message = "stream ended before the provider sent a final event (message_stop)") {

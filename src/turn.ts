@@ -1059,7 +1059,12 @@ export async function runTurn(
       if (!isConnectExhausted(streamResult)) {
         streamResult = await attemptStream();
       }
-      if ((shouldFallback(streamResult) || isPrematureEndRetry(streamResult)) && canFallback()) {
+      // The retry may have streamed text. Do not ask the fallback model after that.
+      if (
+        !streamResult.emittedToUi &&
+        (shouldFallback(streamResult) || isPrematureEndRetry(streamResult)) &&
+        canFallback()
+      ) {
         const fallbackProvider = session.config.llm.fallback_provider!;
         const fallbackModel = session.config.llm.fallback_model!;
         const fallbackReason = streamResult.errorMessage ?? "empty response";
