@@ -2,6 +2,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, normalize, relative } from "node:path";
 import type { SandboxConfig } from "./types.js";
+import { pathInRoot } from "./path-containment.js";
 
 export function sandboxBlockReason(
   path: string,
@@ -23,7 +24,7 @@ export function sandboxBlockReason(
   const resolved = resolve(path);
   const allowed = sandbox.allowed_paths.some((ap) => {
     const apResolved = resolve(ap);
-    return resolved === apResolved || resolved.startsWith(apResolved + "/");
+    return pathInRoot(resolved, apResolved);
   });
 
   return allowed

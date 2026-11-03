@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ContextEngine, ScorecardTracker } from "../src/context-engine/index.js";
+import { rmForce } from "./helpers/platform.js";
 import { createKnowledgeTools } from "../src/tools/knowledge.js";
 import { buildArtifactCard } from "../src/context-engine/summarize.js";
 import type { EventLog } from "../src/event-log.js";
@@ -65,7 +66,7 @@ describe("retrieve_artifact identical-retry churn (#571)", () => {
     } catch {
       // ignore
     }
-    rmSync(dbPath, { force: true });
+    rmForce(dbPath);
   });
 
   it("returns full content on first retrieve, card on identical retry", async () => {

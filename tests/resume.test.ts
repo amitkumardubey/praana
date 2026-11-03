@@ -2,6 +2,7 @@
 import { describe, it, expect, afterAll } from "bun:test";
 import { Session } from "../src/session.js";
 import { mkdtempSync, rmSync } from "node:fs";
+import { rmForce } from "./helpers/platform.js";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { PraanaConfig } from "../src/types.js";
@@ -12,6 +13,25 @@ import {
 
 const testRoot = mkdtempSync(join(tmpdir(), "praana-test-resume-"));
 const testLogDir = join(testRoot, "sessions");
+
+// Sessions are ended by each test; track them so cleanup can end any session
+// left open by a failed assertion before removing the temp tree (Windows
+// cannot delete directories that still hold open file handles).
+const liveSessions = new Set<Session>();
+function tracked<T extends Session>(session: T): T {
+  liveSessions.add(session);
+  return session;
+}
+
+async function endTrackedSessions(): Promise<void> {
+  for (const session of liveSessions) {
+    try {
+      if (!session.ended) await session.end("aborted");
+    } catch {
+      // cleanup must not fail the run
+    }
+  }
+}
 const testConfig: PraanaConfig = {
   llm: { provider: "openrouter", model: "anthropic/claude-sonnet-4" },
   memory: { enabled: false, summarizer: "disabled", db_path: join(testRoot, "memory.db") },
@@ -24,12 +44,13 @@ describe("Session resume", () => {
   let sessionId: string;
   let task1Id: string;
 
-  afterAll(() => {
-    rmSync(testRoot, { recursive: true, force: true });
+  afterAll(async () => {
+    await endTrackedSessions();
+    rmForce(testRoot);
   });
 
   it("creates session with state objects", async () => {
-    const s = await Session.create(process.cwd(), testConfig);
+    const s = tracked(await Session.create(process.cwd(), testConfig));
     sessionId = s.id;
 
     const t1 = s.stateGraph.create("task", { title: "Fix resume bug", status: "todo" });
@@ -68,7 +89,7 @@ describe("Session resume", () => {
   });
 
   it("resumes and rebuilds state correctly", async () => {
-    const s = await Session.resume(sessionId, process.cwd(), testConfig);
+    const s = tracked(await Session.resume(sessionId, process.cwd(), testConfig));
     
     const objects = s.stateGraph.list();
     // 2 tasks + 1 test constraint + 1 project context constraint (if cwd has config files)
@@ -94,14 +115,14 @@ describe("Session resume", () => {
   });
 
   it("resumes without crashing", async () => {
-    const s = await Session.resume(sessionId, process.cwd(), testConfig);
+    const s = tracked(await Session.resume(sessionId, process.cwd(), testConfig));
     expect(s.id).toBe(sessionId);
     expect(s.stateGraph.list().length).toBeGreaterThan(0);
     await s.end("clean");
   });
 
   it("resumes from checkpoint with incremental replay", async () => {
-    const s = await Session.create(process.cwd(), testConfig);
+    const s = tracked(await Session.create(process.cwd(), testConfig));
     const sid = s.id;
     const sessionDir = join(testLogDir, sid);
 
@@ -128,7 +149,7 @@ describe("Session resume", () => {
     const checkpoint = loadStateGraphCheckpoint(sessionDir);
     expect(checkpoint).not.toBeNull();
 
-    const resumed = await Session.resume(sid, process.cwd(), testConfig);
+    const resumed = tracked(await Session.resume(sid, process.cwd(), testConfig));
     expect(resumed.stateGraph.list().length).toBe(50);
 
     const replayed = replayStateGraphFromEvents(
@@ -139,11 +160,11 @@ describe("Session resume", () => {
     expect(replayed).toBe(0);
 
     await resumed.end("clean");
-    rmSync(sessionDir, { recursive: true, force: true });
+    rmForce(sessionDir);
   });
 
   it("isResumed is true immediately after resume and false after a turn", async () => {
-    const s = await Session.create(process.cwd(), testConfig);
+    const s = tracked(await Session.create(process.cwd(), testConfig));
     const sid = s.id;
 
     const task = s.stateGraph.create("task", { title: "Old task", status: "todo" });
@@ -164,7 +185,7 @@ describe("Session resume", () => {
     s.persistStateGraphCheckpoint();
     await s.end("clean");
 
-    const resumed = await Session.resume(sid, process.cwd(), testConfig);
+    const resumed = tracked(await Session.resume(sid, process.cwd(), testConfig));
     expect(resumed.isResumed()).toBe(true);
 
     // Simulate the post-resume turn advancing.
@@ -173,13 +194,13 @@ describe("Session resume", () => {
     expect(resumed.isResumed()).toBe(false);
 
     await resumed.end("clean");
-    rmSync(join(testLogDir, sid), { recursive: true, force: true });
+    rmForce(join(testLogDir, sid));
   });
 
   it("getStaleTasks returns active tasks untouched for more than the threshold", async () => {
     const threshold = 3;
     const cfg: PraanaConfig = { ...testConfig, session: { ...testConfig.session, stale_task_turn_threshold: threshold } };
-    const s = await Session.create(process.cwd(), cfg);
+    const s = tracked(await Session.create(process.cwd(), cfg));
     const sid = s.id;
 
     const freshTask = s.stateGraph.create("task", { title: "Fresh task", status: "todo" });
@@ -223,41 +244,41 @@ describe("Session resume", () => {
     s.persistStateGraphCheckpoint();
     await s.end("clean");
 
-    const resumed = await Session.resume(sid, process.cwd(), cfg);
+    const resumed = tracked(await Session.resume(sid, process.cwd(), cfg));
     const stale = resumed.getStaleTasks();
     expect(stale.length).toBe(1);
     expect((stale[0].payload as any).title).toBe("Stale task");
 
     await resumed.end("clean");
-    rmSync(join(testLogDir, sid), { recursive: true, force: true });
+    rmForce(join(testLogDir, sid));
   });
 
   it("resumes plan mode state from system_note events", async () => {
-    const s = await Session.create(process.cwd(), testConfig);
+    const s = tracked(await Session.create(process.cwd(), testConfig));
     const sid = s.id;
     const sessionDir = join(testLogDir, sid);
 
     s.enterPlanMode();
     await s.end("clean");
 
-    const resumedOn = await Session.resume(sid, process.cwd(), testConfig);
+    const resumedOn = tracked(await Session.resume(sid, process.cwd(), testConfig));
     expect(resumedOn.isPlanMode()).toBe(true);
     await resumedOn.end("clean");
 
-    const resumedOff = await Session.resume(sid, process.cwd(), testConfig);
+    const resumedOff = tracked(await Session.resume(sid, process.cwd(), testConfig));
     expect(resumedOff.isPlanMode()).toBe(true);
     resumedOff.exitPlanMode();
     await resumedOff.end("clean");
 
-    const resumedFinal = await Session.resume(sid, process.cwd(), testConfig);
+    const resumedFinal = tracked(await Session.resume(sid, process.cwd(), testConfig));
     expect(resumedFinal.isPlanMode()).toBe(false);
     await resumedFinal.end("clean");
 
-    rmSync(sessionDir, { recursive: true, force: true });
+    rmForce(sessionDir);
   });
 
   it("restores provider from model_override.provider when provider_override is missing", async () => {
-    const s = await Session.create(process.cwd(), testConfig);
+    const s = tracked(await Session.create(process.cwd(), testConfig));
     const sid = s.id;
     const sessionDir = join(testLogDir, sid);
 
@@ -278,16 +299,16 @@ describe("Session resume", () => {
       ...testConfig,
       llm: { provider: "modal", model: "deepreinforce-ai/Ornith-1.0-9B" },
     };
-    const resumed = await Session.resume(sid, process.cwd(), driftedConfig);
+    const resumed = tracked(await Session.resume(sid, process.cwd(), driftedConfig));
     expect(resumed.getEffectiveProvider()).toBe("umans");
     expect(resumed.getActiveModelId()).toBe("umans-glm-5.2");
     await resumed.end("clean");
 
-    rmSync(sessionDir, { recursive: true, force: true });
+    rmForce(sessionDir);
   });
 
   it("prefers explicit provider_override over model_override.provider", async () => {
-    const s = await Session.create(process.cwd(), testConfig);
+    const s = tracked(await Session.create(process.cwd(), testConfig));
     const sid = s.id;
     const sessionDir = join(testLogDir, sid);
 
@@ -310,11 +331,11 @@ describe("Session resume", () => {
     });
     await s.end("clean");
 
-    const resumed = await Session.resume(sid, process.cwd(), testConfig);
+    const resumed = tracked(await Session.resume(sid, process.cwd(), testConfig));
     expect(resumed.getEffectiveProvider()).toBe("openai");
     expect(resumed.getActiveModelId()).toBe("umans-glm-5.2");
     await resumed.end("clean");
 
-    rmSync(sessionDir, { recursive: true, force: true });
+    rmForce(sessionDir);
   });
 });

@@ -4,7 +4,7 @@
 
 import { existsSync } from "node:fs";
 import { dirname, extname, join } from "node:path";
-import { pathInRoot } from "../lsp/workspace-roots.js";
+import { normalizeRoot, pathInRoot } from "../path-containment.js";
 import { commandOnPath, spawnTimed } from "./spawn.js";
 import {
   VERIFY_TSC_CAP,
@@ -50,8 +50,8 @@ export function findTsconfigDir(
   sessionRoot: string,
 ): string | null {
   let dir = dirname(absPath);
-  const root = sessionRoot.replace(/\/+$/, "") || sessionRoot;
-  while (pathInRoot(dir, root) || dir === root) {
+  const root = normalizeRoot(sessionRoot);
+  while (pathInRoot(dir, root)) {
     if (existsSync(join(dir, "tsconfig.json"))) return dir;
     if (dir === root) break;
     const parent = dirname(dir);

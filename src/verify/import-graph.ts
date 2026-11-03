@@ -4,7 +4,7 @@
 
 import { lstatSync, readdirSync, realpathSync, statSync } from "node:fs";
 import { dirname, extname, join, resolve } from "node:path";
-import { pathInRoot } from "../lsp/workspace-roots.js";
+import { pathInRoot } from "../path-containment.js";
 import type { ListImportsResult } from "../native/types.js";
 import { hashFileBytes } from "./cache.js";
 import { VERIFY_MAX_GRAPH_FILES } from "./types.js";
@@ -60,7 +60,7 @@ export function walkSourceFiles(
       continue;
     }
     if (visited.has(real)) continue;
-    if (!pathInRoot(real, rootAbs) && real !== rootAbs) continue;
+    if (!pathInRoot(real, rootAbs)) continue;
     visited.add(real);
 
     let entries: string[];

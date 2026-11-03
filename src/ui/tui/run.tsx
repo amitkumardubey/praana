@@ -3,6 +3,7 @@
  *
  * Solid owns App shell, Prompt, chrome, toast, spinner, transcript, and overlays.
  */
+import { spawn } from "node:child_process";
 import {
   createCliRenderer,
   ConsolePosition,
@@ -17,7 +18,11 @@ import {
   formatSessionEndEpilogue,
 } from "../../app-banner.js";
 import { APP_NAME } from "../../app-identity.js";
-import { formatLaunchCanvasMeta, formatTuiWelcomeLine } from "./boot-summary.js";
+import {
+  formatAgentsTruncationNotice,
+  formatLaunchCanvasMeta,
+  formatTuiWelcomeLine,
+} from "./boot-summary.js";
 import { loadUserSettings } from "../../user-settings.js";
 import { formatUpdateNotice, refreshUpdateCheck } from "../../update/check.js";
 import { beginUpgradeLock, endUpgradeLock, runUpgrade } from "../../update/upgrade.js";
@@ -46,6 +51,15 @@ import { getSetupConfigPath } from "../../setup/config-writer.js";
 import { setEmbedderConsent } from "../../memory/embedder-consent.js";
 import { setSpinnerSink } from "../../ui.js";
 import type { Session } from "../../session.js";
+import {
+  copyOutcomeOf,
+  createCopyRunState,
+  decideCtrlC,
+  defaultToolLookup,
+  isModalOverlay,
+  runGuardedCopy,
+  shouldClearSelectionAfterCopy,
+} from "./clipboard.js";
 
 function indexToEntries(index: TranscriptIndex): TranscriptEntry[] {
   return index.groups.flatMap((group) => group.entries);
@@ -55,13 +69,23 @@ interface GlobalKeyBindingsProps {
   onF9: () => void;
   onCtrlC: () => void;
   onToggleConsole: () => void;
+  /** Deactivates the global Ctrl+C while a modal overlay owns Ctrl+C itself. */
+  ctrlCEnabled: () => boolean;
 }
 
 function GlobalKeyBindings(props: GlobalKeyBindingsProps): JSX.Element {
   useBindings(() => ({
+    // Above the overlay layers (all default priority 0), so the single copy /
+    // interrupt decision here wins for non-modal overlays; the modal overlays
+    // disable this binding via `ctrlCEnabled` and keep their own Ctrl+C.
+    priority: 1,
     bindings: [
       { key: "f9", cmd: () => props.onF9() },
-      { key: "ctrl+c", cmd: () => props.onCtrlC() },
+      {
+        key: "ctrl+c",
+        enabled: props.ctrlCEnabled,
+        cmd: () => props.onCtrlC(),
+      },
       { key: "`", cmd: () => props.onToggleConsole() },
     ],
   }));
@@ -76,9 +100,45 @@ function toastToneToType(
   return "info";
 }
 
+/**
+ * Whether to surface the AGENTS.md truncation toast for a startup info
+ * bundle. Shown at most once per process (boot, or after /new), only when
+ * the raw truncation notice was captured during session startup.
+ */
+export function shouldShowAgentsTruncationToast(
+  started: Pick<StartupInfo, "agentTruncationNotices">,
+  alreadyShown: boolean,
+): boolean {
+  return !alreadyShown && started.agentTruncationNotices.length > 0;
+}
+
 export interface TuiLaunchOptions {
   needsOnboarding?: boolean;
   needsEmbedderConsent?: boolean;
+}
+
+/** Where the first-run setup landed for this process. */
+export type SetupOutcome =
+  | "not-needed"
+  | "pending"
+  | "completed"
+  | "cancelled"
+  | "failed"
+  | "start-failed";
+
+export interface ShutdownExitContext {
+  setupOutcome: SetupOutcome;
+  hasSession: boolean;
+}
+
+/**
+ * Exit code for a TUI shutdown. A live session is 0. With no session, exit 1
+ * unless setup was not needed — a stale `completed` (wizard succeeded, session
+ * never started) is a failure, same as cancelled, failed, or start-failed.
+ */
+export function resolveShutdownExitCode(ctx: ShutdownExitContext): 0 | 1 {
+  if (ctx.hasSession) return 0;
+  return ctx.setupOutcome === "not-needed" ? 0 : 1;
 }
 
 export async function runTui(
@@ -91,6 +151,9 @@ export async function runTui(
   const useUnicode = config.ui.tool_icons === "unicode";
   let bootOnboarding = Boolean(launch.needsOnboarding);
   let bootConsent = Boolean(launch.needsEmbedderConsent);
+  // Passed into doShutdown, which is the only reader. "completed" is set only
+  // after startSessionFromOverlay returns true (see resolveShutdownExitCode).
+  let setupOutcome: SetupOutcome = launch.needsOnboarding ? "pending" : "not-needed";
 
   const launchMeta = session
     ? formatLaunchCanvasMeta({ session, version: APP_VERSION })
@@ -160,7 +223,12 @@ export async function runTui(
   let prompt: PromptHandle | null = null;
   let openTuiSink: OpenTuiSink | null = null;
   let turnStartedAt = 0;
+  // True while controller.runUserTurn is awaited; lets the Ctrl+C decision
+  // interrupt a running turn even when a non-modal overlay (palette/model) is
+  // open without a selection.
+  let turnRunning = false;
   let ready = false;
+  let agentsTruncationToastShown = false;
   let attachSinkImpl: ((started: StartupInfo) => void) | null = null;
   let updateAvailable = false;
   let updateRestart = false;
@@ -241,7 +309,8 @@ export async function runTui(
       return;
     }
     if (bootOnboarding && !session && kind === "setup") {
-      void doShutdown(1);
+      setupOutcome = "cancelled";
+      void doShutdown(setupOutcome);
       return;
     }
     focusPrompt();
@@ -396,12 +465,17 @@ export async function runTui(
     overlay.dismiss();
     if (!session) {
       if (!result.success) {
-        void doShutdown(1);
+        setupOutcome = "failed";
+        void doShutdown(setupOutcome);
         return;
       }
-      void startSessionFromOverlay();
+      void (async () => {
+        const started = await startSessionFromOverlay();
+        setupOutcome = started ? "completed" : "start-failed";
+      })();
       return;
     }
+    setupOutcome = result.success ? "completed" : "failed";
     void applySetupToLiveSession(result);
     focusPrompt();
   };
@@ -447,8 +521,13 @@ export async function runTui(
     renderer.requestRender();
   };
 
-  async function doShutdown(exitCode = 0): Promise<void> {
+  async function doShutdown(outcome: SetupOutcome): Promise<void> {
+    const exitCode = resolveShutdownExitCode({
+      setupOutcome: outcome,
+      hasSession: Boolean(session),
+    });
     setSpinnerSink();
+    offSlashCtrlCHook();
     transcript.dispose();
     overlay.dispose();
     ui.dispose();
@@ -503,7 +582,7 @@ export async function runTui(
     }
 
     if (result.action === "exit") {
-      await doShutdown();
+      await doShutdown(setupOutcome);
       return;
     }
     if (result.action === "clear_transcript") {
@@ -514,7 +593,7 @@ export async function runTui(
       refreshChrome();
     }
     if (result.action === "new_session") {
-      await controller.startNewSession();
+      const started = await controller.startNewSession();
       config = controller.config;
       session = controller.session;
 
@@ -532,6 +611,13 @@ export async function runTui(
       ui.launch.setMeta(
         formatLaunchCanvasMeta({ session, version: APP_VERSION }),
       );
+
+      // A /new session may re-truncate AGENTS.md; surface the notice once
+      // per process (skipped when the boot toast already showed it).
+      if (shouldShowAgentsTruncationToast(started, agentsTruncationToastShown)) {
+        agentsTruncationToastShown = true;
+        ui.toast.show(formatAgentsTruncationNotice(), "warn");
+      }
 
       refreshChrome();
     }
@@ -555,6 +641,64 @@ export async function runTui(
     }
     renderer.requestRender();
   };
+
+  let offSlashCtrlCHook: () => void = () => {};
+
+  const ctrlCCopyState = createCopyRunState();
+  // The text of the in-flight copy, so settle can tell whether the selection
+  // that exists now is still the one that was copied.
+  let pendingCopyText: string | null = null;
+
+  const startCopy = (text: string): { started: boolean } =>
+    runGuardedCopy(
+      text,
+      {
+        spawn,
+        env: process.env,
+        platform: process.platform,
+        lookup: defaultToolLookup,
+        isOsc52Supported: () => renderer.isOsc52Supported(),
+        osc52: (t) => renderer.copyToClipboardOSC52(t),
+      },
+      ctrlCCopyState,
+      {
+        onStarted: () => {
+          pendingCopyText = text;
+        },
+        onSettled: (result, copiedText) => {
+          const outcome = copyOutcomeOf(result, copiedText);
+          // Clear the selection only when it still holds exactly the copied
+          // text; a selection made or changed while the copy was in flight is
+          // not the copy's to clear.
+          if (
+            pendingCopyText !== null &&
+            shouldClearSelectionAfterCopy(pendingCopyText, {
+              hasSelection: renderer.hasSelection,
+              text: renderer.getSelection()?.getSelectedText() ?? "",
+            })
+          ) {
+            renderer.clearSelection();
+          }
+          pendingCopyText = null;
+          ui.toast.show(outcome.toast, outcome.tone);
+          renderer.requestRender();
+        },
+      },
+    );
+
+  // Slash overlays dismiss on ANY key via a key intercept (host.tsx), so the
+  // global Ctrl+C binding never sees the event there. Priority 1 keeps this
+  // hook ahead of the slash overlay's own (priority 0) intercept: when a
+  // selection exists we copy it without consuming the event, so the overlay
+  // still dismisses as usual for any key.
+  offSlashCtrlCHook = keymap.intercept("key", (ctx) => {
+    if (!ctx.event.ctrl || ctx.event.name !== "c") return;
+    if (overlay.kind() !== "slash") return;
+    if (!renderer.hasSelection) return;
+    const text = renderer.getSelection()?.getSelectedText() ?? "";
+    if ([...text].length === 0) return;
+    startCopy(text);
+  }, { priority: 1 });
 
   const handleSubmit = async (rawInput: string) => {
     if (!openTuiSink || !ready || !session) return;
@@ -580,10 +724,12 @@ export async function runTui(
     openTuiSink.appendUser(input);
     ui.spinner.start("thinking…");
     turnStartedAt = Date.now();
+    turnRunning = true;
 
     try {
       await controller.runUserTurn(input, openTuiSink);
     } finally {
+      turnRunning = false;
       ui.spinner.stop();
       openTuiSink.appendTurnFooter(Date.now() - turnStartedAt);
       refreshChrome();
@@ -595,6 +741,7 @@ export async function runTui(
     () => (
       <KeymapProvider keymap={keymap}>
         <GlobalKeyBindings
+          ctrlCEnabled={() => !isModalOverlay(overlay.kind())}
           onF9={() => {
             transcript.setFocused(true);
             // Blur the prompt so its focus-scoped keymap layer deactivates and
@@ -607,8 +754,41 @@ export async function runTui(
             renderer.requestRender();
           }}
           onCtrlC={() => {
+            const ctrlC = decideCtrlC(
+              renderer.hasSelection,
+              renderer.getSelection()?.getSelectedText() ?? "",
+              overlay.kind(),
+              turnRunning,
+            );
+            if (ctrlC.action === "copy") {
+              // Re-entrancy guard: a second Ctrl+C while a copy is in flight is
+              // ignored; a Ctrl+C with no selection still takes the normal path.
+              startCopy(ctrlC.text);
+              return;
+            }
+            if (ctrlC.action === "cancel_overlay") {
+              if (ctrlC.overlay === "palette") {
+                handlePaletteCancel();
+              } else {
+                dismissOverlay();
+                focusPrompt();
+              }
+              renderer.requestRender();
+              return;
+            }
+            if (ctrlC.action === "defer") return;
+            // An interrupting Ctrl+C closes an open non-modal overlay too, like
+            // Escape would; the turn interrupt below still applies when a turn
+            // is running (decideCtrlC returns interrupt for palette/model with
+            // no selection while turnRunning is set).
+            if (overlay.kind() === "palette") {
+              handlePaletteCancel();
+            } else if (overlay.kind() === "model") {
+              dismissOverlay();
+              focusPrompt();
+            }
             if (!session) {
-              void doShutdown(bootOnboarding ? 1 : 0);
+              void doShutdown(setupOutcome);
               return;
             }
             const action = controller.handleUserInterrupt(
@@ -626,7 +806,7 @@ export async function runTui(
               return;
             }
             if (action === "exit") {
-              void doShutdown();
+              void doShutdown(setupOutcome);
               return;
             }
           }}
@@ -715,6 +895,13 @@ export async function runTui(
             if (line) {
               openTuiSink.onSystemLines([line]);
               openTuiSink.nextGroup();
+            }
+            // Surface the AGENTS.md truncation notice once as a warn-level
+            // toast now that the TUI is ready (headless/CLI paths keep the
+            // stderr notice instead).
+            if (shouldShowAgentsTruncationToast(started, agentsTruncationToastShown)) {
+              agentsTruncationToastShown = true;
+              ui.toast.show(formatAgentsTruncationNotice(), "warn");
             }
             refreshChrome();
             prompt?.focus();

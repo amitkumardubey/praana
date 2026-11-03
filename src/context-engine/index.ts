@@ -1,9 +1,8 @@
 import { homedir } from "node:os";
-import { join } from "node:path";
 import type { Event } from "../types.js";
 import type { StateGraph } from "../state-graph.js";
 import type { PraanaConfig } from "../types.js";
-import { resolveDefaultMemoryDbPath } from "../app-identity.js";
+import { resolveAgainstCwd, resolveDefaultMemoryDbPath } from "../app-identity.js";
 import { ArtifactStore } from "./artifact-store.js";
 import { CheckpointStore, renderContextSummary as formatContextSummary } from "./checkpoint.js";
 import {
@@ -143,7 +142,7 @@ export function resolveContextDbPath(config: PraanaConfig, cwd: string): string 
   const configuredPath = config.memory?.db_path;
   if (configuredPath) {
     const expanded = expandHome(configuredPath);
-    return expanded.startsWith("/") ? expanded : join(cwd, expanded);
+    return resolveAgainstCwd(expanded, cwd);
   }
   return resolveDefaultMemoryDbPath();
 }

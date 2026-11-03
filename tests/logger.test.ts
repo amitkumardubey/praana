@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from "bun:test";
+import { isWindows } from "./helpers/platform.js";
 import {
   existsSync,
   lstatSync,
@@ -13,6 +14,7 @@ import {
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { spawn } from "node:child_process";
+import { Writable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import {
   PraanaLogger,
@@ -47,7 +49,8 @@ describe("logger", () => {
     expect(lines.some((l) => l.includes("something broke"))).toBe(true);
   });
 
-  it("writes session diagnostics to current.log (not events.jsonl)", async () => {
+  // POSIX-only: asserts the current.log symlink (Windows lacks unprivileged symlinks).
+  it.skipIf(isWindows)("writes session diagnostics to current.log (not events.jsonl)", async () => {
     const root = mkdtempSync(join(tmpdir(), "praana-syslog-"));
     const sessionLogDir = join(root, "sessions");
     const sessionId = "sess-log-test";
@@ -81,7 +84,8 @@ describe("logger", () => {
     }
   });
 
-  it("refreshCurrentLogSymlink creates a current.log symlink", () => {
+  // POSIX-only: creates a symlink.
+  it.skipIf(isWindows)("refreshCurrentLogSymlink creates a current.log symlink", () => {
     const dir = mkdtempSync(join(tmpdir(), "praana-symlink-"));
     try {
       const target = join(dir, "praana.2026-07-17.1.log");
@@ -95,7 +99,8 @@ describe("logger", () => {
     }
   });
 
-  it("refreshCurrentLogSymlink is idempotent for the same target", () => {
+  // POSIX-only: creates a symlink.
+  it.skipIf(isWindows)("refreshCurrentLogSymlink is idempotent for the same target", () => {
     const dir = mkdtempSync(join(tmpdir(), "praana-symlink-"));
     try {
       const target = join(dir, "praana.2026-07-17.1.log");
@@ -109,7 +114,8 @@ describe("logger", () => {
     }
   });
 
-  it("refreshCurrentLogSymlink updates a stale symlink", () => {
+  // POSIX-only: creates a symlink.
+  it.skipIf(isWindows)("refreshCurrentLogSymlink updates a stale symlink", () => {
     const dir = mkdtempSync(join(tmpdir(), "praana-symlink-"));
     try {
       const oldTarget = join(dir, "old.log");
@@ -139,7 +145,8 @@ describe("logger", () => {
     }
   });
 
-  it("initAppLogFile survives two concurrent processes sharing PRAANA_HOME", async () => {
+  // POSIX-only: asserts the current.log symlink between two processes.
+  it.skipIf(isWindows)("initAppLogFile survives two concurrent processes sharing PRAANA_HOME", async () => {
     const root = mkdtempSync(join(tmpdir(), "praana-concurrent-init-"));
     const home = join(root, "home");
     mkdirSync(home, { recursive: true });
@@ -207,6 +214,44 @@ describe("logger", () => {
       expect(writes.join("")).not.toContain("keyword-only");
     } finally {
       process.stderr.write = origWrite;
+    }
+  });
+
+  it("withStderrSuppressed keeps file output but silences stderr", () => {
+    const prevVitest = process.env.VITEST;
+    delete process.env.VITEST;
+    const fileLines: string[] = [];
+    const fileStream = new Writable({
+      write(chunk, _encoding, callback) {
+        fileLines.push(String(chunk));
+        callback();
+      },
+    });
+    const stderrWrites: string[] = [];
+    const origWrite = process.stderr.write.bind(process.stderr);
+    (process.stderr.write as typeof process.stderr.write) = ((
+      chunk: string | Uint8Array,
+      encodingOrCb?: BufferEncoding | ((err?: Error | null) => void),
+      cb?: (err?: Error | null) => void,
+    ) => {
+      stderrWrites.push(String(chunk));
+      if (typeof encodingOrCb === "function") encodingOrCb();
+      else cb?.();
+      return true;
+    }) as typeof process.stderr.write;
+
+    try {
+      const logger = new PraanaLogger({ domain: "app", appFileStream: fileStream });
+      logger
+        .withStderrSuppressed()
+        .warn("Failed to open memory db", { cause: new Error("boom") });
+
+      expect(stderrWrites.join("")).toBe("");
+      expect(fileLines.join("")).toContain("Failed to open memory db");
+    } finally {
+      process.stderr.write = origWrite;
+      if (prevVitest !== undefined) process.env.VITEST = prevVitest;
+      else delete process.env.VITEST;
     }
   });
 

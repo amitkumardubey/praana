@@ -3,12 +3,32 @@ import { rmSync, mkdirSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Session } from "../src/session.js";
+import { rmForce } from "./helpers/platform.js";
 import { MemoryStore } from "../src/memory/index.js";
 import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
 import type { PraanaConfig } from "../src/types.js";
 
 const testRoot = mkdtempSync(join(tmpdir(), "praana-test-note-promotion-"));
 const testLogDir = join(testRoot, "sessions");
+// Track real sessions so cleanup ends any session left open by a failed
+// assertion before removing the temp tree (Windows cannot delete directories
+// that still hold open file handles).
+const liveSessions = new Set<Session>();
+function tracked<T extends Session>(session: T): T {
+  liveSessions.add(session);
+  return session;
+}
+
+async function endTrackedSessions(): Promise<void> {
+  for (const session of liveSessions) {
+    try {
+      if (!session.ended) await session.end("aborted");
+    } catch {
+      // cleanup must not fail the run
+    }
+  }
+}
+
 const testConfig: PraanaConfig = {
   llm: { provider: "openrouter", model: "anthropic/claude-sonnet-4" },
   memory: { enabled: false, summarizer: "disabled", db_path: join(testRoot, "memory.db") },
@@ -21,16 +41,18 @@ beforeEach(() => {
   mkdirSync(testLogDir, { recursive: true });
 });
 
-afterEach(() => {
-  rmSync(testLogDir, { recursive: true, force: true });
+afterEach(async () => {
+  await endTrackedSessions();
+  rmForce(testLogDir);
 });
 
-afterAll(() => {
-  rmSync(testRoot, { recursive: true, force: true });
+afterAll(async () => {
+  await endTrackedSessions();
+  rmForce(testRoot);
 });
 
 async function createSessionWithMemory(): Promise<{ session: Session; memoryStore: MemoryStore }> {
-  const session = await Session.create(process.cwd(), testConfig);
+  const session = tracked(await Session.create(process.cwd(), testConfig));
 
   const memoryStore = new MemoryStore({
     dbPath: ":memory:",
@@ -129,7 +151,7 @@ describe("session-end note promotion (#504)", () => {
   });
 
   it("does NOT promote notes when memory is disabled", async () => {
-    const session = await Session.create(process.cwd(), testConfig);
+    const session = tracked(await Session.create(process.cwd(), testConfig));
 
     session.stateGraph.create("note", { text: "Important finding about concurrency" });
 
@@ -182,7 +204,7 @@ describe("session-end note promotion (#504)", () => {
   });
 
   it("skips promotion if incognito mode is active", async () => {
-    const session = await Session.create(process.cwd(), testConfig, { incognito: true });
+    const session = tracked(await Session.create(process.cwd(), testConfig, { incognito: true }));
 
     session.stateGraph.create("note", { text: "Should not persist in incognito mode" });
 

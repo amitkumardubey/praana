@@ -20,6 +20,22 @@ export interface ConfirmPromptState {
   resolve: (cont: boolean) => void;
 }
 
+/**
+ * Full-screen modal overlays that cover the screen and would let the idle
+ * launch canvas bleed through. Palette / slash / model overlays sit on top
+ * of the rest of the UI and must keep the canvas visible underneath.
+ */
+export const LAUNCH_HIDING_OVERLAYS: readonly OverlayKind[] = [
+  "setup",
+  "consent",
+  "login",
+];
+
+/** True when the launch canvas should be hidden while `kind` is open. */
+export function launchCanvasHiddenForOverlay(kind: OverlayKind): boolean {
+  return kind !== "none" && LAUNCH_HIDING_OVERLAYS.includes(kind);
+}
+
 export interface OverlayUi {
   readonly kind: Accessor<OverlayKind>;
   readonly slashLines: Accessor<string[]>;

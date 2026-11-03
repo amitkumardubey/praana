@@ -1,6 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { normalizeText } from "./helpers/platform.js";
 import { z } from "zod";
 import { normalizeToolParameters } from "../src/turn.js";
 import { createAllTools } from "../src/tools/index.js";
@@ -187,6 +188,6 @@ describe("tool parameter schema baseline", () => {
     }
     const serialized = JSON.stringify(stable(actual), null, 2) + "\n";
     if (process.env.PRAANA_WRITE_TOOL_SCHEMAS) writeFileSync(baselinePath, serialized);
-    expect(serialized).toBe(readFileSync(baselinePath, "utf-8"));
+    expect(serialized).toBe(normalizeText(readFileSync(baselinePath, "utf-8")));
   });
 });
