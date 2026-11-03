@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { describe, expect, it } from "bun:test";
+import { isWindows } from "./helpers/platform.js";
 import { formatSha256Sums } from "../scripts/package-release-binaries.js";
 import { SIDECAR_ADDON_FILENAME } from "../src/native/sidecar.js";
 
@@ -49,9 +50,10 @@ async function sha256File(path: string): Promise<string> {
   return hash.digest("hex");
 }
 
-/** Fake `praana.exe` (a sh script; these tests run under pwsh-on-Linux). */
-function fixturePraana(doctorBody: string): string {
-  return `#!/bin/sh
+/** Fake `praana.exe` output and its POSIX implementation. */
+function fixturePraana(doctorLines: string[]): { source: string; doctorLines: string[] } {
+  const doctorBody = doctorLines.map((line) => `  echo ${JSON.stringify(line)}`).join("\n");
+  return { doctorLines, source: `#!/bin/sh
 if [ "$1" = "--version" ]; then
   echo "PRAANA v0.0.0-fixture"
   exit 0
@@ -67,28 +69,84 @@ ${doctorBody}
   exit 0
 fi
 echo fixture-praana
-`;
+` };
 }
 
-async function buildRelease(root: string, praanaSource: string) {
+function writeFixtureExe(path: string, source: string, doctorLines: string[]): void {
+  if (!isWindows) {
+    writeFileSync(path, source);
+    chmodSync(path, 0o755);
+    return;
+  }
+  const entry = `${path}.ts`;
+  writeFileSync(entry, `
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+if (process.argv[2] === "--version") console.log("PRAANA v0.0.0-fixture");
+else if (process.argv[2] === "doctor") {
+  const home = process.env.PRAANA_HOME || join(process.env.HOME || "", ".praana");
+  if (process.env.PRAANA_TEST_RECORD) writeFileSync(process.env.PRAANA_TEST_RECORD, home + "\\n");
+  mkdirSync(home, { recursive: true });
+  writeFileSync(join(home, "doctor-ran"), "");
+  for (const line of ${JSON.stringify(doctorLines)}) console.log(line);
+} else console.log("fixture-praana");
+`);
+  const result = Bun.spawnSync([process.execPath, "build", "--compile", "--no-compile-autoload-bunfig", entry, "--outfile", path], {
+    stdout: "pipe", stderr: "pipe",
+  });
+  if (result.exitCode !== 0) {
+    throw new Error(`fixture compilation failed: ${result.stdout.toString()} ${result.stderr.toString()}`);
+  }
+}
+
+/**
+ * Pack `files` (relative to `staging`) into a zip at `archivePath`.
+ * POSIX uses the `zip` CLI; Windows has no `zip` executable, so PowerShell's
+ * Compress-Archive is used there instead.
+ */
+function packFixtureZip(
+  archivePath: string,
+  staging: string,
+  files: string[],
+): void {
+  let packed: { exitCode: number | null; stdout: Buffer; stderr: Buffer };
+  if (isWindows) {
+    if (!POWERSHELL) {
+      throw new Error("PowerShell not found on PATH");
+    }
+    const list = files.map((f) => JSON.stringify(f)).join(",");
+    packed = Bun.spawnSync(
+      [
+        POWERSHELL,
+        "-NoProfile",
+        "-Command",
+        `Compress-Archive -Path @(${list}) -DestinationPath ${JSON.stringify(archivePath)} -Force`,
+      ],
+      { cwd: staging, stdout: "pipe", stderr: "pipe" },
+    );
+  } else {
+    packed = Bun.spawnSync(["zip", "-j", archivePath, ...files], {
+      cwd: staging,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+  }
+  expect(packed.exitCode).toBe(0);
+}
+
+async function buildRelease(root: string, fixture: { source: string; doctorLines: string[] }) {
   const releaseDir = join(root, "release");
   const prefix = join(root, "bin");
   mkdirSync(releaseDir, { recursive: true });
 
   const staging = join(root, "staging");
   mkdirSync(staging);
-  writeFileSync(join(staging, "praana.exe"), praanaSource);
-  chmodSync(join(staging, "praana.exe"), 0o755);
+  writeFixtureExe(join(staging, "praana.exe"), fixture.source, fixture.doctorLines);
   writeFileSync(join(staging, SIDECAR_ADDON_FILENAME), "fake-native-addon\r\n");
 
   const archiveName = "praana-windows-x64.zip";
   const archivePath = join(releaseDir, archiveName);
-  const packed = Bun.spawnSync(["zip", "-j", archivePath, "praana.exe", SIDECAR_ADDON_FILENAME], {
-    cwd: staging,
-    stdout: "pipe",
-    stderr: "pipe",
-  });
-  expect(packed.exitCode).toBe(0);
+  packFixtureZip(archivePath, staging, ["praana.exe", SIDECAR_ADDON_FILENAME]);
 
   const hash = await sha256File(archivePath);
   writeFileSync(
@@ -142,7 +200,7 @@ describe("install.ps1", () => {
 
     const staging = join(root, "staging");
     mkdirSync(staging);
-    writeFileSync(
+    writeFixtureExe(
       join(staging, "praana.exe"),
       `#!/bin/sh
 if [ "$1" = "--version" ]; then
@@ -158,18 +216,23 @@ if [ "$1" = "doctor" ]; then
 fi
 echo fixture-praana
 `,
+      [
+        "✓ native: available (0.3.0, ping ok)",
+        "✓ search: native grep available (search_code, find_files)",
+        "⚠ embedder: runtime ready, weights not downloaded",
+        "All checks passed.",
+      ],
     );
-    chmodSync(join(staging, "praana.exe"), 0o755);
     writeFileSync(join(staging, SIDECAR_ADDON_FILENAME), "fake-native-addon\r\n");
     writeFileSync(join(staging, "praana-natives.json"), '{"apiVersion":"0.3.0"}\n');
 
     const archiveName = "praana-windows-x64.zip";
     const archivePath = join(releaseDir, archiveName);
-    const packed = Bun.spawnSync(
-      ["zip", "-j", archivePath, "praana.exe", SIDECAR_ADDON_FILENAME, "praana-natives.json"],
-      { cwd: staging, stdout: "pipe", stderr: "pipe" },
-    );
-    expect(packed.exitCode).toBe(0);
+    packFixtureZip(archivePath, staging, [
+      "praana.exe",
+      SIDECAR_ADDON_FILENAME,
+      "praana-natives.json",
+    ]);
 
     const hash = await sha256File(archivePath);
     writeFileSync(
@@ -185,12 +248,16 @@ echo fixture-praana
       expect(result.exitCode).toBe(0);
       expect(existsSync(join(prefix, "praana.exe"))).toBe(true);
       expect(existsSync(join(prefix, SIDECAR_ADDON_FILENAME))).toBe(true);
-      expect(readFileSync(join(prefix, "praana.exe"), "utf-8")).toContain("fixture-praana");
+      if (isWindows) {
+        expect(readFileSync(join(prefix, "praana.exe"))).toEqual(readFileSync(join(staging, "praana.exe")));
+      } else {
+        expect(readFileSync(join(prefix, "praana.exe"), "utf-8")).toContain("fixture-praana");
+      }
       expect(`${result.stdout}${result.stderr}`).toContain(prefix);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 60_000);
 
   it("fails when SHA256SUMS has no entry for the archive", async () => {
     if (!POWERSHELL) return;
@@ -223,10 +290,10 @@ echo fixture-praana
         root,
         fixturePraana(
           [
-            '  echo "Γ£ô native: available (0.3.0, ping ok)"',
-            '  echo "Γ£ô search: native grep available (search_code, find_files)"',
-            '  echo "All checks passed."',
-          ].join("\n"),
+            "Γ£ô native: available (0.3.0, ping ok)",
+            "Γ£ô search: native grep available (search_code, find_files)",
+            "All checks passed.",
+          ],
         ),
       );
       const result = runInstall(["-Prefix", prefix], {
@@ -248,9 +315,9 @@ echo fixture-praana
         root,
         fixturePraana(
           [
-            '  echo "✓ search: native grep available (search_code, find_files)"',
-            '  echo "⚠ native: unavailable: sidecar missing"',
-          ].join("\n"),
+            "✓ search: native grep available (search_code, find_files)",
+            "⚠ native: unavailable: sidecar missing",
+          ],
         ),
       );
       const result = runInstall(["-Prefix", prefix], {
@@ -280,9 +347,9 @@ echo fixture-praana
         root,
         fixturePraana(
           [
-            '  echo "✓ native: available (0.3.0, ping ok)"',
-            '  echo "✓ search: native grep available (search_code, find_files)"',
-          ].join("\n"),
+            "✓ native: available (0.3.0, ping ok)",
+            "✓ search: native grep available (search_code, find_files)",
+          ],
         ),
       );
       const result = runInstall(["-Prefix", prefix], {

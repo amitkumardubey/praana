@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { isWindows } from "./helpers/platform.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -37,7 +38,8 @@ describe("shell read churn instrumentation", () => {
     });
   }
 
-  it("counts shell cat of a path without changing stdout", async () => {
+  // POSIX-only: the shell commands use `cat`, which has no Windows executable.
+  it.skipIf(isWindows)("counts shell cat of a path without changing stdout", async () => {
     writeFileSync(join(testDir, "a.ts"), "export const x = 1;\n");
 
     const tools = makeTools();
@@ -64,7 +66,8 @@ describe("shell read churn instrumentation", () => {
     expect(scorecard.getCounters().churnInterventions).toBe(0);
   });
 
-  it("does not fire a second intervention on further access", async () => {
+  // POSIX-only: uses `cat` (see above).
+  it.skipIf(isWindows)("does not fire a second intervention on further access", async () => {
     writeFileSync(join(testDir, "b.ts"), "export const y = 2;\n");
     const tools = makeTools();
     await tools.shell.execute({ command: "cat b.ts" });

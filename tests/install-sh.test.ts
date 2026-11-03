@@ -14,6 +14,7 @@ import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "bun:test";
 import { formatSha256Sums } from "../scripts/package-release-binaries.js";
+import { isWindows } from "./helpers/platform.js";
 import { SIDECAR_ADDON_FILENAME } from "../src/native/sidecar.js";
 
 const INSTALL_SH = resolve("install.sh");
@@ -52,7 +53,8 @@ async function sha256File(path: string): Promise<string> {
   return hash.digest("hex");
 }
 
-describe("install.sh --print-target", () => {
+// POSIX-only: runs install.sh under `sh`, which is not present on Windows.
+describe.skipIf(isWindows)("install.sh --print-target", () => {
   it("maps linux-x64, linux-arm64, darwin-arm64, and darwin-x64", () => {
     const cases: Array<[string, string, string, Record<string, string>]> = [
       ["Linux", "x86_64", "praana-linux-x64", { PRAANA_LIBC: "gnu" }],
@@ -156,7 +158,8 @@ describe("installer self-check vs real doctor output", () => {
   }, 30_000);
 });
 
-describe("install.sh missing-command hints", () => {
+// POSIX-only: builds a temp PATH from symlinks and launches /bin/sh.
+describe.skipIf(isWindows)("install.sh missing-command hints", () => {
   /** Temp PATH containing only symlinks to `names` (absolute /bin/sh launch). */
   function binWith(names: string[]): string {
     const dir = mkdtempSync(join(tmpdir(), "praana-install-path-"));
@@ -307,7 +310,8 @@ async function buildRelease(root: string, praanaSource: string) {
   return { releaseDir, prefix };
 }
 
-describe("install.sh checksum install", () => {
+// POSIX-only: runs install.sh under `sh` and packs fixtures with `tar`.
+describe.skipIf(isWindows)("install.sh checksum install", () => {
   it("installs praana and the sidecar into --prefix from a fixture archive", async () => {
     const root = mkdtempSync(join(tmpdir(), "praana-install-sh-"));
     const releaseDir = join(root, "release");

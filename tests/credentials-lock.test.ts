@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { isWindows } from "./helpers/platform.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -192,7 +193,7 @@ describe("credential advisory locks", () => {
     writeFileSync(path, "this is not a sqlite database");
     const corrupt = statSync(path);
     expect(lockFileIsReplaceableForTests(path, { dev: corrupt.dev, ino: corrupt.ino })).toBe(true);
-    expect(lockFileIsReplaceableForTests(path, { dev: corrupt.dev, ino: corrupt.ino + 1 })).toBe(false);
+    expect(lockFileIsReplaceableForTests(path, { dev: corrupt.dev, ino: corrupt.ino === 0 ? 1 : 0 })).toBe(false);
   });
 
   it("times out an in-process waiter when waitMs elapses", async () => {
@@ -221,7 +222,9 @@ describe("credential advisory locks", () => {
     again.release();
   });
 
-  it("fails clearly when a corrupt lock database cannot be replaced", () => {
+  // POSIX-only: makes the lock directory non-writable with chmod, which NTFS
+  // does not honour, so replacement succeeds and no error is raised.
+  it.skipIf(isWindows)("fails clearly when a corrupt lock database cannot be replaced", () => {
     const path = pathFor("store");
     const dir = dirname(path);
     mkdirSync(dir, { recursive: true });

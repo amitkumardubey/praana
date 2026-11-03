@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "bun:test";
+import { isWindows } from "./helpers/platform.js";
 import {
   RELEASE_BINARY_TARGETS,
   RELEASE_NATIVE_TRIPLE,
@@ -25,7 +26,9 @@ import {
 import { SIDECAR_ADDON_FILENAME } from "../src/native/sidecar.js";
 
 describe("packageReleaseBinaries", () => {
-  it("archives each target as praana and writes matching SHA256SUMS", async () => {
+  // POSIX-only: the release tooling shells out to `zip`/`tar`, which are not
+  // present on Windows (the release pipeline itself is Linux-only).
+  it.skipIf(isWindows)("archives each target as praana and writes matching SHA256SUMS", async () => {
     const root = mkdtempSync(join(tmpdir(), "praana-package-binaries-"));
     const distDir = join(root, "dist");
     const outDir = join(root, "release");
@@ -147,7 +150,8 @@ describe("packageReleaseBinaries", () => {
     }
   });
 
-  it("packs praana-natives.node beside praana", async () => {
+  // POSIX-only: uses `zip` and `tar` (see above).
+  it.skipIf(isWindows)("packs praana-natives.node beside praana", async () => {
     const root = mkdtempSync(join(tmpdir(), "praana-package-binaries-sidecar-"));
     const distDir = join(root, "dist");
     const nativeDir = join(root, "native");
@@ -208,7 +212,8 @@ describe("release native artifacts", () => {
     }
   });
 
-  it("packs from CI bindings-<triple> artifact layout", async () => {
+  // POSIX-only: uses `zip` (see above).
+  it.skipIf(isWindows)("packs from CI bindings-<triple> artifact layout", async () => {
     const root = mkdtempSync(join(tmpdir(), "praana-native-artifacts-dir-"));
     const distDir = join(root, "dist");
     const artifactsDir = join(root, "artifacts");

@@ -11,6 +11,7 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
+import { isWindows, rmForce } from "./helpers/platform.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -133,7 +134,7 @@ describe("serialized OAuth refresh", () => {
     resetCredentialStoreForTests();
     resetOAuthProvidersForTests();
     globalThis.fetch = originalFetch;
-    rmSync(praanaHome, { recursive: true, force: true });
+    rmForce(praanaHome);
     if (prevHome === undefined) delete process.env.PRAANA_HOME;
     else process.env.PRAANA_HOME = prevHome;
   });
@@ -325,7 +326,7 @@ describe("serialized OAuth refresh", () => {
       expect(getOAuthToken("openai-codex")?.refresh).toBe("refresh-rotated");
     } finally {
       child?.kill();
-      rmSync(dir, { recursive: true, force: true });
+      rmForce(dir);
     }
   });
 
@@ -905,7 +906,7 @@ describe("serialized OAuth refresh", () => {
       expect(getApiKey("openrouter")).toBe("sk-during-refresh");
     } finally {
       child?.kill();
-      rmSync(dir, { recursive: true, force: true });
+      rmForce(dir);
     }
   });
 
@@ -1380,7 +1381,7 @@ describe("credential refresh across processes", () => {
     resetCredentialStoreForTests();
     resetOAuthProvidersForTests();
     globalThis.fetch = originalFetch;
-    rmSync(praanaHome, { recursive: true, force: true });
+    rmForce(praanaHome);
     if (prevHome === undefined) delete process.env.PRAANA_HOME;
     else process.env.PRAANA_HOME = prevHome;
   });
@@ -1463,11 +1464,11 @@ describe("credential refresh across processes", () => {
       };
       expect(stored["openai-codex"]).toMatchObject({ access: next, refresh: "refresh-shared" });
       expect(stored.openrouter.key).toBe("sk-keep");
-      expect(statSync(getCredentialsFilePath()).mode & 0o777).toBe(0o600);
+      if (!isWindows) expect(statSync(getCredentialsFilePath()).mode & 0o777).toBe(0o600);
     } finally {
       for (const child of children) child.kill();
       server.stop(true);
-      rmSync(dir, { recursive: true, force: true });
+      rmForce(dir);
     }
   }, { timeout: 20_000 });
 
@@ -1554,7 +1555,7 @@ describe("credential refresh across processes", () => {
     } finally {
       for (const child of children) child.kill();
       server.stop(true);
-      rmSync(dir, { recursive: true, force: true });
+      rmForce(dir);
     }
   }, { timeout: 20_000 });
 });
@@ -1599,7 +1600,7 @@ describe("seeded credential interleaving", () => {
     globalThis.fetch = originalFetch;
     if (prevHome === undefined) delete process.env.PRAANA_HOME;
     else process.env.PRAANA_HOME = prevHome;
-    rmSync(root, { recursive: true, force: true });
+    rmForce(root);
   });
 
   async function runSeed(seed: number): Promise<void> {
@@ -1756,7 +1757,7 @@ describe("seeded credential interleaving", () => {
         throw new Error(`lost login for ${provider}`);
       }
     }
-    expect(statSync(getCredentialsFilePath()).mode & 0o777).toBe(0o600);
+    if (!isWindows) expect(statSync(getCredentialsFilePath()).mode & 0o777).toBe(0o600);
   }
 
   it("holds credential invariants for 300 seeded interleavings", async () => {
