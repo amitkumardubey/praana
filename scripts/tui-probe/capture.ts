@@ -75,6 +75,8 @@ export async function capture(worktree: string, label: string, size = "110x40", 
         writeFileSync(output, JSON.stringify({ type: "header", label, size, commit, achievedHz: hz }) + "\n" + readFileSync(output, "utf8"));
         return { output, count, hz };
       }
+      // Let signal handlers and an in-process mock service their events between samples.
+      await new Promise<void>((resolve) => setImmediate(resolve));
     }
     throw new Error(interrupted ? `Capture interrupted by ${interrupted}` : `Turn never finished within ${timeout}s; samples retained in ${output}`);
   } finally {
