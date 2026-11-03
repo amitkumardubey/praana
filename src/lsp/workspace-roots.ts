@@ -10,15 +10,8 @@ import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
 import { findGitRoot, isGitRepo } from "../git-context.js";
 
-export function normalizeRoot(p: string): string {
-  return p.replace(/\/+$/, "") || p;
-}
-
-export function pathInRoot(absPath: string, root: string): boolean {
-  const r = normalizeRoot(root);
-  const p = absPath;
-  return p === r || p.startsWith(r + "/");
-}
+import { normalizeRoot, pathInRoot } from "../path-containment.js";
+export { normalizeRoot, pathInRoot } from "../path-containment.js";
 
 function longestPrefix(path: string, candidates: string[]): string | null {
   let best: string | null = null;
@@ -159,7 +152,7 @@ export function discoverWorkspaceMembers(anchor: string): string[] {
     if (negated) exclude.push(...expanded);
     else include.push(...expanded);
   }
-  const excluded = new Set(exclude.map(normalizeRoot));
+  const excluded = new Set(exclude.map((p) => normalizeRoot(p)));
   const seen = new Set<string>();
   const out: string[] = [];
   for (const m of include) {
