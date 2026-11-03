@@ -257,6 +257,28 @@ describe("connect timeout retry budget", () => {
     expect(retried[0]?.type).toBe("error");
   });
 
+  it("retries a connect timeout after a 503 without exceeding the overall budget", async () => {
+    let calls = 0;
+    const result = await withPreEmissionRetry(async () => {
+      calls++;
+      if (calls === 1) throw Object.assign(new Error("unavailable"), { status: 503 });
+      if (calls === 2) throw new ConnectTimeoutError(60_000);
+      return "ok";
+    }, { maxRetries: 3, maxRetriesFor: (err) => err instanceof ConnectTimeoutError ? 1 : undefined, baseDelayMs: 0, maxDelayMs: 0 });
+    expect(result).toBe("ok");
+    expect(calls).toBe(3);
+  });
+
+  it("keeps the overall retry budget after a connect timeout followed by 503s", async () => {
+    let calls = 0;
+    await expect(withPreEmissionRetry(async () => {
+      calls++;
+      if (calls === 1) throw new ConnectTimeoutError(60_000);
+      throw Object.assign(new Error("unavailable"), { status: 503 });
+    }, { maxRetries: 3, maxRetriesFor: (err) => err instanceof ConnectTimeoutError ? 1 : undefined, baseDelayMs: 0, maxDelayMs: 0 })).rejects.toThrow("unavailable");
+    expect(calls).toBe(4);
+  });
+
   it("lets withPreEmissionRetry cap a connect timeout at one retry", async () => {
     let calls = 0;
     await expect(
