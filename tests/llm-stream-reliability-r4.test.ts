@@ -46,6 +46,7 @@ async function collectHung(
   driver: { stream: (req: StreamRequest, auth: ResolvedAuth) => AsyncIterable<StreamEvent> },
   req: StreamRequest,
   chunks: Uint8Array[],
+  timeoutMs = 400,
 ): Promise<{ events: StreamEvent[]; cancelled: boolean; ms: number }> {
   const hanging = hangAfter(chunks);
   globalThis.fetch = (async () => new Response(hanging.stream)) as typeof fetch;
@@ -55,7 +56,7 @@ async function collectHung(
     for await (const event of driver.stream(req, auth)) events.push(event);
   })();
   const timeout = new Promise<never>((_, reject) => {
-    setTimeout(() => reject(new Error("stream kept reading after the terminal event")), 400);
+    setTimeout(() => reject(new Error("stream kept reading after the terminal event")), timeoutMs);
   });
   await Promise.race([done, timeout]);
   return { events, cancelled: hanging.cancelled(), ms: Date.now() - started };
@@ -137,8 +138,11 @@ describe("terminal sentinel stops the read", () => {
         ...budgets,
       },
       [encodeBedrock({ contentBlockDelta: { contentBlockIndex: 0, delta: { text: "Hi" } } }), encodeBedrock({ messageStop: { stopReason: "end_turn" } })],
+      4_000,
     );
-    expect(ms).toBeLessThan(400);
+    // messageStop waits for a metadata usage trailer, then the grace, because this body never closes.
+    expect(ms).toBeGreaterThan(1_000);
+    expect(ms).toBeLessThan(4_000);
     expect(events.at(-1)).toMatchObject({
       type: "done",
       reason: "stop",

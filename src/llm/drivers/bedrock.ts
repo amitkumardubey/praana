@@ -143,7 +143,6 @@ export class BedrockDriver implements LlmDriver {
       frames: (byteStream) => parseAwsEventStream(byteStream),
       onFrame: (frame) => {
         const events: StreamEvent[] = [];
-        let terminal = false;
         const exception = bedrockStreamException(frame);
         if (exception) {
           events.push({
@@ -212,17 +211,19 @@ export class BedrockDriver implements LlmDriver {
               },
             });
           }
+          if (sawTerminal) return { events: [...events, ...finishBedrock()], stop: true };
         }
 
         if (frame.messageStop) {
           sawTerminal = true;
-          terminal = true;
           const stop = frame.messageStop as any;
           if (stop.stopReason === "tool_use") finishReason = "tool_use";
           else if (stop.stopReason === "max_tokens") finishReason = "length";
           else finishReason = "stop";
+          // usage arrives in a later metadata event. Read until that frame,
+          // the body end, or the trailer grace.
+          return { events, awaitTrailer: true };
         }
-        if (terminal) return { events: [...events, ...finishBedrock()], stop: true };
         return { events };
       },
       onComplete: () => finishBedrock(),

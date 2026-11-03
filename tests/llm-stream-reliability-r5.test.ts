@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { BedrockDriver } from "../src/llm/drivers/bedrock.js";
 import { OpenAIResponsesDriver } from "../src/llm/drivers/responses.js";
+import { streamGuardPendingTimers } from "../src/llm/stream-guard.js";
 import type { ResolvedAuth, StreamEvent, StreamRequest } from "../src/llm/types.js";
 
 const originalFetch = globalThis.fetch;
@@ -131,6 +133,113 @@ function expectStreamError(events: StreamEvent[], message: string): void {
   const error = events.at(-1);
   expect(error?.type === "error" && error.error.message).toBe(message);
 }
+
+function encodeBedrock(payload: unknown): Uint8Array {
+  const payloadBytes = Buffer.from(JSON.stringify(payload), "utf8");
+  const totalLength = payloadBytes.length + 16;
+  const buf = Buffer.alloc(totalLength);
+  buf.writeUInt32BE(totalLength, 0);
+  buf.writeUInt32BE(0, 4);
+  buf.writeUInt32BE(0, 8);
+  payloadBytes.copy(buf, 12);
+  buf.writeUInt32BE(0, totalLength - 4);
+  return buf;
+}
+
+async function collectBedrock(
+  steps: Array<{ payload: unknown; delayMs?: number }>,
+  opts: { hang: boolean; strictStreamEnd?: boolean },
+): Promise<{ events: StreamEvent[]; cancelled: boolean; ms: number }> {
+  let cancelled = false;
+  let index = 0;
+  const stream = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      if (index >= steps.length) {
+        if (opts.hang) return new Promise(() => {});
+        controller.close();
+        return;
+      }
+      const step = steps[index];
+      index += 1;
+      if (step?.delayMs) await new Promise((resolve) => setTimeout(resolve, step.delayMs));
+      if (step) controller.enqueue(encodeBedrock(step.payload));
+    },
+    cancel() {
+      cancelled = true;
+    },
+  });
+  globalThis.fetch = (async () => new Response(stream)) as typeof fetch;
+  const events: StreamEvent[] = [];
+  const started = Date.now();
+  const req: StreamRequest = {
+    model: "m",
+    provider: "amazon-bedrock",
+    region: "us-east-1",
+    messages: [{ role: "user", content: "hi" }],
+    connectTimeoutMs: 60_000,
+    idleTimeoutMs: 60_000,
+    ...(opts.strictStreamEnd === undefined ? {} : { strictStreamEnd: opts.strictStreamEnd }),
+  };
+  const done = (async () => {
+    for await (const event of new BedrockDriver().stream(req, { bearerToken: "bearer-fixture" })) {
+      events.push(event);
+    }
+  })();
+  await Promise.race([
+    done,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("Bedrock stream hung")), 4_000)),
+  ]);
+  return { events, cancelled: cancelled, ms: Date.now() - started };
+}
+
+describe("Bedrock usage after messageStop", () => {
+  const prefix = [
+    { payload: { messageStart: { role: "assistant" } } },
+    { payload: { contentBlockDelta: { contentBlockIndex: 0, delta: { text: "Hi" } } } },
+    { payload: { messageStop: { stopReason: "end_turn" } } },
+  ];
+
+  it("emits usage from the metadata frame that follows messageStop, then done", async () => {
+    const { events, cancelled, ms } = await collectBedrock(
+      [
+        ...prefix,
+        {
+          delayMs: 30,
+          payload: { metadata: { usage: { inputTokens: 11, outputTokens: 4, totalTokens: 15 } } },
+        },
+      ],
+      { hang: true },
+    );
+    const usage = events.filter((event) => event.type === "usage");
+    expect(usage).toEqual([
+      { type: "usage", usage: { input: 11, output: 4, totalTokens: 15 } },
+    ]);
+    const usageAt = events.findIndex((event) => event.type === "usage");
+    const doneAt = events.findIndex((event) => event.type === "done");
+    expect(doneAt).toBeGreaterThan(usageAt);
+    expect(events.at(-1)).toMatchObject({
+      type: "done",
+      reason: "stop",
+      message: { role: "assistant", content: "Hi" },
+    });
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(cancelled).toBe(true);
+    expect(ms).toBeLessThan(1_000);
+    expect(streamGuardPendingTimers()).toBe(0);
+  });
+
+  it("finishes a strict stream that closes after messageStop without metadata", async () => {
+    const { events, ms } = await collectBedrock(prefix, { hang: false, strictStreamEnd: true });
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(events.at(-1)).toMatchObject({
+      type: "done",
+      reason: "stop",
+      message: { role: "assistant", content: "Hi" },
+    });
+    expect(ms).toBeLessThan(1_000);
+    expect(streamGuardPendingTimers()).toBe(0);
+  });
+});
 
 describe("Responses failures are errors on the lenient path", () => {
   const finishedTool = [

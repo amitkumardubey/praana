@@ -12,6 +12,17 @@ export const DEFAULT_CONNECT_TIMEOUT_MS = 60_000;
 export const DEFAULT_LOCAL_CONNECT_TIMEOUT_MS = 300_000;
 /** Idle budget for every provider. Server silence, not time-to-first-byte. */
 export const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000;
+/**
+ * After a sentinel that still has a known trailer (Bedrock `metadata`,
+ * OpenAI usage / `[DONE]`), keep reading until the trailer, the body end,
+ * or this long. An idle budget of 0 uses the same cap.
+ */
+export const TRAILER_GRACE_MS = 2_000;
+
+export function trailerGraceMs(idleTimeoutMs: number): number {
+  if (!(idleTimeoutMs > 0)) return TRAILER_GRACE_MS;
+  return Math.min(idleTimeoutMs, TRAILER_GRACE_MS);
+}
 
 export interface LlmStreamTimeouts {
   connectTimeoutMs: number;
@@ -85,7 +96,14 @@ export async function* runGuardedProviderStream<T>(opts: {
    * already buffered (a usage trailer or `[DONE]`), and otherwise finishes
    * without waiting out the idle budget.
    */
-  onFrame: (frame: T) => { events: StreamEvent[]; stop?: boolean; releaseIfIdle?: boolean };
+  onFrame: (frame: T) => {
+    events: StreamEvent[];
+    stop?: boolean;
+    /** One already-buffered frame, then finish. Used until the trailer grace replaces it. */
+    releaseIfIdle?: boolean;
+    /** Keep reading until the driver stops, the body ends, or {@link trailerGraceMs}. */
+    awaitTrailer?: boolean;
+  };
   onComplete: () => StreamEvent[];
 }): AsyncGenerator<StreamEvent> {
   const timeouts = timeoutsFromRequest(opts.req);
@@ -161,6 +179,44 @@ export async function* runGuardedProviderStream<T>(opts: {
       const step = opts.onFrame(nxt.value);
       for (const ev of step.events) yield ev;
       if (step.stop) return;
+      if (step.awaitTrailer) {
+        const deadline = Date.now() + trailerGraceMs(timeouts.idleTimeoutMs);
+        while (Date.now() < deadline) {
+          const remaining = deadline - Date.now();
+          const pending = pullFrame();
+          const framePromise = pending.then((r) => ({ idle: false as const, r }));
+          framePromise.catch(() => {});
+          let timer: ReturnType<typeof setTimeout> | null = null;
+          const raced = await Promise.race([
+            framePromise,
+            new Promise<{ idle: true }>((resolve) => {
+              timer = schedule(Math.max(0, remaining), () => resolve({ idle: true }));
+            }),
+          ]);
+          clearScheduled(timer);
+          if (raced.idle) {
+            guard.dispose();
+            await pending.catch(() => {});
+            break;
+          }
+          if (raced.r.done) break;
+          const more = opts.onFrame(raced.r.value);
+          for (const ev of more.events) yield ev;
+          if (more.stop) return;
+          const during = yieldHalt();
+          if (during) {
+            yield during;
+            return;
+          }
+        }
+        const afterTrailer = yieldHalt();
+        if (afterTrailer) {
+          yield afterTrailer;
+          return;
+        }
+        for (const ev of opts.onComplete()) yield ev;
+        return;
+      }
       if (step.releaseIfIdle) {
         const pending = pullFrame();
         const raced = await Promise.race([
