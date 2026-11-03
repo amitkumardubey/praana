@@ -7,11 +7,16 @@
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
-import { dirname, join, relative, sep } from "node:path";
+import path, { dirname, join, relative, sep } from "node:path";
 import { findGitRoot, isGitRepo } from "../git-context.js";
 
 import { normalizeRoot, pathInRoot } from "../path-containment.js";
 export { normalizeRoot, pathInRoot } from "../path-containment.js";
+
+// Keep findGitRoot unchanged: its raw value is hashed into project-memory scopes.
+export function normalizeGitRoot(raw: string, flavor: typeof path = path): string {
+  return flavor.normalize(raw);
+}
 
 function longestPrefix(path: string, candidates: string[]): string | null {
   let best: string | null = null;
@@ -167,7 +172,7 @@ export function discoverWorkspaceMembers(anchor: string): string[] {
 function nestedGitRoot(absPath: string, sessionRoot: string): string | null {
   const start = existsSync(absPath) && isDir(absPath) ? absPath : dirname(absPath);
   if (!isGitRepo(start)) return null;
-  const root = normalizeRoot(findGitRoot(start));
+  const root = normalizeRoot(normalizeGitRoot(findGitRoot(start)));
   const session = normalizeRoot(sessionRoot);
   if (!pathInRoot(root, session)) return null;
   if (root === session) return null;
@@ -182,7 +187,7 @@ export function resolveLspRoot(absPath: string, sessionRoot: string): string {
   if (!pathInRoot(absPath, session)) return session;
 
   const gitCandidate = nestedGitRoot(absPath, session);
-  const anchor = gitCandidate ?? (isGitRepo(session) ? findGitRoot(session) : session);
+  const anchor = gitCandidate ?? (isGitRepo(session) ? normalizeGitRoot(findGitRoot(session)) : session);
   const members = discoverWorkspaceMembers(normalizeRoot(anchor));
   const member = longestPrefix(absPath, members);
   if (member) return member;
