@@ -6,7 +6,7 @@ import { AppController } from "../src/app-controller.js";
 import type { CliArgs } from "../src/cli-args.js";
 import type { PraanaConfig } from "../src/types.js";
 import * as sessionActual from "../src/session.js";
-import { Session } from "../src/session.js";
+import { Session, AGENTS_TRUNCATION_LOG_LINE, AGENTS_TRUNCATION_MARKER } from "../src/session.js";
 import * as turnActual from "../src/turn.js";
 import { runTurn } from "../src/turn.js";
 import { TurnAbortedError } from "../src/turn-control.js";
@@ -815,4 +815,31 @@ describe("AppController", () => {
 afterAll(() => {
   mock.module("../src/session.js", () => sessionReal);
   mock.module("../src/turn.js", () => turnReal);
+});
+
+describe("AppController AGENTS truncation capture", () => {
+  it("routes the captured truncation notice into agentTruncationNotices, not startupNotices/stderr", async () => {
+    const controller = new AppController({
+      cwd: "/tmp",
+      config: baseConfig,
+      parsed: baseParsed,
+    });
+    const info = await controller.start();
+    expect(info.agentTruncationNotices).toEqual([]);
+    expect(info.startupNotices).toEqual([]);
+
+    // The capture callback the controller wired into Session.create must
+    // collect the raw session notice into agentTruncationNotices.
+    const createMock = Session.create as Mock<typeof Session.create>;
+    const opts = createMock.mock.calls.at(-1)?.[2] as { captureNotice?: (line: string) => void } | undefined;
+    expect(opts?.captureNotice).toBeTypeOf("function");
+    // Feed the exact line the producer composes (from the shared constant), so
+    // a rewording of the producer is caught by the consumer's shared predicate.
+    opts?.captureNotice?.(AGENTS_TRUNCATION_LOG_LINE);
+
+    expect(info.agentTruncationNotices).toHaveLength(1);
+    expect(info.agentTruncationNotices[0]).toContain(AGENTS_TRUNCATION_MARKER);
+    // It must NOT be promoted into stderr-printed startup notices.
+    expect(info.startupNotices).toEqual([]);
+  });
 });

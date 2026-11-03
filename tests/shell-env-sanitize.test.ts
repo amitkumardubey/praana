@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { isWindows } from "./helpers/platform.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -52,7 +53,9 @@ describe("executeShellCommand env sanitization", () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("does not inherit OPENROUTER_API_KEY in the child", async () => {
+  // POSIX-only: the command is `sh` syntax (printf/$VAR), which does not run
+  // on Windows (no sh, no printf executable).
+  it.skipIf(isWindows)("does not inherit OPENROUTER_API_KEY in the child", async () => {
     const result = await executeShellCommand({
       command: "printf '%s' \"$OPENROUTER_API_KEY\"",
       cwd: tmp,

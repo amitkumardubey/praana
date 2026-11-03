@@ -71,8 +71,8 @@ describe("llm oauth providers", () => {
     });
     const model = createProvider({
       provider: "openai-codex",
-      model: "gpt-5.4",
-    })("gpt-5.4") as { __piOptions?: { apiKey?: string }; provider?: string };
+      model: "gpt-6.1-sol",
+    })("gpt-6.1-sol") as { __piOptions?: { apiKey?: string }; provider?: string };
     expect(model.provider).toBe("openai-codex");
     expect(model.__piOptions?.apiKey).toBe("codex-access-token");
   });

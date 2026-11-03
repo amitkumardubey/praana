@@ -10,6 +10,7 @@ import {
   upsertEmbedding,
 } from "../src/memory/db.js";
 import { MemoryStore } from "../src/memory/store.js";
+import { rmForce } from "./helpers/platform.js";
 import type { Embedder } from "../src/memory/types.js";
 
 class FailingEmbedder implements Embedder {
@@ -67,7 +68,7 @@ describe("recall after embedder migration", () => {
 
       store.close();
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmForce(dir);
     }
   });
 
@@ -150,7 +151,7 @@ describe("recall after embedder migration", () => {
 
       store.close();
     } finally {
-      rmSync(dir, { recursive: true, force: true });
+      rmForce(dir);
     }
   });
 });

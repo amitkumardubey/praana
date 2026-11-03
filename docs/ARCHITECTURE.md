@@ -499,6 +499,14 @@ After the LLM streams tool calls, `turn.ts` runs `pre_tool_call` hooks then exec
 - `praana run "<instruction>"` (or `--prompt` / `--max-steps`) runs a non-TTY one-shot session — used by Harbor / CI. Optional `[circuit] max_tokens` / `max_wall_ms` trigger a one-shot wrap-up instead of executing the next tool batch.
 - `harbor_eval/` ships an installed-agent adapter that installs Bun + PRAANA in the task container and invokes `praana run --incognito`.
 
+### Standalone binary and release packaging
+
+- `bun run build:compile` runs `scripts/compile.ts` → `dist/praana` (host platform); `--target bun-linux-x64`, `--outfile …`. It uses `@opentui/solid/bun-plugin` and sets `compile.autoloadBunfig = false` so launching from a cwd with an OpenTUI `bunfig.toml` preload does not fail with `preload not found`. Prefer `bin/praana.js` for `bun add -g` / npm-style installs.
+- Baked `--version`: exact git tag `v{package.json version}` with a clean tree → that version; otherwise `{version}-dev.<shortsha>[.dirty]` so branch builds are not mistaken for a release.
+- Release CI (`.github/workflows/release-please.yml`): after quality-gate (typecheck + tests), builds five targets — linux x64/arm64 and darwin arm64 with `--target`, darwin-x64 and windows-x64 as native host compiles without `--target` — and smoke-runs `--version` on each. `package-release` then runs `bun run package:binaries --allow-missing` to pack `praana-<os>-<arch>.tar.gz` (zip on Windows) + `SHA256SUMS`: each archive is the platform executable plus `praana-natives.node` and `praana-natives.json`; targets whose binary did not build are skipped. Archives upload to the GitHub Release.
+- **Standalone contract:** the `praana` executable plus one `praana-natives.node` beside it (search, tree-sitter, ONNX embed). `loadNative()` tries `@praana/natives` first, then `praana-natives.node` next to `process.execPath`. Model weights still download to `~/.praana/models/` on first use (consent unchanged).
+- `install.sh` → `~/.local/bin` (or `/usr/local/bin` as root) on Linux/macOS; `install.ps1` → `%USERPROFILE%\.local\bin` on Windows. Both always download the latest GitHub Release (which can lag `main`); a `--version` smoke failure is fatal, doctor native/search mismatches are warnings.
+
 ## Configuration
 
 Config files are deep-merged from lower to higher precedence (later overrides earlier):

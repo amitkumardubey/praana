@@ -3,7 +3,27 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Session } from "../src/session.js";
+import { rmForce } from "./helpers/platform.js";
 import type { PraanaConfig } from "../src/types.js";
+
+// Track real sessions so cleanup ends any session left open by a failed
+// assertion before removing the temp tree (Windows cannot delete directories
+// that still hold open file handles).
+const liveSessions = new Set<Session>();
+function tracked<T extends Session>(session: T): T {
+  liveSessions.add(session);
+  return session;
+}
+
+async function endTrackedSessions(): Promise<void> {
+  for (const session of liveSessions) {
+    try {
+      if (!session.ended) await session.end("aborted");
+    } catch {
+      // cleanup must not fail the run
+    }
+  }
+}
 
 const testRoot = mkdtempSync(join(tmpdir(), "praana-test-session-skills-init-"));
 const testLogDir = join(testRoot, "sessions");
@@ -58,16 +78,18 @@ function makeConfig(overrides: Partial<PraanaConfig> = {}): PraanaConfig {
 }
 
 describe("Session skill initialization", () => {
-  afterEach(() => {
-    rmSync(testLogDir, { recursive: true, force: true });
+  afterEach(async () => {
+    await endTrackedSessions();
+    rmForce(testLogDir);
   });
 
-  afterAll(() => {
-    rmSync(testRoot, { recursive: true, force: true });
+  afterAll(async () => {
+    await endTrackedSessions();
+    rmForce(testRoot);
   });
 
   it("initializes SkillRuntime when context engine is enabled", async () => {
-    const session = await Session.create(process.cwd(), makeConfig());
+    const session = tracked(await Session.create(process.cwd(), makeConfig()));
     expect(session.contextEngine).not.toBeNull();
     expect(session.skillRuntime).not.toBeNull();
     await session.end("clean");
@@ -80,7 +102,7 @@ describe("Session skill initialization", () => {
         enabled: false,
       },
     });
-    const session = await Session.create(process.cwd(), config);
+    const session = tracked(await Session.create(process.cwd(), config));
     expect(session.contextEngine).toBeNull();
     expect(session.skillRuntime).toBeNull();
     await session.end("clean");

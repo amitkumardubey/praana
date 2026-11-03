@@ -15,7 +15,8 @@ import { getDriverForProvider } from "./resolver.js";
 import { resolveProviderAuth } from "./auth.js";
 import { getUserProviderConfig } from "../provider-registry.js";
 import { resolveProviderWireDefaults } from "./wire-config.js";
-import { resolveOAuthModelAuth, resolveCopilotModelAuth } from "../oauth.js";
+import { OAuthRefreshBusyError, OAuthRefreshError, resolveOAuthModelAuth, resolveCopilotModelAuth } from "../oauth.js";
+import { CredentialLockTimeoutError } from "../credential-lock.js";
 import { resolveStreamEndMode } from "./stream-end.js";
 import { resolveLlmStreamTimeouts } from "./stream-guard.js";
 
@@ -72,7 +73,7 @@ export async function* streamLlmResponse(
     }
   } else if (!req.apiKey && !req.bearerToken) {
     try {
-      const oauth = await resolveOAuthModelAuth(req.provider);
+      const oauth = await resolveOAuthModelAuth(req.provider, req.signal);
       if (oauth?.apiKey) {
         auth = {
           ...auth,
@@ -82,8 +83,56 @@ export async function* streamLlmResponse(
           baseUrl: oauth.baseUrl ?? auth.baseUrl,
         };
       }
-    } catch {
-      // Fall through with stored/env credentials.
+    } catch (err) {
+      if (req.signal?.aborted || (err instanceof Error && err.name === "AbortError")) {
+        yield {
+          type: "done",
+          reason: "abort",
+          message: { role: "assistant", content: "" },
+        };
+        return;
+      }
+      if (err instanceof OAuthRefreshBusyError) {
+        yield {
+          type: "error",
+          error: err,
+          retryable: true,
+        };
+        return;
+      }
+      if (err instanceof OAuthRefreshError) {
+        yield {
+          type: "error",
+          error: err,
+          status: 401,
+          retryable: false,
+        };
+        return;
+      }
+      if (err instanceof CredentialLockTimeoutError) {
+        yield {
+          type: "error",
+          error: err,
+          retryable: true,
+        };
+        return;
+      }
+      if (err instanceof Error && err.name === "CredentialStoreReadError") {
+        yield {
+          type: "error",
+          error: err,
+          retryable: false,
+        };
+        return;
+      }
+      // Any other unexpected error: surface it instead of silently sending a
+      // request without credentials.
+      yield {
+        type: "error",
+        error: err instanceof Error ? err : new Error(String(err)),
+        retryable: false,
+      };
+      return;
     }
   }
 

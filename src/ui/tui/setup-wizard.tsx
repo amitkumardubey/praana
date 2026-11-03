@@ -22,6 +22,7 @@ import { toPaletteOptions } from "./overlays/picker-items.js";
 import {
   adoptEnvKeyForProvider,
   bedrockNeedsApiKeyPrompt,
+  embedderConsentToRecord,
   fetchCustomProviderModels,
   fetchProviderModels,
   finalizeProviderSetup,
@@ -38,7 +39,12 @@ import {
 import { hasApiKey } from "../../llm.js";
 import { hasCredentials, hasOAuthToken } from "../../credentials.js";
 import { isOAuthOnlyProvider } from "../../oauth.js";
-import { runOAuthLoginWithUi } from "./oauth-login-ui.js";
+import {
+  createOAuthTextPrompt,
+  formatOAuthManualPrompt,
+  OAuthUserCancelledError,
+  runOAuthLoginWithUi,
+} from "./oauth-login-ui.js";
 import { getSetupConfigPath } from "../../setup/config-writer.js";
 import type { CustomProviderConfig, SetupResult } from "../../setup/types.js";
 import type { ProviderCatalogModelEntry } from "../../provider-catalog.js";
@@ -46,7 +52,19 @@ import { upsertUserProvider } from "../../provider-registry.js";
 import {
   needsInteractiveEmbedderConsent,
   setEmbedderConsent,
+  type EmbedderConsent,
 } from "../../memory/embedder-consent.js";
+import {
+  createWizardHistory,
+  escHintText,
+  nextStepAfterModelChosen,
+  popStep,
+  pushStep,
+  removeWizardStep,
+  resetWizardHistory,
+  wizardFooterHint,
+  type WizardStep,
+} from "../../setup/wizard-nav.js";
 
 const YES_NO_OPTIONS = [
   { value: "yes", name: "Yes", description: "" },
@@ -62,28 +80,6 @@ const REAUTH_OPTIONS = [
   { value: "yes", name: "Yes — sign in again", description: "" },
   { value: "no", name: "No — keep existing", description: "" },
 ];
-
-type Step =
-  | "provider"
-  | "auth-method"
-  | "reuse-oauth"
-  | "key-choice"
-  | "key-input"
-  | "bedrock-key"
-  | "custom-id"
-  | "custom-url"
-  | "custom-key"
-  | "verifying"
-  | "save-anyway"
-  | "fetch-models"
-  | "model-picker"
-  | "manual-model"
-  | "embedder"
-  | "confirm"
-  | "oauth-status"
-  | "oauth-text"
-  | "oauth-select"
-  | "oauth-error";
 
 interface WizardState {
   provider: string;
@@ -163,8 +159,22 @@ function TextInput(props: {
 
 export function SetupWizard(props: SetupWizardProps) {
   const renderer = useRenderer();
-  const [step, setStep] = createSignal<Step>("provider");
+  const [step, setStep] = createSignal<WizardStep>("provider");
   const [message, setMessage] = createSignal("");
+  // Visited-step stack; Esc pops to the previous visited step (see wizard-nav.ts).
+  const history = createWizardHistory();
+  // Record every landed-on destination (transient steps are skipped by pushStep).
+  createEffect(() => {
+    pushStep(history, step());
+  });
+  // Separate non-error hint channel (e.g. "Ctrl+C to quit setup" when Esc is
+  // pressed on the first step). Cleared on every step change; never routed
+  // through the error `message`.
+  const [hint, setHint] = createSignal("");
+  createEffect(() => {
+    void step();
+    setHint("");
+  });
   const [models, setModels] = createSignal<ProviderCatalogModelEntry[]>([]);
   const [oauthOptions, setOauthOptions] = createSignal<
     readonly { id: string; label: string; description?: string }[]
@@ -184,9 +194,40 @@ export function SetupWizard(props: SetupWizardProps) {
   };
   let settled = false;
   let oauthAbort: AbortController | undefined;
+  /**
+   * Login attempts whose Esc already stepped the wizard back. Tracked per attempt: a flag shared by
+   * every attempt would let a slow old login, settling after the user started a new one, pop the new
+   * attempt's screen.
+   */
+  const oauthStepped = new WeakSet<AbortController>();
+  let keyVerifyAbort: AbortController | undefined;
+  /** Memory-question answer; recorded only when the final confirmation is accepted. */
+  let pendingConsent: EmbedderConsent | null = null;
   let resolveOAuthText: ((value: string) => void) | undefined;
   let resolveOAuthSelect: ((value: string | undefined) => void) | undefined;
   const maxVisible = Math.max(5, Math.min(14, (process.stdout.rows ?? 24) - 14));
+
+  // Steps that render a PaletteList; the picker owns the single footer hint
+  // line there, so the wizard-level line is suppressed for them.
+  const PALETTE_STEPS = new Set<WizardStep>([
+    "provider",
+    "auth-method",
+    "reuse-oauth",
+    "key-choice",
+    "model-picker",
+    "save-anyway",
+    "confirm",
+    "embedder",
+    "oauth-select",
+    "oauth-error",
+  ]);
+  const stepShowsPalette = () => {
+    const s = step();
+    if (s === "key-choice") {
+      return hasApiKey(state.provider) || !!formatEnvKeyOfferMessage(state.provider);
+    }
+    return PALETTE_STEPS.has(s);
+  };
 
   const providerForConfig = () => (state.isCustom ? state.customProviderId : state.provider);
   const customProvider = (): CustomProviderConfig | undefined =>
@@ -205,6 +246,7 @@ export function SetupWizard(props: SetupWizardProps) {
     if (settled) return;
     settled = true;
     oauthAbort?.abort();
+    keyVerifyAbort?.abort();
     props.onDone(result);
   };
 
@@ -218,18 +260,30 @@ export function SetupWizard(props: SetupWizardProps) {
         env_key: custom.envKey,
       });
     }
-    finish(
-      finalizeProviderSetup(provider, action, {
-        model: state.model || pickDefaultModel(provider) || undefined,
-        customProvider: custom,
-        keySaved: state.keySaved,
-      }),
+    const result = finalizeProviderSetup(provider, action, {
+      model: state.model || pickDefaultModel(provider) || undefined,
+      customProvider: custom,
+      keySaved: state.keySaved,
+    });
+    // The memory question was asked BEFORE this confirmation; record its
+    // answer only now that the setup actually completes with a config write.
+    // Declining ("skip"), cancelling, or a failed write must leave
+    // `.embedder-consent` untouched.
+    const consentToRecord = embedderConsentToRecord(
+      pendingConsent,
+      action,
+      result.configWritten === true,
     );
+    if (consentToRecord) setEmbedderConsent(consentToRecord);
+    finish(result);
   };
 
   const afterModelChosen = () => {
-    if (needsInteractiveEmbedderConsent()) setStep("embedder");
-    else setStep("confirm");
+    setStep(
+      nextStepAfterModelChosen({
+        needsEmbedderConsent: needsInteractiveEmbedderConsent(),
+      }),
+    );
   };
 
   const acceptVerifiedKey = (provider: string, key: string) => {
@@ -241,9 +295,15 @@ export function SetupWizard(props: SetupWizardProps) {
   };
 
   const applyKey = async (provider: string, key: string, baseUrl?: string) => {
+    const abort = new AbortController();
+    keyVerifyAbort?.abort();
+    keyVerifyAbort = abort;
     setStep("verifying");
     setMessage("Verifying key…");
     const result = await verifyProviderKey(provider, key, baseUrl ? { baseUrl } : undefined);
+    // Stale: the user backed out of verification (Esc), so this result must
+    // be ignored — it must not save the key or yank the wizard forward.
+    if (abort.signal.aborted) return;
     if (result.status === "unauthorized") {
       setMessage(result.message);
       setStep(
@@ -301,20 +361,21 @@ export function SetupWizard(props: SetupWizardProps) {
           setMessage(lines.join("\n"));
           renderer.requestRender();
         },
-        promptText: (prompt, placeholder, contextLines) =>
-          new Promise<string>((resolve, reject) => {
-            if (abort.signal.aborted) {
-              reject(new Error("cancelled"));
-              return;
-            }
-            resolveOAuthText = resolve;
-            abort.signal.addEventListener("abort", () => reject(new Error("cancelled")), {
-              once: true,
-            });
-            setOauthPrompt(prompt);
-            setOauthPlaceholder(placeholder ?? "");
-            setOauthContext(contextLines ?? []);
-            setStep("oauth-text");
+        promptText: (prompt, placeholder, contextLines, promptSignal) =>
+          createOAuthTextPrompt({
+            signal: abort.signal,
+            promptSignal,
+            onDismiss: () => {
+              resolveOAuthText = undefined;
+              setStep("oauth-status");
+            },
+            present: (submit) => {
+              resolveOAuthText = submit;
+              setOauthPrompt(prompt);
+              setOauthPlaceholder(placeholder ?? "");
+              setOauthContext(contextLines ?? []);
+              setStep("oauth-text");
+            },
           }),
         promptSelect: (prompt, options) =>
           new Promise<string | undefined>((resolve) => {
@@ -325,68 +386,101 @@ export function SetupWizard(props: SetupWizardProps) {
             setStep("oauth-select");
           }),
       });
+      if (oauthStepped.has(abort)) return;
       if (!abort.signal.aborted) {
         state.keySaved = true;
         setStep("fetch-models");
+      } else if (abort.signal.reason instanceof OAuthUserCancelledError) {
+        // The login settled (callback or token exchange won) just as Esc
+        // landed, so no rejection ever reaches the catch. Step back exactly
+        // once, like the cancel path — otherwise the wizard sticks on the
+        // status screen with oauthAbort already cleared.
+        const target = popStep(history, step());
+        if (target !== "none") {
+          setMessage("");
+          setStep(target);
+        }
       }
     } catch (error) {
-      if (!abort.signal.aborted) {
+      // Esc already stepped the wizard back; this settle is only cleanup.
+      if (oauthStepped.has(abort)) return;
+      // Esc aborts with OAuthUserCancelledError (select resolves undefined;
+      // paste, text, and the device-code screen abort the login signal with
+      // that reason). A fetch in flight may surface a plain AbortError; the
+      // reason still identifies the Esc. Any other abort is the wizard
+      // closing and must not be shown as a failed login.
+      const userCancel = error instanceof OAuthUserCancelledError
+        || abort.signal.reason instanceof OAuthUserCancelledError;
+      if (userCancel) {
+        const target = popStep(history, step());
+        if (target !== "none") {
+          setMessage("");
+          setStep(target);
+        }
+      } else if (abort.signal.aborted) {
+        // Ctrl+C / finish already left this screen.
+      } else {
         setMessage(`OAuth failed: ${error instanceof Error ? error.message : String(error)}`);
         setStep("oauth-error");
       }
     } finally {
-      if (oauthAbort === abort) oauthAbort = undefined;
-      resolveOAuthText = undefined;
-      resolveOAuthSelect = undefined;
+      // Only the current attempt may clear the shared prompt resolvers; a stale one would take them
+      // from the attempt the user started after cancelling this one.
+      if (oauthAbort === abort) {
+        oauthAbort = undefined;
+        resolveOAuthText = undefined;
+        resolveOAuthSelect = undefined;
+      }
     }
   };
 
   const goBack = () => {
-    switch (step()) {
-      case "provider":
-        finish({ success: false, message: "Setup cancelled." });
-        break;
-      case "auth-method":
-      case "reuse-oauth":
-      case "key-choice":
-      case "key-input":
-      case "bedrock-key":
-      case "custom-id":
-      case "verifying":
-      case "save-anyway":
-      case "embedder":
-      case "oauth-error":
-        setStep("provider");
-        break;
-      case "custom-url":
-        setStep("custom-id");
-        break;
-      case "custom-key":
-        setStep("custom-url");
-        break;
-      case "model-picker":
-        setStep("manual-model");
-        break;
-      case "manual-model":
-        setStep("provider");
-        break;
-      case "confirm":
-        setStep("provider");
-        break;
-      case "oauth-text":
-        oauthAbort?.abort();
-        setStep("provider");
-        break;
-      case "oauth-select":
-        resolveOAuthSelect?.(undefined);
-        break;
-      case "oauth-status":
-        oauthAbort?.abort();
-        setStep("provider");
-        break;
-      case "fetch-models":
-        break;
+    const current = step();
+    if (current === "oauth-select") {
+      resolveOAuthSelect?.(undefined);
+      return;
     }
+    if (current === "oauth-text") {
+      // Same abort listener as a signal abort. The reason is what makes Esc
+      // a quiet step back; a bare abort() must not navigate. The text prompt
+      // dismisses itself back to the status step and the login's settle then
+      // steps the wizard back once.
+      oauthAbort?.abort(new OAuthUserCancelledError());
+      return;
+    }
+    if (current === "oauth-status") {
+      // Step back immediately: the login promise (device-code polling, a
+      // pending callback or paste) can take seconds to settle, so waiting for
+      // its rejection would make Esc look dead. Abort the login too so
+      // in-flight work stops; its catch/finally must not pop a second time.
+      const attempt = oauthAbort;
+      attempt?.abort(new OAuthUserCancelledError());
+      if (!attempt || !oauthStepped.has(attempt)) {
+        if (attempt) oauthStepped.add(attempt);
+        const target = popStep(history, current);
+        if (target !== "none") {
+          setMessage("");
+          setStep(target);
+        }
+      }
+      return;
+    }
+    if (current === "fetch-models") return;
+    // Any back navigation invalidates an in-flight key verification so a
+    // stale result cannot save the key or yank the wizard forward.
+    keyVerifyAbort?.abort();
+    const target = popStep(history, current);
+    if (target === "none") {
+      // First step: Esc must not quit — surface the quit hint on its own
+      // channel (never the error message).
+      setHint(escHintText(current) ?? "");
+      return;
+    }
+    // Leaving the "Save anyway?" screen in any direction forgets the
+    // refused key so it can never be resurrected by a later Yes.
+    if (current === "save-anyway") state.pendingKey = "";
+    setMessage("");
+    setStep(target);
   };
 
   useBindings(() => ({
@@ -433,7 +527,7 @@ export function SetupWizard(props: SetupWizardProps) {
     }));
 
   return (
-    <box id="setup-wizard-root" flexDirection="column">
+    <box id="setup-wizard-root" flexDirection="column" flexGrow={1} minHeight={0}>
       {step() === "provider" && (
         <>
           <text>
@@ -444,6 +538,7 @@ export function SetupWizard(props: SetupWizardProps) {
             placeholder="search providers…"
             options={toPaletteOptions(buildProviderSelectItems())}
             maxVisible={maxVisible}
+            footerHint={hint() || wizardFooterHint(step())}
             onSelect={(value) => selectProvider(value)}
           />
         </>
@@ -457,6 +552,7 @@ export function SetupWizard(props: SetupWizardProps) {
           <text> </text>
           <PaletteList
             options={AUTH_METHOD_OPTIONS}
+            footerHint={hint() || wizardFooterHint(step())}
             onSelect={(value) => {
               if (value === "oauth") void startOAuth(state.provider);
               else if (value === "api_key") setStep("key-choice");
@@ -477,6 +573,7 @@ export function SetupWizard(props: SetupWizardProps) {
           <text> </text>
           <PaletteList
             options={REAUTH_OPTIONS}
+            footerHint={hint() || wizardFooterHint(step())}
             onSelect={(value) => {
               if (value === "yes") void startOAuth(state.provider);
               else if (value === "no") {
@@ -500,6 +597,7 @@ export function SetupWizard(props: SetupWizardProps) {
               <text> </text>
               <PaletteList
                 options={YES_NO_OPTIONS}
+                footerHint={hint() || wizardFooterHint(step())}
                 onSelect={(value) => {
                   if (value === "yes") enterKeyInput();
                   else if (value === "no") {
@@ -515,6 +613,7 @@ export function SetupWizard(props: SetupWizardProps) {
               <text> </text>
               <PaletteList
                 options={YES_NO_OPTIONS}
+                footerHint={hint() || wizardFooterHint(step())}
                 onSelect={(value) => {
                   if (value === "yes") {
                     state.keySaved = adoptEnvKeyForProvider(state.provider);
@@ -682,6 +781,7 @@ export function SetupWizard(props: SetupWizardProps) {
             placeholder="search models…"
             options={modelOptions()}
             maxVisible={maxVisible}
+            footerHint={hint() || wizardFooterHint(step())}
             onSelect={(value) => {
               state.model = value;
               afterModelChosen();
@@ -736,34 +836,23 @@ export function SetupWizard(props: SetupWizardProps) {
               { value: "yes", name: "Yes — save anyway", description: "" },
               { value: "no", name: "No — re-enter key", description: "" },
             ]}
+            footerHint={hint() || wizardFooterHint(step())}
             onSelect={(value) => {
               if (value === "yes") {
                 acceptVerifiedKey(providerForConfig(), state.pendingKey);
+                // The key was accepted and saved; forget it and drop this
+                // step from the visited history so Esc cannot walk back onto
+                // a stale "Save anyway?" screen.
+                state.pendingKey = "";
+                removeWizardStep(history, "save-anyway");
               } else if (value === "no") {
+                // Refused: forget the key and drop the step so Esc cannot
+                // resurface it (and Yes cannot overwrite a later good key).
+                state.pendingKey = "";
+                removeWizardStep(history, "save-anyway");
                 setMessage("");
                 setStep(state.isCustom ? "custom-key" : state.provider === "amazon-bedrock" ? "bedrock-key" : "key-input");
               }
-            }}
-          />
-        </>
-      )}
-
-      {step() === "embedder" && (
-        <>
-          <text><span style={TUI_STYLE.info}>Cognitive Memory search</span></text>
-          <text> </text>
-          <text>Download an ONNX embedding model for semantic recall (~38 MB), or keep keyword-only search?</text>
-          <text> </text>
-          <PaletteList
-            options={[
-              { value: "proceed", name: "ONNX semantic recall", description: "Download once from HuggingFace" },
-              { value: "skip", name: "Keyword-only", description: "Skip download — still works, less precise" },
-            ]}
-            onSelect={(value) => {
-              if (value === "proceed" || value === "skip") {
-                setEmbedderConsent(value);
-              }
-              setStep("confirm");
             }}
           />
         </>
@@ -785,6 +874,15 @@ export function SetupWizard(props: SetupWizardProps) {
                 : hasApiKey(providerForConfig())
                   ? ["Key: ", { text: "in credential store", style: TUI_STYLE.success }]
                   : "Key: (not set)",
+              ...(pendingConsent === "proceed"
+                ? [
+                    ["Memory recall: ", { text: "Download now", style: TUI_STYLE.success }],
+                  ]
+                : pendingConsent === "skip"
+                  ? [
+                      ["Memory recall: ", { text: "Keyword only", style: TUI_STYLE.muted }],
+                    ]
+                  : []),
               "",
               setupConfigConfirmPrompt(existsSync(getSetupConfigPath())),
             ]}
@@ -792,9 +890,45 @@ export function SetupWizard(props: SetupWizardProps) {
           <text> </text>
           <PaletteList
             options={YES_NO_OPTIONS}
+            footerHint={hint() || wizardFooterHint(step())}
             onSelect={(value) => {
               if (value === "no") finalize("skip");
               else if (value === "yes") finalize("write");
+            }}
+          />
+        </>
+      )}
+
+      {step() === "embedder" && (
+        <>
+          <text><span style={TUI_STYLE.info}>Smarter memory recall?</span></text>
+          <text> </text>
+          <Lines
+            lines={[
+              "PRAANA remembers things across sessions. A small local model (about 38 MB, downloaded once from HuggingFace) makes recall smarter.",
+              "You can skip it and keep plain keyword search; change this later in config.",
+            ]}
+          />
+          <text> </text>
+          <PaletteList
+            options={[
+              {
+                value: "proceed",
+                name: "Download now (recommended)",
+                description: "Download once from HuggingFace",
+              },
+              {
+                value: "skip",
+                name: "Skip: keyword search only",
+                description: "No download — plain keyword search",
+              },
+            ]}
+            footerHint={hint() || wizardFooterHint(step())}
+            onSelect={(value) => {
+              if (value === "proceed" || value === "skip") {
+                pendingConsent = value;
+                setStep("confirm");
+              }
             }}
           />
         </>
@@ -811,21 +945,23 @@ export function SetupWizard(props: SetupWizardProps) {
 
       {step() === "oauth-text" && (
         <>
-          <text>{`OAuth: ${state.provider}`}</text>
-          <text> </text>
-          <text>{[...oauthContext(), oauthPrompt()].filter(Boolean).join("\n\n")}</text>
-          <Show when={oauthPlaceholder()}>
-            <text><span style={TUI_STYLE.muted}>{oauthPlaceholder()}</span></text>
-          </Show>
-          <text> </text>
-          <TextInput
-            id="setup-oauth-input"
-            focused
-            onSubmit={(value) => {
-              if (value.trim()) resolveOAuthText?.(value.trim());
-            }}
-          />
-          <text><span style={TUI_STYLE.faint}>{"Paste · Enter · Esc cancel"}</span></text>
+          <text flexShrink={0}>{`OAuth: ${state.provider}`}</text>
+          <scrollbox flexGrow={1} flexShrink={1} minHeight={0} scrollY stickyScroll={false}>
+            <text wrapMode="char">{formatOAuthManualPrompt(oauthContext(), oauthPrompt())}</text>
+            <Show when={oauthPlaceholder()}>
+              <text><span style={TUI_STYLE.muted}>{oauthPlaceholder()}</span></text>
+            </Show>
+          </scrollbox>
+          <box flexShrink={0} flexDirection="column">
+            <TextInput
+              id="setup-oauth-input"
+              focused
+              onSubmit={(value) => {
+                if (value.trim()) resolveOAuthText?.(value.trim());
+              }}
+            />
+            <text><span style={TUI_STYLE.faint}>{"Paste · Enter · Esc cancel"}</span></text>
+          </box>
         </>
       )}
 
@@ -841,6 +977,7 @@ export function SetupWizard(props: SetupWizardProps) {
               description: option.description ?? "",
               value: option.id,
             }))}
+            footerHint={hint() || wizardFooterHint(step())}
             onSelect={(value) => resolveOAuthSelect?.(value)}
           />
         </>
@@ -854,10 +991,20 @@ export function SetupWizard(props: SetupWizardProps) {
           <text> </text>
           <PaletteList
             options={[{ name: "Back to provider list", description: "", value: "back" }]}
-            onSelect={() => setStep("provider")}
+            footerHint={hint() || wizardFooterHint(step())}
+            onSelect={() => {
+              resetWizardHistory(history);
+              setStep("provider");
+            }}
           />
         </>
       )}
+
+      <Show when={!stepShowsPalette()}>
+        <text>
+          <span style={TUI_STYLE.muted}>{wizardFooterHint(step())}</span>
+        </text>
+      </Show>
     </box>
   );
 }

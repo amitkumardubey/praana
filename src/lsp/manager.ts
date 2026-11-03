@@ -14,7 +14,7 @@ import {
   type DefaultLspServerSpec,
 } from "./language.js";
 import { resolveOrInstallServer } from "./installer.js";
-import { normalizeRoot, resolveLspRoot } from "./workspace-roots.js";
+import { normalizeRoot, pathInRoot, resolveLspRoot } from "./workspace-roots.js";
 import {
   CODE_ACTIONS_MAX,
   DEFINITION_MAX,
@@ -891,8 +891,7 @@ export class LspManager {
   }
 
   private inWorkspace(absPath: string): boolean {
-    const root = this.workspaceRoot.replace(/\/+$/, "") || this.workspaceRoot;
-    return absPath === root || absPath.startsWith(root + "/");
+    return pathInRoot(absPath, this.workspaceRoot);
   }
 
   private dropActionsForPaths(paths: string[]): void {

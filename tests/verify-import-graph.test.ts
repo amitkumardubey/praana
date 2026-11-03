@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
+import { isWindows } from "./helpers/platform.js";
 import { mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -100,7 +101,8 @@ describe("walkSourceFiles", () => {
     expect(files).toHaveLength(1);
   });
 
-  it("does not follow directory symlink cycles", () => {
+  // POSIX-only: creates a directory symlink, which needs elevated rights on Windows.
+  it.skipIf(isWindows)("does not follow directory symlink cycles", () => {
     writeFileSync(join(dir, "src", "a.ts"), "export {};\n");
     symlinkSync(dir, join(dir, "src", "loop"));
     const started = Date.now();

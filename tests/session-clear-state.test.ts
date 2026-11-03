@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Session, visibleCheckpointAfterBoundary } from "../src/session.js";
+import { rmForce } from "./helpers/platform.js";
 import { executeSlashCommand } from "../src/slash-commands.js";
 import { createEmptyCheckpoint } from "../src/context-engine/checkpoint.js";
 import type { CheckpointDraft, TurnDigest } from "../src/context-engine/types.js";
@@ -11,6 +12,25 @@ import type { SessionCheckpoint } from "../src/context-engine/types.js";
 
 const testRoot = mkdtempSync(join(tmpdir(), "praana-test-session-clear-"));
 const testLogDir = join(testRoot, "sessions");
+// Track real sessions so cleanup ends any session left open by a failed
+// assertion before removing the temp tree (Windows cannot delete directories
+// that still hold open file handles).
+const liveSessions = new Set<Session>();
+function tracked<T extends Session>(session: T): T {
+  liveSessions.add(session);
+  return session;
+}
+
+async function endTrackedSessions(): Promise<void> {
+  for (const session of liveSessions) {
+    try {
+      if (!session.ended) await session.end("aborted");
+    } catch {
+      // cleanup must not fail the run
+    }
+  }
+}
+
 const testConfig: PraanaConfig = {
   llm: { provider: "openrouter", model: "test/model" },
   memory: { enabled: false, summarizer: "disabled", db_path: join(testRoot, "memory.db") },
@@ -21,16 +41,18 @@ const testConfig: PraanaConfig = {
 };
 
 describe("Session.clearState", () => {
-  afterEach(() => {
-    rmSync(testLogDir, { recursive: true, force: true });
+  afterEach(async () => {
+    await endTrackedSessions();
+    rmForce(testLogDir);
   });
 
-  afterAll(() => {
-    rmSync(testRoot, { recursive: true, force: true });
+  afterAll(async () => {
+    await endTrackedSessions();
+    rmForce(testRoot);
   });
 
   it("clears working-memory state without resetting session turns", async () => {
-    const session = await Session.create(process.cwd(), testConfig);
+    const session = tracked(await Session.create(process.cwd(), testConfig));
     session.stateGraph.create("task", { title: "Clear me", status: "todo" });
     session.incrementTurn();
     session.incrementTurn();
@@ -46,7 +68,7 @@ describe("Session.clearState", () => {
   });
 
   it("does not restore cleared state when resuming the session", async () => {
-    const session = await Session.create(process.cwd(), testConfig);
+    const session = tracked(await Session.create(process.cwd(), testConfig));
     const task = session.stateGraph.create("task", { title: "Clear me", status: "todo" });
     session.eventLog.append({
       kind: "context_action",
@@ -74,13 +96,13 @@ describe("Session.clearState", () => {
     });
     session.persistStateGraphCheckpoint();
 
-    const resumed = await Session.resume(session.id, process.cwd(), testConfig);
+    const resumed = tracked(await Session.resume(session.id, process.cwd(), testConfig));
 
     expect(resumed.stateGraph.list()).toEqual([]);
   });
 
   it("/clear with no prior turns reports boundary turn -1 (nothing to hide)", async () => {
-    const session = await Session.create(process.cwd(), testConfig);
+    const session = tracked(await Session.create(process.cwd(), testConfig));
     // No incrementTurn, no user messages — immediate /clear.
     expect(session.getLastResetBoundaryTurn()).toBe(-1);
     session.logResetBoundary("/clear");
@@ -297,13 +319,14 @@ describe("Session.getVisibleSessionCheckpoint (integration)", () => {
     };
   }
 
-  afterEach(() => {
-    rmSync(intDir, { recursive: true, force: true });
-    if (dbPath) rmSync(dbPath, { force: true });
+  afterEach(async () => {
+    await endTrackedSessions();
+    rmForce(intDir);
+    if (dbPath) rmForce(dbPath);
   });
 
   it("hides a pre-clear checkpoint and keeps a post-clear one across /clear", async () => {
-    const session = await Session.create(process.cwd(), makeConfig());
+    const session = tracked(await Session.create(process.cwd(), makeConfig()));
     const ce = session.contextEngine;
     expect(ce).toBeDefined();
     expect(ce!.checkpoint).toBeDefined();

@@ -14,6 +14,7 @@ import { dirname, resolve, isAbsolute, extname, normalize, relative } from "node
 import { homedir } from "node:os";
 import { parseToml } from "../toml-parse.js";
 import type { SandboxConfig } from "../types.js";
+import { pathInRoot } from "../path-containment.js";
 import type { SkillRecord } from "../skills/types.js";
 import type { SkillRuntime } from "../skills/index.js";
 import type { ScorecardInc } from "../context-engine/telemetry.js";
@@ -163,7 +164,7 @@ export async function executeShellCommand(
           } catch {
             apResolved = apNormalized;
           }
-          return resolved === apResolved || resolved.startsWith(apResolved + "/");
+          return pathInRoot(resolved, apResolved);
         });
         if (!isAllowed) {
           return {

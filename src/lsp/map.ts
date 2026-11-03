@@ -3,6 +3,7 @@
  * Agent-facing ranges are 1-based; protocol positions are 0-based.
  */
 
+import { pathInRoot } from "../path-containment.js";
 import {
   fileUriToPath,
   type CompletionKind,
@@ -143,18 +144,13 @@ export function truncateCompletions(raw: unknown): {
   return { completions, truncated };
 }
 
-function inWorkspace(path: string, workspaceRoot: string): boolean {
-  const root = workspaceRoot.replace(/\/+$/, "") || workspaceRoot;
-  return path === root || path.startsWith(root + "/");
-}
-
 function locationFromRange(
   uri: string,
   range: { start?: { line?: number; character?: number }; end?: { line?: number; character?: number } } | undefined,
   workspaceRoot: string,
 ): LspLocation | null {
   const path = fileUriToPath(uri);
-  if (!path || !inWorkspace(path, workspaceRoot)) return null;
+  if (!path || !pathInRoot(path, workspaceRoot)) return null;
   const startLine = (range?.start?.line ?? 0) + 1;
   const startCol = (range?.start?.character ?? 0) + 1;
   const endLine = (range?.end?.line ?? (range?.start?.line ?? 0)) + 1;

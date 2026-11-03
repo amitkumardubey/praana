@@ -3,7 +3,27 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Session } from "../src/session.js";
+import { rmForce } from "./helpers/platform.js";
 import type { PraanaConfig } from "../src/types.js";
+
+// Track real sessions so cleanup ends any session left open by a failed
+// assertion before removing the temp tree (Windows cannot delete directories
+// that still hold open file handles).
+const liveSessions = new Set<Session>();
+function tracked<T extends Session>(session: T): T {
+  liveSessions.add(session);
+  return session;
+}
+
+async function endTrackedSessions(): Promise<void> {
+  for (const session of liveSessions) {
+    try {
+      if (!session.ended) await session.end("aborted");
+    } catch {
+      // cleanup must not fail the run
+    }
+  }
+}
 
 const testRoot = mkdtempSync(join(tmpdir(), "praana-test-session-project-context-"));
 const testLogDir = join(testRoot, "sessions");
@@ -55,15 +75,17 @@ function makeConfig(overrides: Partial<PraanaConfig> = {}): PraanaConfig {
 describe("Session project context", () => {
   let projectDir: string;
 
-  afterEach(() => {
-    rmSync(testLogDir, { recursive: true, force: true });
+  afterEach(async () => {
+    await endTrackedSessions();
+    rmForce(testLogDir);
     if (projectDir) {
-      rmSync(projectDir, { recursive: true, force: true });
+      rmForce(projectDir);
     }
   });
 
-  afterAll(() => {
-    rmSync(testRoot, { recursive: true, force: true });
+  afterAll(async () => {
+    await endTrackedSessions();
+    rmForce(testRoot);
   });
 
   it("stores projectContext on session but not in StateGraph when engine is disabled", async () => {
@@ -75,7 +97,7 @@ describe("Session project context", () => {
       "utf-8",
     );
 
-    const session = await Session.create(projectDir, makeConfig());
+    const session = tracked(await Session.create(projectDir, makeConfig()));
     expect(session.projectContext).toContain("Project: classic-demo");
     expect(
       session.stateGraph
@@ -95,7 +117,7 @@ describe("Session project context", () => {
       "utf-8",
     );
 
-    const session = await Session.create(
+    const session = tracked(await Session.create(
       projectDir,
       makeConfig({
         context_engine: {
@@ -103,7 +125,7 @@ describe("Session project context", () => {
           enabled: true,
         },
       }),
-    );
+    ));
 
     expect(session.projectContext).toContain("Project: engine-demo");
     expect(session.contextEngine).not.toBeNull();

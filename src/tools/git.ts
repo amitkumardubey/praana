@@ -17,6 +17,7 @@ import chalk from "chalk";
 import { writeUiStderr } from "../ui.js";
 import { findGitRoot, isGitRepo } from "../git-context.js";
 import type { SandboxConfig } from "../types.js";
+import { pathInRoot } from "../path-containment.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -295,7 +296,7 @@ export function sandboxBlockReason(
   const resolved = resolveSandboxPath(path);
   const allowed = sandbox.allowed_paths.some((ap) => {
     const apResolved = resolveSandboxPath(ap);
-    return resolved === apResolved || resolved.startsWith(apResolved + "/");
+    return pathInRoot(resolved, apResolved);
   });
 
   return allowed

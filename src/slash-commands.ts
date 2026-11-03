@@ -7,7 +7,6 @@ import {
 } from "./event-log.js";
 import type { Session } from "./session.js";
 import { nativeStatusToString } from "./native/index.js";
-import { getHelpLines as bannerHelpLines } from "./app-banner.js";
 import { explainUnitScore } from "./context-engine/engine-compiler.js";
 import { resolveContextEngineConfig, resolveContextDbPath } from "./context-engine/index.js";
 import {
@@ -78,33 +77,114 @@ export interface SlashCommandMeta {
   argumentHint?: string;
   aliases?: string[];
   category: SlashCommandCategory;
+  /** Session-ending or state-wiping. The palette reads this instead of a name list. */
+  destructive?: true;
 }
 
+/**
+ * Curated palette order. Frequently useful, non-destructive commands come
+ * first (the palette's initial highlight is the first entry, so `/` + Enter
+ * must be harmless); session-ending / state-wiping commands are last. Keep the
+ * category on every entry — grouping is by usefulness, not by category.
+ * `destructive: true` is what the palette uses to keep that tail last.
+ */
 export const SLASH_COMMAND_METADATA: SlashCommandMeta[] = [
-  { name: "/exit", description: "End session", aliases: ["/quit"], category: "Session" },
-  { name: "/state", description: "List working-memory state objects", category: "Insight" },
-  { name: "/stats", description: "Session metadata + memory stats", category: "Insight" },
-  { name: "/scorecard", description: "Per-session telemetry scorecard", category: "Insight" },
-  { name: "/digest", description: "Show Cognitive Memory digest", category: "Memory" },
-  { name: "/events", description: "Show recent event-log entries", category: "Insight" },
-  { name: "/recall", description: "Search Cognitive Memory", argumentHint: "<query>", category: "Memory" },
+  { name: "/help", description: "Show all commands", category: "Insight" },
   { name: "/model", description: "Switch model mid-session", argumentHint: "[provider] <id>", category: "Model & Config" },
   { name: "/sessions", description: "List past sessions", category: "Session" },
-  { name: "/shell", description: "Run a shell command directly", argumentHint: "<command>", category: "Tools" },
-  { name: "/debug", description: "Toggle debug mode", category: "Tools" },
+  { name: "/settings", description: "View or update persistent settings", argumentHint: "[set <key> <value>|reset]", category: "Model & Config" },
+  { name: "/stats", description: "Session metadata + memory stats", category: "Insight" },
+  { name: "/state", description: "List working-memory state objects", category: "Insight" },
+  { name: "/digest", description: "Show Cognitive Memory digest", category: "Memory" },
+  { name: "/recall", description: "Search Cognitive Memory", argumentHint: "<query>", category: "Memory" },
+  { name: "/events", description: "Show recent event-log entries", category: "Insight" },
+  { name: "/scorecard", description: "Per-session telemetry scorecard", category: "Insight" },
+  { name: "/why", description: "Explain context-unit scoring", argumentHint: "<unit-id>", category: "Insight" },
   { name: "/thinking", description: "Toggle reasoning stream visibility", argumentHint: "on|off", category: "Model & Config" },
   { name: "/reasoning", description: "Set reasoning effort level", argumentHint: "off|minimal|low|medium|high|xhigh", category: "Model & Config" },
-  { name: "/incognito", description: "Toggle memory persistence", argumentHint: "on|off", category: "Memory" },
-  { name: "/settings", description: "View or update persistent settings", argumentHint: "[set <key> <value>|reset]", category: "Model & Config" },
   { name: "/plan", description: "Toggle plan mode", argumentHint: "on|off|execute|go", category: "Tools" },
-  { name: "/why", description: "Explain context-unit scoring", argumentHint: "<unit-id>", category: "Insight" },
+  { name: "/incognito", description: "Toggle memory persistence", argumentHint: "on|off", category: "Memory" },
   { name: "/memory", description: "Manage Cognitive Memory", argumentHint: "dedupe", category: "Memory" },
+  { name: "/debug", description: "Toggle debug mode", category: "Tools" },
+  { name: "/shell", description: "Run a shell command directly", argumentHint: "<command>", category: "Tools" },
   { name: "/login", description: "Add or update a provider", argumentHint: "[provider]", category: "Model & Config" },
-  { name: "/logout", description: "Remove a provider's credentials", argumentHint: "[provider]", category: "Model & Config" },
-  { name: "/clear", description: "Reset in-session context", category: "Session" },
-  { name: "/new", description: "Start a new session", category: "Session" },
-  { name: "/help", description: "Show all commands", category: "Insight" },
+  // Destructive / session-ending commands — always last in the palette.
+  { name: "/logout", description: "Remove a provider's credentials", argumentHint: "[provider]", category: "Model & Config", destructive: true },
+  { name: "/new", description: "Start a new session", category: "Session", destructive: true },
+  { name: "/clear", description: "Reset in-session context", category: "Session", destructive: true },
+  { name: "/exit", description: "End session", aliases: ["/quit"], category: "Session", destructive: true },
 ];
+
+const HELP_LINE_WIDTH = 66;
+
+function helpCommandLines(meta: SlashCommandMeta): string[] {
+  const hint = meta.argumentHint ? ` ${meta.argumentHint}` : "";
+  const alias = meta.aliases?.length ? ` (${meta.aliases.join(", ")})` : "";
+  const head = `  ${meta.name}${hint}${alias}`;
+  const oneLine = `${head} — ${meta.description}`;
+  if (oneLine.length <= HELP_LINE_WIDTH) return [oneLine];
+  return [head, `    ${meta.description}`];
+}
+
+/**
+ * Plain-text /help. Built from SLASH_COMMAND_METADATA (the palette table)
+ * so the list cannot drift. No ANSI and no box drawing — the overlay
+ * prints these lines as-is.
+ */
+export function buildInAppHelpLines(): string[] {
+  const lines: string[] = ["Slash commands", ""];
+  const groups = new Map<SlashCommandCategory, SlashCommandMeta[]>();
+  for (const meta of SLASH_COMMAND_METADATA) {
+    const bucket = groups.get(meta.category);
+    if (bucket) bucket.push(meta);
+    else groups.set(meta.category, [meta]);
+  }
+  let first = true;
+  for (const [category, metas] of groups) {
+    if (!first) lines.push("");
+    first = false;
+    lines.push(category);
+    for (const meta of metas) lines.push(...helpCommandLines(meta));
+  }
+
+  lines.push(
+    "",
+    "Keys",
+    "  Enter — send the message",
+    "  Ctrl+J, Alt+Enter, Ctrl+Enter, Shift+Enter — insert a newline",
+    "  \\ + Enter — newline when the caret is at the end of the line",
+    "  Esc — close autocomplete, overlays, or transcript focus",
+    "  !<command> — run a shell command directly (same as /shell <command>)",
+    "    A command is required after !; bare ! shows Usage: !<command>",
+    "  Ctrl+C — copy the selection; otherwise abort a running turn, clear the input, or exit when idle",
+    "    Idle: clear the input, or exit when it is empty",
+    "  F9 — focus the transcript",
+    "    Up/Down move, Enter expands, Esc returns",
+    "",
+    "Status bar",
+    "  ctx — tokens in use / window, and how full it is",
+    "  %w — weighted fill percent (engine). Classic mode uses %",
+    "  (N% raw) — raw fill percent, shown when it diverges from the weighted %",
+    "    by more than 15 points",
+    "  compact, emergency — context pressure mode, shown when not normal",
+    "  wm — working memory: nA active, nS soft, nH hard",
+    "    Hidden when every tier is zero",
+    "  skills — loaded count, or catalog size if none are loaded",
+    "  think — effort level (think medium), or the stream",
+    "    Shown when thinking is on or an effort is set",
+    "  engine — context engine is on",
+    "  mem — memory writes on or off (incognito replaces mem)",
+    "  debug — debug mode is on",
+    "  plan — plan mode is on: mutating tools are blocked",
+    "  update — a newer version is available",
+    "  restart — an update was installed; restart to apply it",
+    "  in, out — session input tokens and output tokens",
+    "    Shown when cost display is on",
+    "",
+    "Command-line commands: praana --help",
+  );
+  return lines;
+}
 
 export interface SlashCommandResult {
   action: SlashCommandAction;
@@ -339,7 +419,7 @@ export async function executeSlashCommand(
   // ever reaches /clear or /new mid-turn, refuse rather than wipe state that
   // the running turn is still appending to.
   if ((cmd === "/clear" || cmd === "/new") && handlers.isTurnActive?.()) {
-    lines.push("A turn is still running. Interrupt it first (Esc Esc), then retry.");
+    lines.push("A turn is still running. Interrupt it first (Ctrl+C), then retry.");
     return result("none", "toast", "error");
   }
 
@@ -1031,7 +1111,7 @@ export async function executeSlashCommand(
     }
 
     case "/help": {
-      return { action: "none", lines: bannerHelpLines() };
+      return { action: "none", lines: buildInAppHelpLines() };
     }
 
     default:

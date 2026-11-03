@@ -118,7 +118,12 @@ describe("risk hook registration", () => {
 
   it("reaches risk confirm for rm while plan mode is on", async () => {
     let confirmCalls = 0;
-    const registry = createBuiltinHookRegistry("/proj");
+    // Report every first token as on-PATH so the validate hook (which probes
+    // `rm` as a real executable) does not block before risk runs. `rm` is a
+    // shell builtin/utility on POSIX but has no executable on Windows.
+    const registry = createBuiltinHookRegistry("/proj", {
+      validate: { commandOnPath: () => true },
+    });
     const out = await registry.runPreToolCall({
       toolName: "shell",
       args: { command: "rm -rf tmp" },

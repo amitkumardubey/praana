@@ -34,14 +34,7 @@ import {
   type AutocompleteResult,
 } from "./autocomplete.js";
 import { TUI_PALETTE, TUI_STYLE } from "../theme.js";
-
-const SUBMIT_BINDINGS = [
-  { name: "return", action: "submit" as const },
-  { name: "kpenter", action: "submit" as const },
-  { name: "linefeed", action: "submit" as const },
-  { name: "return", shift: true, action: "newline" as const },
-  { name: "kpenter", shift: true, action: "newline" as const },
-];
+import { displayOffsetToIndex, displayWidth, SUBMIT_BINDINGS, shouldContinueLine } from "./keys.js";
 
 export interface PromptProps {
   cwd: string;
@@ -109,7 +102,8 @@ export function Prompt(props: PromptProps) {
     },
     setText(text: string) {
       textarea?.setText(text);
-      if (textarea) textarea.cursorOffset = text.length;
+      // cursorOffset is in display columns, not a string index.
+      if (textarea) textarea.cursorOffset = displayWidth(text);
       prevText = text;
       syncHeight(text);
     },
@@ -136,7 +130,8 @@ export function Prompt(props: PromptProps) {
   const refreshAutocomplete = async () => {
     if (!textarea) return;
     const text = textarea.plainText;
-    const caret = textarea.cursorOffset ?? text.length;
+    // cursorOffset is in display columns; autocomplete helpers need a string index.
+    const caret = displayOffsetToIndex(text, textarea.cursorOffset ?? displayWidth(text));
     const result = await getAutocomplete(text, caret, props.cwd);
     setAc(result);
     setAcIndex(0);
@@ -152,7 +147,8 @@ export function Prompt(props: PromptProps) {
       item,
     );
     textarea.setText(text);
-    textarea.cursorOffset = caret;
+    // caret is a string index; cursorOffset wants display columns.
+    textarea.cursorOffset = displayWidth(text.slice(0, caret));
     setAc(null);
     syncHeight(text);
     renderer.requestRender();
@@ -286,7 +282,33 @@ export function Prompt(props: PromptProps) {
       // Enter while autocomplete open is handled in onKeyDown; don't double-submit.
       return;
     }
-    const expanded = expandPasteChips(textarea.plainText, pasteStore).trim();
+    // Trailing single `\` before the caret continues the line instead of
+    // submitting: drop the backslash and insert a real newline.
+    const text = textarea.plainText;
+    // cursorOffset is in display columns; shouldContinueLine needs a string index.
+    const caret = displayOffsetToIndex(text, textarea.cursorOffset ?? displayWidth(text));
+    if (shouldContinueLine(text, caret)) {
+      // In-place edit: delete the terminating backslash before the caret
+      // (keeps undo history and selection), then insert the real newline
+      // only when the caret is now at the end of the buffer — continuing
+      // before an existing newline (end of a non-last line) already
+      // terminates the line and must not gain a second one.
+      textarea.deleteCharBackward();
+      // Both sides in display units: is the caret now at the end of the buffer?
+      if (textarea.cursorOffset >= displayWidth(textarea.plainText)) {
+        textarea.insertText("\n");
+      }
+      syncHeight(textarea.plainText);
+      // Inlined continuation-state reset: the autocomplete popup and any
+      // history browsing cursor must not survive the multiline edit, and
+      // `prevText` refreshes exactly like `onContentChange` does.
+      setAc(null);
+      history.resetBrowse();
+      prevText = textarea.plainText;
+      renderer.requestRender();
+      return;
+    }
+    const expanded = expandPasteChips(text, pasteStore).trim();
     if (!expanded) return;
     history.push(expanded);
     pasteStore.clear();
