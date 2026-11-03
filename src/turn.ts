@@ -820,7 +820,14 @@ export async function runTurn(
   // `max_steps` as a hard cap: the last batch executes, then one wrap-up.
   const isHeadless = !!session.headless;
   const pauseAfterSteps = Math.max(1, session.config.turn?.pause_after_steps ?? 50);
-  const hardMaxSteps = Math.max(1, session.config.turn?.hard_max_steps ?? 300);
+  const configuredHardMaxSteps = Math.max(1, session.config.turn?.hard_max_steps ?? 300);
+  const hardMaxSteps = Math.max(configuredHardMaxSteps, pauseAfterSteps);
+  if (configuredHardMaxSteps < pauseAfterSteps) {
+    llmLogger.warn("turn.hard_max_steps is below turn.pause_after_steps; raising the ceiling", {
+      code: "CONFIG_INVALID",
+      details: { hardMaxSteps: configuredHardMaxSteps, pauseAfterSteps },
+    });
+  }
   const pauseEnabled = !isHeadless && !!s.onStepPause;
   const loopCap = pauseEnabled ? hardMaxSteps : maxSteps;
   let interrupted = false;

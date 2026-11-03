@@ -771,13 +771,24 @@ describe("per-turn step budget — interactive soft pause", () => {
     expect(sink.texts.join("")).toContain("[summary] wrapped up");
   });
 
+  it("raises a directly constructed hard ceiling to the pause interval and warns", async () => {
+    llmWarns.length = 0;
+    installLoopStream(10);
+    const session = makeMockSession({ config: makeConfig({ turn: { max_steps: 25, pause_after_steps: 4, hard_max_steps: 2 } }) });
+    const sink = makePauseSink();
+    await runTurn(session, "invalid ceiling", undefined, { sink });
+    expect(streamRequestCalls()).toHaveLength(5);
+    expect(shellExecuteCount()).toBe(3);
+    expect(llmWarns.some((w) => w.message.includes("hard_max_steps") && w.message.includes("pause_after_steps"))).toBe(true);
+  });
+
   it("hard ceiling forces the wrap-up without prompting", async () => {
     installLoopStream(10);
     const session = makeMockSession({
       config: makeConfig({
         turn: {
           max_steps: 25,
-          pause_after_steps: 100,
+          pause_after_steps: 3,
           hard_max_steps: 3,
         },
       }),
@@ -826,7 +837,7 @@ describe("per-turn step budget — interactive soft pause", () => {
         config: makeConfig({
           turn: {
             max_steps: 25,
-            pause_after_steps: kind === "pause" ? 3 : 100,
+            pause_after_steps: 3,
             hard_max_steps: kind === "ceiling" ? 3 : 300,
           },
         }),
