@@ -490,11 +490,24 @@ export async function runTui(
    * Interactive step-pause: open a small confirm overlay (spinner stopped)
    * and resolve on Enter (continue) / Esc/Ctrl+C (stop → wrap-up).
    */
-  const askContinueFromOverlay = (stepsUsed: number): Promise<boolean> => {
+  const askContinueFromOverlay = async (stepsUsed: number, signal: AbortSignal): Promise<boolean> => {
+    if (signal.aborted) return false;
     ui.spinner.stop();
     const pending = overlay.showConfirm(`Used ${stepsUsed} steps this turn. Continue?`);
+    const onAbort = () => {
+      if (overlay.kind() === "confirm") overlay.resolveConfirm(false);
+      renderer.requestRender();
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
     renderer.requestRender();
-    return pending;
+    try {
+      const cont = await pending;
+      focusPrompt();
+      if (cont && !signal.aborted) ui.spinner.start("working…");
+      return cont;
+    } finally {
+      signal.removeEventListener("abort", onAbort);
+    }
   };
 
   const handleLogoutComplete = (result: LogoutWizardResult) => {

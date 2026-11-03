@@ -858,6 +858,33 @@ describe("per-turn step budget — interactive soft pause", () => {
     await stopAt("ceiling");
   });
 
+  it("treats a throwing pause hook as stop and wraps up", async () => {
+    installLoopStream(5);
+    const session = makeMockSession({ config: makeConfig({ turn: { max_steps: 25, pause_after_steps: 1, hard_max_steps: 300 } }) });
+    const notices: string[] = [];
+    const sink: TurnUiSink = {
+      onStepPause: () => { throw new Error("pause hook failed"); },
+      onSystemLines: (lines) => notices.push(...lines),
+    };
+    await runTurn(session, "throwing pause", undefined, { sink });
+    expect(notices).toContain("Stopped at the step pause.");
+    expect(shellExecuteCount()).toBe(0);
+  });
+
+  it("I1: aborting a pause aborts the hook's cancellation signal", async () => {
+    installLoopStream(5);
+    const session = makeMockSession({ config: makeConfig({ turn: { max_steps: 25, pause_after_steps: 1, hard_max_steps: 300 } }) });
+    const abort = new AbortController();
+    let pauseSignal: AbortSignal | undefined;
+    const sink: TurnUiSink = { onStepPause: (_steps: number, signal: AbortSignal) => {
+      pauseSignal = signal;
+      abort.abort();
+      return new Promise<boolean>(() => {});
+    } };
+    await runTurn(session, "abort pause", undefined, { sink, signal: abort.signal }).catch(() => {});
+    expect(pauseSignal?.aborted).toBe(true);
+  });
+
   it("aborting while a pause handler is pending interrupts the turn", async () => {
     installLoopStream(5);
     const session = makeMockSession({ config: makeConfig({ turn: { max_steps: 25, pause_after_steps: 1, hard_max_steps: 300 } }) });

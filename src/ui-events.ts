@@ -54,7 +54,7 @@ export interface TurnUiSink {
    * continue, `false` to stop with a wrap-up summary. Absent ⇒ the turn uses
    * `max_steps` as a hard cap (last batch executes, then a wrap-up) and never pauses.
    */
-  onStepPause?(stepsUsed: number): boolean | Promise<boolean>;
+  onStepPause?(stepsUsed: number, signal: AbortSignal): boolean | Promise<boolean>;
   /** Slash command result output to display in a distinct overlay. */
   onSlashCommandResult?(lines: string[]): void;
   /** Structured error for UI display (LLM failures, etc.). */
@@ -99,7 +99,7 @@ export function createDefaultTurnSink(options?: {
       }
     },
     ...(process.stdin.isTTY && process.stdout.isTTY
-      ? { onStepPause: (stepsUsed: number) => promptContinueSteps(stepsUsed) }
+      ? { onStepPause: (stepsUsed: number, signal: AbortSignal) => promptContinueSteps(stepsUsed, signal) }
       : {}),
     onSlashCommandResult: (lines) => {
       for (const line of lines) {
@@ -119,23 +119,29 @@ export function createDefaultTurnSink(options?: {
  * continues; anything else stops with a wrap-up. Readline has no Esc
  * handling here. Non-TTY stdin never prompts.
  */
-async function promptContinueSteps(stepsUsed: number): Promise<boolean> {
+async function promptContinueSteps(stepsUsed: number, signal: AbortSignal): Promise<boolean> {
   if (!process.stdin.isTTY) return true;
+  if (signal.aborted) return false;
+  const wasFlowing = process.stdin.readableFlowing;
   const answer = await new Promise<string>((resolve) => {
-    const rl = createInterface({
-      input: process.stdin,
-      output: process.stdout,
-      terminal: false,
-    });
-    rl.once("close", () => resolve("no"));
+    const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: false });
+    let settled = false;
+    const finish = (answer: string) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener("abort", onAbort);
+      rl.close();
+      if (wasFlowing === true) process.stdin.resume();
+      else process.stdin.pause();
+      resolve(answer);
+    };
+    const onAbort = () => finish("no");
+    signal.addEventListener("abort", onAbort, { once: true });
+    rl.once("close", () => finish("no"));
     rl.question(
       `Used ${stepsUsed} steps this turn. Continue? Enter or y = continue, anything else = stop `,
-      (ans) => {
-        resolve(ans);
-        rl.close();
-        // close() pauses stdin. Resume so the next reader is not stuck.
-        process.stdin.resume();
-      },
+      { signal },
+      finish,
     );
   });
   const normalized = answer.trim().toLowerCase();

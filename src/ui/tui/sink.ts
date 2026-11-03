@@ -36,7 +36,7 @@ export interface SinkOpts {
    * Interactive step-pause implementation (Enter = continue, Esc = stop).
    * Absent ⇒ the turn never pauses (headless / non-interactive sinks).
    */
-  onStepPause?: (stepsUsed: number) => Promise<boolean>;
+  onStepPause?: (stepsUsed: number, signal: AbortSignal) => Promise<boolean>;
 }
 
 export class OpenTuiSink implements TurnUiSink {
@@ -46,7 +46,7 @@ export class OpenTuiSink implements TurnUiSink {
   private readonly transcript: TranscriptMount;
   private readonly toast: ToastApi;
   private readonly opts: SinkOpts;
-  readonly onStepPause?: (stepsUsed: number) => Promise<boolean>;
+  readonly onStepPause?: (stepsUsed: number, signal: AbortSignal) => Promise<boolean>;
 
   private group = 1;
   private pendingToolArgs = new Map<string, Record<string, unknown>>();

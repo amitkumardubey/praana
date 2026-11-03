@@ -49,7 +49,7 @@ describe("plain-terminal step pause prompt", () => {
     for (const [line, expected] of cases) {
       const input = scriptedStdin(line, true);
       const continued = await withStdin(input as unknown as NodeJS.ReadStream, () =>
-        createDefaultTurnSink().onStepPause!(3),
+        createDefaultTurnSink().onStepPause!(3, new AbortController().signal),
       );
       expect({ line: JSON.stringify(line), continued }).toEqual({
         line: JSON.stringify(line),
@@ -71,14 +71,15 @@ describe("plain-terminal step pause prompt", () => {
 
     try {
       const continued = await withStdin(input as unknown as NodeJS.ReadStream, async () => {
-        const pending = createDefaultTurnSink().onStepPause!(8);
+        const pending = createDefaultTurnSink().onStepPause!(8, new AbortController().signal);
         await new Promise((resolve) => setImmediate(resolve));
         input.write("yes\n");
         return pending;
       });
       expect(chunks.join("")).toContain(PROMPT_HINT);
       expect(continued).toBe(true);
-      expect(input.isPaused()).toBe(false);
+      expect(input.isPaused()).toBe(true);
+      input.resume();
 
       let later = "";
       input.on("data", (chunk) => {
@@ -92,10 +93,25 @@ describe("plain-terminal step pause prompt", () => {
     }
   });
 
+  it("stops on cancellation and restores a paused stdin", async () => {
+    const input = new FakeStdin();
+    input.pause();
+    const abort = new AbortController();
+    const baseline = input.listenerCount("data");
+    const result = await withStdin(input as unknown as NodeJS.ReadStream, async () => {
+      const pending = createDefaultTurnSink().onStepPause!(2, abort.signal);
+      abort.abort();
+      return pending;
+    });
+    expect(result).toBe(false);
+    expect(input.isPaused()).toBe(true);
+    expect(input.listenerCount("data")).toBe(baseline);
+  });
+
   it("stops when stdin closes before a line", async () => {
     const input = new FakeStdin();
     const result = await withStdin(input as unknown as NodeJS.ReadStream, async () => {
-      const pending = createDefaultTurnSink().onStepPause!(2);
+      const pending = createDefaultTurnSink().onStepPause!(2, new AbortController().signal);
       input.end();
       return Promise.race([pending, new Promise<string>((resolve) => setTimeout(() => resolve("timeout"), 100))]);
     });

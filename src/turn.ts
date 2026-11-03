@@ -1198,19 +1198,28 @@ export async function runTurn(
       }
       if (stepsUsed % pauseAfterSteps === 0) {
         const signal = options?.signal;
-        let onAbort: (() => void) | undefined;
+        const pauseController = new AbortController();
+        const onAbort = () => pauseController.abort();
+        if (signal?.aborted) onAbort();
+        else signal?.addEventListener("abort", onAbort, { once: true });
         const aborted = new Promise<boolean>((resolve) => {
-          onAbort = () => resolve(false);
-          if (signal?.aborted) onAbort();
-          else signal?.addEventListener("abort", onAbort, { once: true });
+          if (pauseController.signal.aborted) resolve(false);
+          else pauseController.signal.addEventListener("abort", () => resolve(false), { once: true });
         });
         let cont: boolean;
         try {
-          cont = (await Promise.race([Promise.resolve(s.onStepPause!(stepsUsed)), aborted])) !== false;
+          cont = (await Promise.race([Promise.resolve(s.onStepPause!(stepsUsed, pauseController.signal)), aborted])) !== false;
+        } catch (err) {
+          llmLogger.warn("Step pause hook failed; stopping turn", {
+            details: { stepsUsed, error: err instanceof Error ? err.message : String(err) },
+          });
+          cont = false;
         } finally {
-          if (onAbort) signal?.removeEventListener("abort", onAbort);
+          signal?.removeEventListener("abort", onAbort);
+          pauseController.abort();
         }
         if (options?.signal?.aborted) {
+          appendNotExecutedResults(pendingToolCalls);
           interrupted = true;
           break;
         }
