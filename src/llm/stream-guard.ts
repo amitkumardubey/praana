@@ -255,8 +255,10 @@ export async function* runGuardedProviderStream<T>(opts: {
     }
     yield errorEvent(err);
   } finally {
-    await frames.return?.().catch(() => {});
+    // return() waits behind an in-flight next(). Cancel the body first so
+    // that pull settles instead of holding the turn for the idle budget.
     guard.dispose();
+    await frames.return?.().catch(() => {});
   }
 }
 

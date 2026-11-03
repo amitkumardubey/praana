@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { BedrockDriver } from "../src/llm/drivers/bedrock.js";
 import { OpenAIResponsesDriver } from "../src/llm/drivers/responses.js";
-import { streamGuardPendingTimers } from "../src/llm/stream-guard.js";
+import { runGuardedProviderStream, streamGuardPendingTimers } from "../src/llm/stream-guard.js";
 import type { ResolvedAuth, StreamEvent, StreamRequest } from "../src/llm/types.js";
 
 const originalFetch = globalThis.fetch;
@@ -191,6 +191,78 @@ async function collectBedrock(
   ]);
   return { events, cancelled: cancelled, ms: Date.now() - started };
 }
+
+describe("stream guard closes a pull that is still waiting", () => {
+  async function releaseAndHang(idleTimeoutMs: number): Promise<{ cancelled: boolean; ms: number; done: boolean }> {
+    let cancelled = false;
+    let reads = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        reads += 1;
+        if (reads === 1) {
+          controller.enqueue(new TextEncoder().encode("one"));
+          return;
+        }
+        return new Promise(() => {});
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    globalThis.fetch = (async () => new Response(body)) as typeof fetch;
+    const events: StreamEvent[] = [];
+    const started = Date.now();
+    const finished = (async () => {
+      for await (const event of runGuardedProviderStream({
+        req: {
+          model: "m",
+          provider: "openai",
+          messages: [{ role: "user", content: "hi" }],
+          connectTimeoutMs: 0,
+          idleTimeoutMs,
+        },
+        haltedMessage: () => ({ role: "assistant", content: "" }),
+        httpErrorLabel: "err",
+        emptyBodyMessage: "empty",
+        request: (guard) => guard.fetch("http://127.0.0.1/v1", { method: "POST" }),
+        frames: async function* (stream) {
+          const reader = stream.getReader();
+          try {
+            while (true) {
+              const next = await reader.read();
+              if (next.done) return;
+              yield next.value;
+            }
+          } finally {
+            reader.releaseLock();
+          }
+        },
+        onFrame: () => ({
+          events: [{ type: "text_delta", delta: "Hi" }],
+          releaseIfIdle: true,
+        }),
+        onComplete: () => [{ type: "done", reason: "stop", message: { role: "assistant", content: "Hi" } }],
+      })) events.push(event);
+    })();
+    await Promise.race([
+      finished,
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`hung with idleTimeoutMs ${idleTimeoutMs}`)), 1_500)),
+    ]);
+    return {
+      cancelled,
+      ms: Date.now() - started,
+      done: events.some((event) => event.type === "done"),
+    };
+  }
+
+  it.each([0, 60_000])("finishes promptly and cancels the body when idleTimeoutMs is %s", async (idleTimeoutMs) => {
+    const result = await releaseAndHang(idleTimeoutMs);
+    expect(result.done).toBe(true);
+    expect(result.cancelled).toBe(true);
+    expect(result.ms).toBeLessThan(1_000);
+    expect(streamGuardPendingTimers()).toBe(0);
+  });
+});
 
 describe("Bedrock usage after messageStop", () => {
   const prefix = [
