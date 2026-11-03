@@ -176,6 +176,11 @@ export class OpenAIResponsesDriver implements LlmDriver {
     const openFunctionCalls = new Set<number | string>();
     const functionCallIndexById = new Map<string, number | string>();
     const bufferedArgs = new Map<string, string>();
+    // Opened calls stay "seen" after arguments.done removes them from
+    // openFunctionCalls. output_item.done may repeat the full arguments
+    // string; that fallback is only for a call that was never announced.
+    const openedCallIndexes = new Set<number | string>();
+    const openedCallIds = new Set<string>();
     const toolCutoffMessage = "The response was cut off while the model was calling a tool";
     const unannouncedToolDeltaMessage = "OpenAI Responses stream received function call arguments without an open call";
     const responsesErrorMessage = (parsed: Record<string, unknown>, type: string): string => {
@@ -307,8 +312,15 @@ export class OpenAIResponsesDriver implements LlmDriver {
             if (res.started) {
               emitted = true;
               openFunctionCalls.add(index);
-              if (typeof item.call_id === "string" && item.call_id) functionCallIndexById.set(item.call_id, index);
-              if (typeof item.id === "string" && item.id) functionCallIndexById.set(item.id, index);
+              openedCallIndexes.add(index);
+              if (typeof item.call_id === "string" && item.call_id) {
+                functionCallIndexById.set(item.call_id, index);
+                openedCallIds.add(item.call_id);
+              }
+              if (typeof item.id === "string" && item.id) {
+                functionCallIndexById.set(item.id, index);
+                openedCallIds.add(item.id);
+              }
               events.push({ type: "tool_call_start", id: res.started.id, name: res.started.name });
             }
           }
@@ -345,21 +357,29 @@ export class OpenAIResponsesDriver implements LlmDriver {
           if (!codex && !matchedOpen && type === "response.output_item.done" && item?.type === "function_call") {
             const ids = [typeof parsed.item_id === "string" ? parsed.item_id : undefined, item.id, item.call_id]
               .filter((id): id is string => typeof id === "string" && id.length > 0);
-            const buffered = ids.map((id) => bufferedArgs.get(id)).find((value) => value !== undefined) ?? "";
-            for (const id of ids) bufferedArgs.delete(id);
-            const args = typeof item.arguments === "string" ? item.arguments : buffered;
-            const index = typeof parsed.output_index === "number" ? parsed.output_index : itemIndex++;
-            const res = accumulator.processChunk({
-              index,
-              id: String(item.call_id ?? item.id ?? ""),
-              name: String(item.name ?? ""),
-              argsDelta: args || undefined,
-            });
-            if (res.started) {
-              emitted = true;
-              events.push({ type: "tool_call_start", id: res.started.id, name: res.started.name });
+            const explicitIndex = typeof parsed.output_index === "number" ? parsed.output_index : undefined;
+            const alreadyOpened =
+              (explicitIndex !== undefined && openedCallIndexes.has(explicitIndex)) ||
+              ids.some((id) => openedCallIds.has(id));
+            if (!alreadyOpened) {
+              const buffered = ids.map((id) => bufferedArgs.get(id)).find((value) => value !== undefined) ?? "";
+              for (const id of ids) bufferedArgs.delete(id);
+              const args = typeof item.arguments === "string" ? item.arguments : buffered;
+              const index = explicitIndex ?? itemIndex++;
+              const res = accumulator.processChunk({
+                index,
+                id: String(item.call_id ?? item.id ?? ""),
+                name: String(item.name ?? ""),
+                argsDelta: args || undefined,
+              });
+              if (res.started) {
+                emitted = true;
+                openedCallIndexes.add(index);
+                for (const id of ids) openedCallIds.add(id);
+                events.push({ type: "tool_call_start", id: res.started.id, name: res.started.name });
+              }
+              if (res.delta) events.push({ type: "tool_call_delta", id: res.delta.id, argsDelta: res.delta.argsDelta });
             }
-            if (res.delta) events.push({ type: "tool_call_delta", id: res.delta.id, argsDelta: res.delta.argsDelta });
           }
         }
 
