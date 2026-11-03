@@ -26,6 +26,36 @@ const cases: Array<[string, typeof path, string, string, boolean]> = [
 ];
 
 describe("path containment", () => {
+  for (const [name, flavor, root, separator] of [
+    ["POSIX", path.posix, "/a/b", "/"],
+    ["Windows", path.win32, "C:\\a\\b", "\\"],
+    ["Windows forward slash", path.win32, "C:/a/b", "/"],
+  ] as const) {
+    for (const child of ["..hidden", "...x"]) {
+      test(`${name} contains ${child}`, () => {
+        expect(pathInRoot(`${root}${separator}${child}`, root, flavor)).toBe(true);
+      });
+    }
+    for (const escape of ["..", `..${separator}x`]) {
+      test(`${name} excludes ${escape}`, () => {
+        expect(pathInRoot(`${root}${separator}${escape}`, root, flavor)).toBe(false);
+      });
+    }
+  }
+
+  for (const [name, flavor] of [["POSIX", path.posix], ["Windows", path.win32]] as const) {
+    test(`${name} does not resolve relative arguments against cwd`, () => {
+      const cwd = flavor.resolve(process.cwd());
+      expect(pathInRoot("rel/x", cwd, flavor)).toBe(false);
+      expect(pathInRoot(flavor.join(cwd, "rel/x"), "rel", flavor)).toBe(false);
+    });
+    test(`${name} compares normalized relative arguments for equality`, () => {
+      expect(pathInRoot("rel/x", "rel/x", flavor)).toBe(true);
+      expect(pathInRoot(`rel/x${flavor.sep}`, "rel/x", flavor)).toBe(true);
+      expect(pathInRoot("rel/x", "rel/y", flavor)).toBe(false);
+    });
+  }
+
   for (const [name, flavor, candidate, root, expected] of cases) {
     test(name, () => {
       expect(pathInRoot(candidate, root, flavor)).toBe(expected);
