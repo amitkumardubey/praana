@@ -60,8 +60,12 @@ function looksBinary(bytes: Uint8Array): boolean {
  */
 export function normalizeBytes(bytes: Uint8Array): Uint8Array {
   if (!isWindows || looksBinary(bytes)) return bytes;
-  const text = Buffer.from(bytes).toString("utf8").replace(/\r\n/g, "\n");
-  return Buffer.from(text, "utf8");
+  const normalized: number[] = [];
+  for (let i = 0; i < bytes.length; i++) {
+    if (bytes[i] === 13 && bytes[i + 1] === 10) continue;
+    normalized.push(bytes[i]!);
+  }
+  return Uint8Array.from(normalized);
 }
 
 function sha256Hex(bytes: Uint8Array): string {
