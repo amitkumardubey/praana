@@ -90,6 +90,13 @@ describe("resolveStreamEndMode", () => {
     expect(resolveStreamEndMode("openai", "strict", "http://127.0.0.1:11434/v1")).toBe("strict");
   });
 
+  it("treats Vertex and Bedrock as hosted even with an unrelated base URL", () => {
+    for (const provider of ["vertex", "amazon-bedrock"]) {
+      expect(isDefaultHostedEndpoint(provider, "https://custom.example/v1")).toBe(true);
+      expect(resolveStreamEndMode(provider, "auto", "https://custom.example/v1")).toBe("strict");
+    }
+  });
+
   it("keeps the built-in OpenAI host strict under auto", () => {
     expect(isDefaultHostedEndpoint("openai")).toBe(true);
     expect(isDefaultHostedEndpoint("openai", "https://api.openai.com/v1")).toBe(true);

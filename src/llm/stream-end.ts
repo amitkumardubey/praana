@@ -52,11 +52,13 @@ export function endpointHostname(url: string | undefined): string | null {
  * Hosted means the id is in {@link STREAM_END_STRICT_PROVIDERS}, it is not a
  * user-declared `[providers.<id>]` entry, and the effective base URL is unset
  * or its host is that provider's built-in registry host. Any other host,
- * including loopback and private addresses, is not hosted.
+ * including loopback and private addresses, is not hosted. Vertex and Bedrock
+ * ignore the base URL and are hosted regardless of its value.
  */
 export function isDefaultHostedEndpoint(provider: string, baseUrl?: string): boolean {
   if (isUserDeclaredProvider(provider)) return false;
   if (!STREAM_END_STRICT_PROVIDERS.has(provider)) return false;
+  if (provider === "vertex" || provider === "amazon-bedrock") return true;
   const given = endpointHostname(baseUrl);
   if (!given) return true;
   const builtin = endpointHostname(PROVIDER_REGISTRY[provider]?.baseUrl);
