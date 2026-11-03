@@ -35,6 +35,18 @@ const BEDROCK_EXCEPTION_STATUS: Record<string, number> = {
 function bedrockStreamException(
   frame: Record<string, unknown>,
 ): { message: string; status?: number } | null {
+  if (
+    frame[":message-type"] === "error" ||
+    typeof frame[":error-code"] === "string" ||
+    typeof frame[":error-message"] === "string"
+  ) {
+    const code = typeof frame[":error-code"] === "string" ? frame[":error-code"] : "";
+    const headerMessage = typeof frame[":error-message"] === "string" ? frame[":error-message"] : "";
+    const raw = typeof frame.message === "string" ? frame.message : "";
+    const detail = [headerMessage, raw].filter((value, index, all) => value && all.indexOf(value) === index).join(": ");
+    const message = code && detail ? `${code}: ${detail}` : code || detail || "Bedrock stream error";
+    return { message, status: code ? BEDROCK_EXCEPTION_STATUS[code] : undefined };
+  }
   const headerType = typeof frame[":exception-type"] === "string" ? frame[":exception-type"] : undefined;
   if (headerType) {
     const wrapped = frame[headerType];

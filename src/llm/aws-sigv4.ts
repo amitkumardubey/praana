@@ -114,13 +114,14 @@ function parseEventStreamHeaders(bytes: Buffer): Record<string, string> {
       headers[name] = type === 0 ? "true" : "false";
       continue;
     }
-    const width = type === 2 ? 1 : type === 3 ? 2 : type === 4 ? 4 : type === 5 || type === 8 ? 8 : type === 9 ? 16 : 0;
     if (type === 6) {
       if (offset + 2 > bytes.length) break;
       const len = bytes.readUInt16BE(offset);
       offset += 2 + len;
       continue;
     }
+    const headerValueWidth: Record<number, number> = { 2: 1, 3: 2, 4: 4, 5: 8, 8: 8, 9: 16 };
+    const width = headerValueWidth[type] ?? 0;
     if (width === 0) break;
     offset += width;
   }
@@ -161,25 +162,31 @@ export async function* parseAwsEventStream(
         buffer = buffer.subarray(totalLength);
 
         const headers = parseEventStreamHeaders(headerBytes);
-        if (payloadBytes.length > 0) {
+        const payloadStr = payloadBytes.length > 0 ? payloadBytes.toString("utf8") : "";
+        let record: Record<string, unknown> | undefined;
+        if (payloadStr) {
           try {
-            const payloadStr = payloadBytes.toString("utf8");
             const parsed = JSON.parse(payloadStr);
-            if (parsed && typeof parsed === "object") {
-              const record = parsed as Record<string, unknown>;
-              if (headers[":message-type"]) record[":message-type"] = headers[":message-type"];
-              if (headers[":exception-type"]) record[":exception-type"] = headers[":exception-type"];
-              yield record;
-            }
+            if (parsed && typeof parsed === "object") record = parsed as Record<string, unknown>;
           } catch {
-            // Non-JSON or binary event frame, skip
+            record = undefined;
           }
-        } else if (headers[":exception-type"]) {
-          yield {
-            ":message-type": headers[":message-type"],
-            ":exception-type": headers[":exception-type"],
-          };
         }
+        const messageType = headers[":message-type"];
+        const exceptionType = headers[":exception-type"];
+        const errorCode = headers[":error-code"];
+        const errorMessage = headers[":error-message"];
+        const surfaced = messageType === "error" || exceptionType !== undefined || errorCode !== undefined || errorMessage !== undefined;
+        if (!record) {
+          if (!surfaced) continue;
+          record = {};
+          if (payloadStr) record.message = payloadStr;
+        }
+        if (messageType) record[":message-type"] = messageType;
+        if (exceptionType) record[":exception-type"] = exceptionType;
+        if (errorCode) record[":error-code"] = errorCode;
+        if (errorMessage) record[":error-message"] = errorMessage;
+        yield record;
       }
     }
   } finally {

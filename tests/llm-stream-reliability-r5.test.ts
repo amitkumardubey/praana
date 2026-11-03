@@ -261,6 +261,91 @@ async function collectGoogle(body: string): Promise<StreamEvent[]> {
   return events;
 }
 
+function encodeStringHeader(name: string, value: string): Buffer {
+  const nameBytes = Buffer.from(name, "utf8");
+  const valueBytes = Buffer.from(value, "utf8");
+  const buf = Buffer.alloc(1 + nameBytes.length + 1 + 2 + valueBytes.length);
+  let offset = 0;
+  buf.writeUInt8(nameBytes.length, offset);
+  offset += 1;
+  nameBytes.copy(buf, offset);
+  offset += nameBytes.length;
+  buf.writeUInt8(7, offset);
+  offset += 1;
+  buf.writeUInt16BE(valueBytes.length, offset);
+  offset += 2;
+  valueBytes.copy(buf, offset);
+  return buf;
+}
+
+function encodeRawFrame(payload: Buffer, headers: Buffer): Buffer {
+  const totalLength = 12 + headers.length + payload.length + 4;
+  const buf = Buffer.alloc(totalLength);
+  buf.writeUInt32BE(totalLength, 0);
+  buf.writeUInt32BE(headers.length, 4);
+  buf.writeUInt32BE(0, 8);
+  headers.copy(buf, 12);
+  payload.copy(buf, 12 + headers.length);
+  buf.writeUInt32BE(0, totalLength - 4);
+  return buf;
+}
+
+async function collectBedrockBody(body: Buffer): Promise<StreamEvent[]> {
+  globalThis.fetch = (async () => new Response(body)) as typeof fetch;
+  const events: StreamEvent[] = [];
+  for await (const event of new BedrockDriver().stream(
+    {
+      model: "m",
+      provider: "amazon-bedrock",
+      region: "us-east-1",
+      messages: [{ role: "user", content: "hi" }],
+      connectTimeoutMs: 0,
+      idleTimeoutMs: 0,
+      strictStreamEnd: true,
+    },
+    { bearerToken: "bearer-fixture" },
+  )) events.push(event);
+  return events;
+}
+
+describe("AWS event stream error frames", () => {
+  it("reports a :message-type error frame instead of a premature end", async () => {
+    const headers = Buffer.concat([
+      encodeStringHeader(":message-type", "error"),
+      encodeStringHeader(":error-code", "internalServerException"),
+      encodeStringHeader(":error-message", "service blew up"),
+    ]);
+    const events = await collectBedrockBody(encodeRawFrame(Buffer.alloc(0), headers));
+    const error = events.find((event) => event.type === "error");
+    expect(error?.type === "error" && error.error.message).toContain("internalServerException");
+    expect(error?.type === "error" && error.error.message).toContain("service blew up");
+    expect(events.some((event) => event.type === "error" && event.kind === "premature_end")).toBe(false);
+  });
+
+  it("keeps both the error header and raw payload", async () => {
+    const headers = Buffer.concat([
+      encodeStringHeader(":message-type", "error"),
+      encodeStringHeader(":error-code", "internalServerException"),
+      encodeStringHeader(":error-message", "service blew up"),
+    ]);
+    const events = await collectBedrockBody(encodeRawFrame(Buffer.from("raw detail"), headers));
+    const error = events.find((event) => event.type === "error");
+    expect(error?.type === "error" && error.error.message).toContain("service blew up");
+    expect(error?.type === "error" && error.error.message).toContain("raw detail");
+  });
+
+  it("reports an exception frame whose payload is not JSON", async () => {
+    const headers = Buffer.concat([
+      encodeStringHeader(":message-type", "exception"),
+      encodeStringHeader(":exception-type", "validationException"),
+    ]);
+    const events = await collectBedrockBody(encodeRawFrame(Buffer.from("not json: denied"), headers));
+    const error = events.find((event) => event.type === "error");
+    expect(error?.type === "error" && error.error.message).toContain("not json: denied");
+    expect(events.some((event) => event.type === "error" && event.kind === "premature_end")).toBe(false);
+  });
+});
+
 describe("Google finish reasons", () => {
   it("keeps tool_use when a later STOP chunk has no parts", async () => {
     Math.random = () => 0.123456789;
