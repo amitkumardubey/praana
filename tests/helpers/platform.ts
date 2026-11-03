@@ -17,17 +17,22 @@ export const isWindows = process.platform === "win32";
  *
  * Windows cannot delete a file/dir while a handle is still open (EBUSY).
  * Tests close what they can before cleanup; for handles that have no close
- * API from tests (e.g. the pino-roll session log stream), retry a few times
- * so the removal still succeeds once the OS releases them. No-op behaviour on
- * POSIX (maxRetries 0, same as plain rmSync).
+ * API from tests (e.g. the pino-roll session log stream), retry a few times.
+ * If Windows still holds a handle, leave the temporary path behind. On POSIX
+ * errors continue to propagate as with plain rmSync.
  */
 export function rmForce(path: string): void {
-  rmSync(path, {
-    recursive: true,
-    force: true,
-    maxRetries: isWindows ? 5 : 0,
-    retryDelay: 100,
-  });
+  try {
+    rmSync(path, {
+      recursive: true,
+      force: true,
+      maxRetries: isWindows ? 5 : 0,
+      retryDelay: 100,
+    });
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (!isWindows || (code !== "EBUSY" && code !== "EPERM")) throw error;
+  }
 }
 
 /**
