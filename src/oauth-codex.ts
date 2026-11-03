@@ -1,0 +1,411 @@
+import { createHash, randomBytes as cryptoRandomBytes } from "node:crypto";
+import type { AuthInteraction, OAuthAuth, OAuthCredential } from "./oauth.js";
+import { OAuthCallbackDeniedError, startOAuthCallbackServer, type CallbackServerFactory, type OAuthCallbackServer } from "./oauth-callback-server.js";
+import { extractAccountId } from "./llm/jwt.js";
+
+export { extractAccountId };
+
+const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+const AUTH_BASE = "https://auth.openai.com";
+const REDIRECT_URI = "http://localhost:1455/auth/callback";
+const DEVICE_REDIRECT_URI = `${AUTH_BASE}/deviceauth/callback`;
+const NOTICE = "Signs in with your ChatGPT account via the Codex CLI sign-in.";
+const RELOGIN = "OpenAI Codex credential missing accountId; run /login openai-codex again";
+const TOKEN_FIELDS = "OpenAI Codex token response missing access_token, refresh_token or numeric expires_in";
+
+const refreshHeaderNotifiers = new WeakMap<AbortSignal, () => void>();
+
+/** The refresh timeout uses this to stop the header budget once the response headers arrive. */
+export function bindRefreshHeadersNotifier(signal: AbortSignal, notify: () => void): void {
+  refreshHeaderNotifiers.set(signal, notify);
+}
+
+function noteRefreshHeaders(signal?: AbortSignal): void {
+  if (signal) refreshHeaderNotifiers.get(signal)?.();
+}
+
+/**
+ * A refresh grant already rotated the token at the provider. The caller must
+ * persist `received` before surfacing this error, or the new refresh token is lost.
+ */
+export class CodexTokenResponseError extends Error {
+  readonly received?: OAuthCredential;
+
+  constructor(message: string, received?: OAuthCredential) {
+    super(message);
+    this.name = "CodexTokenResponseError";
+    this.received = received;
+  }
+}
+
+/**
+ * The paste prompt's own signal aborted while login itself did not.
+ * Callers must reject with this instead of leaving the prompt pending.
+ */
+export class CodexManualPromptSuperseded extends Error {
+  constructor() {
+    super("OpenAI Codex manual prompt was dismissed");
+    this.name = "CodexManualPromptSuperseded";
+  }
+}
+
+type RandomBytes = (size: number) => Uint8Array;
+export interface CodexOAuthDeps {
+  fetch?: typeof fetch;
+  now?: () => number;
+  randomBytes?: RandomBytes;
+  callbackServer?: CallbackServerFactory;
+  sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+}
+
+export function generatePKCE(randomBytes: RandomBytes = cryptoRandomBytes): { verifier: string; challenge: string } {
+  const verifier = Buffer.from(randomBytes(32)).toString("base64url");
+  return { verifier, challenge: createHash("sha256").update(verifier).digest("base64url") };
+}
+
+export function buildAuthorizeUrl(challenge: string, state: string): string {
+  const url = new URL(`${AUTH_BASE}/oauth/authorize`);
+  url.search = new URLSearchParams({
+    response_type: "code", client_id: CLIENT_ID, scope: "openid profile email offline_access",
+    redirect_uri: REDIRECT_URI, code_challenge: challenge, code_challenge_method: "S256", state,
+    id_token_add_organizations: "true", codex_cli_simplified_flow: "true", originator: "praana",
+  }).toString();
+  return url.toString();
+}
+
+export function parseManualInput(input: string, expectedState: string): string {
+  const value = input.trim();
+  let code: string | null = value;
+  let state: string | null = null;
+  if (/^https?:\/\//i.test(value) || value.includes("code=") || value.includes("error=")) {
+    const params = /^https?:\/\//i.test(value)
+      ? new URL(value).searchParams : new URLSearchParams(value.replace(/^\?/, ""));
+    state = params.get("state");
+    if (state !== null && state !== expectedState) throw new Error("OpenAI Codex OAuth state mismatch");
+    if (params.has("error")) throw new Error(`OpenAI Codex authorization failed: ${params.get("error_description") || params.get("error")}`);
+    code = params.get("code");
+  } else if (value.includes("#")) {
+    const index = value.indexOf("#");
+    code = value.slice(0, index);
+    state = value.slice(index + 1);
+  }
+  if (state !== null && state !== expectedState) throw new Error("OpenAI Codex OAuth state mismatch");
+  if (!code?.trim()) throw new Error("Missing OpenAI Codex authorization code");
+  return code;
+}
+
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    signal.throwIfAborted();
+    const onAbort = () => { clearTimeout(timer); reject(signal.reason); };
+    const timer = setTimeout(() => { signal.removeEventListener("abort", onAbort); resolve(); }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+async function withSignal<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  // Promise.race does not handle the loser. A paste-prompt rejection and a
+  // signal abort can settle in the same turn; attach a handler so the loser
+  // is not an unhandled rejection. The race result is unchanged.
+  promise.catch(() => {});
+  signal.throwIfAborted();
+  let onAbort!: () => void;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  aborted.catch(() => {});
+  try { return await Promise.race([promise, aborted]); }
+  finally { signal.removeEventListener("abort", onAbort); }
+}
+
+export function createOpenAICodexOAuth(deps: CodexOAuthDeps = {}): OAuthAuth {
+  const request = deps.fetch ?? fetch;
+  const now = deps.now ?? Date.now;
+  const randomBytes = deps.randomBytes ?? cryptoRandomBytes;
+  const callbackServer = deps.callbackServer ?? startOAuthCallbackServer;
+  const pause = deps.sleep ?? sleep;
+
+  const tokenRequest = async (
+    params: Record<string, string>,
+    signal?: AbortSignal,
+    previous?: OAuthCredential,
+  ): Promise<OAuthCredential> => {
+    const response = await request(`${AUTH_BASE}/oauth/token`, {
+      method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ ...params, client_id: CLIENT_ID }), signal,
+    });
+    noteRefreshHeaders(signal);
+    if (!response.ok) throw new Error(`OpenAI Codex token ${params.grant_type} failed (${response.status})`);
+    const data = await response.json() as Record<string, unknown>;
+    const refreshGrant = params.grant_type === "refresh_token";
+    const access = typeof data.access_token === "string" ? data.access_token : "";
+    const responseRefresh = typeof data.refresh_token === "string" ? data.refresh_token : "";
+    const refresh = responseRefresh || (refreshGrant ? previous?.refresh ?? "" : "");
+    const expiresIn = typeof data.expires_in === "number" && Number.isFinite(data.expires_in) && data.expires_in > 0
+      ? data.expires_in
+      : undefined;
+    const expiresAt = expiresIn === undefined ? undefined : now() + expiresIn * 1000;
+    const previousAccountId = typeof previous?.accountId === "string" ? previous.accountId.trim() : "";
+    const fail = (message: string, accountId = previousAccountId): never => {
+      if (!refreshGrant || !previous || (!access && !responseRefresh)) throw new Error(message);
+      const received: OAuthCredential = {
+        type: "oauth",
+        access: access || previous.access,
+        refresh: refresh || previous.refresh,
+        expires: expiresAt ?? previous.expires,
+      };
+      if (accountId) received.accountId = accountId;
+      throw new CodexTokenResponseError(message, received);
+    };
+    if (!access || !refresh) fail(TOKEN_FIELDS);
+    const expires = expiresAt ?? fail(TOKEN_FIELDS);
+    let accountId: string;
+    try {
+      accountId = extractAccountId(access);
+    } catch (err) {
+      if (!refreshGrant) throw err;
+      if (!previousAccountId) fail(err instanceof Error ? err.message : String(err), "");
+      accountId = previousAccountId;
+    }
+    return { type: "oauth", access, refresh, expires, accountId };
+  };
+  const exchange = (code: string, verifier: string, redirectUri: string, signal: AbortSignal) =>
+    tokenRequest({ grant_type: "authorization_code", code, code_verifier: verifier, redirect_uri: redirectUri }, signal);
+
+  async function browserLogin(interaction: AuthInteraction): Promise<OAuthCredential> {
+    const timeout = new AbortController();
+    const timer = setTimeout(() => timeout.abort(new Error("OpenAI Codex browser login timed out")), 10 * 60_000);
+    const signal = interaction.signal ? AbortSignal.any([interaction.signal, timeout.signal]) : timeout.signal;
+    const manualAbort = new AbortController();
+    let callback: OAuthCallbackServer | undefined;
+    let ignoreCallbackError = false;
+    try {
+      signal.throwIfAborted();
+      const { verifier, challenge } = generatePKCE(randomBytes);
+      const state = Buffer.from(randomBytes(16)).toString("hex");
+      let bindFailure: string | undefined;
+      try {
+        callback = await callbackServer({ state, signal });
+      } catch (error) {
+        if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : error;
+        const code = (error as { code?: string }).code;
+        bindFailure = code || (error instanceof Error ? error.message : String(error));
+      }
+      interaction.notify({ type: "auth_url", url: buildAuthorizeUrl(challenge, state), instructions: NOTICE });
+      // The callback-unavailable notice is carried into the first paste prompt
+      // itself: the wizard/login overlay render the message channel only on the
+      // status step, so a notice fired while the paste prompt is open would
+      // never be seen.
+      let lastError: string | undefined;
+      if (!callback) {
+        const unavailable = bindFailure
+          ? `Local callback unavailable (${bindFailure})`
+          : "Local callback unavailable (127.0.0.1:1455)";
+        interaction.notify({
+          type: "info",
+          message: `${unavailable}; paste the redirect URL or authorization code below.`,
+        });
+        lastError = unavailable;
+      }
+      const manualMessage = callback
+        ? "Paste the redirect URL or authorization code (or finish in your browser):"
+        : "Paste the redirect URL or authorization code:";
+      const manual = async () => {
+        // A live callback can still win, so a bad paste must not exhaust the login.
+        const attemptLimit = callback ? Number.POSITIVE_INFINITY : 5;
+        for (let attempt = 1; attempt <= attemptLimit; attempt++) {
+          if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : new Error(String(signal.reason));
+          let input: string;
+          try {
+            input = await interaction.prompt({
+              type: "manual_code",
+              // Carry the last paste error into this prompt so the retry screen
+              // explains why the field reappeared.
+              message: lastError ? `${lastError}. ${manualMessage}` : manualMessage,
+              signal: manualAbort.signal,
+            });
+          } catch (error) {
+            // Callback won, or the paste prompt was dismissed, without cancelling login.
+            if (error instanceof CodexManualPromptSuperseded) throw error;
+            if (manualAbort.signal.aborted && !signal.aborted) throw new CodexManualPromptSuperseded();
+            throw error;
+          }
+          try {
+            return parseManualInput(input, state);
+          } catch (error) {
+            // The callback can abort this prompt after a stale paste resolves.
+            if (error instanceof CodexManualPromptSuperseded) throw error;
+            if (manualAbort.signal.aborted && !signal.aborted) throw new CodexManualPromptSuperseded();
+            lastError = error instanceof Error ? error.message : String(error);
+            interaction.notify({ type: "info", message: lastError });
+          }
+        }
+        throw new Error(lastError ?? "Missing OpenAI Codex authorization code");
+      };
+      const callbackTask = callback
+        ? callback.wait().catch((error: unknown) => {
+            // Esc and the 10-minute timeout abort the callback server before
+            // ignoreCallbackError is set; that teardown rejection is not a
+            // local callback failure and must not surface a paste notice.
+            if (ignoreCallbackError || signal.aborted) return new Promise<string>(() => {});
+            if (error instanceof OAuthCallbackDeniedError) throw error;
+            const code = (error as { code?: string }).code;
+            const detail = code || (error instanceof Error ? error.message : String(error));
+            interaction.notify({
+              type: "info",
+              message: `Local callback failed (${detail}); paste the redirect URL or authorization code below.`,
+            });
+            return new Promise<string>(() => {});
+          })
+        : undefined;
+      const manualTask = manual().then(
+        (value) => value,
+        (error: unknown) => {
+          if (error instanceof CodexManualPromptSuperseded) return null;
+          throw error;
+        },
+      );
+      const raced = callbackTask
+        ? Promise.race([
+            callbackTask,
+            manualTask.then((value) => value ?? callbackTask),
+          ])
+        : manualTask.then((value) => {
+            if (value === null) throw new CodexManualPromptSuperseded();
+            return value;
+          });
+      const code = await withSignal(raced, signal);
+      ignoreCallbackError = true;
+      manualAbort.abort();
+      callback?.close();
+      return await withSignal(exchange(code, verifier, REDIRECT_URI, signal), signal);
+    } finally {
+      ignoreCallbackError = true;
+      clearTimeout(timer);
+      manualAbort.abort();
+      callback?.close();
+    }
+  }
+
+  async function deviceLogin(interaction: AuthInteraction): Promise<OAuthCredential> {
+    const timeout = new AbortController();
+    const timer = setTimeout(() => timeout.abort(new Error("OpenAI Codex device login timed out")), 15 * 60_000);
+    const signal = interaction.signal ? AbortSignal.any([interaction.signal, timeout.signal]) : timeout.signal;
+    const deadline = now() + 15 * 60_000;
+    const post = async (path: string, body: Record<string, string>) => {
+      signal.throwIfAborted();
+      return withSignal(request(`${AUTH_BASE}${path}`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), signal,
+      }), signal);
+    };
+    const releaseBody = async (response: Response) => {
+      try { await response.body?.cancel(); } catch { /* json() already drained and locked the body. */ }
+    };
+    const retryAfterMs = (response: Response): number | undefined => {
+      const raw = response.headers.get("retry-after")?.trim();
+      if (!raw) return undefined;
+      const seconds = Number(raw);
+      if (!Number.isFinite(seconds) || seconds < 0) return undefined;
+      return Math.min(seconds, 30) * 1000;
+    };
+    try {
+      const initial = await post("/api/accounts/deviceauth/usercode", { client_id: CLIENT_ID });
+      if (!initial.ok) {
+        await releaseBody(initial);
+        if (initial.status === 404) throw new Error("OpenAI Codex device-code login unavailable; use browser login");
+        throw new Error(`OpenAI Codex device-code request failed (${initial.status})`);
+      }
+      const data = await initial.json() as Record<string, unknown>;
+      const interval = typeof data.interval === "string" ? Number(data.interval.trim()) : data.interval;
+      if (typeof data.device_auth_id !== "string" || !data.device_auth_id || typeof data.user_code !== "string" || !data.user_code ||
+          typeof interval !== "number" || !Number.isFinite(interval) || interval < 0) throw new Error("Invalid OpenAI Codex device-code response");
+      let intervalMs = Math.max(1000, Math.floor(interval * 1000));
+      interaction.notify({ type: "info", message: NOTICE });
+      interaction.notify({ type: "device_code", userCode: data.user_code, verificationUri: `${AUTH_BASE}/codex/device`, intervalSeconds: interval, expiresInSeconds: 900 });
+      let consecutiveNetworkFailures = 0;
+      while (now() < deadline) {
+        let waitMs = intervalMs;
+        let response: Response;
+        try {
+          response = await post("/api/accounts/deviceauth/token", { device_auth_id: data.device_auth_id, user_code: data.user_code });
+        } catch (err) {
+          if (signal.aborted || (err instanceof Error && err.name === "AbortError")) {
+            throw err instanceof Error ? err : new Error(String(err));
+          }
+          consecutiveNetworkFailures += 1;
+          if (consecutiveNetworkFailures >= 10) throw err;
+          const remaining = deadline - now();
+          if (remaining > 0) await withSignal(pause(Math.min(waitMs, remaining), signal), signal);
+          continue;
+        }
+        consecutiveNetworkFailures = 0;
+        try {
+          if (response.ok) {
+            const result = await response.json() as Record<string, unknown>;
+            if (typeof result.authorization_code !== "string" || !result.authorization_code || typeof result.code_verifier !== "string" || !result.code_verifier) throw new Error("Invalid OpenAI Codex device authorization response");
+            return await withSignal(exchange(result.authorization_code, result.code_verifier, DEVICE_REDIRECT_URI, signal), signal);
+          }
+          if (response.status !== 403 && response.status !== 404) {
+            let error: unknown;
+            try {
+              const result = await response.json() as { error?: string | { code?: string } };
+              error = typeof result.error === "object" ? result.error?.code : result.error;
+            } catch { /* Non-JSON failures are reported by status below. */ }
+            if (error === "slow_down") {
+              intervalMs += 5000;
+              waitMs = intervalMs;
+            } else if (error !== "deviceauth_authorization_pending") {
+              if (response.status === 429 || response.status === 502 || response.status === 503 || response.status === 504) {
+                const retry = retryAfterMs(response);
+                if (retry !== undefined) waitMs = Math.max(intervalMs, retry);
+              } else {
+                throw new Error(`OpenAI Codex device authorization failed (${response.status})`);
+              }
+            }
+          }
+        } finally {
+          await releaseBody(response);
+        }
+        const remaining = deadline - now();
+        if (remaining > 0) await withSignal(pause(Math.min(waitMs, remaining), signal), signal);
+      }
+      throw new Error("OpenAI Codex device login timed out");
+    } finally { clearTimeout(timer); }
+  }
+
+  return {
+    name: "OpenAI Codex",
+    async login(interaction) {
+      interaction.signal?.throwIfAborted();
+      const method = await interaction.prompt({ type: "select", message: `${NOTICE}\nChoose a sign-in method:`, signal: interaction.signal, options: [
+        { id: "browser", label: "Browser login (default)", description: "Local callback with paste fallback" },
+        { id: "device_code", label: "Device-code login", description: "For SSH or headless environments" },
+      ] });
+      if (method === "browser") return browserLogin(interaction);
+      if (method === "device_code") return deviceLogin(interaction);
+      throw new Error("OpenAI Codex login cancelled");
+    },
+    async refresh(credential, signal) {
+      const accountId = typeof credential.accountId === "string" ? credential.accountId.trim() : "";
+      // Called only once the stored token is expired (see resolveOAuthModelAuth).
+      if (!accountId || credential.refresh === credential.access) throw new Error(RELOGIN);
+      return tokenRequest(
+        { grant_type: "refresh_token", refresh_token: credential.refresh },
+        signal,
+        credential,
+      );
+    },
+    async toAuth(credential) {
+      let accountId = typeof credential.accountId === "string" ? credential.accountId.trim() : "";
+      if (!accountId) {
+        try {
+          accountId = extractAccountId(credential.access);
+        } catch {
+          throw new Error(RELOGIN);
+        }
+      }
+      return { apiKey: credential.access, headers: { "chatgpt-account-id": accountId } };
+    },
+  };
+}

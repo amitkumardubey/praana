@@ -5,13 +5,155 @@
 
 import {
   getOAuthToken,
+  readCachedOAuthIfUnchanged,
+  readOAuthTokenFromDisk,
+  releaseProviderRefreshLock,
   setOAuthToken,
+  waitForProviderRefreshLock,
+  withCredentialStoreLockSync,
   type StoredOAuthCredential,
 } from "./credentials.js";
+import { getAppLogger } from "./logger.js";
 import { PROVIDER_REGISTRY } from "./provider-registry.js";
+import {
+  bindRefreshHeadersNotifier,
+  CodexTokenResponseError,
+  createOpenAICodexOAuth,
+  type CodexOAuthDeps,
+} from "./oauth-codex.js";
 
 /** Refresh when fewer than this many ms remain before expiry. */
 const REFRESH_SKEW_MS = 60_000;
+/** Connecting and response headers. The body has its own, longer budget. */
+const REFRESH_HEADERS_TIMEOUT_MS = 15_000;
+const REFRESH_BODY_TIMEOUT_MS = 60_000;
+
+class RefreshWaitGate {
+  private controller = new AbortController();
+  private active = 0;
+  readonly signal = this.controller.signal;
+
+  /** Leave when this caller stops waiting. The lock wait aborts only when nobody is left. */
+  enter(signal?: AbortSignal): () => void {
+    this.active += 1;
+    let left = false;
+    const leave = () => {
+      if (left) return;
+      left = true;
+      signal?.removeEventListener("abort", onAbort);
+      this.active -= 1;
+      if (this.active <= 0 && !this.controller.signal.aborted) {
+        const err = new Error("The operation was aborted.");
+        err.name = "AbortError";
+        this.controller.abort(err);
+      }
+    };
+    const onAbort = () => leave();
+    if (signal?.aborted) {
+      leave();
+      return () => {};
+    }
+    if (signal) signal.addEventListener("abort", onAbort, { once: true });
+    return leave;
+  }
+}
+
+interface InflightRefresh {
+  promise: Promise<ModelAuth | null>;
+  gate: RefreshWaitGate;
+}
+
+const oauthRefreshInflight = new Map<string, InflightRefresh>();
+
+export class OAuthRefreshError extends Error {
+  readonly provider: string;
+
+  constructor(provider: string, providerName: string, reason: string) {
+    super(`${providerName} session expired and could not be refreshed: ${reason}. Run /login ${provider} again.`);
+    this.name = "OAuthRefreshError";
+    this.provider = provider;
+  }
+}
+
+/** Another session still holds the refresh lock and the access token is already expired. */
+export class OAuthRefreshBusyError extends Error {
+  readonly provider: string;
+
+  constructor(provider: string) {
+    super("another PRAANA session is refreshing; try again in a moment");
+    this.name = "OAuthRefreshBusyError";
+    this.provider = provider;
+  }
+}
+
+export const REFRESH_LOCK_WAIT_MS = 30_000;
+let refreshLockWaitOverride: number | null = null;
+
+export function setRefreshLockWaitMsForTests(ms: number): void {
+  refreshLockWaitOverride = ms;
+}
+
+function refreshLockWaitMs(): number {
+  return refreshLockWaitOverride ?? REFRESH_LOCK_WAIT_MS;
+}
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && (err.name === "AbortError" || /abort/i.test(err.message));
+}
+
+function abortError(signal: AbortSignal): Error {
+  const reason = signal.reason;
+  if (reason instanceof Error) {
+    if (reason.name === "AbortError") return reason;
+    const err = new Error(reason.message);
+    err.name = "AbortError";
+    return err;
+  }
+  const err = new Error(typeof reason === "string" && reason ? reason : "The operation was aborted.");
+  err.name = "AbortError";
+  return err;
+}
+
+/** Sleep that rejects immediately when `signal` aborts (used by device-code polls). */
+function sleepAbortable(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const rejectReason = () => {
+      const reason = signal?.reason;
+      reject(reason instanceof Error ? reason : abortError(signal!));
+    };
+    if (signal?.aborted) {
+      rejectReason();
+      return;
+    }
+    const fail = () => {
+      if (timer === undefined) return;
+      clearTimeout(timer);
+      rejectReason();
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
+      signal?.removeEventListener("abort", fail);
+      resolve();
+    }, ms);
+    signal?.addEventListener("abort", fail, { once: true });
+  });
+}
+
+function raceWithSignal<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return work;
+  if (signal.aborted) return Promise.reject(abortError(signal));
+  let onAbort: (() => void) | undefined;
+  const aborted = new Promise<never>((_, reject) => {
+    onAbort = () => reject(abortError(signal));
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+  return Promise.race([work, aborted]).finally(() => {
+    if (onAbort) signal.removeEventListener("abort", onAbort);
+  });
+}
+
+function refreshFailureReason(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 /** Built-in OAuth provider ids. */
 export const OAUTH_PROVIDER_IDS = [
@@ -84,13 +226,23 @@ export interface OAuthProviderInfo {
   oauth: OAuthAuth;
 }
 
+const EMPTY_OAUTH_TOKEN = "Refusing to store an empty OAuth token";
+
+function assertStorableOAuthCredential(creds: OAuthCredential): void {
+  if (typeof creds.access !== "string" || typeof creds.refresh !== "string" ||
+      !creds.access.trim() || !creds.refresh.trim()) {
+    throw new Error(EMPTY_OAUTH_TOKEN);
+  }
+}
+
 const pasteTokenAuth = (name: string, promptMessage: string): OAuthAuth => ({
   name,
   async login(interaction: AuthInteraction): Promise<OAuthCredential> {
-    const code = await interaction.prompt({
+    const code = (await interaction.prompt({
       type: "secret",
       message: promptMessage,
-    });
+    })).trim();
+    if (!code) throw new Error(EMPTY_OAUTH_TOKEN);
     return {
       type: "oauth",
       access: code,
@@ -198,7 +350,9 @@ const githubCopilotOAuth: OAuthAuth = {
       if (interaction.signal?.aborted) {
         throw new Error("OAuth login aborted");
       }
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      // Watch the signal during the poll sleep so Esc is not delayed by the
+      // (>= 5s) interval; the rejection carries the signal reason.
+      await sleepAbortable(intervalMs, interaction.signal);
       const tokenRes = await fetch("https://github.com/login/oauth/access_token", {
         method: "POST",
         headers: {
@@ -245,16 +399,21 @@ const githubCopilotOAuth: OAuthAuth = {
   },
 };
 
+const anthropicPaste = pasteTokenAuth(
+  "Anthropic",
+  "Paste your Anthropic API key or Claude Pro OAuth token:",
+);
+
 const providers: OAuthProviderInfo[] = [
   {
     id: "anthropic",
     name: "Anthropic",
-    oauth: pasteTokenAuth("Anthropic", "Paste your Anthropic API key or Claude Pro OAuth token:"),
+    oauth: anthropicPaste,
   },
   {
     id: "openai-codex",
     name: "OpenAI Codex",
-    oauth: pasteTokenAuth("OpenAI Codex", "Paste your ChatGPT / Codex access token:"),
+    oauth: createOpenAICodexOAuth(),
   },
   { id: "github-copilot", name: "GitHub Copilot", oauth: githubCopilotOAuth },
 ];
@@ -336,6 +495,7 @@ export async function runOAuthLogin(
     throw new Error(`Unknown OAuth provider: ${provider}`);
   }
   const creds = await oauth.login(interaction);
+  assertStorableOAuthCredential(creds);
   setOAuthToken(provider, toStored(creds));
   return getOAuthToken(provider)!;
 }
@@ -347,24 +507,194 @@ export async function ensureFreshAccessToken(
   return auth?.apiKey ?? null;
 }
 
-export async function resolveOAuthModelAuth(
+function useCurrentAfterBusyWait(
   provider: string,
+  oauth: OAuthAuth,
+  latest: StoredOAuthCredential,
 ): Promise<ModelAuth | null> {
-  const stored = getOAuthToken(provider);
-  if (!stored) return null;
-
-  const oauth = getOAuthAuth(provider);
-  if (!oauth) return { apiKey: stored.access };
-
-  let credential = toOAuthCredential(stored);
-  if (stored.expires <= Date.now() + REFRESH_SKEW_MS) {
-    credential = await oauth.refresh(credential);
-    setOAuthToken(provider, toStored(credential, stored));
+  // A concurrent refresh can store a token that is outside the skew while this
+  // session is still waiting on the lock. Use that token with no warning.
+  if (latest.expires > Date.now() + REFRESH_SKEW_MS) {
+    return oauth.toAuth(toOAuthCredential(latest));
   }
-
-  return oauth.toAuth(credential);
+  if (latest.expires > Date.now()) {
+    getAppLogger().child("credentials").warn(
+      "another PRAANA session is refreshing; using the current access token",
+      { code: "UNKNOWN", details: { provider } },
+    );
+    return oauth.toAuth(toOAuthCredential(latest));
+  }
+  // Callers pass a token that was still unexpired. If it expires in the gap
+  // before this check, fail closed instead of sending it.
+  throw new OAuthRefreshBusyError(provider);
 }
 
-export function resetOAuthProvidersForTests(): void {
-  // no-op for native providers
+/** Fresh tokens are returned before any refresh lock. `"refresh"` means the lock is required. */
+async function readOAuthAuthIfFresh(
+  provider: string,
+  oauth: OAuthAuth,
+): Promise<ModelAuth | null | "refresh"> {
+  const cached = readCachedOAuthIfUnchanged(provider);
+  const token = cached.unchanged
+    ? cached.token
+    : withCredentialStoreLockSync(() => readOAuthTokenFromDisk(provider));
+  if (!token) return null;
+  if (token.expires > Date.now() + REFRESH_SKEW_MS) {
+    return oauth.toAuth(toOAuthCredential(token));
+  }
+  return "refresh";
+}
+
+function storedTokenStillValid(token: StoredOAuthCredential | undefined): token is StoredOAuthCredential {
+  return token !== undefined && token.expires > Date.now();
+}
+
+async function refreshOAuthCredential(
+  provider: string,
+  oauth: OAuthAuth,
+  signal?: AbortSignal,
+): Promise<ModelAuth | null> {
+  let acquired = false;
+  try {
+    acquired = await waitForProviderRefreshLock(provider, refreshLockWaitMs(), signal);
+    if (signal?.aborted) throw abortError(signal);
+    if (!acquired) {
+      const latest = withCredentialStoreLockSync(() => readOAuthTokenFromDisk(provider));
+      if (storedTokenStillValid(latest)) return useCurrentAfterBusyWait(provider, oauth, latest);
+      acquired = await waitForProviderRefreshLock(provider, refreshLockWaitMs(), signal);
+      if (signal?.aborted) throw abortError(signal);
+      if (!acquired) {
+        const after = withCredentialStoreLockSync(() => readOAuthTokenFromDisk(provider));
+        if (storedTokenStillValid(after)) return useCurrentAfterBusyWait(provider, oauth, after);
+        if (!after) return null;
+        throw new OAuthRefreshBusyError(provider);
+      }
+    }
+    const stored = withCredentialStoreLockSync(() => readOAuthTokenFromDisk(provider));
+    if (!stored) return null;
+    if (stored.expires > Date.now() + REFRESH_SKEW_MS) {
+      return oauth.toAuth(toOAuthCredential(stored));
+    }
+
+    const refreshToken = stored.refresh;
+    const timeout = new AbortController();
+    let timer = setTimeout(() => {
+      timeout.abort(new Error("OAuth token refresh timed out"));
+    }, REFRESH_HEADERS_TIMEOUT_MS);
+    timer.unref?.();
+    bindRefreshHeadersNotifier(timeout.signal, () => {
+      if (timeout.signal.aborted) return;
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        timeout.abort(new Error("OAuth token refresh timed out"));
+      }, REFRESH_BODY_TIMEOUT_MS);
+      timer.unref?.();
+    });
+    try {
+      let refreshed: OAuthCredential;
+      try {
+        refreshed = await oauth.refresh(toOAuthCredential(stored), timeout.signal);
+      } catch (err) {
+        if (err instanceof CodexTokenResponseError && err.received?.access && err.received.refresh) {
+          const received = err.received;
+          withCredentialStoreLockSync(() => {
+            const latest = readOAuthTokenFromDisk(provider);
+            if (!latest || latest.refresh !== refreshToken) return;
+            setOAuthToken(provider, toStored(received, latest));
+          });
+        }
+        const latest = withCredentialStoreLockSync(() => readOAuthTokenFromDisk(provider));
+        if (!latest) return null;
+        if (latest.refresh !== refreshToken) {
+          if (latest.expires > Date.now()) return oauth.toAuth(toOAuthCredential(latest));
+          throw new OAuthRefreshError(provider, oauth.name, refreshFailureReason(err));
+        }
+        if (latest.expires <= Date.now()) {
+          throw new OAuthRefreshError(provider, oauth.name, refreshFailureReason(err));
+        }
+        getAppLogger().child("credentials").warn(
+          `OAuth token refresh failed; using the current access token (${refreshFailureReason(err)})`,
+          {
+            cause: err instanceof Error ? err : new Error(refreshFailureReason(err)),
+            code: "UNKNOWN",
+            details: { provider },
+          },
+        );
+        return oauth.toAuth(toOAuthCredential(latest));
+      }
+
+      // Persist before releasing the refresh lock, and only if this refresh token is still current.
+      const committed = withCredentialStoreLockSync(() => {
+        const latest = readOAuthTokenFromDisk(provider);
+        if (!latest || latest.refresh !== refreshToken) return latest ?? null;
+        setOAuthToken(provider, toStored(refreshed, latest));
+        return readOAuthTokenFromDisk(provider) ?? null;
+      });
+      if (!committed) return null;
+      return oauth.toAuth(toOAuthCredential(committed));
+    } finally {
+      clearTimeout(timer);
+    }
+  } finally {
+    if (acquired) releaseProviderRefreshLock(provider);
+  }
+}
+
+export async function resolveOAuthModelAuth(
+  provider: string,
+  signal?: AbortSignal,
+): Promise<ModelAuth | null> {
+  const oauth = getOAuthAuth(provider);
+  if (!oauth) return null;
+
+  const fresh = await readOAuthAuthIfFresh(provider, oauth);
+  if (fresh !== "refresh") return fresh;
+
+  if (signal?.aborted) throw abortError(signal);
+
+  let shared = oauthRefreshInflight.get(provider);
+  if (!shared || shared.gate.signal.aborted) {
+    const gate = new RefreshWaitGate();
+    const leave = gate.enter(signal);
+    const promise = (async () => {
+      try {
+        return await refreshOAuthCredential(provider, oauth, gate.signal);
+      } catch (err) {
+        if (err instanceof OAuthRefreshError || err instanceof OAuthRefreshBusyError || isAbortError(err)) {
+          throw err;
+        }
+        const latest = withCredentialStoreLockSync(() => readOAuthTokenFromDisk(provider));
+        if (!latest || latest.expires <= Date.now()) {
+          throw new OAuthRefreshError(provider, oauth.name, refreshFailureReason(err));
+        }
+        getAppLogger().child("credentials").warn(
+          `OAuth token refresh failed; using the current access token (${refreshFailureReason(err)})`,
+          {
+            cause: err instanceof Error ? err : new Error(refreshFailureReason(err)),
+            code: "UNKNOWN",
+            details: { provider },
+          },
+        );
+        return oauth.toAuth(toOAuthCredential(latest));
+      }
+    })();
+    shared = { promise, gate };
+    oauthRefreshInflight.set(provider, shared);
+    void promise.finally(() => {
+      if (oauthRefreshInflight.get(provider) === shared) oauthRefreshInflight.delete(provider);
+    }).catch(() => {});
+    return raceWithSignal(promise, signal).finally(leave);
+  }
+  const leave = shared.gate.enter(signal);
+  return raceWithSignal(shared.promise, signal).finally(leave);
+}
+
+export function resetOAuthProvidersForTests(
+  codexDeps: CodexOAuthDeps = {},
+  overrides: { anthropic?: OAuthAuth } = {},
+): void {
+  oauthRefreshInflight.clear();
+  refreshLockWaitOverride = null;
+  providers.find((provider) => provider.id === "openai-codex")!.oauth = createOpenAICodexOAuth(codexDeps);
+  providers.find((provider) => provider.id === "anthropic")!.oauth = overrides.anthropic ?? anthropicPaste;
 }

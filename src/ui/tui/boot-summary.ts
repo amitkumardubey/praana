@@ -37,6 +37,41 @@ function normalizeVersionLabel(version?: string): string {
   return `v${version.replace(/^v/, "")}`;
 }
 
+/**
+ * Short form of the first-screen hint for narrow terminals where the full
+ * line would wrap.
+ */
+export const LAUNCH_HINT_TEXT_SHORT: string =
+  "Type a message · /help · /model · Ctrl+J = new line";
+
+/**
+ * Dim first-screen hint shown under the launch-canvas meta while the
+ * transcript is still empty. Disappears once the first entry exists.
+ * The full form is 90+ chars, so it is only used on terminals wide enough
+ * (>= 100 cols) for it to fit on one line.
+ */
+export const LAUNCH_HINT_TEXT: string =
+  "Type a message to start · /help for commands · /model to switch model · Ctrl+J for a new line";
+
+/**
+ * Width-aware first-screen hint. Below 100 columns the shorter form is used
+ * so the hint never wraps; at 100+ columns the full form fits.
+ */
+export function launchHintForWidth(width: number): string {
+  return width < 100 ? LAUNCH_HINT_TEXT_SHORT : LAUNCH_HINT_TEXT;
+}
+
+/**
+ * Friendlier user-facing copy for the AGENTS.md truncation notice
+ * (the raw internal log line never appears on the launch canvas).
+ */
+export const AGENTS_TRUNCATION_NOTICE_TEXT: string =
+  "Project instructions (AGENTS.md) are long; using the first ~4000 tokens.";
+
+export function formatAgentsTruncationNotice(): string {
+  return AGENTS_TRUNCATION_NOTICE_TEXT;
+}
+
 /** Version + skills lines for the idle launch canvas (launch-screen design lock). */
 export function formatLaunchCanvasMeta(input: {
   session: Pick<Session, "skills">;

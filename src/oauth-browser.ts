@@ -1,44 +1,50 @@
 import { spawn } from "node:child_process";
 
-function isWsl(): boolean {
-  return Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
+export interface BrowserOpenerDeps {
+  spawn?: typeof spawn;
+  platform?: NodeJS.Platform;
+  isWsl?: boolean;
 }
 
-function spawnDetached(command: string, args: string[]): boolean {
-  try {
-    const child = spawn(command, args, {
-      detached: true,
-      stdio: "ignore",
-    });
-    child.on("error", () => {
-      // Ignored — caller may try another opener.
-    });
-    child.unref();
-    return true;
-  } catch {
-    return false;
-  }
+async function spawnDetached(command: string, args: string[], spawnChild: typeof spawn): Promise<boolean> {
+  return new Promise((resolve) => {
+    try {
+      const child = spawnChild(command, args, { detached: true, stdio: "ignore" });
+      child.once("error", () => resolve(false));
+      child.once("spawn", () => { child.unref(); resolve(true); });
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+/** Quote a URL for PowerShell single quotes. `&` stays inside the string. */
+function powershellStartCommand(url: string): string {
+  return `Start-Process -FilePath '${url.replaceAll("'", "''")}'`;
 }
 
 /**
  * Best-effort open a URL in the user's default browser.
- * On WSL, prefers wslview / Windows `cmd.exe start` because xdg-open is often a no-op.
+ * On WSL, prefers wslview, then PowerShell Start-Process, because xdg-open is often a no-op.
+ * The URL is never passed through cmd.exe, which would split on `&`.
  */
-export function openBrowserUrl(url: string): void {
-  if (isWsl()) {
-    if (spawnDetached("wslview", [url])) return;
-    if (spawnDetached("cmd.exe", ["/c", "start", "", url])) return;
-    spawnDetached("xdg-open", [url]);
-    return;
+export async function openBrowserUrl(url: string, deps: BrowserOpenerDeps = {}): Promise<boolean> {
+  if (
+    deps.spawn === undefined
+    && process.env.NODE_ENV === "test"
+    && process.env.PRAANA_OPEN_BROWSER === "0"
+  ) return false;
+  const spawnChild = deps.spawn ?? spawn;
+  const platform = deps.platform ?? process.platform;
+  const isWsl = deps.isWsl ?? Boolean(process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP);
+  if (isWsl) {
+    if (await spawnDetached("wslview", [url], spawnChild)) return true;
+    if (await spawnDetached("powershell.exe", [
+      "-NoProfile", "-NonInteractive", "-Command", powershellStartCommand(url),
+    ], spawnChild)) return true;
+    return spawnDetached("xdg-open", [url], spawnChild);
   }
-
-  if (process.platform === "darwin") {
-    spawnDetached("open", [url]);
-    return;
-  }
-  if (process.platform === "win32") {
-    spawnDetached("cmd", ["/c", "start", "", url]);
-    return;
-  }
-  spawnDetached("xdg-open", [url]);
+  if (platform === "darwin") return spawnDetached("open", [url], spawnChild);
+  if (platform === "win32") return spawnDetached("rundll32", ["url.dll,FileProtocolHandler", url], spawnChild);
+  return spawnDetached("xdg-open", [url], spawnChild);
 }

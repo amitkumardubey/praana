@@ -77,7 +77,7 @@ export const DEFAULT_MODELS: Record<string, string> = {
   opencode: "gpt-4o",
   umans: "umans-coder",
   poolside: "poolside/laguna-s-2.1",
-  "openai-codex": "gpt-5.4",
+  "openai-codex": "gpt-6.1-sol",
   "github-copilot": "gpt-4.1",
 };
 

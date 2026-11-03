@@ -65,6 +65,11 @@ export interface ListModelsForProviderOptions {
   /** When set, skip env-key re-check (caller already gated availability). */
   available?: boolean;
   disabledReason?: string;
+  /**
+   * Called when the live catalog fails but curated models remain, so the
+   * caller can report the failure without dropping the merged list.
+   */
+  onLiveError?: (message: string) => void;
 }
 
 /** Models for one provider: pi-ai catalog merged with live `/models` when available. */
@@ -111,6 +116,8 @@ export async function listModelsForProvider(
     } catch (err) {
       // Keep any pi-ai models we already have; only fail hard when empty.
       if (byId.size === 0) throw err;
+      const message = err instanceof Error ? err.message : String(err);
+      opts?.onLiveError?.(message);
     }
   }
 
@@ -118,26 +125,110 @@ export async function listModelsForProvider(
 }
 
 /**
- * Flat list across available providers for the `/model` selector.
- * Loads fresh each open (no session-long cache).
- * Throws when every available provider fails to yield models.
+ * Static/curated models for available providers (no network). Same provider
+ * and model set the live listing starts from, minus live-catalog additions.
+ * Models are sorted by modelId within each provider, matching the live
+ * listing's order so it never depends on which fetches succeed.
  */
-export async function listAllAvailableModels(): Promise<ModelListEntry[]> {
+export function listStaticAvailableModels(): ModelListEntry[] {
   const providers = listKnownProviders().filter((p) => isProviderAvailable(p));
   const out: ModelListEntry[] = [];
-  const errors: string[] = [];
+  for (const provider of providers) {
+    out.push(
+      ...collectPiAiModels(provider, true).sort((a, b) =>
+        a.modelId.localeCompare(b.modelId),
+      ),
+    );
+  }
+  return out;
+}
+
+/** Progress info delivered with incremental `onUpdate` snapshots. */
+export interface ModelListUpdateMeta {
+  /** Number of providers whose live `/models` fetch is still pending. */
+  pending: number;
+  /** Per-provider failures collected so far (`provider: message`). */
+  failed: string[];
+}
+
+export interface ListAllAvailableModelsOptions {
+  /**
+   * Called with the current merged snapshot whenever it changes: once
+   * synchronously with static models before any network I/O, then again as
+   * each provider's live catalog lands or fails.
+   */
+  onUpdate?: (entries: ModelListEntry[], meta: ModelListUpdateMeta) => void;
+}
+
+/**
+ * Flat list across available providers for the `/model` selector.
+ * Loads fresh each open (no session-long cache). Providers are queried in
+ * parallel; the result order is deterministic (same provider order as
+ * `listKnownProviders()`, models sorted by id within each provider).
+ * Throws when every available provider fails to yield models.
+ */
+export async function listAllAvailableModels(
+  opts?: ListAllAvailableModelsOptions,
+): Promise<ModelListEntry[]> {
+  const providers = listKnownProviders().filter((p) => isProviderAvailable(p));
+
+  // Per-provider snapshots keep the final order identical to the old
+  // sequential listing: providers in `listKnownProviders()` order, each
+  // provider's models sorted by modelId.
+  const perProvider = new Map<string, Map<string, ModelListEntry>>();
+  const snapshot = (): ModelListEntry[] => {
+    const out: ModelListEntry[] = [];
+    for (const provider of providers) {
+      const models = perProvider.get(provider);
+      if (!models) continue;
+      for (const entry of models.values()) out.push(entry);
+    }
+    return out;
+  };
 
   for (const provider of providers) {
-    try {
-      out.push(
-        ...(await listModelsForProvider(provider, { available: true })),
-      );
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      errors.push(`${provider}: ${message}`);
+    perProvider.set(provider, new Map());
+    const curated = collectPiAiModels(provider, true).sort((a, b) =>
+      a.modelId.localeCompare(b.modelId),
+    );
+    for (const entry of curated) {
+      perProvider.get(provider)!.set(entry.modelId, entry);
     }
   }
 
+  const errors: string[] = [];
+  let pending = providers.length;
+  const emit = () => {
+    // Deterministic order: sort failures by provider id so the reported list
+    // never depends on which live fetch settled first.
+    opts?.onUpdate?.(snapshot(), {
+      pending,
+      failed: [...errors].sort((a, b) => a.localeCompare(b)),
+    });
+  };
+  emit();
+
+  await Promise.allSettled(
+    providers.map(async (provider) => {
+      try {
+        const live = await listModelsForProvider(provider, {
+          available: true,
+          onLiveError: (message) => {
+            errors.push(`${provider}: ${message}`);
+          },
+        });
+        perProvider.set(provider, new Map(live.map((e) => [e.modelId, e])));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        errors.push(`${provider}: ${message}`);
+      } finally {
+        pending -= 1;
+        emit();
+      }
+    }),
+  );
+
+  const out = snapshot();
   if (out.length === 0 && errors.length > 0) {
     throw new Error(`Failed to load models:\n${errors.join("\n")}`);
   }

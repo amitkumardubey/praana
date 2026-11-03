@@ -3,12 +3,13 @@
  */
 import { createSignal, onCleanup, onMount, Show } from "solid-js";
 import type { InputRenderable } from "@opentui/core";
-import { useRenderer } from "@opentui/solid";
+import { useRenderer, useTerminalDimensions } from "@opentui/solid";
 import {
   buildProviderSelectItems,
   CUSTOM_PROVIDER_VALUE,
   providerHintMatchesList,
   resolveProviderHint,
+  type SelectItem,
 } from "../../../setup/provider-options.js";
 import {
   bedrockNeedsApiKeyPrompt,
@@ -26,7 +27,7 @@ import {
 import { hasApiKey } from "../../../llm.js";
 import { hasCredentials, hasOAuthToken } from "../../../credentials.js";
 import { isOAuthOnlyProvider } from "../../../oauth.js";
-import { runOAuthLoginWithUi } from "../oauth-login-ui.js";
+import { createOAuthTextPrompt, formatOAuthManualPrompt, loginOauthFrame, runOAuthLoginWithUi } from "../oauth-login-ui.js";
 import {
   isUserDeclaredProvider,
   listUserDeclaredProviderIds,
@@ -127,6 +128,26 @@ export function routeLoginHint(
   return { customId: hint, step: "custom-url" };
 }
 
+/**
+ * Login picker items: the curated provider list with user-declared custom
+ * providers inserted BEFORE the generic "Custom OpenAI-compatible endpoint"
+ * entry, which must stay last. The readline setup list
+ * (`buildProviderSelectItems`) is intentionally untouched, so its numbering
+ * stays stable with the generic Custom entry at the highest number.
+ */
+export function buildLoginPickerItems(): SelectItem[] {
+  const items = buildProviderSelectItems();
+  const customIndex = items.findIndex(
+    (item) => item.value === CUSTOM_PROVIDER_VALUE,
+  );
+  const declared: SelectItem[] = listUserDeclaredProviderIds()
+    .filter((id) => !items.some((item) => item.value === id))
+    .map((id) => ({ value: id, label: id, description: "(custom)" }));
+  if (customIndex >= 0) items.splice(customIndex, 0, ...declared);
+  else items.push(...declared);
+  return items;
+}
+
 const YES_NO_OPTIONS = [
   { value: "yes", name: "Yes — enter a new key", description: "" },
   { value: "no", name: "No — use existing key", description: "" },
@@ -205,6 +226,8 @@ function providerMap(): Record<string, true> {
 
 export function LoginOverlay(props: LoginOverlayProps) {
   const renderer = useRenderer();
+  const dimensions = useTerminalDimensions();
+  const oauthFrame = () => loginOauthFrame(dimensions().height || 24, dimensions().width || 80);
   const rawHint = props.initialProvider?.toLowerCase().trim();
   const providerItems = buildProviderSelectItems();
   const resolvedHint = rawHint
@@ -231,7 +254,6 @@ export function LoginOverlay(props: LoginOverlayProps) {
   let customId = routed?.customId ?? "";
   let customBaseUrl = "";
   let oauthAbort: AbortController | undefined;
-  let rejectOAuthText: ((error: Error) => void) | undefined;
   let resolveOAuthSelect: ((value: string | undefined) => void) | undefined;
   let settled = false;
 
@@ -242,7 +264,6 @@ export function LoginOverlay(props: LoginOverlayProps) {
 
   onCleanup(() => {
     oauthAbort?.abort();
-    rejectOAuthText?.(new Error("cancelled"));
     resolveOAuthSelect?.(undefined);
   });
 
@@ -420,26 +441,21 @@ export function LoginOverlay(props: LoginOverlayProps) {
           setMessage(lines.join("\n"));
           renderer.requestRender();
         },
-        promptText: (prompt, placeholder, contextLines) =>
-          new Promise<string>((resolve, reject) => {
-            if (abort.signal.aborted) {
-              reject(new Error("cancelled"));
-              return;
-            }
-            rejectOAuthText = reject;
-            abort.signal.addEventListener("abort", () => reject(new Error("cancelled")), {
-              once: true,
-            });
-            setOauthPrompt(prompt);
-            setOauthPlaceholder(placeholder ?? "");
-            setOauthContext(contextLines ?? []);
-            setStep("oauth-text");
-            const submit = (value: string) => {
-              if (!value.trim()) return;
-              rejectOAuthText = undefined;
-              resolve(value.trim());
-            };
-            oauthTextSubmit = submit;
+        promptText: (prompt, placeholder, contextLines, promptSignal) =>
+          createOAuthTextPrompt({
+            signal: abort.signal,
+            promptSignal,
+            onDismiss: () => {
+              oauthTextSubmit = undefined;
+              setStep("oauth-status");
+            },
+            present: (submit) => {
+              setOauthPrompt(prompt);
+              setOauthPlaceholder(placeholder ?? "");
+              setOauthContext(contextLines ?? []);
+              setStep("oauth-text");
+              oauthTextSubmit = submit;
+            },
           }),
         promptSelect: (prompt, options) =>
           new Promise<string | undefined>((resolve) => {
@@ -458,25 +474,19 @@ export function LoginOverlay(props: LoginOverlayProps) {
       }
     } finally {
       if (oauthAbort === abort) oauthAbort = undefined;
-      rejectOAuthText = undefined;
       resolveOAuthSelect = undefined;
       oauthTextSubmit = undefined;
     }
   };
 
   let oauthTextSubmit: ((value: string) => void) | undefined;
-  const pickerOptions = () => {
-    const items = buildProviderSelectItems();
-    for (const id of listUserDeclaredProviderIds()) {
-      if (!items.some((item) => item.value === id)) {
-        items.push({ value: id, label: id, description: "(custom)" });
-      }
-    }
-    return toPaletteOptions(items);
-  };
+  const pickerOptions = () => toPaletteOptions(buildLoginPickerItems());
 
   return (
-    <OverlayFrame width={64}>
+    <OverlayFrame
+      width={step() === "oauth-text" ? oauthFrame().width : 64}
+      maxHeight={step() === "oauth-text" ? oauthFrame().maxHeight : undefined}
+    >
       {step() === "picker" && (
         <>
           <text><span style={TUI_STYLE.info}>{"Login — select a provider"}</span></text>
@@ -636,13 +646,17 @@ export function LoginOverlay(props: LoginOverlayProps) {
       )}
       {step() === "oauth-text" && (
         <>
-          <text><span style={TUI_STYLE.info}>{`OAuth: ${provider}`}</span></text>
-          <text>{[...oauthContext(), oauthPrompt()].filter(Boolean).join("\n\n")}</text>
-          <Show when={oauthPlaceholder()}>
-            <text><span style={TUI_STYLE.muted}>{oauthPlaceholder()}</span></text>
-          </Show>
-          <TextInput id="login-oauth-input" focused onSubmit={(value) => oauthTextSubmit?.(value)} />
-          <text><span style={TUI_STYLE.faint}>{"Paste · Enter · Esc cancel"}</span></text>
+          <text flexShrink={0}><span style={TUI_STYLE.info}>{`OAuth: ${provider}`}</span></text>
+          <scrollbox flexGrow={1} flexShrink={1} minHeight={0} scrollY stickyScroll={false}>
+            <text wrapMode="char">{formatOAuthManualPrompt(oauthContext(), oauthPrompt())}</text>
+            <Show when={oauthPlaceholder()}>
+              <text><span style={TUI_STYLE.muted}>{oauthPlaceholder()}</span></text>
+            </Show>
+          </scrollbox>
+          <box flexShrink={0} flexDirection="column">
+            <TextInput id="login-oauth-input" focused onSubmit={(value) => oauthTextSubmit?.(value)} />
+            <text><span style={TUI_STYLE.faint}>{"Paste · Enter · Esc cancel"}</span></text>
+          </box>
         </>
       )}
       {step() === "oauth-select" && (

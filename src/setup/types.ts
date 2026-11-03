@@ -4,6 +4,8 @@ export interface SetupResult {
   model?: string;
   baseUrl?: string;
   keySaved?: boolean;
+  /** True when the setup actually wrote/patched the config file. */
+  configWritten?: boolean;
   message: string;
 }
 

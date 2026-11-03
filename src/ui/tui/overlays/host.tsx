@@ -4,7 +4,7 @@
 import { Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 import { useRenderer } from "@opentui/solid";
 import { useBindings, useKeymap } from "@opentui/keymap/solid";
-import type { ModelListEntry } from "../../../model-listing.js";
+import type { ListAllAvailableModelsOptions, ModelListEntry } from "../../../model-listing.js";
 import type { OverlayUi } from "./state.js";
 import { SlashResultOverlay } from "./slash-result.js";
 import { ModelSelectorOverlay } from "./model-selector.js";
@@ -17,11 +17,46 @@ import { ConsentOverlay } from "./consent.js";
 import type { SetupResult } from "../../../setup/types.js";
 import type { Session } from "../../../session.js";
 
+export interface OverlayBindingCommands {
+  dismiss: () => void;
+  paletteCancel: () => void;
+}
+
+/**
+ * Key bindings the overlay host owns per kind. The login/logout overlays have
+ * no internal key handling and cancel on both Escape and Ctrl+C here (the
+ * documented "modal login/logout screens keep their own Ctrl+C (cancel)");
+ * setup/consent handle Ctrl+C inside their own components, so the host only
+ * provides Escape for them. The palette cancels on Escape and Ctrl+C; model
+ * closes on Escape (its Ctrl+C goes through the global binding decision).
+ */
+export function overlayBindingsFor(
+  kind: string,
+  cmds: OverlayBindingCommands,
+): Array<{ key: string; cmd: () => void }> {
+  if (kind === "login" || kind === "logout") {
+    return [
+      { key: "escape", cmd: cmds.dismiss },
+      { key: "ctrl+c", cmd: cmds.dismiss },
+    ];
+  }
+  if (kind === "model" || kind === "consent") {
+    return [{ key: "escape", cmd: cmds.dismiss }];
+  }
+  if (kind === "palette") {
+    return [
+      { key: "escape", cmd: cmds.paletteCancel },
+      { key: "ctrl+c", cmd: cmds.paletteCancel },
+    ];
+  }
+  return [];
+}
+
 export interface OverlayHostProps {
   overlay: OverlayUi;
   currentProvider: () => string;
   currentModelId: () => string;
-  loadModels: () => Promise<ModelListEntry[]>;
+  loadModels: (opts?: ListAllAvailableModelsOptions) => Promise<ModelListEntry[]>;
   onModelSelect: (provider: string, modelId: string) => void;
   onLoginComplete: (result: LoginWizardResult) => void;
   onLogoutComplete: (result: LogoutWizardResult) => void;
@@ -65,20 +100,12 @@ export function OverlayHost(props: OverlayHostProps) {
 
   useBindings(() => {
     const k = kind();
-    if (k === "model" || k === "login" || k === "logout" || k === "consent") {
-      return {
-        bindings: [{ key: "escape", cmd: () => props.onDismiss() }],
-      };
-    }
-    if (k === "palette") {
-      return {
-        bindings: [
-          { key: "escape", cmd: () => props.onPaletteCancel() },
-          { key: "ctrl+c", cmd: () => props.onPaletteCancel() },
-        ],
-      };
-    }
-    return { bindings: [] };
+    return {
+      bindings: overlayBindingsFor(k, {
+        dismiss: () => props.onDismiss(),
+        paletteCancel: () => props.onPaletteCancel(),
+      }),
+    };
   });
 
   createEffect(() => {

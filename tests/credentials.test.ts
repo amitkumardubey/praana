@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, rmSync, statSync, existsSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { writeFileSync, chmodSync, mkdirSync } from "node:fs";
+import { writeFileSync, readFileSync, chmodSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import {
   getApiKey,
@@ -19,6 +19,9 @@ import {
   resolveAuth,
   getCredentialsFilePath,
   ensureCredentialsFileMode,
+  mutateCredentialsForTests,
+  failNextCredentialPersistForTests,
+  readCachedOAuthIfUnchanged,
   resetCredentialStoreForTests,
   type StoredOAuthCredential,
 } from "../src/credentials.js";
@@ -221,6 +224,48 @@ describe("credential store", () => {
       expires: expect.any(Number),
     });
   });
+
+  it("re-reads when a replacement file keeps the same mtime", () => {
+    setOAuthToken("openai-codex", sampleOAuth({ access: "old-access", refresh: "old-refresh" }));
+    const path = getCredentialsFilePath();
+    expect(readCachedOAuthIfUnchanged("openai-codex")).toMatchObject({
+      unchanged: true,
+      token: { access: "old-access" },
+    });
+    const before = statSync(path);
+    const tmp = `${path}.next`;
+    writeFileSync(tmp, JSON.stringify({
+      "openai-codex": {
+        type: "oauth",
+        access: "new-access",
+        refresh: "new-refresh",
+        expires: Date.now() + 60_000,
+        savedAt: 1,
+      },
+    }), { mode: 0o600 });
+    renameSync(tmp, path);
+    const seconds = before.mtimeMs / 1000;
+    utimesSync(path, seconds, seconds);
+    expect(statSync(path).mtimeMs).toBe(before.mtimeMs);
+    expect(statSync(path).ino).not.toBe(before.ino);
+    expect(readCachedOAuthIfUnchanged("openai-codex").unchanged).toBe(false);
+  });
+
+  it("does not replace a credentials file it cannot read", () => {
+    const path = getCredentialsFilePath();
+    mkdirSync(dirname(path), { recursive: true });
+    const bytes = Buffer.from("{\"openrouter\":{\"type\":\"api_key\",\"key\":\"sk-keep\",\"savedAt\":1}}");
+    writeFileSync(path, bytes, { mode: 0o600 });
+    chmodSync(path, 0o000);
+    resetCredentialStoreForTests();
+    try {
+      expect(() => setApiKey("openrouter", "sk-new")).toThrow(/left it unchanged/);
+    } finally {
+      chmodSync(path, 0o600);
+    }
+    expect(readFileSync(path)).toEqual(bytes);
+    expect(readdirSync(dirname(path)).some((name) => name.startsWith("credentials.json.corrupt-"))).toBe(false);
+  });
 });
 
 describe("resolveApiKey precedence", () => {
@@ -269,5 +314,92 @@ describe("resolveApiKey precedence", () => {
     savedEnv.UNSET_KEY = process.env.UNSET_KEY;
     delete process.env.UNSET_KEY;
     expect(resolveApiKey("provider-z", "UNSET_KEY")).toBe("");
+  });
+
+  it("removeCredentials of an absent provider returns false and never touches the file", () => {
+    setApiKey("openrouter", "sk-or");
+    const path = getCredentialsFilePath();
+    const before = readFileSync(path);
+    const statBefore = statSync(path);
+    const removed = removeCredentials("no-such-provider");
+    expect(removed).toBe(false);
+    const after = readFileSync(path);
+    const statAfter = statSync(path);
+    expect(after).toEqual(before);
+    expect(statAfter.mtimeMs).toBe(statBefore.mtimeMs);
+    expect(statAfter.ino).toBe(statBefore.ino);
+    expect(statAfter.size).toBe(statBefore.size);
+    // The store still holds the provider that was there.
+    expect(getApiKey("openrouter")).toBe("sk-or");
+  });
+
+  it("removeCredentials of an absent provider leaves a corrupt store untouched (no backup copy)", () => {
+    const path = getCredentialsFilePath();
+    mkdirSync(dirname(path), { recursive: true });
+    const bytes = Buffer.from("{not-json");
+    writeFileSync(path, bytes);
+    resetCredentialStoreForTests();
+    const statBefore = statSync(path);
+    const removed = removeCredentials("no-such-provider");
+    expect(removed).toBe(false);
+    expect(readFileSync(path)).toEqual(bytes);
+    const statAfter = statSync(path);
+    expect(statAfter.mtimeMs).toBe(statBefore.mtimeMs);
+    expect(statAfter.ino).toBe(statBefore.ino);
+    expect(readdirSync(dirname(path)).some((name) => name.includes(".corrupt-"))).toBe(false);
+  });
+
+  it("a throwing mutator leaves the credential cache and file unchanged", () => {
+    setOAuthToken("openai-codex", {
+      access: "access-1",
+      refresh: "refresh-1",
+      expires: 123,
+      accountId: "acct",
+    });
+    const before = readFileSync(getCredentialsFilePath());
+    const cached = getOAuthToken("openai-codex");
+    expect(cached?.access).toBe("access-1");
+    expect(() => mutateCredentialsForTests((creds) => {
+      const entry = creds["openai-codex"];
+      if (entry && entry.type === "oauth") entry.access = "mutated";
+      throw new Error("boom");
+    })).toThrow("boom");
+    expect(readFileSync(getCredentialsFilePath())).toEqual(before);
+    expect(getOAuthToken("openai-codex")?.access).toBe("access-1");
+    expect(getOAuthToken("openai-codex")?.refresh).toBe("refresh-1");
+  });
+
+  it("a throwing mutator on a corrupt credentials file leaves the file and cache unchanged", () => {
+    setApiKey("openrouter", "sk-keep");
+    const path = getCredentialsFilePath();
+    const bytes = Buffer.from("{not-json");
+    writeFileSync(path, bytes);
+    expect(() => mutateCredentialsForTests(() => {
+      throw new Error("boom");
+    })).toThrow("boom");
+    expect(readFileSync(path)).toEqual(bytes);
+    expect(readdirSync(dirname(path)).some((name) => name.includes(".corrupt-"))).toBe(false);
+    expect(getApiKey("openrouter")).toBe("sk-keep");
+  });
+
+  it("a failed save of a corrupt credentials file leaves the original file and cache unchanged", () => {
+    setApiKey("openrouter", "sk-keep");
+    const path = getCredentialsFilePath();
+    const bytes = Buffer.from("{not-json");
+    writeFileSync(path, bytes, { mode: 0o600 });
+    const error = new Error("no space left on device");
+    (error as NodeJS.ErrnoException).code = "ENOSPC";
+    failNextCredentialPersistForTests(error);
+    expect(() => mutateCredentialsForTests((creds) => {
+      creds["openrouter"] = { type: "api_key", key: "sk-new", savedAt: 1 };
+    })).toThrow("no space left on device");
+    expect(readFileSync(path)).toEqual(bytes);
+    const backups = readdirSync(dirname(path)).filter((name) => name.startsWith("credentials.json.corrupt-"));
+    expect(backups).toHaveLength(1);
+    const backupPath = join(dirname(path), backups[0]!);
+    expect(readFileSync(backupPath)).toEqual(bytes);
+    expect(statSync(backupPath).mode & 0o777).toBe(0o600);
+    expect(readdirSync(dirname(path)).some((name) => name.includes(".tmp"))).toBe(false);
+    expect(getApiKey("openrouter")).toBe("sk-keep");
   });
 });

@@ -4,11 +4,37 @@
 import { For, Show, createEffect } from "solid-js";
 import { useRenderer, useTerminalDimensions } from "@opentui/solid";
 import { useBindings } from "@opentui/keymap/solid";
+import type { ScrollBoxRenderable } from "@opentui/core";
 import { needsGap } from "./gap.js";
 import { TranscriptEntryView } from "./entries.js";
 import type { TranscriptStoreApi } from "./store.js";
 import type { TranscriptRenderOpts } from "./opts.js";
 import type { ExpandedContentResult, IndexedTranscriptEntry } from "./index.js";
+
+export interface PromptFocusGuardState {
+  /** An overlay (palette, picker, wizard, …) owns the keyboard right now. */
+  overlayOpen: boolean;
+  /** F9 transcript focus mode: the transcript intentionally owns the keys. */
+  transcriptFocusMode: boolean;
+  /** The renderer already has a text editor (prompt or overlay input) focused. */
+  editorFocused: boolean;
+}
+
+/**
+ * Mouse clicks in the transcript must never leave typing dead.
+ *
+ * OpenTUI's renderer auto-focuses the nearest focusable ancestor of a mouse
+ * click, so a click (or drag-select) in the transcript used to focus the
+ * transcript scrollbox and blur the prompt. The transcript is not a text
+ * input, so with nothing focused a printable key was simply dropped. When that
+ * happens we hand focus back to the prompt — unless an overlay owns the
+ * keyboard or the user deliberately entered transcript (F9) focus mode.
+ */
+export function shouldRestorePromptFocus(
+  state: PromptFocusGuardState,
+): boolean {
+  return !state.overlayOpen && !state.transcriptFocusMode && !state.editorFocused;
+}
 
 export interface TranscriptViewProps {
   store: TranscriptStoreApi;
@@ -96,6 +122,14 @@ export function TranscriptView(props: TranscriptViewProps) {
     // rely on native vertical content flow + full-height native scrollbar.
     <scrollbox
       id="transcript"
+      ref={(el: ScrollBoxRenderable) => {
+        // The transcript never wants keyboard focus: F9 transcript focus mode
+        // drives navigation through global keymap bindings, and mouse clicks /
+        // drag-selects must not blur the prompt (typing would go nowhere).
+        // ScrollBoxRenderable forces `_focusable = true` in its own field
+        // initializer, so the `focusable` prop cannot turn it off — do it here.
+        el.focusable = false;
+      }}
       flexGrow={1}
       minHeight={1}
       paddingLeft={2}
