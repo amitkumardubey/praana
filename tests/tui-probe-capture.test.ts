@@ -9,5 +9,6 @@ test("capture accepts positive terminal dimensions", () => {
 test("capture only finishes after a busy turn returns to idle", () => {
   expect(turnFinished(false, "replying…")).toEqual({ busy: true, finished: false });
   expect(turnFinished(false, "idle")).toEqual({ busy: false, finished: false });
-  expect(turnFinished(true, "idle")).toEqual({ busy: true, finished: true });
+  expect(turnFinished(true, "idle")).toEqual({ busy: true, finished: false });
+  expect(turnFinished(true, "Message Praana")).toEqual({ busy: true, finished: true });
 });

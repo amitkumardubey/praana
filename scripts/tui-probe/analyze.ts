@@ -143,5 +143,5 @@ export function analyzeSamples(samples: Sample[], opts: { height: number }): Rep
 
 /** Optional I/O boundary for capture JSONL; analysis itself is pure. */
 export async function readSamples(path: string): Promise<Sample[]> {
-  return (await Bun.file(path).text()).split("\n").filter(Boolean).map((line) => JSON.parse(line) as Sample);
+  return (await Bun.file(path).text()).split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((entry) => typeof entry.timestamp === "number" && typeof entry.text === "string") as Sample[];
 }
