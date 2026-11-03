@@ -16,7 +16,7 @@ import type {
 import { parseSseStream } from "../sse.js";
 import { ToolCallAccumulator } from "../tool-accumulator.js";
 import { runGuardedProviderStream } from "../stream-guard.js";
-import { logLenientStreamEnd } from "../stream-end.js";
+import { logLenientStreamEnd, prematureEndError } from "../stream-end.js";
 
 export class AnthropicDriver implements LlmDriver {
   readonly protocol = "anthropic-messages";
@@ -95,6 +95,7 @@ export class AnthropicDriver implements LlmDriver {
       frames: (byteStream) => parseSseStream(byteStream),
       onFrame: (event) => {
         const events: StreamEvent[] = [];
+        let terminal = false;
         const dataStr = event.data?.trim();
         if (!dataStr) return { events };
 
@@ -193,6 +194,7 @@ export class AnthropicDriver implements LlmDriver {
           const delta = parsed.delta;
           if (delta?.stop_reason) {
             sawTerminal = true;
+            terminal = true;
             if (delta.stop_reason === "tool_use") finishReason = "tool_use";
             else if (delta.stop_reason === "max_tokens") finishReason = "length";
             else finishReason = "stop";
@@ -203,18 +205,19 @@ export class AnthropicDriver implements LlmDriver {
           }
         } else if (type === "message_stop") {
           sawTerminal = true;
+          terminal = true;
         }
+        if (terminal) return { events: [...events, ...finishAnthropic()], stop: true };
         return { events };
       },
-      onComplete: () => {
+      onComplete: () => finishAnthropic(),
+    });
+
+    function finishAnthropic(): StreamEvent[] {
         const events: StreamEvent[] = [];
         if (!sawTerminal) {
           if (req.strictStreamEnd !== false) {
-            events.push({
-              type: "error",
-              error: new Error("stream ended before the provider sent a final event (message_stop)"),
-              retryable: !emittedDelta,
-            });
+            events.push(prematureEndError("message_stop", !emittedDelta));
             return events;
           }
           logLenientStreamEnd(req.provider);
@@ -254,8 +257,7 @@ export class AnthropicDriver implements LlmDriver {
           message: finalAssistant,
         });
         return events;
-      },
-    });
+    }
   }
 
   private formatMessages(

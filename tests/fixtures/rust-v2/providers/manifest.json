@@ -4,14 +4,14 @@
   "oracle_sha256_by_file": {
     "src/llm/auth.ts": "41beb8db735ce7bc4103802b19965193c0d5f72668bb5aaa2ab3796c2b47420a",
     "src/llm/drivers/base.ts": "b0cc64042cef8c21adfdb81c8abda6e8619dea4ee05e90dba105ee38488e8d01",
-    "src/llm/drivers/openai.ts": "d2175221bbc7bbb31ea654707ca496ad2a0580c6fdcaee9e3056c78941bc5c1d",
+    "src/llm/drivers/openai.ts": "e78ef7036eecfd58210ff440352cffc7d755a7163e87c61efa127ecd09c885c5",
     "src/llm/drivers/responses.ts": "93f6d143c92046cec2ea4f552921ef0ff527fdf5bdd30789ac2327ebe928b6f6",
     "src/llm/resolver.ts": "57f9f08352ca46610f1aaab73fad21645992d5dc1df8a83761bf5d8e25178662",
-    "src/llm/retry.ts": "f8787c74f916cc9ac66ae35f2ebc86fd6f0d4d51f3a36ccb58ab3418e9ba108b",
+    "src/llm/retry.ts": "a9906f2d281323ea5f8c2ab1e733279a321577efe9933242f87bcf3b5632cbaa",
     "src/llm/sse.ts": "2363b78f3623cc14d704fa71b9222fdccd0654fcd6cde83d4b66d884dcde8c62",
     "src/llm/stream.ts": "5c4cbaba23ee9ea1db48d18b0768cb5fdfa6281a9919578500edc6dda61b9929",
     "src/llm/tool-accumulator.ts": "4541234f02a81e79cb63055c9a70f89a67fe99fd27c674f0e2318f606f1bef11",
-    "src/llm/types.ts": "9831bbb6a7bdbfca0958807757b97968bc98634797e2f1c7d927f6874dc64a71",
+    "src/llm/types.ts": "be4283c29a103c7a23732fd1cc210ff376ce7b3ab01f59f54970e9fb1d4d0739",
     "src/llm/url.ts": "7a3852c7849728c6f5d8939fff9ef1e20d2d99851445d2c80a63b92c6ca406ea",
     "src/llm/wire-config.ts": "1fa8d09c8f1a22895873e09279ac08184636b9f1bf7328d4e5105de93503181d",
     "src/provider-registry.ts": "a731c0716a8d24c5c4ffa6202d8d8ff65fcfcdf6502fc35f3194caceb23af4c7"

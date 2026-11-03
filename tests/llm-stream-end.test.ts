@@ -5,7 +5,6 @@ import { join } from "node:path";
 import { getConfigWarnings, loadConfig } from "../src/config.js";
 import { streamLlmResponse } from "../src/llm/stream.js";
 import type { StreamEvent } from "../src/llm/types.js";
-import { setStreamEndCheck } from "../src/llm/stream-end.js";
 import { resetUserProvidersForTests } from "../src/provider-registry.js";
 import { createTestLogger, getAppLogger, setAppLogger, type PraanaLogger } from "../src/logger.js";
 
@@ -20,7 +19,6 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
   if (previousLogger) setAppLogger(previousLogger);
   previousLogger = undefined;
-  setStreamEndCheck("auto");
   resetUserProvidersForTests();
   getConfigWarnings();
   if (dir) rmSync(dir, { recursive: true, force: true });

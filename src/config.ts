@@ -188,10 +188,17 @@ function normalizeStreamEndCheck(value: unknown): StreamEndCheck {
   return "auto";
 }
 
+/** Largest delay `setTimeout` accepts. Above this, the delay overflows and fires immediately. */
+const MAX_SETTIMEOUT_MS = 2_147_483_647;
+
 function normalizeLlmTimeout(value: unknown, name: string): number | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
     configWarn(`Invalid llm.${name}, using the provider default`);
+    return undefined;
+  }
+  if (value > MAX_SETTIMEOUT_MS) {
+    configWarn(`Invalid llm.${name} above 2147483647, using the provider default`);
     return undefined;
   }
   return value;

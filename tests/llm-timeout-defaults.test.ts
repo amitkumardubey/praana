@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getConfigWarnings, loadConfig } from "../src/config.js";
 import { AnthropicDriver } from "../src/llm/drivers/anthropic.js";
-import { getLlmStreamTimeouts, resolveLlmStreamTimeouts } from "../src/llm/stream-guard.js";
+import { resolveLlmStreamTimeouts } from "../src/llm/stream-guard.js";
 import { streamLlmResponse } from "../src/llm/stream.js";
 import { resetUserProvidersForTests, upsertUserProvider } from "../src/provider-registry.js";
 import { createTestLogger, getAppLogger, setAppLogger, type PraanaLogger } from "../src/logger.js";
@@ -51,6 +51,20 @@ describe("resolveLlmStreamTimeouts", () => {
     expect(resolveLlmStreamTimeouts({ provider: "my-llama" }).connectTimeoutMs).toBe(300_000);
   });
 
+  it("uses the long connect budget when a hosted id points at another host", () => {
+    expect(
+      resolveLlmStreamTimeouts({ provider: "openai", baseUrl: "http://localhost:11434/v1" }),
+    ).toEqual({ connectTimeoutMs: 300_000, idleTimeoutMs: 300_000 });
+    expect(resolveLlmStreamTimeouts({ provider: "openai" }).connectTimeoutMs).toBe(60_000);
+    expect(
+      resolveLlmStreamTimeouts({
+        provider: "openai",
+        baseUrl: "http://127.0.0.1:11434/v1",
+        connectTimeoutMs: 12_000,
+      }).connectTimeoutMs,
+    ).toBe(12_000);
+  });
+
   it("lets an explicit value, including 0, override the provider default", () => {
     expect(
       resolveLlmStreamTimeouts({
@@ -67,7 +81,7 @@ describe("resolveLlmStreamTimeouts", () => {
 
 describe("config validation does not retune live streams", () => {
   it("leaves another stream on provider defaults after validating a throwaway config", async () => {
-    const before = getLlmStreamTimeouts();
+    const before = resolveLlmStreamTimeouts({ provider: "anthropic" });
     dir = mkdtempSync(join(tmpdir(), "praana-llm-timeout-isolate-"));
     const path = join(dir, "praana.config.toml");
     writeFileSync(
@@ -87,7 +101,7 @@ describe("config validation does not retune live streams", () => {
     expect(cfg.llm.connect_timeout_ms).toBe(1);
     expect(cfg.llm.stream_idle_timeout_ms).toBe(1);
     expect(cfg.llm.stream_end_check).toBe("lenient");
-    expect(getLlmStreamTimeouts()).toEqual(before);
+    expect(resolveLlmStreamTimeouts({ provider: "anthropic" })).toEqual(before);
 
     globalThis.fetch = (async () =>
       new Response(

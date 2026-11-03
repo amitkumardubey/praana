@@ -3,8 +3,7 @@
 // ============================================================
 
 import type { AssistantMessage, StreamEvent, StreamRequest } from "./types.js";
-import { STREAM_END_STRICT_PROVIDERS } from "./stream-end.js";
-import { isUserDeclaredProvider } from "../provider-registry.js";
+import { isDefaultHostedEndpoint } from "./stream-end.js";
 import { withPreEmissionRetry } from "./retry.js";
 
 /** Connect budget for first-party hosted providers. */
@@ -19,52 +18,46 @@ export interface LlmStreamTimeouts {
   idleTimeoutMs: number;
 }
 
-let configured: LlmStreamTimeouts = {
-  connectTimeoutMs: DEFAULT_CONNECT_TIMEOUT_MS,
-  idleTimeoutMs: DEFAULT_STREAM_IDLE_TIMEOUT_MS,
-};
-
 const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
 let pendingListeners = 0;
-
-/**
- * AbortSignal.any is present in this Bun, but its dependent abort algorithms
- * stay on the caller's signal until that signal itself aborts. A turn-scoped
- * signal would keep one algorithm per request. The guard links the user
- * signal with addEventListener and removes it in dispose().
- */
-export function setLlmStreamTimeouts(next: LlmStreamTimeouts): void {
-  configured = {
-    connectTimeoutMs: next.connectTimeoutMs,
-    idleTimeoutMs: next.idleTimeoutMs,
-  };
-}
-
-export function getLlmStreamTimeouts(): LlmStreamTimeouts {
-  return { ...configured };
-}
 
 /**
  * Connect and idle budgets for one request.
  * An explicit number, including `0` (disabled), wins for every provider.
  * Otherwise idle is {@link DEFAULT_STREAM_IDLE_TIMEOUT_MS}. Connect is
- * {@link DEFAULT_CONNECT_TIMEOUT_MS} for the first-party hosted set
- * ({@link STREAM_END_STRICT_PROVIDERS}) and {@link DEFAULT_LOCAL_CONNECT_TIMEOUT_MS}
- * for everyone else, including user-declared endpoints that reuse a hosted id.
+ * {@link DEFAULT_CONNECT_TIMEOUT_MS} when {@link isDefaultHostedEndpoint}
+ * and {@link DEFAULT_LOCAL_CONNECT_TIMEOUT_MS} otherwise (another host,
+ * a user-declared id, or any provider outside the hosted set).
  */
 export function resolveLlmStreamTimeouts(opts: {
   provider: string;
+  baseUrl?: string;
   connectTimeoutMs?: number;
   idleTimeoutMs?: number;
 }): LlmStreamTimeouts {
-  const hosted =
-    !isUserDeclaredProvider(opts.provider) && STREAM_END_STRICT_PROVIDERS.has(opts.provider);
+  const hosted = isDefaultHostedEndpoint(opts.provider, opts.baseUrl);
   return {
     connectTimeoutMs:
       opts.connectTimeoutMs ??
       (hosted ? DEFAULT_CONNECT_TIMEOUT_MS : DEFAULT_LOCAL_CONNECT_TIMEOUT_MS),
     idleTimeoutMs: opts.idleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS,
   };
+}
+
+/**
+ * Use budgets already resolved onto the request. Resolve only when a caller
+ * invoked a driver directly and left a budget unset.
+ */
+export function timeoutsFromRequest(req: StreamRequest): LlmStreamTimeouts {
+  if (typeof req.connectTimeoutMs === "number" && typeof req.idleTimeoutMs === "number") {
+    return { connectTimeoutMs: req.connectTimeoutMs, idleTimeoutMs: req.idleTimeoutMs };
+  }
+  return resolveLlmStreamTimeouts({
+    provider: req.provider,
+    baseUrl: req.baseUrl,
+    connectTimeoutMs: req.connectTimeoutMs,
+    idleTimeoutMs: req.idleTimeoutMs,
+  });
 }
 
 export function streamGuardPendingTimers(): number {
@@ -87,14 +80,15 @@ export async function* runGuardedProviderStream<T>(opts: {
   emptyBodyMessage: string;
   request: (guard: LlmFetchGuard) => Promise<Response>;
   frames: (body: ReadableStream<Uint8Array>) => AsyncIterable<T>;
-  onFrame: (frame: T) => { events: StreamEvent[]; stop?: boolean };
+  /**
+   * `stop` ends the read now. `releaseIfIdle` reads one more frame if it is
+   * already buffered (a usage trailer or `[DONE]`), and otherwise finishes
+   * without waiting out the idle budget.
+   */
+  onFrame: (frame: T) => { events: StreamEvent[]; stop?: boolean; releaseIfIdle?: boolean };
   onComplete: () => StreamEvent[];
 }): AsyncGenerator<StreamEvent> {
-  const timeouts = resolveLlmStreamTimeouts({
-    provider: opts.req.provider,
-    connectTimeoutMs: opts.req.connectTimeoutMs,
-    idleTimeoutMs: opts.req.idleTimeoutMs,
-  });
+  const timeouts = timeoutsFromRequest(opts.req);
   const guard = createLlmFetchGuard({
     userSignal: opts.req.signal,
     connectTimeoutMs: timeouts.connectTimeoutMs,
@@ -132,7 +126,10 @@ export async function* runGuardedProviderStream<T>(opts: {
         if (!res.body) throw new Error(opts.emptyBodyMessage);
         return res;
       },
-      { signal: opts.req.signal },
+      {
+        signal: opts.req.signal,
+        maxRetriesFor: (err) => (err instanceof ConnectTimeoutError ? 1 : undefined),
+      },
     );
   } catch (err) {
     guard.dispose();
@@ -150,16 +147,43 @@ export async function* runGuardedProviderStream<T>(opts: {
     return null;
   };
 
+  const frames = opts.frames(guard.wrapBody(response.body!))[Symbol.asyncIterator]();
+  const pullFrame = () => frames.next();
   try {
-    for await (const frame of opts.frames(guard.wrapBody(response.body!))) {
+    while (true) {
+      const nxt = await pullFrame();
+      if (nxt.done) break;
       const halted = yieldHalt();
       if (halted) {
         yield halted;
         return;
       }
-      const step = opts.onFrame(frame);
+      const step = opts.onFrame(nxt.value);
       for (const ev of step.events) yield ev;
       if (step.stop) return;
+      if (step.releaseIfIdle) {
+        const pending = pullFrame();
+        const raced = await Promise.race([
+          pending.then((r) => ({ idle: false as const, r })),
+          new Promise<{ idle: true }>((resolve) => {
+            setTimeout(() => resolve({ idle: true }), 0);
+          }),
+        ]);
+        if (!raced.idle && !raced.r.done) {
+          const more = opts.onFrame(raced.r.value);
+          for (const ev of more.events) yield ev;
+          if (more.stop) return;
+        } else if (raced.idle) {
+          pending.catch(() => {});
+        }
+        const after = yieldHalt();
+        if (after) {
+          yield after;
+          return;
+        }
+        for (const ev of opts.onComplete()) yield ev;
+        return;
+      }
     }
     const halted = yieldHalt();
     if (halted) {
@@ -175,6 +199,7 @@ export async function* runGuardedProviderStream<T>(opts: {
     }
     yield errorEvent(err);
   } finally {
+    await frames.return?.().catch(() => {});
     guard.dispose();
   }
 }
@@ -272,6 +297,12 @@ function clearScheduled(timer: ReturnType<typeof setTimeout> | null): void {
   pendingTimers.delete(timer);
 }
 
+/**
+ * AbortSignal.any is present in this Bun, but its dependent abort algorithms
+ * stay on the caller's signal until that signal itself aborts. A turn-scoped
+ * signal would keep one algorithm per request. The guard links the user
+ * signal with addEventListener and removes it in dispose().
+ */
 export function createLlmFetchGuard(opts: {
   userSignal?: AbortSignal;
   connectTimeoutMs: number;
@@ -285,6 +316,8 @@ export function createLlmFetchGuard(opts: {
   let onUserAbort: (() => void) | null = null;
   let disposed = false;
   let attempt = 0;
+  let bodyReader: ReadableStreamDefaultReader<Uint8Array> | null = null;
+  let bodyDone = false;
 
   const unlinkUser = (): void => {
     if (!userSignal || !onUserAbort) return;
@@ -378,6 +411,7 @@ export function createLlmFetchGuard(opts: {
 
     wrapBody(body) {
       const reader = body.getReader();
+      bodyReader = reader;
       // highWaterMark 0: pull only to satisfy the consumer's read. A default
       // watermark of 1 pulls the next chunk as soon as the previous one is
       // delivered, which would re-arm the idle timer while the consumer is
@@ -393,6 +427,7 @@ export function createLlmFetchGuard(opts: {
             const { done, value } = await reader.read();
             clearIdle();
             if (done) {
+              bodyDone = true;
               ctrl.close();
               return;
             }
@@ -420,6 +455,11 @@ export function createLlmFetchGuard(opts: {
       connectTimer = null;
       clearIdle();
       unlinkUser();
+      if (bodyDone) return;
+      if (controller && !controller.signal.aborted) controller.abort();
+      const reader = bodyReader;
+      bodyReader = null;
+      if (reader) void reader.cancel().catch(() => {});
     },
   };
 }

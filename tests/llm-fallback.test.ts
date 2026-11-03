@@ -583,6 +583,7 @@ describe("LLM fallback", () => {
 
 const IDLE_TIMEOUT_ERROR =
   "The model stopped responding (idle timeout after 5s). The partial answer above was not completed.";
+const IDLE_TIMEOUT_BARE = "The model stopped responding (idle timeout after 5s).";
 
 function unpairedToolIds(messages: unknown): string[] {
   if (!Array.isArray(messages)) return ["invalid-history"];
@@ -658,7 +659,8 @@ describe("timeout history", () => {
     expect(histories.length).toBeGreaterThan(1);
     expect(histories.every((messages) => unpairedToolIds(messages).length === 0)).toBe(true);
     expect(JSON.stringify(histories)).not.toContain("call_partial");
-    expect(errors).toContain(IDLE_TIMEOUT_ERROR);
+    expect(errors).toContain(IDLE_TIMEOUT_BARE);
+    expect(errors.some((message) => message.includes("partial answer"))).toBe(false);
   });
 
   it("keeps history valid when a later tool step times out mid-tool-call", async () => {
@@ -727,12 +729,13 @@ describe("timeout history", () => {
   });
 });
 
-function prematureEnd(retryable: boolean) {
+function prematureEnd(retryable: boolean, message = "stream ended before the provider sent a final event (message_stop)") {
   return (async function* () {
     yield {
       type: "error",
-      error: new Error("stream ended before the provider sent a final event (message_stop)"),
+      error: new Error(message),
       retryable,
+      kind: "premature_end" as const,
     };
   })();
 }
@@ -760,6 +763,71 @@ describe("premature stream end retry", () => {
     expect(response).toContain("recovered");
     expect(callCount).toBe(2);
     expect(session.getEffectiveProvider()).toBe("umans");
+  });
+
+  it("retries a premature end when the message text is reworded", async () => {
+    const session = makeMockSession();
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      if (callCount === 1) return prematureEnd(true, "the socket closed early");
+      return (async function* () {
+        yield { type: "text_delta", delta: "recovered" };
+        yield { type: "done", reason: "stop", message: { role: "assistant", content: "recovered" } };
+      })();
+    });
+
+    const response = await runTurn(session, "hello");
+    expect(response).toContain("recovered");
+    expect(callCount).toBe(2);
+  });
+
+  it("does not retry the old premature-end sentence when the kind marker is absent", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      return (async function* () {
+        yield {
+          type: "error",
+          error: new Error("stream ended before the provider sent a final event (message_stop)"),
+          retryable: true,
+        };
+      })();
+    });
+
+    await runTurn(session, "hello");
+    expect(callCount).toBe(1);
+  });
+
+  it("skips the step-0 retry for a connect timeout and goes to the fallback", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      if (callCount === 1) {
+        return (async function* () {
+          yield {
+            type: "error",
+            error: new Error("ETIMEDOUT: connect timeout after 60000ms (llm.connect_timeout_ms)"),
+            retryable: false,
+          };
+        })();
+      }
+      return (async function* () {
+        yield { type: "text_delta", delta: "fallback" };
+        yield { type: "done", reason: "stop", message: { role: "assistant", content: "fallback" } };
+      })();
+    });
+
+    const response = await runTurn(session, "hello");
+    expect(response).toContain("fallback");
+    expect(callCount).toBe(2);
+    expect(session.getEffectiveProvider()).toBe("openrouter");
   });
 
   it("falls back after the one premature-end retry also fails", async () => {

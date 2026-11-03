@@ -14,7 +14,7 @@ import type {
 } from "../types.js";
 import { parseSseStream } from "../sse.js";
 import { runGuardedProviderStream } from "../stream-guard.js";
-import { logLenientStreamEnd } from "../stream-end.js";
+import { logLenientStreamEnd, prematureEndError } from "../stream-end.js";
 import { resolveVertexAccessToken } from "../google-adc.js";
 
 export class GoogleDriver implements LlmDriver {
@@ -99,6 +99,7 @@ export class GoogleDriver implements LlmDriver {
       frames: (byteStream) => parseSseStream(byteStream),
       onFrame: (event) => {
         const events: StreamEvent[] = [];
+        let terminal = false;
         const dataStr = event.data?.trim();
         if (!dataStr) return { events };
 
@@ -143,6 +144,7 @@ export class GoogleDriver implements LlmDriver {
 
         if (candidate.finishReason) {
           sawTerminal = true;
+          terminal = true;
           if (candidate.finishReason === "STOP") finishReason = "stop";
           else if (candidate.finishReason === "MAX_TOKENS") finishReason = "length";
         }
@@ -174,17 +176,17 @@ export class GoogleDriver implements LlmDriver {
             }
           }
         }
+        if (terminal) return { events: [...events, ...finishGoogle()], stop: true };
         return { events };
       },
-      onComplete: () => {
+      onComplete: () => finishGoogle(),
+    });
+
+    function finishGoogle(): StreamEvent[] {
         const events: StreamEvent[] = [];
         if (!sawTerminal) {
           if (req.strictStreamEnd !== false) {
-            events.push({
-              type: "error",
-              error: new Error("stream ended before the provider sent a final event (finishReason)"),
-              retryable: !emittedDelta,
-            });
+            events.push(prematureEndError("finishReason", !emittedDelta));
             return events;
           }
           logLenientStreamEnd(req.provider);
@@ -201,8 +203,7 @@ export class GoogleDriver implements LlmDriver {
           },
         });
         return events;
-      },
-    });
+    }
   }
 
   private formatContents(

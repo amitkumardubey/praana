@@ -17,8 +17,6 @@ const originalFetch = globalThis.fetch;
 const originalSetTimeout = globalThis.setTimeout;
 
 interface GuardModule {
-  setLlmStreamTimeouts(next: { connectTimeoutMs: number; idleTimeoutMs: number }): void;
-  getLlmStreamTimeouts(): { connectTimeoutMs: number; idleTimeoutMs: number };
   streamGuardPendingTimers(): number;
   streamGuardPendingListeners(): number;
   ConnectTimeoutError: new (timeoutMs: number) => Error;
@@ -46,11 +44,6 @@ afterEach(async () => {
   globalThis.fetch = originalFetch;
   globalThis.setTimeout = originalSetTimeout;
   requestTimeouts = null;
-  const guard = await loadGuard();
-  guard?.setLlmStreamTimeouts({
-    connectTimeoutMs: guard.DEFAULT_CONNECT_TIMEOUT_MS,
-    idleTimeoutMs: guard.DEFAULT_STREAM_IDLE_TIMEOUT_MS,
-  });
 });
 
 function encodeFrame(payload: unknown): Buffer {
@@ -238,7 +231,7 @@ describe("llm stream timeouts", () => {
         const error = events.find((ev) => ev.type === "error");
         expect(error && error.type === "error" ? error.error.message : "").toContain("ETIMEDOUT");
         expect(error && error.type === "error" ? error.error.message : "").toContain("30");
-        expect(calls).toBe(4);
+        expect(calls).toBe(2);
         expect(events.some((ev) => ev.type === "done" && ev.reason === "stop")).toBe(false);
       } finally {
         restore();
@@ -428,11 +421,10 @@ describe("llm timeout config", () => {
       false,
     );
     const guard = await loadGuard();
-    const before = guard?.getLlmStreamTimeouts();
     expect(cfg.llm.connect_timeout_ms).toBeUndefined();
     expect(cfg.llm.stream_idle_timeout_ms).toBeUndefined();
-    expect(guard?.getLlmStreamTimeouts()).toEqual(before);
-    expect(before).toEqual({ connectTimeoutMs: 60_000, idleTimeoutMs: 300_000 });
+    expect(guard?.DEFAULT_CONNECT_TIMEOUT_MS).toBe(60_000);
+    expect(guard?.DEFAULT_STREAM_IDLE_TIMEOUT_MS).toBe(300_000);
   });
 
   it("accepts 0 as a disabled timer", async () => {
@@ -465,5 +457,21 @@ describe("llm timeout config", () => {
     expect(warnings.some((w) => w.includes("Invalid llm.stream_idle_timeout_ms"))).toBe(true);
     expect(cfg.llm.connect_timeout_ms).toBeUndefined();
     expect(cfg.llm.stream_idle_timeout_ms).toBeUndefined();
+  });
+
+  it("rejects a timeout above the setTimeout limit instead of letting it overflow", async () => {
+    dir = mkdtempSync(join(tmpdir(), "praana-llm-timeout-"));
+    const path = join(dir, "praana.config.toml");
+    writeFileSync(
+      path,
+      "[llm]\nconnect_timeout_ms = 2147483648\nstream_idle_timeout_ms = 2147483647\n",
+      "utf-8",
+    );
+    getConfigWarnings();
+    const cfg = loadConfig(path);
+    const warnings = getConfigWarnings();
+    expect(warnings.some((w) => w.includes("above 2147483647"))).toBe(true);
+    expect(cfg.llm.connect_timeout_ms).toBeUndefined();
+    expect(cfg.llm.stream_idle_timeout_ms).toBe(2_147_483_647);
   });
 });

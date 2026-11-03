@@ -1,16 +1,14 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import {
   STREAM_END_STRICT_PROVIDERS,
-  getStreamEndCheck,
+  isDefaultHostedEndpoint,
   resolveStreamEndMode,
-  setStreamEndCheck,
   type StreamEndCheck,
 } from "../src/llm/stream-end.js";
 import { resetUserProvidersForTests, upsertUserProvider } from "../src/provider-registry.js";
 
 afterEach(() => {
   resetUserProvidersForTests();
-  setStreamEndCheck("auto");
 });
 
 describe("resolveStreamEndMode", () => {
@@ -81,11 +79,21 @@ describe("resolveStreamEndMode", () => {
     expect(resolveStreamEndMode("my-llama", "strict")).toBe("strict");
   });
 
-  it("reads the configured mode when the argument is omitted", () => {
-    setStreamEndCheck("lenient");
-    expect(getStreamEndCheck()).toBe("lenient");
-    expect(resolveStreamEndMode("anthropic")).toBe("lenient");
-    setStreamEndCheck("strict");
-    expect(resolveStreamEndMode("ollama")).toBe("strict");
+  it("treats an omitted check as auto", () => {
+    expect(resolveStreamEndMode("anthropic")).toBe("strict");
+    expect(resolveStreamEndMode("ollama")).toBe("lenient");
+  });
+
+  it("treats a hosted id on another host as lenient under auto", () => {
+    expect(isDefaultHostedEndpoint("openai", "http://localhost:11434/v1")).toBe(false);
+    expect(resolveStreamEndMode("openai", "auto", "http://localhost:11434/v1")).toBe("lenient");
+    expect(resolveStreamEndMode("openai", "strict", "http://127.0.0.1:11434/v1")).toBe("strict");
+  });
+
+  it("keeps the built-in OpenAI host strict under auto", () => {
+    expect(isDefaultHostedEndpoint("openai")).toBe(true);
+    expect(isDefaultHostedEndpoint("openai", "https://api.openai.com/v1")).toBe(true);
+    expect(resolveStreamEndMode("openai", "auto")).toBe("strict");
+    expect(resolveStreamEndMode("openai", "auto", "https://api.openai.com/v1")).toBe("strict");
   });
 });

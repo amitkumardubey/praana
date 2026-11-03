@@ -16,7 +16,7 @@ import type {
 import { parseSseStream } from "../sse.js";
 import { ToolCallAccumulator } from "../tool-accumulator.js";
 import { runGuardedProviderStream } from "../stream-guard.js";
-import { logLenientStreamEnd } from "../stream-end.js";
+import { logLenientStreamEnd, prematureEndError } from "../stream-end.js";
 import { joinUrl } from "../url.js";
 
 export class OpenAICompatibleDriver implements LlmDriver {
@@ -97,10 +97,13 @@ export class OpenAICompatibleDriver implements LlmDriver {
       frames: (byteStream) => parseSseStream(byteStream),
       onFrame: (event) => {
         const events: StreamEvent[] = [];
+        const trailer = sawTerminal;
+        let justFinished = false;
         const dataStr = event.data?.trim();
-        if (!dataStr || dataStr === "[DONE]") {
-          if (dataStr === "[DONE]") sawTerminal = true;
-          return { events };
+        if (!dataStr) return trailer ? { events: finishOpenAI(), stop: true } : { events };
+        if (dataStr === "[DONE]") {
+          sawTerminal = true;
+          return { events: finishOpenAI(), stop: true };
         }
 
         let parsed: any;
@@ -148,17 +151,25 @@ export class OpenAICompatibleDriver implements LlmDriver {
         }
 
         const choice = parsed.choices?.[0];
-        if (!choice) return { events };
+        if (!choice) {
+          if (trailer) return { events: [...events, ...finishOpenAI()], stop: true };
+          return { events };
+        }
 
         if (choice.finish_reason) {
           sawTerminal = true;
+          justFinished = true;
           if (choice.finish_reason === "tool_calls") finishReason = "tool_use";
           else if (choice.finish_reason === "length") finishReason = "length";
           else finishReason = "stop";
         }
 
         const delta = choice.delta;
-        if (!delta) return { events };
+        if (!delta) {
+          if (trailer) return { events: [...events, ...finishOpenAI()], stop: true };
+          if (justFinished) return { events, releaseIfIdle: true };
+          return { events };
+        }
 
         if (delta.reasoning_content) {
           accumulatedThinking += delta.reasoning_content;
@@ -192,19 +203,18 @@ export class OpenAICompatibleDriver implements LlmDriver {
             }
           }
         }
+        if (trailer) return { events: [...events, ...finishOpenAI()], stop: true };
+        if (justFinished) return { events, releaseIfIdle: true };
         return { events };
       },
-      onComplete: () => {
+      onComplete: () => finishOpenAI(),
+    });
+
+    function finishOpenAI(): StreamEvent[] {
         const events: StreamEvent[] = [];
         if (!sawTerminal) {
           if (req.strictStreamEnd !== false) {
-            events.push({
-              type: "error",
-              error: new Error(
-                "stream ended before the provider sent a final event (finish_reason or [DONE])",
-              ),
-              retryable: !emittedDelta,
-            });
+            events.push(prematureEndError("finish_reason or [DONE]", !emittedDelta));
             return events;
           }
           logLenientStreamEnd(req.provider);
@@ -231,8 +241,7 @@ export class OpenAICompatibleDriver implements LlmDriver {
           message: finalAssistant,
         });
         return events;
-      },
-    });
+    }
   }
 
   private formatMessages(

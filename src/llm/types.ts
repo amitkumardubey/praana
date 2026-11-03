@@ -70,7 +70,14 @@ export type StreamEvent =
       reason: "stop" | "tool_use" | "length" | "abort" | "error" | "rate_limit" | "timeout";
       message: AssistantMessage;
     }
-  | { type: "error"; error: Error; status?: number; retryable: boolean };
+  | {
+      type: "error";
+      error: Error;
+      status?: number;
+      retryable: boolean;
+      /** Set by drivers when a clean close never delivered the provider's final event. */
+      kind?: "premature_end";
+    };
 
 import type { ProviderWireCompat } from "../provider-registry.js";
 

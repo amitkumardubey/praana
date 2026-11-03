@@ -17,7 +17,7 @@ import type {
 import { parseAwsEventStream } from "../aws-sigv4.js";
 import { ToolCallAccumulator } from "../tool-accumulator.js";
 import { runGuardedProviderStream } from "../stream-guard.js";
-import { logLenientStreamEnd } from "../stream-end.js";
+import { logLenientStreamEnd, prematureEndError } from "../stream-end.js";
 import { authorizeAwsRequest } from "../aws-credentials.js";
 import { resolveBedrockRegion } from "../../bedrock/region.js";
 
@@ -143,6 +143,7 @@ export class BedrockDriver implements LlmDriver {
       frames: (byteStream) => parseAwsEventStream(byteStream),
       onFrame: (frame) => {
         const events: StreamEvent[] = [];
+        let terminal = false;
         const exception = bedrockStreamException(frame);
         if (exception) {
           events.push({
@@ -215,22 +216,23 @@ export class BedrockDriver implements LlmDriver {
 
         if (frame.messageStop) {
           sawTerminal = true;
+          terminal = true;
           const stop = frame.messageStop as any;
           if (stop.stopReason === "tool_use") finishReason = "tool_use";
           else if (stop.stopReason === "max_tokens") finishReason = "length";
           else finishReason = "stop";
         }
+        if (terminal) return { events: [...events, ...finishBedrock()], stop: true };
         return { events };
       },
-      onComplete: () => {
+      onComplete: () => finishBedrock(),
+    });
+
+    function finishBedrock(): StreamEvent[] {
         const events: StreamEvent[] = [];
         if (!sawTerminal) {
           if (req.strictStreamEnd !== false) {
-            events.push({
-              type: "error",
-              error: new Error("stream ended before the provider sent a final event (messageStop)"),
-              retryable: !emittedDelta,
-            });
+            events.push(prematureEndError("messageStop", !emittedDelta));
             return events;
           }
           logLenientStreamEnd(req.provider);
@@ -255,8 +257,7 @@ export class BedrockDriver implements LlmDriver {
           },
         });
         return events;
-      },
-    });
+    }
   }
 
   private formatMessages(

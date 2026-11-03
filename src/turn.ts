@@ -104,6 +104,8 @@ export interface LlmStreamResult {
   emittedToolCall: boolean;
   /** Driver said this failure can be retried. Read for a premature stream end. */
   retryable: boolean;
+  /** Set when a driver reports a clean close with no terminal event. */
+  errorKind?: "premature_end";
 }
 
 export function isRecoverableStreamError(result: LlmStreamResult): boolean {
@@ -135,13 +137,17 @@ export function shouldFallback(result: LlmStreamResult): boolean {
 export function isPrematureEndRetry(result: LlmStreamResult): boolean {
   if (result.interrupted || result.emittedToUi || result.emittedToolCall) return false;
   if (result.retryable !== true) return false;
-  return (result.errorMessage ?? "").includes("stream ended before the provider sent a final event");
+  return result.errorKind === "premature_end";
 }
 
-/** User-facing line when the idle timer ends a stream. `idleTimeoutMs` is the configured budget. */
-export function idleTimeoutUserMessage(idleTimeoutMs: number): string {
+/**
+ * User-facing line when the idle timer ends a stream.
+ * The partial-answer sentence is included only when text was actually streamed.
+ */
+export function idleTimeoutUserMessage(idleTimeoutMs: number, streamedText = false): string {
   const seconds = Math.max(0, Math.round(idleTimeoutMs / 1000));
-  return `The model stopped responding (idle timeout after ${seconds}s). The partial answer above was not completed.`;
+  const base = `The model stopped responding (idle timeout after ${seconds}s).`;
+  return streamedText ? `${base} The partial answer above was not completed.` : base;
 }
 
 /**
@@ -297,6 +303,7 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
   let emittedToUi = false;
   let emittedToolCall = false;
   let retryable = false;
+  let errorKind: LlmStreamResult["errorKind"];
 
   for await (const event of stream) {
     if (input.signal?.aborted) {
@@ -360,6 +367,7 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
       finalReason = (event as any).reason ?? "error";
       if (typeof event.status === "number") errorStatus = event.status;
       retryable = event.retryable;
+      if (event.kind === "premature_end") errorKind = "premature_end";
       const err = (event as any).error;
       if (err) {
         if (typeof err === "string") {
@@ -393,6 +401,7 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
     emittedToUi,
     emittedToolCall,
     retryable,
+    errorKind,
   };
 }
 
@@ -1045,7 +1054,11 @@ export async function runTurn(
       !streamResult.emittedToUi &&
       (shouldFallback(streamResult) || isPrematureEndRetry(streamResult))
     ) {
-      streamResult = await attemptStream();
+      // A connect timeout already had its one driver-level retry. Do not
+      // spend another full connect budget here; go to the fallback model.
+      if (!isConnectExhausted(streamResult)) {
+        streamResult = await attemptStream();
+      }
       if ((shouldFallback(streamResult) || isPrematureEndRetry(streamResult)) && canFallback()) {
         const fallbackProvider = session.config.llm.fallback_provider!;
         const fallbackModel = session.config.llm.fallback_model!;
@@ -1065,11 +1078,14 @@ export async function runTurn(
       }
     }
 
+    let streamedTimeoutText = false;
     if (streamResult.finalReason === "timeout" || isConnectExhausted(streamResult)) {
+      const kept = assistantTextAfterTimeout(streamResult.finalMessage);
+      streamedTimeoutText = streamResult.finalReason === "timeout" && kept !== null;
       streamResult = {
         ...streamResult,
         pendingToolCalls: [],
-        finalMessage: assistantTextAfterTimeout(streamResult.finalMessage),
+        finalMessage: kept,
       };
     }
 
@@ -1094,7 +1110,10 @@ export async function runTurn(
     ) {
       const llmMessage =
         streamResult.finalReason === "timeout"
-          ? idleTimeoutUserMessage(configuredIdleTimeoutMs(session.config.llm.stream_idle_timeout_ms))
+          ? idleTimeoutUserMessage(
+              configuredIdleTimeoutMs(session.config.llm.stream_idle_timeout_ms),
+              streamedTimeoutText,
+            )
           : streamResult.errorMessage;
       lastStreamReason = streamResult.finalReason;
       lastLlmErrorMessage = llmMessage;

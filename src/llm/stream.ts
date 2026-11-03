@@ -147,23 +147,25 @@ export async function* streamLlmResponse(
     },
   };
 
+  const effectiveBaseUrl = req.baseUrl || mergedAuth.baseUrl;
+  const streamEndCheck = req.streamEndCheck ?? "auto";
   const timeouts = resolveLlmStreamTimeouts({
     provider: req.provider,
+    baseUrl: effectiveBaseUrl,
     connectTimeoutMs: req.connectTimeoutMs,
     idleTimeoutMs: req.idleTimeoutMs,
   });
-  const streamEndCheck = req.streamEndCheck ?? "auto";
   const mergedReq: StreamRequest = {
     ...req,
-    baseUrl: req.baseUrl || mergedAuth.baseUrl,
+    baseUrl: effectiveBaseUrl,
     headers: mergedAuth.headers,
     compat: req.compat ?? wire.compat,
     api: req.api ?? wire.api,
-    streamEndCheck,
     connectTimeoutMs: timeouts.connectTimeoutMs,
     idleTimeoutMs: timeouts.idleTimeoutMs,
     strictStreamEnd:
-      req.strictStreamEnd ?? resolveStreamEndMode(req.provider, streamEndCheck) === "strict",
+      req.strictStreamEnd ??
+      resolveStreamEndMode(req.provider, streamEndCheck, effectiveBaseUrl) === "strict",
   };
 
   const driver = getDriverForProvider(req.provider, mergedReq.api);

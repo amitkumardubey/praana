@@ -4,6 +4,12 @@
 
 export interface RetryOptions {
   maxRetries?: number;
+  /**
+   * Per-error cap, when the default of {@link RetryOptions.maxRetries} is too
+   * high. Return `undefined` to keep the default. A connect timeout returns 1
+   * so the request is tried once more and then surfaces.
+   */
+  maxRetriesFor?: (error: unknown) => number | undefined;
   baseDelayMs?: number;
   maxDelayMs?: number;
   signal?: AbortSignal;
@@ -81,8 +87,9 @@ export async function withPreEmissionRetry<T>(
     } catch (err: any) {
       attempt++;
       const status = err.status ?? (err.response ? err.response.status : undefined);
+      const cap = opts.maxRetriesFor?.(err) ?? maxRetries;
 
-      if (attempt > maxRetries || !isRetryableError(err, status)) {
+      if (attempt > cap || !isRetryableError(err, status)) {
         throw err;
       }
 

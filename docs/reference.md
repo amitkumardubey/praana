@@ -136,14 +136,14 @@ Provider resolution order: explicit config → credential store (`~/.praana/cred
 
 ### LLM stream timeouts
 
-These keys live in `[llm]`. A value that is not a non-negative integer warns and the provider default is used instead. `0` turns that timer off. An explicit value applies to every provider. Omitting a key does not change timeouts for other streams in the process; each request resolves its own budget.
+These keys live in `[llm]`. A value that is not a non-negative integer warns and the provider default is used instead. An integer above `2147483647` is also rejected with a warning and the provider default is used: `setTimeout` overflows past that and the timer would fire immediately. `0` turns that timer off. An explicit value applies to every provider. Omitting a key does not change timeouts for other streams in the process; each request resolves its own budget.
 
 Connect time is time until the first response headers. Local and self-hosted servers often spend that time loading a model or prefilling the prompt, so they get a longer budget than hosted APIs. Idle time is silence from the server after the response has started, including a reasoning model that has not emitted a token yet. It is not reset by the client being slow to read a chunk it already received.
 
 | Key | Default | Behaviour |
 |---|---|---|
-| `connect_timeout_ms` | `60000` for `anthropic`, `openai`, `google`, `vertex`, and `amazon-bedrock`; `300000` for every other provider (user-declared endpoints, Ollama, LM Studio, vLLM, and the rest of the registry). A user-declared id uses `300000` even when that id is also in the hosted list. | Abort the request if response headers have not arrived. The failure is retried before any tokens are emitted. |
-| `stream_idle_timeout_ms` | `300000` | Abort if the server stays silent this long. The timer resets when an upstream chunk arrives, including SSE comment keep-alives, and pauses while that chunk is processed. The stream ends with reason `timeout`. Partial text is kept when the assistant message has no unpaired tool call, and the turn reports `The model stopped responding (idle timeout after Ns).` A user abort is still reason `abort`. |
+| `connect_timeout_ms` | `60000` when the provider is `anthropic`, `openai`, `google`, `vertex`, or `amazon-bedrock` and the effective base URL is unset or is that provider's built-in host. `300000` when `base_url` points at any other host (including loopback and private addresses), for every other provider, and for a user-declared id even when that id is also in the hosted list. An explicit number always wins. | Abort the request if response headers have not arrived. A connect timeout is fetched at most twice (the first attempt plus one retry, with up to 1.2s of backoff). The turn does not retry that failure again: if a fallback model is configured, that model is asked next. Worst case before the fallback request starts is about 121s on the 60s budget and about 601s on the 300s budget. Other retryable errors still use up to three driver retries and one more turn attempt before the fallback model. No tokens have been emitted yet. |
+| `stream_idle_timeout_ms` | `300000` | Abort if the server stays silent this long. The timer resets when an upstream chunk arrives, including SSE comment keep-alives, and pauses while that chunk is processed. Once the provider's terminal sentinel has been read, the stream finishes and cancels the rest of the body, so a connection left open cannot use up this budget. The stream ends with reason `timeout` only when the server actually goes silent. Partial text is kept. Tool calls from a stream that did not finish normally are never executed, including tool calls that already looked complete. The turn reports `The model stopped responding (idle timeout after Ns).` and adds `The partial answer above was not completed.` only when some text was streamed. A user abort is still reason `abort`. |
 
 A non-OK response body is read under the same idle budget, capped at 15 seconds (or 15 seconds when idle is disabled). If that body never arrives, the error is the HTTP status plus `response body timed out`.
 
@@ -153,7 +153,7 @@ A non-OK response body is read under the same idle budget, capped at 15 seconds 
 
 | Key | Default | Behaviour |
 |---|---|---|
-| `stream_end_check` | `auto` | What to do when a stream closes cleanly without the provider's final signal (Anthropic `message_stop` / `stop_reason`, OpenAI-compatible `finish_reason` or `[DONE]`, Google `finishReason`, Bedrock `messageStop`). `strict` returns an error. `lenient` treats the close as a normal finish (text received so far, same reason mapping as a completed stream) and writes a debug log: `<provider>: stream ended without a final event; accepted (lenient)`. `auto` is strict for `anthropic`, `openai`, `google`, `vertex`, and `amazon-bedrock`, and lenient for every other provider, including user-declared `[providers.<id>]` endpoints and local servers. A user-declared id is lenient under `auto` even if that id is also in the strict list. |
+| `stream_end_check` | `auto` | What to do when a stream closes cleanly without the provider's final signal (Anthropic `message_stop` / `stop_reason`, OpenAI-compatible `finish_reason` or `[DONE]`, Responses `response.completed` / `response.incomplete` / `response.done` / `[DONE]`, Google `finishReason`, Bedrock `messageStop`). `strict` returns an error whose event has `kind: "premature_end"` (the turn retries from that marker, not from the message text). `lenient` treats the close as a normal finish (text received so far, same reason mapping as a completed stream) and writes a debug log: `<provider>: stream ended without a final event; accepted (lenient)`. `auto` uses the same hosted rule as the connect budget: strict when the base URL is unset or is the built-in host, lenient when `base_url` points at another host. A user-declared id is lenient under `auto` even if that id is also in the hosted list. Explicit `strict` or `lenient` always wins. Codex (`openai-codex`) still reports a missing terminal event as an error when `auto` would otherwise be lenient for that id. |
 
 ### ChatGPT subscription login
 
@@ -304,8 +304,16 @@ plain text finishes with the partial output and reason `length`. A cutoff while 
 tool call is still being sent is an error: `The response was cut off while the
 model was calling a tool.` That check is the same for `response.incomplete`,
 `response.done`, and `response.completed` when the status is incomplete.
-A tool call that has already finished is still published. Other Responses providers keep the previous stream
-behaviour.
+A tool call that has already finished is still published. A function-call
+argument delta with no announced call is a non-retryable error for Codex.
+Other Responses providers buffer those deltas by `item_id` and complete the
+call when `response.output_item.done` arrives with the name, call id, and
+arguments. If that `done` never arrives, the stream ends with the same
+non-retryable error and no assistant `done`. Those providers share the
+connect and idle guard. A clean close with no terminal event stays a normal
+finish unless `stream_end_check` resolves to strict; a strict close is
+`kind: "premature_end"`. `response.failed` is an error when the check is
+strict, and a lenient stream still finishes normally.
 
 ## Slash command palette
 
