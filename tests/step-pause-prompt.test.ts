@@ -13,11 +13,15 @@ class FakeStdin extends PassThrough {
 
 async function withStdin<T>(stdin: NodeJS.ReadStream, fn: () => Promise<T>): Promise<T> {
   const original = process.stdin;
+  const stdoutTty = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
   Object.defineProperty(process, "stdin", { value: stdin, configurable: true });
+  Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
   try {
     return await fn();
   } finally {
     Object.defineProperty(process, "stdin", { value: original, configurable: true });
+    if (stdoutTty) Object.defineProperty(process.stdout, "isTTY", stdoutTty);
+    else delete (process.stdout as { isTTY?: boolean }).isTTY;
   }
 }
 
@@ -90,9 +94,9 @@ describe("plain-terminal step pause prompt", () => {
 
   it("does not prompt when stdin is not a TTY", async () => {
     const input = scriptedStdin("n\n", false);
-    const continued = await withStdin(input as unknown as NodeJS.ReadStream, () =>
-      createDefaultTurnSink().onStepPause!(2),
+    const handler = await withStdin(input as unknown as NodeJS.ReadStream, async () =>
+      createDefaultTurnSink().onStepPause,
     );
-    expect(continued).toBe(true);
+    expect(handler).toBeUndefined();
   });
 });

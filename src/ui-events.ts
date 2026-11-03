@@ -98,7 +98,9 @@ export function createDefaultTurnSink(options?: {
         process.stdout.write(line + "\n");
       }
     },
-    onStepPause: (stepsUsed) => promptContinueSteps(stepsUsed),
+    ...(process.stdin.isTTY && process.stdout.isTTY
+      ? { onStepPause: (stepsUsed: number) => promptContinueSteps(stepsUsed) }
+      : {}),
     onSlashCommandResult: (lines) => {
       for (const line of lines) {
         process.stdout.write(line + "\n");

@@ -46,6 +46,7 @@ export class OpenTuiSink implements TurnUiSink {
   private readonly transcript: TranscriptMount;
   private readonly toast: ToastApi;
   private readonly opts: SinkOpts;
+  readonly onStepPause?: (stepsUsed: number) => Promise<boolean>;
 
   private group = 1;
   private pendingToolArgs = new Map<string, Record<string, unknown>>();
@@ -72,6 +73,7 @@ export class OpenTuiSink implements TurnUiSink {
     this.transcript = transcript;
     this.toast = toast;
     this.opts = opts;
+    this.onStepPause = opts.onStepPause;
   }
 
   get currentGroup(): number {
@@ -292,10 +294,6 @@ export class OpenTuiSink implements TurnUiSink {
     } else {
       this.onSystemLines(lines);
     }
-  }
-
-  onStepPause(stepsUsed: number): Promise<boolean> {
-    return this.opts.onStepPause?.(stepsUsed) ?? Promise.resolve(true);
   }
 
   appendShellRun(run: {

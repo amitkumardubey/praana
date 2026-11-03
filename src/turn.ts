@@ -821,7 +821,7 @@ export async function runTurn(
   const isHeadless = !!session.headless;
   const pauseAfterSteps = Math.max(1, session.config.turn?.pause_after_steps ?? 50);
   const hardMaxSteps = Math.max(1, session.config.turn?.hard_max_steps ?? 300);
-  const pauseEnabled = !isHeadless && typeof s.onStepPause === "function";
+  const pauseEnabled = !isHeadless && !!s.onStepPause;
   const loopCap = pauseEnabled ? hardMaxSteps : maxSteps;
   let interrupted = false;
   // Tracks whether any step in the turn ran a non-load_skill tool, for markResidentSkillsUsed.

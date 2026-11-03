@@ -891,6 +891,18 @@ describe("per-turn step budget — interactive soft pause", () => {
   });
 });
 
+describe("per-turn step budget — default sink", () => {
+  it("uses max_steps when the terminal is not interactive", async () => {
+    expect(Boolean(process.stdin.isTTY && process.stdout.isTTY)).toBe(false);
+    mockStream.mockReset();
+    installLoopStream(5);
+    const session = makeMockSession({ config: makeConfig({ turn: { max_steps: 1, pause_after_steps: 50, hard_max_steps: 300 } }) });
+    await runTurn(session, "default sink");
+    expect(streamRequestCalls()).toHaveLength(2);
+    expect(shellExecuteCount()).toBe(1);
+  });
+});
+
 describe("per-turn step budget — headless hard cap", () => {
   beforeEach(() => {
     (mockStream as ReturnType<typeof mock>).mockReset();

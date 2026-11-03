@@ -128,6 +128,15 @@ describe("AppController", () => {
     }
   });
 
+  it("does not manufacture a pause handler for sinks without one", async () => {
+    const controller = new AppController({ cwd: "/tmp", config: baseConfig, parsed: baseParsed });
+    await controller.start();
+    await controller.runUserTurn("hello", {});
+    const calls = (runTurn as unknown as Mock<any>).mock.calls;
+    const wrapped = calls.at(-1)?.[3]?.sink;
+    expect(wrapped.onStepPause).toBeUndefined();
+  });
+
   it("starts a session and exposes status bar input", async () => {
     const controller = new AppController({
       cwd: "/tmp",
