@@ -11,7 +11,7 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { rmForce } from "./helpers/platform.js";
+import { isWindows, rmForce } from "./helpers/platform.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -1464,7 +1464,7 @@ describe("credential refresh across processes", () => {
       };
       expect(stored["openai-codex"]).toMatchObject({ access: next, refresh: "refresh-shared" });
       expect(stored.openrouter.key).toBe("sk-keep");
-      expect(statSync(getCredentialsFilePath()).mode & 0o777).toBe(0o600);
+      if (!isWindows) expect(statSync(getCredentialsFilePath()).mode & 0o777).toBe(0o600);
     } finally {
       for (const child of children) child.kill();
       server.stop(true);
@@ -1757,7 +1757,7 @@ describe("seeded credential interleaving", () => {
         throw new Error(`lost login for ${provider}`);
       }
     }
-    expect(statSync(getCredentialsFilePath()).mode & 0o777).toBe(0o600);
+    if (!isWindows) expect(statSync(getCredentialsFilePath()).mode & 0o777).toBe(0o600);
   }
 
   it("holds credential invariants for 300 seeded interleavings", async () => {
