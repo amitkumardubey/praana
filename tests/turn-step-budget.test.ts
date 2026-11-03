@@ -15,6 +15,7 @@ import * as loggerActual from "../src/logger.js";
 import type { PraanaConfig, TurnConfig } from "../src/types.js";
 import type { ConversationMessage, StreamRequest } from "../src/llm/types.js";
 import { AnthropicDriver } from "../src/llm/drivers/anthropic.js";
+import { BedrockDriver } from "../src/llm/drivers/bedrock.js";
 import { OpenAICompatibleDriver } from "../src/llm/drivers/openai.js";
 
 // Snapshot real exports BEFORE mock.module updates live bindings on the namespaces
@@ -561,7 +562,7 @@ function toolResultsBeforeCall(callIndex: number): number {
  * return the JSON body the driver would POST. No network.
  */
 async function captureDriverBody(
-  driver: AnthropicDriver | OpenAICompatibleDriver,
+  driver: AnthropicDriver | OpenAICompatibleDriver | BedrockDriver,
   messages: ConversationMessage[],
 ): Promise<Record<string, unknown>> {
   const original = globalThis.fetch;
@@ -659,6 +660,24 @@ async function expectEveryToolCallHasResult(messages: ConversationMessage[]): Pr
 
 // ── Tests ──────────────────────────────────────────────────────────
 
+describe("wrap-up provider request shapes", () => {
+  for (const [name, driver] of [["Anthropic", new AnthropicDriver()], ["Bedrock", new BedrockDriver()]] as const) {
+    it(`${name} wrap-up sends no tool blocks without definitions`, async () => {
+      mockStream.mockReset();
+      installLoopStream(5, { withToolCalls: true });
+      const session = makeMockSession({ config: makeConfig({ turn: { max_steps: 1, pause_after_steps: 50, hard_max_steps: 300 } }), headless: true });
+      await runTurn(session, "loop", undefined, { sink: {} });
+      const req = (mockStream.mock.calls as unknown as Array<[StreamRequest]>).at(-1)![0];
+      expect(req.tools).toEqual([]);
+      const body = await captureDriverBody(driver, req.messages);
+      const serialized = JSON.stringify(body.messages);
+      expect(serialized).not.toContain(name === "Anthropic" ? '"type":"tool_use"' : '"toolUse":');
+      expect(serialized).not.toContain(name === "Anthropic" ? '"type":"tool_result"' : '"toolResult":');
+      expect(serialized).toContain("echo call-0");
+    });
+  }
+});
+
 describe("per-turn step budget — interactive soft pause", () => {
   beforeEach(() => {
     (mockStream as ReturnType<typeof mock>).mockReset();
@@ -709,11 +728,9 @@ describe("per-turn step budget — interactive soft pause", () => {
     // Rounds 1 and 2 ran. The batch requested at the pause was not executed;
     // it is recorded as one error result so the wrap-up history stays valid.
     const lastReq = streamRequestCalls().at(-1)!;
-    const toolResults = lastReq.messages.filter((m) => m.role === "tool_result");
+    const toolResults = lastReq.messages.filter((m) => String(m.content ?? "").startsWith("Tool result ("));
     expect(toolResults).toHaveLength(3);
-    expect(
-      toolResults.filter((m) => String(m.result ?? "").includes(NOT_EXECUTED)),
-    ).toHaveLength(1);
+    expect(toolResults.filter((m) => String(m.content ?? "").includes(NOT_EXECUTED))).toHaveLength(1);
     // The wrap-up request is a user instruction asking for a summary.
     const lastUser = [...lastReq.messages].reverse().find((m) => m.role === "user");
     expect(String(lastUser?.content ?? "")).toContain("Do not call tools");
@@ -741,11 +758,9 @@ describe("per-turn step budget — interactive soft pause", () => {
     // 3 tool rounds then wrap-up: no prompting, no extra tool rounds.
     expect(streamRequestCalls().length).toBe(4);
     const lastReq = streamRequestCalls().at(-1)!;
-    const ceilingResults = lastReq.messages.filter((m) => m.role === "tool_result");
+    const ceilingResults = lastReq.messages.filter((m) => String(m.content ?? "").startsWith("Tool result ("));
     expect(ceilingResults).toHaveLength(3);
-    expect(
-      ceilingResults.filter((m) => String(m.result ?? "").includes(NOT_EXECUTED)),
-    ).toHaveLength(1);
+    expect(ceilingResults.filter((m) => String(m.content ?? "").includes(NOT_EXECUTED))).toHaveLength(1);
     expect(response).toContain("[summary] wrapped up");
   });
 
@@ -790,14 +805,10 @@ describe("per-turn step budget — interactive soft pause", () => {
       // The stopped batch was not executed.
       expect(shellExecuteCount()).toBe(2);
       const last = streamRequestCalls().at(-1)!;
-      // Prove the wrap-up payload through the real Anthropic and OpenAI
-      // serializers before checking the synthetic result text.
-      await expectEveryToolCallHasResult(last.messages as ConversationMessage[]);
-      const synthetic = last.messages.filter(
-        (m) => m.role === "tool_result" && String(m.result ?? "").includes(NOT_EXECUTED),
-      );
+      // Flattened wrap-up history retains the stopped call and its result.
+      expect(JSON.stringify(last.messages)).toContain("call-2");
+      const synthetic = last.messages.filter((m) => String(m.content ?? "").includes(NOT_EXECUTED));
       expect(synthetic).toHaveLength(1);
-      expect(synthetic[0]?.isError).toBe(true);
     };
 
     await stopAt("pause");
@@ -908,7 +919,7 @@ describe("per-turn step budget — headless hard cap", () => {
     // The last executed batch (round 3) results ARE in history before the
     // wrap-up call.
     const lastReq = streamRequestCalls().at(-1)!;
-    const toolResults = lastReq.messages.filter((m) => m.role === "tool_result");
+    const toolResults = lastReq.messages.filter((m) => String(m.content ?? "").startsWith("Tool result ("));
     expect(toolResults.length).toBe(3);
     const lastUser = [...lastReq.messages].reverse().find((m) => m.role === "user");
     expect(String(lastUser?.content ?? "")).toContain("Do not call tools");
@@ -951,10 +962,8 @@ describe("per-turn step budget — headless hard cap", () => {
 
     expect(streamRequestCalls().length).toBe(4);
     const last = streamRequestCalls().at(-1)!;
-    expect(last.messages.filter((m) => m.role === "tool_result")).toHaveLength(3);
-    expect(
-      last.messages.some((m) => String(m.result ?? "").includes(NOT_EXECUTED)),
-    ).toBe(false);
+    expect(last.messages.filter((m) => String(m.content ?? "").startsWith("Tool result ("))).toHaveLength(3);
+    expect(last.messages.some((m) => String(m.content ?? "").includes(NOT_EXECUTED))).toBe(false);
     const lastUser = [...last.messages].reverse().find((m) => m.role === "user");
     expect(String(lastUser?.content ?? "")).toContain("Do not call tools");
     expect(response).toContain("[summary] wrapped up");

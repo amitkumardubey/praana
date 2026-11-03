@@ -847,6 +847,7 @@ export async function runTurn(
 
   async function attemptStream(
     toolsForCall: typeof piTools = piTools,
+    historyForCall = history,
   ): Promise<LlmStreamResult> {
     const reasoningEffort = getReasoningEffort(
       activeModel as Record<string, unknown>,
@@ -860,7 +861,7 @@ export async function runTurn(
       modelName: activeModelName,
       providerName: activeProviderName,
       compiledPrompt,
-      history,
+      history: historyForCall,
       piTools: toolsForCall,
       signal: options?.signal,
       reasoningEffort,
@@ -1012,7 +1013,19 @@ export async function runTurn(
       timestamp: Date.now(),
     });
     try {
-      const wrap = await attemptStream([]);
+      const wrapHistory = history.map((message) => {
+        if (message.role === "toolResult" || message.role === "tool_result") {
+          const result = message.result ?? message.content;
+          return { role: "user", content: `Tool result (${message.toolName ?? "unknown"}, ${message.toolCallId ?? ""}): ${typeof result === "string" ? result : JSON.stringify(result)}` };
+        }
+        if (message.role !== "assistant") return message;
+        const parts = Array.isArray(message.content) ? message.content : [];
+        const calls = message.toolCalls ?? parts.filter((part: any) => part?.type === "tool_use" || part?.type === "toolUse" || part?.type === "toolCall");
+        if (!calls.length) return message;
+        const text = typeof message.content === "string" ? message.content : parts.filter((part: any) => part?.type === "text").map((part: any) => part.text).join("");
+        return { role: "assistant", content: `${text}${text ? "\n" : ""}Tool calls: ${JSON.stringify(calls)}` };
+      });
+      const wrap = await attemptStream([], wrapHistory);
       if (wrap.interrupted || options?.signal?.aborted) {
         fullResponse += wrap.fullResponse;
         providerUsage = wrap.providerUsage ?? providerUsage;
