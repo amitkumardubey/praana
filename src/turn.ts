@@ -1038,6 +1038,8 @@ export async function runTurn(
         return;
       }
       fullResponse += wrap.fullResponse;
+      lastStreamReason = wrap.finalReason;
+      lastLlmErrorMessage = undefined;
       providerUsage = wrap.providerUsage ?? providerUsage;
       recordedProviderUsage = wrap.recordedProviderUsage || recordedProviderUsage;
       if (wrap.finalMessage) {
@@ -1187,6 +1189,7 @@ export async function runTurn(
     if (pauseEnabled && pendingToolCalls.length > 0) {
       const stepsUsed = step + 1;
       if (stepsUsed >= hardMaxSteps) {
+        s.onSystemLines?.([`Reached the step limit (${stepsUsed}).`]);
         appendNotExecutedResults(pendingToolCalls);
         await wrapUpStep("Hard per-turn step ceiling reached.");
         break;
@@ -1210,6 +1213,7 @@ export async function runTurn(
           break;
         }
         if (!cont) {
+          s.onSystemLines?.(["Stopped at the step pause."]);
           appendNotExecutedResults(pendingToolCalls);
           await wrapUpStep("Stopped at per-turn step pause.");
           break;
@@ -1495,6 +1499,7 @@ export async function runTurn(
     // Hard cap for headless runs and sinks that cannot pause: the last batch
     // has already executed. One no-tool wrap-up, then the turn ends.
     if (!pauseEnabled && step === maxSteps - 1) {
+      s.onSystemLines?.([`Reached the step limit (${step + 1}).`]);
       await wrapUpStep("Reached per-turn tool step limit.");
       break;
     }

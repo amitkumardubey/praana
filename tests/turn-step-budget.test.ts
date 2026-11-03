@@ -706,6 +706,38 @@ describe("per-turn step budget — interactive soft pause", () => {
     expect(response).toContain("final answer reached");
   });
 
+  it("reports pause stop before even a failed wrap-up", async () => {
+    installLoopStream(5, { failWrapUp: true });
+    const session = makeMockSession({ config: makeConfig({ turn: { max_steps: 25, pause_after_steps: 1, hard_max_steps: 300 } }) });
+    const sink = makePauseSink();
+    sink.setPauseAnswer(false);
+    await runTurn(session, "pause notice", undefined, { sink });
+    expect(sink.sys).toContain("Stopped at the step pause.");
+  });
+
+  it("records a successful empty wrap-up as stop rather than toolUse", async () => {
+    llmWarns.length = 0;
+    mockStream.mockImplementation((req: FakeStreamRequest) => {
+      const last = req.messages.at(-1);
+      if (String(last?.content ?? "").includes("Do not call tools")) {
+        return (async function* () { yield { type: "done", reason: "stop", message: { role: "assistant", content: "" } }; })();
+      }
+      return makeLoopStream(req, 5);
+    });
+    const session = makeMockSession({ headless: true, config: makeConfig({ turn: { max_steps: 1, pause_after_steps: 50, hard_max_steps: 300 } }) });
+    await runTurn(session, "empty wrap", undefined, { sink: {} });
+    expect(llmWarns.find((w) => w.message === "LLM returned no text content")?.opts?.details?.reason).toBe("stop");
+  });
+
+  it("reports the headless cap before streaming its wrap-up", async () => {
+    installLoopStream(5);
+    const session = makeMockSession({ headless: true, config: makeConfig({ turn: { max_steps: 1, pause_after_steps: 50, hard_max_steps: 300 } }) });
+    const order: string[] = [];
+    await runTurn(session, "limit notice", undefined, { sink: { onSystemLines: (lines) => order.push(...lines), onTextDelta: (text) => order.push(text) } });
+    expect(order.indexOf("Reached the step limit (1).")).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf("Reached the step limit (1).")).toBeLessThan(order.indexOf("[summary] wrapped up"));
+  });
+
   it("stop at the pause resolves to a wrap-up stream call and no further tool execution", async () => {
     installLoopStream(6);
     const session = makeMockSession({
