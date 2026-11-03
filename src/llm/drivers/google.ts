@@ -75,6 +75,7 @@ export class GoogleDriver implements LlmDriver {
     let accumulatedThinking = "";
     const pendingToolCalls: ToolCall[] = [];
     let finishReason: (Extract<StreamEvent, { type: "done" }>)["reason"] = "stop";
+    let terminalFinish: string | undefined;
     let sawTerminal = false;
     let emittedDelta = false;
 
@@ -145,8 +146,7 @@ export class GoogleDriver implements LlmDriver {
         if (candidate.finishReason) {
           sawTerminal = true;
           terminal = true;
-          if (candidate.finishReason === "STOP") finishReason = "stop";
-          else if (candidate.finishReason === "MAX_TOKENS") finishReason = "length";
+          terminalFinish = String(candidate.finishReason);
         }
 
         const parts = candidate.content?.parts;
@@ -183,6 +183,11 @@ export class GoogleDriver implements LlmDriver {
     });
 
     function finishGoogle(): StreamEvent[] {
+        if (pendingToolCalls.length > 0) finishReason = "tool_use";
+        else if (terminalFinish === "MAX_TOKENS") finishReason = "length";
+        else if (terminalFinish && terminalFinish !== "STOP") finishReason = "error";
+        else if (terminalFinish === "STOP") finishReason = "stop";
+
         const events: StreamEvent[] = [];
         if (!sawTerminal) {
           if (req.strictStreamEnd !== false) {

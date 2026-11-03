@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { BedrockDriver } from "../src/llm/drivers/bedrock.js";
+import { GoogleDriver } from "../src/llm/drivers/google.js";
 import { OpenAICompatibleDriver } from "../src/llm/drivers/openai.js";
 import { OpenAIResponsesDriver } from "../src/llm/drivers/responses.js";
 import { runGuardedProviderStream, streamGuardPendingTimers } from "../src/llm/stream-guard.js";
@@ -243,6 +244,49 @@ async function collectOpenAI(
   ]);
   return { events, cancelled, ms: Date.now() - started };
 }
+
+async function collectGoogle(body: string): Promise<StreamEvent[]> {
+  globalThis.fetch = (async () => new Response(body, { headers: { "Content-Type": "text/event-stream" } })) as typeof fetch;
+  const events: StreamEvent[] = [];
+  for await (const event of new GoogleDriver().stream(
+    {
+      model: "m",
+      provider: "google",
+      messages: [{ role: "user", content: "hi" }],
+      connectTimeoutMs: 0,
+      idleTimeoutMs: 0,
+    },
+    { apiKey: "test-key" },
+  )) events.push(event);
+  return events;
+}
+
+describe("Google finish reasons", () => {
+  it("keeps tool_use when a later STOP chunk has no parts", async () => {
+    Math.random = () => 0.123456789;
+    const events = await collectGoogle(
+      [
+        'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"read_file","args":{"path":"a.ts"}}}]}}]}\n\n',
+        'data: {"candidates":[{"finishReason":"STOP"}]}\n\n',
+      ].join(""),
+    );
+    const done = events.at(-1);
+    expect(done?.type).toBe("done");
+    if (done?.type === "done") {
+      expect(done.reason).toBe("tool_use");
+      expect(done.message.toolCalls?.[0]?.name).toBe("read_file");
+    }
+  });
+
+  it("maps MAX_TOKENS to length and any other non-STOP reason to error", async () => {
+    const max = await collectGoogle('data: {"candidates":[{"finishReason":"MAX_TOKENS"}]}\n\n');
+    expect(max.at(-1)).toMatchObject({ type: "done", reason: "length" });
+    for (const reason of ["SAFETY", "RECITATION", "MALFORMED_FUNCTION_CALL"]) {
+      const events = await collectGoogle(`data: {"candidates":[{"finishReason":"${reason}"}]}\n\n`);
+      expect(events.at(-1), reason).toMatchObject({ type: "done", reason: "error" });
+    }
+  });
+});
 
 describe("OpenAI usage trailer after finish_reason", () => {
   it("keeps a usage chunk that arrives 30ms after finish_reason, then [DONE]", async () => {
