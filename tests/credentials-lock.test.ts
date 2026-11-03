@@ -193,7 +193,7 @@ describe("credential advisory locks", () => {
     writeFileSync(path, "this is not a sqlite database");
     const corrupt = statSync(path);
     expect(lockFileIsReplaceableForTests(path, { dev: corrupt.dev, ino: corrupt.ino })).toBe(true);
-    expect(lockFileIsReplaceableForTests(path, { dev: corrupt.dev, ino: corrupt.ino + 1 })).toBe(false);
+    expect(lockFileIsReplaceableForTests(path, { dev: corrupt.dev, ino: corrupt.ino === 0 ? 1 : 0 })).toBe(false);
   });
 
   it("times out an in-process waiter when waitMs elapses", async () => {
