@@ -92,6 +92,16 @@ describe("plain-terminal step pause prompt", () => {
     }
   });
 
+  it("stops when stdin closes before a line", async () => {
+    const input = new FakeStdin();
+    const result = await withStdin(input as unknown as NodeJS.ReadStream, async () => {
+      const pending = createDefaultTurnSink().onStepPause!(2);
+      input.end();
+      return Promise.race([pending, new Promise<string>((resolve) => setTimeout(() => resolve("timeout"), 100))]);
+    });
+    expect(result).toBe(false);
+  });
+
   it("does not prompt when stdin is not a TTY", async () => {
     const input = scriptedStdin("n\n", false);
     const handler = await withStdin(input as unknown as NodeJS.ReadStream, async () =>

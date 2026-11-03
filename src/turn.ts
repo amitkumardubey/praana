@@ -1192,7 +1192,19 @@ export async function runTurn(
         break;
       }
       if (stepsUsed % pauseAfterSteps === 0) {
-        const cont = (await s.onStepPause?.(stepsUsed)) !== false;
+        const signal = options?.signal;
+        let onAbort: (() => void) | undefined;
+        const aborted = new Promise<boolean>((resolve) => {
+          onAbort = () => resolve(false);
+          if (signal?.aborted) onAbort();
+          else signal?.addEventListener("abort", onAbort, { once: true });
+        });
+        let cont: boolean;
+        try {
+          cont = (await Promise.race([Promise.resolve(s.onStepPause!(stepsUsed)), aborted])) !== false;
+        } finally {
+          if (onAbort) signal?.removeEventListener("abort", onAbort);
+        }
         if (options?.signal?.aborted) {
           interrupted = true;
           break;

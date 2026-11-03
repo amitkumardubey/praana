@@ -815,6 +815,19 @@ describe("per-turn step budget — interactive soft pause", () => {
     await stopAt("ceiling");
   });
 
+  it("aborting while a pause handler is pending interrupts the turn", async () => {
+    installLoopStream(5);
+    const session = makeMockSession({ config: makeConfig({ turn: { max_steps: 25, pause_after_steps: 1, hard_max_steps: 300 } }) });
+    const abort = new AbortController();
+    const sink: TurnUiSink = { onStepPause: () => { abort.abort(); return new Promise<boolean>(() => {}); } };
+    const result = await Promise.race([
+      runTurn(session, "abort pause", undefined, { sink, signal: abort.signal }).catch((err) => err),
+      new Promise<string>((resolve) => setTimeout(() => resolve("timeout"), 100)),
+    ]);
+    expect(result).toBeInstanceOf(TurnAbortedError);
+    expect(shellExecuteCount()).toBe(0);
+  });
+
   it("Ctrl+C during wrap-up finalizes the turn as an interrupt", async () => {
     const abort = new AbortController();
     installLoopStream(6, { wrapUp: "interrupt", abort });

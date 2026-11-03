@@ -127,13 +127,14 @@ async function promptContinueSteps(stepsUsed: number): Promise<boolean> {
       output: process.stdout,
       terminal: false,
     });
+    rl.once("close", () => resolve("no"));
     rl.question(
       `Used ${stepsUsed} steps this turn. Continue? Enter or y = continue, anything else = stop `,
       (ans) => {
+        resolve(ans);
         rl.close();
         // close() pauses stdin. Resume so the next reader is not stuck.
         process.stdin.resume();
-        resolve(ans);
       },
     );
   });
