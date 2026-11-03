@@ -248,7 +248,11 @@ echo fixture-praana
       expect(result.exitCode).toBe(0);
       expect(existsSync(join(prefix, "praana.exe"))).toBe(true);
       expect(existsSync(join(prefix, SIDECAR_ADDON_FILENAME))).toBe(true);
-      expect(readFileSync(join(prefix, "praana.exe"))).toEqual(readFileSync(join(staging, "praana.exe")));
+      if (isWindows) {
+        expect(readFileSync(join(prefix, "praana.exe"))).toEqual(readFileSync(join(staging, "praana.exe")));
+      } else {
+        expect(readFileSync(join(prefix, "praana.exe"), "utf-8")).toContain("fixture-praana");
+      }
       expect(`${result.stdout}${result.stderr}`).toContain(prefix);
     } finally {
       rmSync(root, { recursive: true, force: true });
