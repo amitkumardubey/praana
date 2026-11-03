@@ -45,7 +45,7 @@ import {
 } from "./context-display.js";
 import { estimateTokens as estimateDisplayTokens } from "./token-estimate.js";
 import { redactSecrets } from "./redact/secrets.js";
-import { checkCircuitBudget, circuitWrapUpInstruction } from "./circuit/budget.js";
+import { checkCircuitBudget } from "./circuit/budget.js";
 import {
   createSessionLogger,
   extractLlmErrorMessage,
@@ -1050,7 +1050,11 @@ export async function runTurn(
             source: "assistant",
           });
         }
-        history.push(withoutWrapUpToolCalls(wrap.finalMessage));
+        const message = withoutWrapUpToolCalls(wrap.finalMessage);
+        const hasContent = Array.isArray(message.content)
+          ? message.content.length > 0
+          : typeof message.content === "string" && message.content.trim().length > 0;
+        if (hasContent) history.push(message);
       }
     } catch (err) {
       if (options?.signal?.aborted) {
@@ -1168,17 +1172,8 @@ export async function runTurn(
       });
       if (reason) {
         session.scorecard.inc("circuitBudgetWrapups");
-        history.push({
-          role: "user",
-          content: circuitWrapUpInstruction(reason),
-          timestamp: Date.now(),
-        });
-        const wrap = await attemptStream();
-        fullResponse += wrap.fullResponse;
-        providerUsage = wrap.providerUsage ?? providerUsage;
-        if (wrap.finalMessage) {
-          history.push(wrap.finalMessage);
-        }
+        appendNotExecutedResults(pendingToolCalls);
+        await wrapUpStep(`Circuit budget exceeded (${reason}).`);
         break;
       }
     }

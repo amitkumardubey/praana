@@ -907,6 +907,32 @@ describe("per-turn step budget — interactive soft pause", () => {
     expect(logged?.opts?.details?.provider).toBe("openrouter");
   });
 
+  it("does not store an empty assistant message after stripping wrap-up calls", async () => {
+    mockStream.mockImplementation((req: FakeStreamRequest) => {
+      if (String(req.messages.at(-1)?.content ?? "").includes("Do not call tools")) {
+        return (async function* () {
+          yield { type: "done", reason: "toolUse", message: { role: "assistant", content: "", toolCalls: [{ id: "extra", name: "shell", args: {} }] } };
+        })();
+      }
+      return makeLoopStream(req, 5, { withToolCalls: true });
+    });
+    const session = makeMockSession({ headless: true, config: makeConfig({ turn: { max_steps: 1, pause_after_steps: 50, hard_max_steps: 300 } }) });
+    const pushed: unknown[] = [];
+    const original = Array.prototype.push;
+    Array.prototype.push = function (...items: any[]) {
+      for (const item of items) {
+        if (item?.role === "assistant" && item.content === "" && !item.toolCalls) original.call(pushed, item);
+      }
+      return original.apply(this, items);
+    };
+    try {
+      await runTurn(session, "empty stripped message", undefined, { sink: {} });
+    } finally {
+      Array.prototype.push = original;
+    }
+    expect(pushed).toEqual([]);
+  });
+
   it("wrap-up offers no tools and does not run tool calls from that reply", async () => {
     installLoopStream(6, { wrapUp: "tools" });
     const session = makeMockSession({
@@ -951,6 +977,18 @@ describe("per-turn step budget — default sink", () => {
 describe("per-turn step budget — headless hard cap", () => {
   beforeEach(() => {
     (mockStream as ReturnType<typeof mock>).mockReset();
+  });
+
+  it("uses the guarded wrap-up path when the circuit budget expires", async () => {
+    installLoopStream(5, { withToolCalls: true, wrapUp: "error" });
+    const config = makeConfig({ turn: { max_steps: 25, pause_after_steps: 50, hard_max_steps: 300 } });
+    config.circuit = { loop_threshold: 3, max_tokens: 0, max_wall_ms: 1 };
+    const session = makeMockSession({ headless: true, config });
+    const errors: string[] = [];
+    await runTurn(session, "circuit", undefined, { sink: { onFallback: (text) => errors.push(text) } });
+    expect(streamRequestCalls().at(-1)?.tools).toEqual([]);
+    expect(errors.join(" ")).toContain("wrap-up provider 500");
+    expect(shellExecuteCount()).toBe(0);
   });
 
   it("headless max_steps cap performs a wrap-up and never prompts", async () => {
