@@ -510,6 +510,15 @@ export function flattenWrapUpHistory(messages: readonly any[]): any[] {
   return out;
 }
 
+/**
+ * Positive integer, or `fallback`. Config loading already warns and substitutes
+ * defaults; this clamp is silent so a NaN that bypasses validation cannot
+ * make the step loop compare against NaN.
+ */
+function clampTurnInt(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
 /** Visible wrap-up text, or null when the reply is empty, whitespace, or thinking-only. */
 function visibleWrapUpText(message: any): string | null {
   if (!message || typeof message !== "object") return null;
@@ -912,20 +921,16 @@ export async function runTurn(
       timestamp: Date.now(),
     },
   ];
-  const maxSteps = session.config.turn?.max_steps ?? 25;
+  const maxSteps = clampTurnInt(session.config.turn?.max_steps, 25);
   // Pause/ceiling only when the sink can ask. Headless runs, and any sink
   // without `onStepPause` (subagents, tests, non-interactive UIs), use
   // `max_steps` as a hard cap: the last batch executes, then one wrap-up.
+  // User-facing warnings for bad values live in validateConfig. Here a bad
+  // value is only clamped so the loop bound stays a positive integer.
   const isHeadless = !!session.headless;
-  const pauseAfterSteps = Math.max(1, session.config.turn?.pause_after_steps ?? 50);
-  const configuredHardMaxSteps = Math.max(1, session.config.turn?.hard_max_steps ?? 300);
+  const pauseAfterSteps = clampTurnInt(session.config.turn?.pause_after_steps, 50);
+  const configuredHardMaxSteps = clampTurnInt(session.config.turn?.hard_max_steps, 300);
   const hardMaxSteps = Math.max(configuredHardMaxSteps, pauseAfterSteps);
-  if (configuredHardMaxSteps < pauseAfterSteps) {
-    llmLogger.warn("turn.hard_max_steps is below turn.pause_after_steps; raising the ceiling", {
-      code: "CONFIG_INVALID",
-      details: { hardMaxSteps: configuredHardMaxSteps, pauseAfterSteps },
-    });
-  }
   const pauseEnabled = !isHeadless && !!s.onStepPause;
   const loopCap = pauseEnabled ? hardMaxSteps : maxSteps;
   let interrupted = false;

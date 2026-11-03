@@ -861,7 +861,7 @@ describe("per-turn step budget — interactive soft pause", () => {
     expect(sink.texts.join("")).toContain("[summary] wrapped up");
   });
 
-  it("raises a directly constructed hard ceiling to the pause interval and warns", async () => {
+  it("raises a directly constructed hard ceiling to the pause interval without warning again", async () => {
     llmWarns.length = 0;
     installLoopStream(10);
     const session = makeMockSession({ config: makeConfig({ turn: { max_steps: 25, pause_after_steps: 4, hard_max_steps: 2 } }) });
@@ -869,7 +869,34 @@ describe("per-turn step budget — interactive soft pause", () => {
     await runTurn(session, "invalid ceiling", undefined, { sink });
     expect(streamRequestCalls()).toHaveLength(5);
     expect(shellExecuteCount()).toBe(3);
-    expect(llmWarns.some((w) => w.message.includes("hard_max_steps") && w.message.includes("pause_after_steps"))).toBe(true);
+    expect(llmWarns.some((w) => w.message.includes("hard_max_steps") && w.message.includes("pause_after_steps"))).toBe(false);
+  });
+
+  it("clamps NaN, non-integer, and negative budgets that reach runTurn directly", async () => {
+    llmWarns.length = 0;
+    installLoopStream(4);
+    const session = makeMockSession({
+      config: makeConfig({
+        turn: { max_steps: Number.NaN, pause_after_steps: 1.5, hard_max_steps: -3 },
+      }),
+    });
+    const sink = makePauseSink();
+    const response = await runTurn(session, "bad numbers", undefined, { sink });
+    expect(sink.pauseCalls).toEqual([]);
+    expect(streamRequestCalls()).toHaveLength(5);
+    expect(response).toContain("final answer reached");
+    expect(llmWarns.some((w) => w.message.includes("hard_max_steps") || w.message.includes("pause_after_steps"))).toBe(false);
+
+    installLoopStream(2);
+    const headless = makeMockSession({
+      headless: true,
+      config: makeConfig({
+        turn: { max_steps: Number.NaN, pause_after_steps: -8, hard_max_steps: 2.2 },
+      }),
+    });
+    const before = streamRequestCalls().length;
+    await runTurn(headless, "nan cap", undefined, { sink: {} });
+    expect(streamRequestCalls().length - before).toBe(3);
   });
 
   it("hard ceiling forces the wrap-up without prompting", async () => {

@@ -131,7 +131,7 @@ What is already in history depends on which limit fired:
 - **Soft-pause stop** and **hard ceiling** (`hard_max_steps`): the model has already asked for a tool batch, but that batch is **not executed** (stopping must not edit files). Each pending tool call is recorded as an error result: `Not executed: the step budget was reached and the turn was stopped.` Then the wrap-up runs.
 - **Headless cap** and **any sink without `onStepPause`** (`max_steps`): the last tool batch **runs first**, its results stay in history, and then the wrap-up runs.
 
-Set any of the three keys to `0` (or use a non-positive value) to fall back to the default; invalid values log a config warning and use the default.
+Set any of the three keys to `0` (or use a non-positive value) to fall back to the default; invalid values log a config warning and use the default. A NaN, fraction, or negative that reaches a turn without going through config loading is clamped to the same default and does not warn again.
 
 ### Supported providers
 
