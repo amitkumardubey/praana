@@ -11,7 +11,7 @@ bun scripts/tui-probe/mock-llm.ts --port 9779 --delay-ms 12
 bun scripts/tui-probe/capture.ts --worktree /path/to/praana --label build-a --size 110x40
 ```
 
-The driver writes JSONL in `~/.cache/probe-scratch/`. Analyze it (height must match the capture):
+The driver writes JSONL in `~/.cache/probe-scratch/`, with a header containing the label, size, commit, and achieved Hz. Analyze it (height must match the capture):
 
 ```sh
 bun -e 'import { analyzeSamples, readSamples } from "./scripts/tui-probe/analyze"; const r = analyzeSamples(await readSamples(process.argv[1]), {height: 40}); console.log(JSON.stringify(r, null, 2));' ~/.cache/probe-scratch/build-a-1.jsonl
@@ -32,4 +32,14 @@ Fixture source line numbers are one-based; blank/fence lines occupy numbers. Chr
 
 Tmux samples emulated screen states, not Windows Terminal. It only sees glitches that reach the terminal as separate states; faster or between-sample glitches are invisible. Sampling is unthrottled and its achieved rate depends on the machine and tmux overhead. Partially rendered markdown, duplicate fixture text, wrapping, and a status disappearing before the prompt is ready can affect interpretation.
 
-## A/B runner: next task
+## A/B, noise and checks
+
+The runner starts its own mock on port 9779, captures A and B in interleaved order, and retains captures and reports under `~/.cache/probe-scratch/ab/` by default. It retries captures below 60 Hz twice and records batch load averages. Supply `--out` to choose a directory, `--runs` (default 5), `--delay-ms` (default 12), and repeat `--size` for multiple batches.
+
+```sh
+bun scripts/tui-probe/run-ab.ts --a /path/to/a --b /path/to/b --label-a old --label-b new --runs 5 --size 110x40 --size 80x24
+bun scripts/tui-probe/run-ab.ts --noise /path/to/a --runs 5 --size 110x40
+bun scripts/tui-probe/run-ab.ts --a /path/to/a --b /path/to/b --check --regressions 0 --scrollReversals 0 --aba 0 --styleFlips 20
+```
+
+The table shows mean/min/max counts and the mean of per-run rates per 1,000 samples. `--check` checks B (or the noise build): the first three thresholds apply to the maximum count across runs and default to zero; `--styleFlips` applies to the mean rate per 1,000 samples and is off unless specified. This diagnostic is not a substitute for inspecting artifacts.
