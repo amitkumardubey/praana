@@ -121,6 +121,48 @@ function expectExactToolArgs(events: StreamEvent[], calls: CallSpec[]): void {
   expect(done.message.toolCalls?.map((call) => call.id)).toEqual(calls.map((call) => call.callId));
 }
 
+describe("Responses argument deltas that arrive before the call is announced", () => {
+  it("merges delta, delta, added, done into the original JSON", async () => {
+    const args = '{"path":"a.ts"}';
+    const events = await collectResponses("openai", [
+      { type: "response.function_call_arguments.delta", item_id: "fc-1", delta: '{"path":' },
+      { type: "response.function_call_arguments.delta", item_id: "fc-1", delta: '"a.ts"}' },
+      {
+        type: "response.output_item.added",
+        output_index: 0,
+        item: { type: "function_call", id: "fc-1", call_id: "call-1", name: "read_file" },
+      },
+      {
+        type: "response.output_item.done",
+        output_index: 0,
+        item: { type: "function_call", id: "fc-1", call_id: "call-1", name: "read_file", arguments: args },
+      },
+      completed,
+    ]);
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    const done = events.at(-1);
+    expect(done?.type === "done" && done.message.toolCalls?.[0]?.rawArgs).toBe(args);
+    expect(events.filter((event) => event.type === "tool_call_delta")).toHaveLength(1);
+  });
+
+  it("still errors when a buffered call never receives added or done", async () => {
+    const events = await collectResponses("openai", [
+      { type: "response.function_call_arguments.delta", item_id: "fc-kept", delta: '{"path":"a.ts"}' },
+      {
+        type: "response.output_item.added",
+        item: { type: "function_call", id: "fc-opened", call_id: "call-opened", name: "shell", arguments: "{}" },
+      },
+      { type: "response.function_call_arguments.delta", item_id: "fc-orphan", delta: '{"cmd":"ls"}' },
+      completed,
+    ]);
+    expect(events.some((event) => event.type === "done")).toBe(false);
+    const error = events.at(-1);
+    expect(error?.type === "error" && error.error.message).toBe(
+      "OpenAI Responses stream received function call arguments without an open call",
+    );
+  });
+});
+
 describe("Responses tool arguments are not repeated", () => {
   it.each([
     ["openai", true, oneCall],

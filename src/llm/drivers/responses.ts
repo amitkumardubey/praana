@@ -195,6 +195,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
       return message || `OpenAI Responses stream ${type}`;
     };
     const finish = (): StreamEvent[] => {
+      // Entries left here never met output_item.added or output_item.done.
       if (!codex && bufferedArgs.size > 0) {
         return [{ type: "error", error: new Error(unannouncedToolDeltaMessage), retryable: false }];
       }
@@ -303,12 +304,23 @@ export class OpenAIResponsesDriver implements LlmDriver {
           const item = parsed.item as Record<string, unknown> | undefined;
           if (item?.type === "function_call") {
             const index = (parsed.output_index as number | undefined) ?? itemIndex++;
+            const earlyIds = [item.id, item.call_id].filter(
+              (id): id is string => typeof id === "string" && id.length > 0,
+            );
+            let earlyArgs = "";
+            for (const id of earlyIds) {
+              const piece = bufferedArgs.get(id);
+              if (piece) earlyArgs += piece;
+              bufferedArgs.delete(id);
+            }
+            const itemArgs = typeof item.arguments === "string" ? item.arguments : undefined;
             const res = accumulator.processChunk({
               index,
               id: String(item.call_id ?? item.id ?? ""),
               name: String(item.name ?? ""),
-              argsDelta: typeof item.arguments === "string" ? item.arguments : undefined,
+              argsDelta: earlyArgs || undefined,
             });
+            if (itemArgs) accumulator.processChunk({ index, argsDelta: itemArgs });
             if (res.started) {
               emitted = true;
               openFunctionCalls.add(index);
@@ -322,6 +334,9 @@ export class OpenAIResponsesDriver implements LlmDriver {
                 openedCallIds.add(item.id);
               }
               events.push({ type: "tool_call_start", id: res.started.id, name: res.started.name });
+            }
+            if (earlyArgs && res.delta) {
+              events.push({ type: "tool_call_delta", id: res.delta.id, argsDelta: res.delta.argsDelta });
             }
           }
           return { events };
