@@ -17,7 +17,7 @@ export function turnFinished(busy: boolean, screen: string) {
 }
 
 function tmux(socket: string, ...args: string[]) {
-  const result = spawnSync("tmux", ["-S", socket, ...args], { encoding: "utf8" });
+  const result = spawnSync("tmux", ["-S", socket, ...args], { encoding: "utf8", timeout: 5000 });
   if (result.status !== 0) throw new Error(`tmux ${args[0]}: ${result.stderr}`);
   return result.stdout;
 }
@@ -52,7 +52,10 @@ export async function capture(worktree: string, label: string, size = "110x40", 
   process.on("SIGINT", onInt); process.on("SIGTERM", onTerm);
   try {
     tmux(socket, "new-session", "-d", "-s", session, "-x", String(width), "-y", String(height), command);
-    await Bun.sleep(9000);
+    const readyAt = Date.now() + 9000;
+    while (!interrupted && Date.now() < Math.min(readyAt, deadline)) {
+      await Bun.sleep(Math.min(100, readyAt - Date.now(), deadline - Date.now()));
+    }
     if (interrupted) throw new Error(`Capture interrupted by ${interrupted}`);
     if (Date.now() >= deadline) throw new Error(`Capture timed out after ${timeout}s`);
     tmux(socket, "send-keys", "-t", session, "-l", "Please provide the markdown fixture.");

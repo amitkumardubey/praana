@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { parseSize, turnFinished } from "../scripts/tui-probe/capture";
+import { capture, parseSize, turnFinished } from "../scripts/tui-probe/capture";
+
+test("capture rejects an invalid timeout before launching tmux", async () => {
+  await expect(capture(".", "test", "110x40", 0)).rejects.toThrow("Invalid timeout");
+});
 
 test("capture accepts positive terminal dimensions", () => {
   expect(parseSize("80x24")).toEqual({ width: 80, height: 24 });
