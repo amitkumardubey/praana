@@ -39,6 +39,7 @@ import { OpenTuiSink } from "./sink.js";
 import { listAllAvailableModels } from "../../model-listing.js";
 import { App } from "./app.js";
 import { createShellUi } from "./shell-ui.js";
+import { parseSynchronizedOutput } from "./render-options.js";
 import { createOverlayUi } from "./overlays/state.js";
 import type { PromptHandle } from "./prompt/index.js";
 import { DEFAULT_CONTEXT_WINDOW } from "../../status-bar.js";
@@ -166,6 +167,7 @@ export async function runTui(
     width: process.stdout.columns ?? 80,
     height: process.stdout.rows ?? 24,
     exitOnCtrlC: false,
+    synchronizedOutput: parseSynchronizedOutput(process.env.PRAANA_TUI_SYNC_OUTPUT),
     consoleOptions: {
       position: ConsolePosition.BOTTOM,
       sizePercent: 25,
