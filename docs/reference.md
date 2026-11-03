@@ -122,7 +122,9 @@ The pause/ceiling path runs only when the sink provides `onStepPause`. Headless 
 
 When an interactive turn reaches a multiple of `pause_after_steps`, PRAANA stops the spinner and shows a small prompt: `Used N steps this turn. Continue?` In the TUI, **Enter** continues and **Esc** (or Ctrl+C) stops. On the plain terminal the prompt says `Enter or y = continue, anything else = stop` — **Enter**, **y**, or **yes** continues, and any other line stops (readline has no Esc key). The next pause is another `pause_after_steps` later.
 
-**Wrap-up:** a turn that stops at a limit runs one final model call with **no tools**, asking for a short summary of what was done and what remains. That summary streams like a normal reply. If the model still returns tool calls, they are dropped and not executed. If the wrap-up call fails, the turn ends with the normal end-of-turn banner text instead of an error. Ctrl+C during the wrap-up interrupts the turn.
+**Wrap-up:** a turn that stops at a limit runs one final model call with **no tools**, asking for a short summary of what was done and what remains. That summary streams like a normal reply, separated from the preceding step text by a blank line. The "do not call tools" instruction is sent only with that call and is not kept in the transcript. The summary is stored only when it has visible text (a thinking-only or blank reply is not stored). If the model still returns tool calls, they are dropped and not executed. If the wrap-up call fails, the error is reported the same way as any other model error (and, when nothing was streamed yet, the turn still ends with the normal banner). Ctrl+C during the wrap-up interrupts the turn and keeps whatever summary text was already streamed.
+
+Tool results on that no-tools request include text only (image and other non-text parts are omitted). Each result is cut at 2,000 characters and ends with `[truncated]` when it was cut. Adjacent user messages are merged so the request alternates roles.
 
 What is already in history depends on which limit fired:
 

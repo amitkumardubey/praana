@@ -16,6 +16,7 @@ import type { PraanaConfig, TurnConfig } from "../src/types.js";
 import type { ConversationMessage, StreamRequest } from "../src/llm/types.js";
 import { AnthropicDriver } from "../src/llm/drivers/anthropic.js";
 import { BedrockDriver } from "../src/llm/drivers/bedrock.js";
+import { GoogleDriver } from "../src/llm/drivers/google.js";
 import { OpenAICompatibleDriver } from "../src/llm/drivers/openai.js";
 
 // Snapshot real exports BEFORE mock.module updates live bindings on the namespaces
@@ -165,7 +166,7 @@ mock.module("../src/ui.js", () => ({
   stopSpinner: mock(),
 }));
 
-import { runTurn } from "../src/turn.js";
+import { flattenWrapUpHistory, WRAP_UP_TOOL_RESULT_CAP, runTurn } from "../src/turn.js";
 import { createAllTools } from "../src/tools/index.js";
 import { TurnAbortedError } from "../src/turn-control.js";
 import { loadConfig, getConfigWarnings } from "../src/config.js";
@@ -545,6 +546,26 @@ function makePauseSink() {
   return sink;
 }
 
+/** Arrays that are a turn's live history (the opening user message carries a timestamp). */
+async function historyArraysFor(userInput: string, run: () => Promise<unknown>): Promise<any[][]> {
+  const found: any[][] = [];
+  const original = Array.prototype.push;
+  Array.prototype.push = function (...items: any[]) {
+    const ret = original.apply(this, items);
+    const first = this[0] as { role?: string; content?: unknown; timestamp?: unknown } | undefined;
+    if (first?.role === "user" && first.content === userInput && typeof first.timestamp === "number") {
+      found.push(this);
+    }
+    return ret;
+  };
+  try {
+    await run();
+  } finally {
+    Array.prototype.push = original;
+  }
+  return [...new Set(found)];
+}
+
 function streamRequestCalls(): Array<{ messages: FakeStreamRequest["messages"] }> {
   return ((mockStream as ReturnType<typeof mock>).mock.calls as Array<[FakeStreamRequest]>).map(
     (c) => c[0],
@@ -562,7 +583,7 @@ function toolResultsBeforeCall(callIndex: number): number {
  * return the JSON body the driver would POST. No network.
  */
 async function captureDriverBody(
-  driver: AnthropicDriver | OpenAICompatibleDriver | BedrockDriver,
+  driver: AnthropicDriver | OpenAICompatibleDriver | BedrockDriver | GoogleDriver,
   messages: ConversationMessage[],
 ): Promise<Record<string, unknown>> {
   const original = globalThis.fetch;
@@ -660,8 +681,30 @@ async function expectEveryToolCallHasResult(messages: ConversationMessage[]): Pr
 
 // ── Tests ──────────────────────────────────────────────────────────
 
+const WRAP_DRIVERS = [
+  ["Anthropic", new AnthropicDriver()],
+  ["Bedrock", new BedrockDriver()],
+  ["OpenAI", new OpenAICompatibleDriver()],
+  ["Google", new GoogleDriver()],
+] as const;
+
+function providerMessages(body: Record<string, unknown>): Array<Record<string, unknown>> {
+  const raw = body.messages ?? body.contents;
+  return Array.isArray(raw) ? (raw as Array<Record<string, unknown>>) : [];
+}
+
+function assertAlternatingRoles(messages: Array<Record<string, unknown>>): void {
+  let prev = "";
+  for (const msg of messages) {
+    const role = String(msg.role ?? "");
+    expect(role).not.toBe("");
+    expect(role).not.toBe(prev);
+    prev = role;
+  }
+}
+
 describe("wrap-up provider request shapes", () => {
-  for (const [name, driver] of [["Anthropic", new AnthropicDriver()], ["Bedrock", new BedrockDriver()]] as const) {
+  for (const [name, driver] of WRAP_DRIVERS) {
     it(`${name} wrap-up sends no tool blocks without definitions`, async () => {
       mockStream.mockReset();
       installLoopStream(5, { withToolCalls: true });
@@ -670,12 +713,59 @@ describe("wrap-up provider request shapes", () => {
       const req = (mockStream.mock.calls as unknown as Array<[StreamRequest]>).at(-1)![0];
       expect(req.tools).toEqual([]);
       const body = await captureDriverBody(driver, req.messages);
-      const serialized = JSON.stringify(body.messages);
-      expect(serialized).not.toContain(name === "Anthropic" ? '"type":"tool_use"' : '"toolUse":');
-      expect(serialized).not.toContain(name === "Anthropic" ? '"type":"tool_result"' : '"toolResult":');
+      const serialized = JSON.stringify(body);
+      expect(serialized).not.toContain('"type":"tool_use"');
+      expect(serialized).not.toContain('"type":"tool_result"');
+      expect(serialized).not.toContain('"toolUse":');
+      expect(serialized).not.toContain('"toolResult":');
+      expect(serialized).not.toContain('"tool_calls"');
+      expect(serialized).not.toContain('"functionCall"');
+      expect(serialized).not.toContain('"functionResponse"');
       expect(serialized).toContain("echo call-0");
+      assertAlternatingRoles(providerMessages(body));
     });
   }
+
+  it("keeps text parts only, truncates, and merges adjacent user messages", async () => {
+    const long = "v".repeat(WRAP_UP_TOOL_RESULT_CAP + 50);
+    const flat = flattenWrapUpHistory([
+      { role: "user", content: "do the work", timestamp: 1 },
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "call-img", name: "shell", args: { command: "echo call-img" } }],
+      },
+      {
+        role: "toolResult",
+        toolName: "shell",
+        toolCallId: "call-img",
+        content: [
+          { type: "text", text: long },
+          { type: "image", mimeType: "image/png", data: "BASE64SENTINEL" },
+        ],
+      },
+      {
+        role: "user",
+        content: "Stopped. Reply with a short summary of what was done and what remains. Do not call tools.",
+        timestamp: 2,
+      },
+    ]);
+    const merged = flat.filter((m) => m.role === "user").at(-1);
+    expect(String(merged?.content)).toContain("[truncated]");
+    expect(String(merged?.content)).toContain("Do not call tools");
+    expect(String(merged?.content)).not.toContain("BASE64SENTINEL");
+    expect(String(merged?.content).match(/v+/)?.[0]?.length).toBe(
+      WRAP_UP_TOOL_RESULT_CAP - "[truncated]".length,
+    );
+    for (const [, driver] of WRAP_DRIVERS) {
+      const body = await captureDriverBody(driver, flat as ConversationMessage[]);
+      const serialized = JSON.stringify(body);
+      expect(serialized).not.toContain("BASE64SENTINEL");
+      expect(serialized).toContain("[truncated]");
+      expect(serialized).toContain("Do not call tools");
+      assertAlternatingRoles(providerMessages(body));
+    }
+  });
 });
 
 describe("per-turn step budget — interactive soft pause", () => {
@@ -917,6 +1007,11 @@ describe("per-turn step budget — interactive soft pause", () => {
     }
     expect(thrown).toBeInstanceOf(TurnAbortedError);
     expect((thrown as TurnAbortedError).partialResponse).toContain("partial wrap");
+    const agent = String(
+      session.eventLog.readAll().filter((e: { kind?: string }) => e.kind === "agent_message").at(-1)?.payload?.text ?? "",
+    );
+    expect(agent).toContain((thrown as TurnAbortedError).partialResponse);
+    expect(agent).not.toContain("Do not call tools");
   });
 
   it("a wrap-up stream error is logged and shown as the end-of-turn banner", async () => {
@@ -943,6 +1038,151 @@ describe("per-turn step budget — interactive soft pause", () => {
     expect(logged?.opts?.details?.error).toBe("wrap-up provider 500");
     expect(logged?.opts?.details?.model).toBe("test-model");
     expect(logged?.opts?.details?.provider).toBe("openrouter");
+  });
+
+  it("separates wrap-up text, drops the instruction, and reports a failed summary", async () => {
+    llmWarns.length = 0;
+    const userInput = "step then fail wrap";
+    mockStream.mockImplementation((req: FakeStreamRequest) => {
+      const last = req.messages.at(-1);
+      const lastText = typeof last?.content === "string" ? last.content : "";
+      if (lastText.includes("Do not call tools")) {
+        return (async function* () {
+          yield { type: "error", error: new Error("wrap-up provider 500"), retryable: false };
+        })();
+      }
+      return (async function* () {
+        yield { type: "text_delta", delta: "did the work" };
+        yield {
+          type: "toolcall_end",
+          toolCall: { id: "call-0", name: "shell", arguments: { command: "echo call-0" } },
+        };
+        yield {
+          type: "done",
+          reason: "toolUse",
+          message: {
+            role: "assistant",
+            content: "did the work",
+            toolCalls: [{ id: "call-0", name: "shell", args: { command: "echo call-0" } }],
+          },
+        };
+      })();
+    });
+    const session = makeMockSession({
+      config: makeConfig({ turn: { max_steps: 25, pause_after_steps: 1, hard_max_steps: 300 } }),
+    });
+    const order: string[] = [];
+    const errors: string[] = [];
+    const histories = await historyArraysFor(userInput, () =>
+      runTurn(session, userInput, undefined, {
+        sink: {
+          onStepPause: () => false,
+          onTextDelta: (delta) => order.push(delta),
+          onSystemLines: (lines) => order.push(...lines),
+          onError: (entry) => errors.push(entry.message),
+        },
+      }),
+    );
+    expect(order.indexOf("Stopped at the step pause.")).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf("Stopped at the step pause.")).toBeLessThan(order.length);
+    expect(errors).toContain("wrap-up provider 500");
+    const stored = session.eventLog.readAll().filter((e: { kind?: string }) => e.kind === "agent_message");
+    const agent = String(stored.at(-1)?.payload?.text ?? "");
+    expect(agent).toContain("did the work");
+    expect(agent).not.toContain("Do not call tools");
+    expect(histories.some((h) => JSON.stringify(h).includes("Do not call tools"))).toBe(false);
+  });
+
+  it("inserts a blank line between step text and a stored wrap-up summary", async () => {
+    const userInput = "step then summary";
+    mockStream.mockImplementation((req: FakeStreamRequest) => {
+      const last = req.messages.at(-1);
+      const lastText = typeof last?.content === "string" ? last.content : "";
+      if (lastText.includes("Do not call tools")) {
+        return (async function* () {
+          yield { type: "text_delta", delta: "[summary] wrapped up" };
+          yield {
+            type: "done",
+            reason: "stop",
+            message: { role: "assistant", content: "[summary] wrapped up" },
+          };
+        })();
+      }
+      return (async function* () {
+        yield { type: "text_delta", delta: "did the work" };
+        yield {
+          type: "toolcall_end",
+          toolCall: { id: "call-0", name: "shell", arguments: { command: "echo call-0" } },
+        };
+        yield {
+          type: "done",
+          reason: "toolUse",
+          message: {
+            role: "assistant",
+            content: "did the work",
+            toolCalls: [{ id: "call-0", name: "shell", args: { command: "echo call-0" } }],
+          },
+        };
+      })();
+    });
+    const session = makeMockSession({
+      config: makeConfig({ turn: { max_steps: 25, pause_after_steps: 1, hard_max_steps: 300 } }),
+    });
+    const deltas: string[] = [];
+    await runTurn(session, userInput, undefined, {
+      sink: {
+        onStepPause: () => false,
+        onTextDelta: (delta) => deltas.push(delta),
+      },
+    });
+    expect(deltas.join("")).toContain("did the work\n\n[summary] wrapped up");
+    const agent = String(
+      session.eventLog.readAll().filter((e: { kind?: string }) => e.kind === "agent_message").at(-1)?.payload?.text ?? "",
+    );
+    expect(agent).toContain("did the work\n\n[summary] wrapped up");
+    expect(agent).not.toContain("Do not call tools");
+  });
+
+  it("does not store a thinking-only wrap-up and drops the instruction", async () => {
+    const userInput = "thinking wrap";
+    mockStream.mockImplementation((req: FakeStreamRequest) => {
+      const last = req.messages.at(-1);
+      const lastText = typeof last?.content === "string" ? last.content : "";
+      if (lastText.includes("Do not call tools")) {
+        return (async function* () {
+          yield { type: "thinking_delta", delta: "secret-thought" };
+          yield {
+            type: "done",
+            reason: "stop",
+            message: { role: "assistant", content: "   ", thinking: "secret-thought" },
+          };
+        })();
+      }
+      return makeLoopStream(req, 1, { withToolCalls: true });
+    });
+    const session = makeMockSession({
+      headless: true,
+      config: makeConfig({ turn: { max_steps: 1, pause_after_steps: 50, hard_max_steps: 300 } }),
+    });
+    const histories = await historyArraysFor(userInput, () =>
+      runTurn(session, userInput, undefined, { sink: {} }),
+    );
+    const agent = String(
+      session.eventLog.readAll().filter((e: { kind?: string }) => e.kind === "agent_message").at(-1)?.payload?.text ?? "",
+    );
+    expect(agent).not.toContain("secret-thought");
+    expect(agent).not.toContain("Do not call tools");
+    expect(histories.some((h) => JSON.stringify(h).includes("Do not call tools"))).toBe(false);
+    expect(
+      histories.some((h) =>
+        h.some(
+          (m) =>
+            m?.role === "assistant" &&
+            !m.toolCalls &&
+            !(typeof m.content === "string" ? m.content.trim() : ""),
+        ),
+      ),
+    ).toBe(false);
   });
 
   it("does not store an empty assistant message after stripping wrap-up calls", async () => {

@@ -426,6 +426,100 @@ export function buildScorecardNudge(
   }
   return undefined;
 }
+/**
+ * Characters of each tool result kept on a no-tools wrap-up request.
+ * Longer text is cut and ends with `[truncated]` so the excerpt stays within
+ * this cap (the marker counts toward the cap).
+ */
+export const WRAP_UP_TOOL_RESULT_CAP = 2000;
+
+function textPartsOnly(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  let out = "";
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const block = part as { type?: unknown; text?: unknown };
+    if (block.type === "text" && typeof block.text === "string") out += block.text;
+  }
+  return out;
+}
+
+function capWrapUpToolResult(text: string): string {
+  if (text.length <= WRAP_UP_TOOL_RESULT_CAP) return text;
+  const mark = "[truncated]";
+  return text.slice(0, Math.max(0, WRAP_UP_TOOL_RESULT_CAP - mark.length)) + mark;
+}
+
+function appendMergedUser(out: Array<{ role: string; content: string }>, text: string): void {
+  const prev = out[out.length - 1];
+  if (prev?.role === "user") {
+    prev.content = prev.content && text ? `${prev.content}\n\n${text}` : `${prev.content}${text}`;
+    return;
+  }
+  out.push({ role: "user", content: text });
+}
+
+/**
+ * History for a no-tools wrap-up call. Tool results become user text (text
+ * parts only, capped), assistant tool calls become text, and adjacent user
+ * messages are merged so providers that require alternating roles accept it.
+ * Does not mutate `messages`.
+ */
+export function flattenWrapUpHistory(messages: readonly any[]): any[] {
+  const out: any[] = [];
+  for (const message of messages) {
+    if (!message || typeof message !== "object") continue;
+    if (message.role === "toolResult" || message.role === "tool_result") {
+      const text = Array.isArray(message.content)
+        ? textPartsOnly(message.content)
+        : typeof message.result === "string"
+          ? message.result
+          : typeof message.content === "string"
+            ? message.content
+            : textPartsOnly(message.result ?? message.content);
+      appendMergedUser(
+        out,
+        `Tool result (${message.toolName ?? "unknown"}, ${message.toolCallId ?? ""}): ${capWrapUpToolResult(text)}`,
+      );
+      continue;
+    }
+    if (message.role === "user") {
+      const text = typeof message.content === "string" ? message.content : textPartsOnly(message.content);
+      appendMergedUser(out, text);
+      continue;
+    }
+    if (message.role === "assistant") {
+      const parts = Array.isArray(message.content) ? message.content : [];
+      const calls =
+        message.toolCalls ??
+        parts.filter(
+          (part: any) => part?.type === "tool_use" || part?.type === "toolUse" || part?.type === "toolCall",
+        );
+      if (!calls?.length) {
+        out.push(message);
+        continue;
+      }
+      const text = typeof message.content === "string" ? message.content : textPartsOnly(message.content);
+      out.push({
+        role: "assistant",
+        content: `${text}${text ? "\n" : ""}Tool calls: ${JSON.stringify(calls)}`,
+      });
+    }
+  }
+  return out;
+}
+
+/** Visible wrap-up text, or null when the reply is empty, whitespace, or thinking-only. */
+function visibleWrapUpText(message: any): string | null {
+  if (!message || typeof message !== "object") return null;
+  const content = message.content;
+  if (typeof content === "string") return content.trim() ? content : null;
+  if (!Array.isArray(content)) return null;
+  const text = textPartsOnly(content);
+  return text.trim() ? text : null;
+}
+
 export async function runTurn(
   session: Session,
   userInput: string,
@@ -804,6 +898,10 @@ export async function runTurn(
   let fullResponse = "";
   let stepIndex = 0;
   let lastStreamReason: LlmStreamResult["finalReason"] = "stop";
+  // Set around a wrap-up stream so the first visible delta is preceded by a
+  // blank line when this turn already streamed step text.
+  let armWrapSeparator = false;
+  let wrapSeparatorSent = false;
   let lastLlmErrorMessage: string | undefined;
   let providerUsage: ProviderUsage | null = null;
   let recordedProviderUsage = false;
@@ -873,6 +971,13 @@ export async function runTurn(
       signal: options?.signal,
       reasoningEffort,
       onTextDelta: (delta) => {
+        if (armWrapSeparator && delta.trim()) {
+          armWrapSeparator = false;
+          if (fullResponse.length > 0) {
+            wrapSeparatorSent = true;
+            s.onTextDelta?.("\n\n");
+          }
+        }
         s.onTextDelta?.(delta);
       },
       onThinkingDelta: (delta) => {
@@ -991,52 +1096,73 @@ export async function runTurn(
   }
 
   function logWrapUpFailure(reason: string, error: string | undefined): void {
+    const message = error ?? "LLM stream error";
     llmLogger.warn("Wrap-up summary stream failed; ending turn", {
       code: "LLM_STREAM_ERROR",
       details: {
         reason,
-        error,
+        error: message,
         model: activeModelName,
         provider: activeProviderName,
       },
     });
     lastStreamReason = "error";
-    lastLlmErrorMessage = error ?? lastLlmErrorMessage;
+    lastLlmErrorMessage = message;
+    // Same shape as a normal step's stream error, so a failed summary is visible
+    // even when earlier steps already produced text.
+    s.onError?.({
+      level: "error",
+      domain: "llm",
+      message,
+      code: "LLM_STREAM_ERROR",
+      details: {
+        model: activeModelName,
+        provider: activeProviderName,
+        reason: "error",
+      },
+    });
   }
 
   /**
-   * Stop the turn gracefully at a step budget limit: append a no-tool
-   * instruction asking for a short summary, stream one final model call
-   * with an empty tool list, and record its text. Tool calls in that reply
-   * are dropped and not executed. A stream error is logged and left for the
-   * existing end-of-turn banner. Ctrl+C sets `interrupted` so the caller
-   * finalizes the turn the same way as an interrupt in a normal step.
+   * Stop the turn gracefully at a step budget limit: one no-tool model call
+   * asking for a short summary. The instruction exists only for that call and
+   * is removed afterwards (the reply, when it has visible text, is the record).
+   * Tool calls in the reply are dropped and not executed. A stream error is
+   * logged and reported through `onError`. Ctrl+C sets `interrupted` and
+   * `lastStreamReason` to aborted, keeping any partial text that was stored.
    */
   async function wrapUpStep(reason: string): Promise<void> {
     s.onSpinnerStop?.();
-    history.push({
+    const instruction = {
       role: "user",
       content: `${reason} Reply with a short summary of what was done and what remains. Do not call tools.`,
       timestamp: Date.now(),
-    });
+    };
+    history.push(instruction);
+    const dropInstruction = () => {
+      const idx = history.lastIndexOf(instruction);
+      if (idx >= 0) history.splice(idx, 1);
+    };
+    wrapSeparatorSent = false;
+    armWrapSeparator = true;
     try {
-      const wrapHistory = history.map((message) => {
-        if (message.role === "toolResult" || message.role === "tool_result") {
-          const result = message.result ?? message.content;
-          return { role: "user", content: `Tool result (${message.toolName ?? "unknown"}, ${message.toolCallId ?? ""}): ${typeof result === "string" ? result : JSON.stringify(result)}` };
+      const wrap = await attemptStream([], flattenWrapUpHistory(history));
+      const streamed = wrap.fullResponse;
+      const fromMessage = visibleWrapUpText(withoutWrapUpToolCalls(wrap.finalMessage));
+      const text = streamed.trim() ? streamed : fromMessage;
+      const aborted =
+        wrap.interrupted ||
+        !!options?.signal?.aborted ||
+        wrap.finalReason === "aborted";
+      if (aborted) {
+        if (text) {
+          if (wrapSeparatorSent) fullResponse += "\n\n";
+          fullResponse += text;
+          history.push({ role: "assistant", content: text, timestamp: Date.now() });
         }
-        if (message.role !== "assistant") return message;
-        const parts = Array.isArray(message.content) ? message.content : [];
-        const calls = message.toolCalls ?? parts.filter((part: any) => part?.type === "tool_use" || part?.type === "toolUse" || part?.type === "toolCall");
-        if (!calls.length) return message;
-        const text = typeof message.content === "string" ? message.content : parts.filter((part: any) => part?.type === "text").map((part: any) => part.text).join("");
-        return { role: "assistant", content: `${text}${text ? "\n" : ""}Tool calls: ${JSON.stringify(calls)}` };
-      });
-      const wrap = await attemptStream([], wrapHistory);
-      if (wrap.interrupted || options?.signal?.aborted) {
-        fullResponse += wrap.fullResponse;
         providerUsage = wrap.providerUsage ?? providerUsage;
         recordedProviderUsage = wrap.recordedProviderUsage || recordedProviderUsage;
+        lastStreamReason = "aborted";
         interrupted = true;
         return;
       }
@@ -1044,31 +1170,32 @@ export async function runTurn(
         logWrapUpFailure(reason, wrap.errorMessage);
         return;
       }
-      fullResponse += wrap.fullResponse;
-      lastStreamReason = wrap.finalReason;
+      lastStreamReason = wrap.finalReason === "toolUse" ? "stop" : wrap.finalReason;
       lastLlmErrorMessage = undefined;
       providerUsage = wrap.providerUsage ?? providerUsage;
       recordedProviderUsage = wrap.recordedProviderUsage || recordedProviderUsage;
-      if (wrap.finalMessage) {
-        if (wrap.assistantTokens > 0) {
-          turnHistoryTokens += wrap.assistantTokens;
-          s.onContextHistoryDelta?.({
-            tokensAdded: wrap.assistantTokens,
-            source: "assistant",
-          });
-        }
-        const message = withoutWrapUpToolCalls(wrap.finalMessage);
-        const hasContent = Array.isArray(message.content)
-          ? message.content.length > 0
-          : typeof message.content === "string" && message.content.trim().length > 0;
-        if (hasContent) history.push(message);
+      if (wrap.finalMessage && wrap.assistantTokens > 0) {
+        turnHistoryTokens += wrap.assistantTokens;
+        s.onContextHistoryDelta?.({
+          tokensAdded: wrap.assistantTokens,
+          source: "assistant",
+        });
+      }
+      if (text) {
+        if (wrapSeparatorSent) fullResponse += "\n\n";
+        fullResponse += text;
+        history.push({ role: "assistant", content: text, timestamp: Date.now() });
       }
     } catch (err) {
       if (options?.signal?.aborted) {
+        lastStreamReason = "aborted";
         interrupted = true;
         return;
       }
       logWrapUpFailure(reason, err instanceof Error ? err.message : String(err));
+    } finally {
+      armWrapSeparator = false;
+      dropInstruction();
     }
   }
 
