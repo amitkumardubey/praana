@@ -17,7 +17,6 @@ export type OverlayKind =
 /** Minimal confirm prompt used by the per-turn step pause. */
 export interface ConfirmPromptState {
   message: string;
-  resolve: (cont: boolean) => void;
 }
 
 /**
@@ -49,8 +48,12 @@ export interface OverlayUi {
   showPalette(): void;
   showSetup(): void;
   showConsent(): void;
-  /** Open a small confirm overlay; resolves true on Enter, false on Esc/Ctrl+C. */
-  showConfirm(message: string): Promise<boolean>;
+  /**
+   * Open a small confirm overlay; resolves true on Enter, false on Esc/Ctrl+C
+   * or when `signal` aborts. A confirm that is already open stays open: this
+   * call waits and runs after it (see the priority rule on `createOverlayUi`).
+   */
+  showConfirm(message: string, signal?: AbortSignal): Promise<boolean>;
   resolveConfirm(cont: boolean): void;
   dismiss(): void;
   dispose(): void;
@@ -64,14 +67,71 @@ export function createOverlayUi(): OverlayUi {
     const [logoutHint, setLogoutHint] = createSignal<string | undefined>(undefined);
     const [confirmPrompt, setConfirmPrompt] = createSignal<ConfirmPromptState | null>(null);
     let confirmResolver: ((cont: boolean) => void) | null = null;
+    // Latest overlay requested while a step-pause confirm is open. Applied
+    // when that confirm resolves or its signal aborts. It does not answer
+    // the confirm. A newer request replaces the previous one; a replaced
+    // queued confirm resolves false so its caller does not hang. dismiss
+    // and dispose drop the queue.
+    let deferredOverlay: (() => void) | null = null;
+    let abandonDeferred: (() => void) | null = null;
 
-    /** Resolve (and clear) a pending confirm prompt. No-op when none is open. */
-    const flushConfirm = (cont: boolean) => {
-      if (!confirmResolver) return;
-      const resolve = confirmResolver;
-      confirmResolver = null;
-      setConfirmPrompt(null);
-      resolve(cont);
+    const queueOverlay = (open: () => void, abandon?: () => void) => {
+      const previous = abandonDeferred;
+      deferredOverlay = open;
+      abandonDeferred = abandon ?? null;
+      previous?.();
+    };
+
+    const takeDeferred = (): (() => void) | null => {
+      const next = deferredOverlay;
+      deferredOverlay = null;
+      abandonDeferred = null;
+      return next;
+    };
+
+    const dropDeferred = () => {
+      const abandon = abandonDeferred;
+      deferredOverlay = null;
+      abandonDeferred = null;
+      abandon?.();
+    };
+
+    const showConfirm = (message: string, signal?: AbortSignal): Promise<boolean> => {
+      if (signal?.aborted) return Promise.resolve(false);
+      if (confirmResolver) {
+        return new Promise((resolve) => {
+          queueOverlay(
+            () => {
+              void showConfirm(message, signal).then(resolve);
+            },
+            () => resolve(false),
+          );
+        });
+      }
+      return new Promise((resolve) => {
+        let settled = false;
+        const finish = (cont: boolean) => {
+          if (settled) return;
+          settled = true;
+          signal?.removeEventListener("abort", onAbort);
+          confirmResolver = null;
+          setConfirmPrompt(null);
+          const next = takeDeferred();
+          if (!next) setKind((current) => (current === "confirm" ? "none" : current));
+          resolve(cont);
+          next?.();
+        };
+        const onAbort = () => finish(false);
+        if (signal) signal.addEventListener("abort", onAbort, { once: true });
+        confirmResolver = finish;
+        setConfirmPrompt({ message });
+        setKind("confirm");
+      });
+    };
+
+    const openUnlessPaused = (open: () => void) => {
+      if (confirmResolver) queueOverlay(open);
+      else open();
     };
 
     return {
@@ -81,60 +141,50 @@ export function createOverlayUi(): OverlayUi {
       logoutHint,
       confirmPrompt,
       showSlash(lines: string[]) {
-        flushConfirm(false);
-        setSlashLines(lines);
-        setKind("slash");
-      },
-      showModel() {
-        flushConfirm(false);
-        setKind("model");
-      },
-      showLogin(providerHint?: string) {
-        flushConfirm(false);
-        setLoginHint(providerHint);
-        setKind("login");
-      },
-      showLogout(providerHint?: string) {
-        flushConfirm(false);
-        setLogoutHint(providerHint);
-        setKind("logout");
-      },
-      showPalette() {
-        flushConfirm(false);
-        setKind("palette");
-      },
-      showSetup() {
-        flushConfirm(false);
-        setKind("setup");
-      },
-      showConsent() {
-        flushConfirm(false);
-        setKind("consent");
-      },
-      showConfirm(message: string) {
-        // Replacing an open confirm is a transition away from it.
-        flushConfirm(false);
-        return new Promise<boolean>((resolve) => {
-          confirmResolver = resolve;
-          setConfirmPrompt({ message, resolve });
-          setKind("confirm");
+        openUnlessPaused(() => {
+          setSlashLines(lines);
+          setKind("slash");
         });
       },
+      showModel() {
+        openUnlessPaused(() => setKind("model"));
+      },
+      showLogin(providerHint?: string) {
+        openUnlessPaused(() => {
+          setLoginHint(providerHint);
+          setKind("login");
+        });
+      },
+      showLogout(providerHint?: string) {
+        openUnlessPaused(() => {
+          setLogoutHint(providerHint);
+          setKind("logout");
+        });
+      },
+      showPalette() {
+        openUnlessPaused(() => setKind("palette"));
+      },
+      showSetup() {
+        openUnlessPaused(() => setKind("setup"));
+      },
+      showConsent() {
+        openUnlessPaused(() => setKind("consent"));
+      },
+      showConfirm,
       resolveConfirm(cont: boolean) {
-        flushConfirm(cont);
-        setKind("none");
+        confirmResolver?.(cont);
       },
       dismiss() {
-        // Never leave a pending step-pause promise hanging — treat a dismiss
-        // as a stop so the turn can proceed to its wrap-up.
-        flushConfirm(false);
+        dropDeferred();
+        if (confirmResolver) confirmResolver(false);
         setKind("none");
         setSlashLines([]);
         setLoginHint(undefined);
         setLogoutHint(undefined);
       },
       dispose() {
-        flushConfirm(false);
+        dropDeferred();
+        if (confirmResolver) confirmResolver(false);
         dispose();
       },
     };

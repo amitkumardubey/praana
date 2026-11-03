@@ -493,20 +493,20 @@ export async function runTui(
   const askContinueFromOverlay = async (stepsUsed: number, signal: AbortSignal): Promise<boolean> => {
     if (signal.aborted) return false;
     ui.spinner.stop();
-    const pending = overlay.showConfirm(`Used ${stepsUsed} steps this turn. Continue?`);
-    const onAbort = () => {
-      if (overlay.kind() === "confirm") overlay.resolveConfirm(false);
-      renderer.requestRender();
-    };
+    // showConfirm closes itself when `signal` aborts, so a cancelled turn
+    // cannot leave "Continue?" or its key intercept on screen.
+    const pending = overlay.showConfirm(`Used ${stepsUsed} steps this turn. Continue?`, signal);
+    const onAbort = () => renderer.requestRender();
     signal.addEventListener("abort", onAbort, { once: true });
     renderer.requestRender();
     try {
       const cont = await pending;
       focusPrompt();
       if (cont && !signal.aborted) ui.spinner.start("working…");
-      return cont;
+      return cont && !signal.aborted;
     } finally {
       signal.removeEventListener("abort", onAbort);
+      renderer.requestRender();
     }
   };
 
