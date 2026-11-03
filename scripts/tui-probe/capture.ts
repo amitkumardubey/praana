@@ -2,6 +2,8 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync, appendFileSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 
+export interface Sample { timestamp: number; text: string }
+
 export function parseSize(value: string) {
   const match = /^(\d+)x(\d+)$/.exec(value);
   if (!match || !Number(match[1]) || !Number(match[2])) throw new Error("Invalid terminal size");
