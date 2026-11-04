@@ -17,6 +17,8 @@ export type OverlayKind =
 /** Minimal confirm prompt used by the per-turn step pause. */
 export interface ConfirmPromptState {
   message: string;
+  /** Changes for every confirm that is shown, so Enter's arm delay resets. */
+  id: number;
 }
 
 /**
@@ -67,6 +69,7 @@ export function createOverlayUi(): OverlayUi {
     const [logoutHint, setLogoutHint] = createSignal<string | undefined>(undefined);
     const [confirmPrompt, setConfirmPrompt] = createSignal<ConfirmPromptState | null>(null);
     let confirmResolver: ((cont: boolean) => void) | null = null;
+    let nextConfirmId = 0;
     // Latest overlay requested while a step-pause confirm is open. Applied
     // when that confirm resolves or its signal aborts. It does not answer
     // the confirm. A newer request replaces the previous one; a replaced
@@ -124,7 +127,7 @@ export function createOverlayUi(): OverlayUi {
         const onAbort = () => finish(false);
         if (signal) signal.addEventListener("abort", onAbort, { once: true });
         confirmResolver = finish;
-        setConfirmPrompt({ message });
+        setConfirmPrompt({ message, id: ++nextConfirmId });
         setKind("confirm");
       });
     };
