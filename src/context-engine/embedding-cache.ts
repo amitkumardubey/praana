@@ -55,6 +55,9 @@ async function embedTextsConcurrently(
   async function worker(): Promise<void> {
     while (next < texts.length) {
       const index = next++;
+      // Native embedders can block synchronously even though embed() returns a
+      // promise. Give the renderer and other I/O a turn between calls.
+      if (index > 0) await new Promise<void>((resolve) => setImmediate(resolve));
       const text = texts[index];
       const vec = await embedder.embed(text);
       cache.set(text, vec);
