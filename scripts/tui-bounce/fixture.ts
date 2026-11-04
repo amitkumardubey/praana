@@ -53,6 +53,45 @@ export const STREAM_MARKDOWN = [
   "The last line of the answer is this one.",
 ].join("\n");
 
+/** Recording-shaped answer: all requested structures, including split spans. */
+export const ATOMIC_HABITS_MARKDOWN = [
+  "# Atomic Habits — James Clear",
+  "",
+  "**The central idea:** Small changes compound into remarkable results.",
+  "",
+  "## 1. Build systems, not just goals",
+  "",
+  "- **Goals** define the results you want.",
+  "- **Systems** are the routines that move you toward those results.",
+  "* Goals provide direction; systems make progress repeatable.",
+  "",
+  "> Focus on the *process* you can repeat, not only the outcome.",
+  "",
+  "### The three layers of change",
+  "",
+  "1. **Outcomes:** What you get — finishing a race.",
+  "2. **Processes:** What you do — running regularly.",
+  "3. **Identity:** What you believe — being a runner.",
+  "",
+  "Shift: *trying to read more* → **I’m becoming a reader** with _small steps_.",
+  "",
+  "| Habit | Two-minute version |",
+  "| --- | --- |",
+  "| Read books | Read one page |",
+  "| Run three miles | Put on running shoes |",
+  "",
+  "## 2. Make it obvious",
+  "",
+  "Use a cue: `after breakfast`. Make the next action easy to start.",
+  "",
+  "```ts",
+  "const habit = () => readOnePage();",
+  "habit();",
+  "```",
+  "",
+  "**Make good habits obvious, attractive, easy, and satisfying.**",
+].join("\n");
+
 /** Whitespace-delimited tokens, whitespace kept as its own deltas. */
 export function wordDeltas(text: string): string[] {
   return text.match(/\s+|\S+/g) ?? [text];
