@@ -76,8 +76,8 @@ export function createOverlayUi(): OverlayUi {
     // Confirms and overlays waiting to be shown. A confirm requested while
     // something else is open waits here and listens to its own signal.
     // Non-confirm requests queue behind an open confirm (a later one replaces
-    // only a trailing overlay, never a confirm). dismiss/dispose of an open
-    // confirm drops the queue. Closing any other overlay promotes it.
+    // only a trailing overlay, never a confirm). dismiss() of an open confirm
+    // settles only that confirm and promote() shows the queue. dispose() drops it.
     type QueuedConfirm = {
       type: "confirm";
       message: string;
@@ -195,6 +195,9 @@ export function createOverlayUi(): OverlayUi {
       if (kind() === "slash") {
         setSlashLines([]);
         setKind("none");
+        // Work queued behind the panel stays queued. Opening through the
+        // blocked path would promote that work and hide this confirm.
+        return new Promise((resolve) => openConfirm(message, signal, resolve));
       }
       const blocked = confirmResolver !== null || kind() !== "none" || queue.length > 0;
       if (!blocked) return new Promise((resolve) => openConfirm(message, signal, resolve));
@@ -264,12 +267,12 @@ export function createOverlayUi(): OverlayUi {
         confirmResolver?.(cont);
       },
       dismiss() {
+        // Every overlay close path must go through dismiss() or promote().
+        // A close that only clears kind leaves a queued confirm waiting, and its turn hangs.
         if (confirmResolver) {
-          dropQueue();
+          // finish() clears the prompt and promote() shows the queue.
+          // setKind/setConfirmPrompt here would race that and are not needed.
           confirmResolver(false);
-          setKind("none");
-          setConfirmPrompt(null);
-          clearOverlayFields();
           return;
         }
         setKind("none");

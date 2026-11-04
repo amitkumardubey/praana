@@ -144,19 +144,32 @@ describe("createOverlayUi", () => {
     ui.dispose();
   });
 
-  it("dismiss and dispose stop the confirm and drop a queued overlay", async () => {
+  it("dismiss stops only the visible confirm and promotes what is queued", async () => {
     const ui = createOverlayUi();
     const pending = ui.showConfirm("still open?");
     const queued = ui.showConfirm("queued?");
     ui.showPalette();
     ui.dismiss();
     expect(await pending).toBe(false);
-    expect(await queued).toBe(false);
+    let queuedValue: boolean | undefined;
+    void queued.then((value) => {
+      queuedValue = value;
+    });
+    await Promise.resolve();
+    expect(queuedValue).toBeUndefined();
+    expect(ui.kind()).toBe("confirm");
+    expect(ui.confirmPrompt()?.message).toBe("queued?");
+    ui.resolveConfirm(true);
+    expect(await queued).toBe(true);
+    expect(ui.kind()).toBe("palette");
+    ui.dismiss();
     expect(ui.kind()).toBe("none");
 
     const disposed = ui.showConfirm("dispose?");
+    const also = ui.showConfirm("also?");
     ui.dispose();
     expect(await disposed).toBe(false);
+    expect(await also).toBe(false);
   });
 });
 
@@ -268,10 +281,38 @@ async function runOverlayInterleave(seed: number): Promise<void> {
           }
         }
       } else if (ui.kind() === "confirm") {
-        const cont = rng() < 0.5;
-        ops.push(cont ? "resolve:yes" : "resolve:no");
-        ui.resolveConfirm(cont);
-        await flushMicro();
+        const waiting = confirms.filter((c) => c.settles === 0);
+        if (waiting.length > 1 && rng() < 0.5) {
+          const visible = ui.confirmPrompt()?.message;
+          ops.push("dismiss-confirm");
+          ui.dismiss();
+          await flushMicro();
+          const visibleRec = confirms.find((c) => `c${c.id}?` === visible);
+          if (!visibleRec || visibleRec.settles !== 1 || visibleRec.value !== false) {
+            fail(`O2 dismiss did not stop only the visible confirm ${visible ?? "(none)"}`);
+          }
+          for (const other of confirms) {
+            if (other === visibleRec) continue;
+            if (other.settles !== beforeSettles[other.id]) {
+              fail(`O2 dismiss settled confirm ${other.id}`);
+            }
+          }
+          const stillWaiting = confirms.filter((c) => c.settles === 0);
+          if (stillWaiting.length > 0 && ui.kind() === "none") {
+            fail("O2 dismiss dropped a queued confirm (kind none)");
+          }
+          if (ui.kind() === "confirm") {
+            const shown = ui.confirmPrompt()?.message;
+            if (!stillWaiting.some((c) => `c${c.id}?` === shown)) {
+              fail(`O2 dismiss showed ${shown ?? "(none)"} instead of a queued confirm`);
+            }
+          }
+        } else {
+          const cont = rng() < 0.5;
+          ops.push(cont ? "resolve:yes" : "resolve:no");
+          ui.resolveConfirm(cont);
+          await flushMicro();
+        }
       } else if (ui.kind() !== "none") {
         ops.push("close");
         ui.dismiss();
