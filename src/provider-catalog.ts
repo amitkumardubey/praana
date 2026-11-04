@@ -15,7 +15,7 @@ import { getApiKey } from "./credentials.js";
 /** Exclude known non-conversational model families from live pickers. */
 export function isChatToolModel(id: string): boolean {
   const name = id.toLowerCase().split("/").pop() ?? "";
-  return !/(?:embedding|whisper|transcrib|(?:^|[-_])tts(?:[-_]|$)|audio|realtime|dall-e|gpt-image|imagen|(?:^|[-_])veo(?:[-_]|$)|(?:^|[-_])sora(?:[-_]|$)|moderation|davinci|babbage|instruct|^aqa$)/.test(name);
+  return !/^(?:text-embedding|embedding|gemini-embedding|whisper|tts(?:[-_]|$)|dall-e|gpt-image|imagen|veo(?:[-_]|$)|sora(?:[-_]|$)|omni-moderation|davinci|babbage|gpt-3\.5-turbo-instruct|aqa$)|(?:^|[-_])embed(?:ding)?(?:[-_]|$)|^(?:qwen2-audio|gpt-4o-audio|gpt-realtime|gpt-4o-transcribe)(?:[-_]|$)/.test(name);
 }
 
 export const PROVIDER_CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
