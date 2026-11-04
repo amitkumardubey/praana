@@ -86,7 +86,7 @@ Typing `/` opens the slash palette (fuzzy filter; non-destructive first; Enter r
 
 ## Testing
 
-`bun test` (full suite; `bun run test:parallel` opt-in). Tests live in `tests/`; keep the suite passing before committing and add tests for new logic. In-memory SQLite (`:memory:`) tests must use `openDatabase()` (`src/sqlite.ts`), never raw `new Database(":memory:")`. `bunfig.toml` preloads `tests/helpers/solid-client.ts` under `bun test` (client build of solid-js + Solid JSX transform) so OpenTUI Solid UI tests are reactive.
+`bun test` (full suite; `bun run test:parallel` opt-in). Tests live in `tests/`; keep the suite passing before committing and add tests for new logic. In-memory SQLite (`:memory:`) tests must use `openDatabase()` (`src/sqlite.ts`), never raw `new Database(":memory:")`. `bunfig.toml` preloads `tests/helpers/solid-client.ts` under `bun test` (client build of solid-js + Solid JSX transform) so OpenTUI Solid UI tests are reactive. `bunfig.toml` also preloads `tests/helpers/isolated-home.ts`, which points `HOME`/`USERPROFILE`/`PRAANA_HOME` at a per-run temp dir and clears provider credential env vars so the suite never reads or writes your real `~/.praana`; set `PRAANA_TEST_REAL_HOME=1` to opt out for a rare live test.
 
 ## Code Conventions
 
