@@ -1,9 +1,20 @@
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, posix, win32 } from "node:path";
 import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
-import { resolveLspRoot, discoverWorkspaceMembers } from "../src/lsp/workspace-roots.js";
+import { resolveLspRoot, discoverWorkspaceMembers, normalizeGitRoot } from "../src/lsp/workspace-roots.js";
+
+describe("normalizeGitRoot", () => {
+  it("uses Windows separators for git output", () => {
+    expect(normalizeGitRoot("C:/a/b", win32)).toBe("C:\\a\\b");
+  });
+
+  it("preserves normalized POSIX paths, including a trailing slash", () => {
+    expect(normalizeGitRoot("/a/b", posix)).toBe("/a/b");
+    expect(normalizeGitRoot("/a/b/", posix)).toBe("/a/b/");
+  });
+});
 
 function makeDir(): string {
   const dir = join(

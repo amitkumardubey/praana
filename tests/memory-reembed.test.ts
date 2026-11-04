@@ -10,6 +10,7 @@ import {
 } from "../src/memory/db.js";
 import { openDatabase } from "../src/sqlite.js";
 import { MemoryStore } from "../src/memory/store.js";
+import { rmForce } from "./helpers/platform.js";
 import type { Embedder } from "../src/memory/types.js";
 
 class FixedEmbedder implements Embedder {
@@ -28,7 +29,7 @@ async function withTempDb<T>(fn: (dbPath: string) => Promise<T> | T): Promise<T>
   try {
     return await fn(dbPath);
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    rmForce(dir);
   }
 }
 

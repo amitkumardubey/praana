@@ -9,6 +9,7 @@ import {
   formatScorecardLines,
 } from "../src/context-engine/telemetry.js";
 import { openContextEngineDb } from "../src/context-engine/db.js";
+import { rmForce } from "./helpers/platform.js";
 import { getMemorySignalAverages } from "../src/memory/db.js";
 
 function memoryAveragesProvider(contextScope?: string) {
@@ -33,7 +34,7 @@ describe("ScorecardTracker", () => {
       // ignore
     }
     try {
-      rmSync(dbPath, { force: true });
+      rmForce(dbPath);
     } catch {
       // ignore
     }
@@ -240,7 +241,7 @@ describe("ScorecardTracker", () => {
     expect(row?.validity_avg_start).toBeCloseTo(0.9, 1);
 
     memDb.close();
-    rmSync(memDbPath, { force: true });
+    rmForce(memDbPath);
   });
 
   it("classic mode with measurement_mode=true creates row with context_engine_on=0", async () => {
@@ -305,7 +306,7 @@ describe("ScorecardTracker", () => {
     expect(row?.usefulness_avg_end).toBeCloseTo(0.6, 1);
 
     memDb.close();
-    rmSync(memDbPath, { force: true });
+    rmForce(memDbPath);
   });
 
   it("setRecallUsedCount is reflected in getCounters and flush", async () => {
@@ -385,7 +386,7 @@ describe("ScorecardTracker", () => {
     expect(row?.usefulness_avg_end).toBeCloseTo(0.42, 1);
 
     memDb.close();
-    rmSync(memDbPath, { force: true });
+    rmForce(memDbPath);
   });
 
   it("does not show a fake arrow delta when memory averages are unchanged", () => {
@@ -457,7 +458,7 @@ describe("Scorecard schema privacy invariant", () => {
     }
 
     db.close();
-    rmSync(dbPath, { force: true });
+    rmForce(dbPath);
   });
 });
 
@@ -496,7 +497,7 @@ describe("getMemorySignalAverages", () => {
     expect(global.validityAvg).toBeCloseTo(0.5, 1);
 
     memDb.close();
-    rmSync(memDbPath, { force: true });
+    rmForce(memDbPath);
   });
 });
 
@@ -524,6 +525,6 @@ describe("End-to-end: minimal session with retrieve_artifact", () => {
     expect(row?.recall_used_count).toBe(2);
 
     db.close();
-    rmSync(dbPath, { force: true });
+    rmForce(dbPath);
   });
 });

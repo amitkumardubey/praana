@@ -66,7 +66,8 @@ describe("runUpgrade", () => {
     });
     expect(result.exitCode).toBe(0);
     const text = result.lines.join("\n");
-    expect(text).toContain(".local/bin");
+    // The warning prints the prefix joined with the host separator.
+    expect(text).toContain(join(".local", "bin"));
     expect(text.toLowerCase()).toContain("bun remove");
   });
 

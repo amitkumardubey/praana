@@ -6,6 +6,7 @@ import { createSystemTools } from "../src/tools/system.js";
 import { ScorecardTracker } from "../src/context-engine/telemetry.js";
 import { ArtifactStore } from "../src/context-engine/artifact-store.js";
 import { openContextEngineDb } from "../src/context-engine/db.js";
+import { rmForce } from "./helpers/platform.js";
 import { buildArtifactCard } from "../src/context-engine/summarize.js";
 import type { ContextEngineConfig } from "../src/types.js";
 
@@ -41,7 +42,7 @@ describe("repeat-read interceptor", () => {
     } catch {
       // ignore
     }
-    rmSync(testDir, { recursive: true, force: true });
+    rmForce(testDir);
   });
 
   function makeTools(opts: { blockRepeatReads?: boolean } = {}) {
@@ -371,6 +372,6 @@ describe("ScorecardTracker read-path helpers", () => {
     expect(resumed.hasReadPath("/tmp/a")).toBe(true);
 
     db.close();
-    rmSync(dir, { recursive: true, force: true });
+    rmForce(dir);
   });
 });

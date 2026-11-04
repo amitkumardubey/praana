@@ -6,6 +6,7 @@ import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, normalize, resolve } from "node:path";
 import type { SandboxConfig } from "../../types.js";
+import { pathInRoot } from "../../path-containment.js";
 import { BunAdapter } from "./adapters/bun.js";
 import { CargoAdapter } from "./adapters/cargo.js";
 import { GenericAdapter } from "./adapters/generic.js";
@@ -85,7 +86,7 @@ function sandboxBlockReason(
   const resolved = resolvePath(path);
   const allowed = sandbox.allowed_paths.some((ap) => {
     const apResolved = resolvePath(ap);
-    return resolved === apResolved || resolved.startsWith(apResolved + "/");
+    return pathInRoot(resolved, apResolved);
   });
 
   return allowed

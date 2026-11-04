@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { isWindows } from "./helpers/platform.js";
 import { existsSync, mkdtempSync, readdirSync, renameSync, rmSync, statSync, utimesSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -106,7 +107,8 @@ describe("credential store", () => {
     expect(getApiKey("persisted")).toBe("sk-persist");
   });
 
-  it("creates file with 0o600 permissions on Unix", () => {
+  // POSIX-only: NTFS reports 0o666 regardless of the requested chmod mode.
+  it.skipIf(isWindows)("creates file with 0o600 permissions on Unix", () => {
     setApiKey("perm-test", "sk-perm");
     const credPath = getCredentialsFilePath();
     expect(existsSync(credPath)).toBe(true);
@@ -137,7 +139,9 @@ describe("credential store", () => {
     expect(getApiKey("recovered")).toBe("sk-ok");
   });
 
-  it("ensureCredentialsFileMode heals overly permissive files", () => {
+  // POSIX-only: relies on chmod clearing group/other bits, which NTFS does not
+  // honour (it reports 0o666 either way).
+  it.skipIf(isWindows)("ensureCredentialsFileMode heals overly permissive files", () => {
     setApiKey("perm-heal", "sk-heal");
     const credPath = getCredentialsFilePath();
     chmodSync(credPath, 0o644);
@@ -246,12 +250,16 @@ describe("credential store", () => {
     renameSync(tmp, path);
     const seconds = before.mtimeMs / 1000;
     utimesSync(path, seconds, seconds);
-    expect(statSync(path).mtimeMs).toBe(before.mtimeMs);
+    // Windows reports the mtime with a slightly different sub-ms float; the
+    // product's staleness check uses the file identity (ino), asserted next.
+    expect(Math.round(statSync(path).mtimeMs)).toBe(Math.round(before.mtimeMs));
     expect(statSync(path).ino).not.toBe(before.ino);
     expect(readCachedOAuthIfUnchanged("openai-codex").unchanged).toBe(false);
   });
 
-  it("does not replace a credentials file it cannot read", () => {
+  // POSIX-only: relies on chmod 0o000 making the file unreadable; on Windows
+  // the ACL is unchanged and the save path behaves differently.
+  it.skipIf(isWindows)("does not replace a credentials file it cannot read", () => {
     const path = getCredentialsFilePath();
     mkdirSync(dirname(path), { recursive: true });
     const bytes = Buffer.from("{\"openrouter\":{\"type\":\"api_key\",\"key\":\"sk-keep\",\"savedAt\":1}}");
@@ -398,7 +406,10 @@ describe("resolveApiKey precedence", () => {
     expect(backups).toHaveLength(1);
     const backupPath = join(dirname(path), backups[0]!);
     expect(readFileSync(backupPath)).toEqual(bytes);
-    expect(statSync(backupPath).mode & 0o777).toBe(0o600);
+    // 0o600 backup mode is a POSIX permission; NTFS reports 0o666.
+    if (!isWindows) {
+      expect(statSync(backupPath).mode & 0o777).toBe(0o600);
+    }
     expect(readdirSync(dirname(path)).some((name) => name.includes(".tmp"))).toBe(false);
     expect(getApiKey("openrouter")).toBe("sk-keep");
   });
