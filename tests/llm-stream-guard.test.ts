@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, jest } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +9,7 @@ import { BedrockDriver } from "../src/llm/drivers/bedrock.js";
 import { GoogleDriver } from "../src/llm/drivers/google.js";
 import { OpenAICompatibleDriver } from "../src/llm/drivers/openai.js";
 import type { LlmDriver } from "../src/llm/drivers/base.js";
-import { createLlmFetchGuard, readErrorBody } from "../src/llm/stream-guard.js";
+import { createLlmFetchGuard, readErrorBody, runGuardedProviderStream } from "../src/llm/stream-guard.js";
 import { isRetryableError } from "../src/llm/retry.js";
 import type { ResolvedAuth, StreamEvent, StreamRequest } from "../src/llm/types.js";
 
@@ -473,5 +473,222 @@ describe("llm timeout config", () => {
     expect(warnings.some((w) => w.includes("above 2147483647"))).toBe(true);
     expect(cfg.llm.connect_timeout_ms).toBeUndefined();
     expect(cfg.llm.stream_idle_timeout_ms).toBe(2_147_483_647);
+  });
+});
+
+describe("stream guard after a terminal signal", () => {
+  const openaiReq = {
+    model: "m",
+    provider: "openai",
+    messages: [{ role: "user" as const, content: "hi" }],
+    connectTimeoutMs: 0,
+    idleTimeoutMs: 60_000,
+  };
+
+  it("completes a tool call when the body errors after finish_reason", async () => {
+    const frames = [
+      'data: {"choices":[{"delta":{"content":"Hi"}}]}\n\n',
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"read_file","arguments":"{\\"path\\":\\"a.ts\\"}"}}]}}]}\n\n',
+      'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+    ];
+    const enc = new TextEncoder();
+    let sent = 0;
+    globalThis.fetch = (async () => {
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          if (sent < frames.length) {
+            controller.enqueue(enc.encode(frames[sent++]!));
+            return;
+          }
+          controller.error(new Error("read ECONNRESET"));
+        },
+      });
+      return new Response(body, { status: 200 });
+    }) as typeof fetch;
+
+    const events = await collect(new OpenAICompatibleDriver(), openaiReq, { apiKey: "test-key" });
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(events.some((event) => event.type === "usage")).toBe(false);
+    expect(events).toContainEqual({ type: "text_delta", delta: "Hi" });
+    expect(events).toContainEqual({
+      type: "tool_call_end",
+      toolCall: { id: "call_1", name: "read_file", args: { path: "a.ts" }, rawArgs: '{"path":"a.ts"}' },
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: "done",
+      reason: "tool_use",
+      message: { role: "assistant", content: "Hi" },
+    });
+  });
+
+  it("does not emit a trailer frame after the user aborts", async () => {
+    const user = new AbortController();
+    const enc = new TextEncoder();
+    let pulls = 0;
+    globalThis.fetch = (async () => {
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulls += 1;
+          controller.enqueue(enc.encode(pulls === 1 ? "one" : "two"));
+        },
+      });
+      return new Response(body, { status: 200 });
+    }) as typeof fetch;
+
+    const events: StreamEvent[] = [];
+    for await (const event of runGuardedProviderStream({
+      req: { ...openaiReq, signal: user.signal },
+      haltedMessage: () => ({ role: "assistant", content: "Hi" }),
+      httpErrorLabel: "err",
+      emptyBodyMessage: "empty",
+      request: (guard) => guard.fetch("http://127.0.0.1/v1/chat/completions", { method: "POST" }),
+      frames: async function* (stream) {
+        const reader = stream.getReader();
+        try {
+          while (true) {
+            const next = await reader.read();
+            if (next.done) return;
+            yield next.value;
+          }
+        } finally {
+          reader.releaseLock();
+        }
+      },
+      onFrame: () => {
+        if (!user.signal.aborted) {
+          user.abort();
+          return { events: [{ type: "text_delta", delta: "Hi" }], releaseIfIdle: true };
+        }
+        return {
+          events: [{
+            type: "tool_call_end",
+            toolCall: { id: "call-1", name: "read_file", args: { path: "a.ts" } },
+          }],
+          stop: true,
+        };
+      },
+      onComplete: () => [{ type: "done", reason: "stop", message: { role: "assistant", content: "Hi" } }],
+    })) {
+      events.push(event);
+    }
+
+    expect(events.some((event) => event.type === "tool_call_end")).toBe(false);
+    expect(events.some((event) => event.type === "done" && event.reason === "stop")).toBe(false);
+    expect(events.at(-1)).toEqual({ type: "done", reason: "abort", message: { role: "assistant", content: "Hi" } });
+  });
+
+  it("waits for Retry-After on 429 instead of the jittered backoff", async () => {
+    jest.useFakeTimers();
+    try {
+      let calls = 0;
+      globalThis.fetch = (async () => {
+        calls += 1;
+        if (calls === 1) {
+          return new Response("slow down", { status: 429, headers: { "Retry-After": "2" } });
+        }
+        return new Response(OPENAI_TEXT + OPENAI_DONE, { status: 200 });
+      }) as typeof fetch;
+
+      let settled = false;
+      const pending = collect(new OpenAICompatibleDriver(), openaiReq, { apiKey: "test-key" }).then((events) => {
+        settled = true;
+        return events;
+      });
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      jest.advanceTimersByTime(1_500);
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      expect(calls).toBe(1);
+      expect(settled).toBe(false);
+      jest.advanceTimersByTime(500);
+      for (let i = 0; i < 20; i++) await Promise.resolve();
+      const events = await pending;
+      expect(calls).toBe(2);
+      expect(events.at(-1)).toMatchObject({ type: "done", reason: "stop" });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it("reports an abort before response headers as done/abort", async () => {
+    const user = new AbortController();
+    user.abort();
+    globalThis.fetch = (async () => {
+      throw new DOMException("The operation was aborted.", "AbortError");
+    }) as typeof fetch;
+    const events = await collect(
+      new OpenAICompatibleDriver(),
+      { ...openaiReq, signal: user.signal },
+      { apiKey: "test-key" },
+    );
+    expect(events).toEqual([{
+      type: "done",
+      reason: "abort",
+      message: { role: "assistant", content: "", toolCalls: [] },
+    }]);
+  });
+
+  it("reports an abort during the retry sleep as done/abort", async () => {
+    const user = new AbortController();
+    globalThis.fetch = (async () => {
+      setTimeout(() => user.abort(), 20);
+      return new Response("no", { status: 429 });
+    }) as typeof fetch;
+    const events = await collect(
+      new OpenAICompatibleDriver(),
+      { ...openaiReq, signal: user.signal, idleTimeoutMs: 0 },
+      { apiKey: "test-key" },
+    );
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    expect(events).toEqual([{
+      type: "done",
+      reason: "abort",
+      message: { role: "assistant", content: "", toolCalls: [] },
+    }]);
+  });
+});
+
+describe("error body bounds", () => {
+  it("times out a trickling error body on one deadline", async () => {
+    let chunks = 0;
+    const res = new Response(
+      new ReadableStream<Uint8Array>({
+        async pull(controller) {
+          chunks += 1;
+          if (chunks > 20) {
+            controller.close();
+            return;
+          }
+          await Bun.sleep(30);
+          controller.enqueue(new TextEncoder().encode("x"));
+        },
+      }),
+      { status: 502 },
+    );
+    const started = Date.now();
+    await expect(readErrorBody(res, 80)).rejects.toThrow(/response body timed out/);
+    expect(Date.now() - started).toBeLessThan(200);
+    expect(chunks).toBeLessThan(8);
+  });
+
+  it("stops reading an error body after 64 KiB", async () => {
+    let pulls = 0;
+    const res = new Response(
+      new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulls += 1;
+          if (pulls === 1) {
+            controller.enqueue(new Uint8Array(70 * 1024).fill(0x61));
+            return;
+          }
+          return new Promise(() => {});
+        },
+      }, { highWaterMark: 0 }),
+      { status: 500 },
+    );
+    const started = Date.now();
+    const text = await readErrorBody(res, 300);
+    expect(text.length).toBe(64 * 1024);
+    expect(pulls).toBe(1);
+    expect(Date.now() - started).toBeLessThan(150);
   });
 });

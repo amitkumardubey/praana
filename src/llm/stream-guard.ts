@@ -134,10 +134,11 @@ export async function* runGuardedProviderStream<T>(opts: {
           } catch {
             errText = "response body timed out";
           }
-          const err: Error & { status?: number } = new Error(
+          const err: Error & { status?: number; headers?: Headers } = new Error(
             `${opts.httpErrorLabel} (${res.status}): ${errText}`,
           );
           err.status = res.status;
+          err.headers = res.headers;
           throw err;
         }
         if (!res.body) throw new Error(opts.emptyBodyMessage);
@@ -150,6 +151,15 @@ export async function* runGuardedProviderStream<T>(opts: {
     );
   } catch (err) {
     guard.dispose();
+    const halted = streamGuardTerminal(
+      guard.abortKind(),
+      Boolean(opts.req.signal?.aborted),
+      opts.haltedMessage(),
+    );
+    if (halted) {
+      yield halted;
+      return;
+    }
     yield errorEvent(err);
     return;
   }
@@ -186,12 +196,20 @@ export async function* runGuardedProviderStream<T>(opts: {
           const framePromise = pending.then((r) => ({ idle: false as const, r }));
           framePromise.catch(() => {});
           let timer: ReturnType<typeof setTimeout> | null = null;
-          const raced = await Promise.race([
-            framePromise,
-            new Promise<{ idle: true }>((resolve) => {
-              timer = schedule(Math.max(0, remaining), () => resolve({ idle: true }));
-            }),
-          ]);
+          let raced: { idle: true } | { idle: false; r: IteratorResult<T> };
+          try {
+            raced = await Promise.race([
+              framePromise,
+              new Promise<{ idle: true }>((resolve) => {
+                timer = schedule(Math.max(0, remaining), () => resolve({ idle: true }));
+              }),
+            ]);
+          } catch {
+            // The provider already sent its terminal. A later socket error is
+            // the body ending, unless the user or the idle timer already halted.
+            clearScheduled(timer);
+            break;
+          }
           clearScheduled(timer);
           if (raced.idle) {
             guard.dispose();
@@ -199,14 +217,14 @@ export async function* runGuardedProviderStream<T>(opts: {
             break;
           }
           if (raced.r.done) break;
-          const more = opts.onFrame(raced.r.value);
-          for (const ev of more.events) yield ev;
-          if (more.stop) return;
           const during = yieldHalt();
           if (during) {
             yield during;
             return;
           }
+          const more = opts.onFrame(raced.r.value);
+          for (const ev of more.events) yield ev;
+          if (more.stop) return;
         }
         const afterTrailer = yieldHalt();
         if (afterTrailer) {
@@ -240,6 +258,8 @@ export async function* runGuardedProviderStream<T>(opts: {
 
 /** Bound for reading a non-OK response body after headers have arrived. */
 export const ERROR_BODY_TIMEOUT_MS = 15_000;
+/** Stop reading a non-OK body after this many bytes. */
+export const ERROR_BODY_MAX_BYTES = 64 * 1024;
 
 export function errorBodyTimeoutMs(idleTimeoutMs: number): number {
   if (idleTimeoutMs > 0) return Math.min(idleTimeoutMs, ERROR_BODY_TIMEOUT_MS);
@@ -248,30 +268,41 @@ export function errorBodyTimeoutMs(idleTimeoutMs: number): number {
 
 /**
  * Read an error response body, or throw if it stays silent past `timeoutMs`.
+ * The deadline is computed once for the whole read. A trickling body does not
+ * reset it. The read also stops after {@link ERROR_BODY_MAX_BYTES}.
  * Callers should report the HTTP status plus "response body timed out".
  */
 export async function readErrorBody(res: Response, timeoutMs = ERROR_BODY_TIMEOUT_MS): Promise<string> {
   if (!res.body) return "";
-  if (timeoutMs === 0) return res.text();
   const reader = res.body.getReader();
   const chunks: Uint8Array[] = [];
+  let received = 0;
   let timer: ReturnType<typeof setTimeout> | null = null;
   const timedOut = new Error("response body timed out");
+  const deadline = timeoutMs === 0 ? Number.POSITIVE_INFINITY : Date.now() + timeoutMs;
   try {
-    while (true) {
+    while (received < ERROR_BODY_MAX_BYTES) {
+      const remaining = deadline - Date.now();
+      if (timeoutMs !== 0 && remaining <= 0) throw timedOut;
       const readPromise = reader.read();
       readPromise.catch(() => {});
-      const result = await Promise.race([
-        readPromise,
-        new Promise<never>((_, reject) => {
-          timer = schedule(timeoutMs, () => reject(timedOut));
-        }),
-      ]);
+      const result = timeoutMs === 0
+        ? await readPromise
+        : await Promise.race([
+            readPromise,
+            new Promise<never>((_, reject) => {
+              timer = schedule(remaining, () => reject(timedOut));
+            }),
+          ]);
       clearScheduled(timer);
       timer = null;
       if (result.done) break;
-      chunks.push(result.value);
+      const room = ERROR_BODY_MAX_BYTES - received;
+      const value = result.value.byteLength > room ? result.value.subarray(0, room) : result.value;
+      chunks.push(value);
+      received += value.byteLength;
     }
+    if (received >= ERROR_BODY_MAX_BYTES) await reader.cancel().catch(() => {});
     return Buffer.concat(chunks).toString("utf8");
   } catch (err) {
     clearScheduled(timer);
