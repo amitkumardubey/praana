@@ -5,6 +5,7 @@ import { OpenAICompatibleDriver } from "../src/llm/drivers/openai.js";
 import { OpenAIResponsesDriver } from "../src/llm/drivers/responses.js";
 import { parseSseStream } from "../src/llm/sse.js";
 import { isDefaultHostedEndpoint, resolveStreamEndMode } from "../src/llm/stream-end.js";
+import { ToolCallAccumulator } from "../src/llm/tool-accumulator.js";
 import { resolveLlmStreamTimeouts } from "../src/llm/stream-guard.js";
 import type { ResolvedAuth, StreamEvent, StreamRequest } from "../src/llm/types.js";
 
@@ -12,12 +13,14 @@ import type { ResolvedAuth, StreamEvent, StreamRequest } from "../src/llm/types.
  * Lenient streams may keep text and may run a tool whose arguments parsed as
  * sent. They must not run a call that was still open or whose JSON had to be
  * repaired. Removing that guard in a driver makes the invariants table fail.
+ * An unterminated stream also drops a call whose argument text is empty or
+ * does not start with `{`. Removing that rule makes the F2 rows publish the
+ * call. Applying it to a terminated stream makes the terminated-empty rows fail.
  *
  * The table cannot catch:
  * - a Google functionCall whose args are a syntactically valid object that is
  *   only semantically truncated (the SSE frame parsed; there is no string to repair)
  * - an SSE frame cut mid-line, which the parser drops before a driver sees it
- * - a call that ended before any argument bytes (empty text parses as {})
  */
 
 const CUTOFF = "The response was cut off while the model was calling a tool";
@@ -159,6 +162,83 @@ const responsesTerminal = [
   ...responsesComplete,
   { type: "response.completed", response: { status: "completed" } },
 ];
+
+const openaiEmpty = sse([
+  {
+    choices: [{
+      delta: {
+        tool_calls: [{ index: 0, id: "call_1", function: { name: "read_file" } }],
+      },
+    }],
+  },
+]);
+
+const openaiScalar = sse([
+  {
+    choices: [{
+      delta: {
+        tool_calls: [{
+          index: 0,
+          id: "call_1",
+          function: { name: "read_file", arguments: "12" },
+        }],
+      },
+    }],
+  },
+]);
+
+const openaiTerminatedEmpty = sse([
+  {
+    choices: [{
+      delta: {
+        tool_calls: [{ index: 0, id: "call_1", function: { name: "read_file" } }],
+      },
+      finish_reason: "tool_calls",
+    }],
+  },
+]) + "data: [DONE]\n\n";
+
+const anthropicEmpty = sse([
+  { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_1", name: "read_file" } },
+]);
+
+const anthropicScalar = sse([
+  { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_1", name: "read_file" } },
+  { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: "true" } },
+]);
+
+const anthropicTerminatedEmpty = sse([
+  { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_1", name: "read_file" } },
+  { type: "message_delta", delta: { stop_reason: "tool_use" }, usage: { output_tokens: 1 } },
+  { type: "message_stop" },
+]);
+
+const responsesEmpty = [
+  {
+    type: "response.output_item.added",
+    output_index: 0,
+    item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "read_file", arguments: "" },
+  },
+];
+
+const responsesScalar = [
+  ...responsesEmpty,
+  { type: "response.function_call_arguments.delta", item_id: "fc_1", output_index: 0, delta: "12" },
+];
+
+const responsesTerminatedEmpty = [
+  ...responsesEmpty,
+  { type: "response.completed", response: { status: "completed" } },
+];
+
+function googleTerminatedEmpty(): string {
+  return sse([{
+    candidates: [{
+      content: { parts: [{ functionCall: { name: "read_file", args: "" } }] },
+      finishReason: "STOP",
+    }],
+  }]);
+}
 
 function googleBody(args: unknown, text = false): string {
   const parts: unknown[] = [];
@@ -322,6 +402,9 @@ describe("invariants across drivers", () => {
     complete: () => Promise<StreamEvent[]>;
     strict: () => Promise<StreamEvent[]>;
     terminal: () => Promise<StreamEvent[]>;
+    empty: () => Promise<StreamEvent[]>;
+    scalar: () => Promise<StreamEvent[]>;
+    terminatedEmpty: () => Promise<StreamEvent[]>;
   }> = [
     {
       driver: "openai",
@@ -339,6 +422,18 @@ describe("invariants across drivers", () => {
       },
       terminal: async () => {
         withFetch(openaiTerminal);
+        return collect(new OpenAICompatibleDriver().stream(req("openai", true), auth));
+      },
+      empty: async () => {
+        withFetch(openaiEmpty);
+        return collect(new OpenAICompatibleDriver().stream(req("openai", false), auth));
+      },
+      scalar: async () => {
+        withFetch(openaiScalar);
+        return collect(new OpenAICompatibleDriver().stream(req("openai", false), auth));
+      },
+      terminatedEmpty: async () => {
+        withFetch(openaiTerminatedEmpty);
         return collect(new OpenAICompatibleDriver().stream(req("openai", true), auth));
       },
     },
@@ -360,6 +455,18 @@ describe("invariants across drivers", () => {
         withFetch(anthropicTerminal);
         return collect(new AnthropicDriver().stream(req("anthropic", true), auth));
       },
+      empty: async () => {
+        withFetch(anthropicEmpty);
+        return collect(new AnthropicDriver().stream(req("anthropic", false), auth));
+      },
+      scalar: async () => {
+        withFetch(anthropicScalar);
+        return collect(new AnthropicDriver().stream(req("anthropic", false), auth));
+      },
+      terminatedEmpty: async () => {
+        withFetch(anthropicTerminatedEmpty);
+        return collect(new AnthropicDriver().stream(req("anthropic", true), auth));
+      },
     },
     {
       driver: "responses",
@@ -377,6 +484,18 @@ describe("invariants across drivers", () => {
       },
       terminal: async () => {
         withFetch(sse(responsesTerminal));
+        return collect(new OpenAIResponsesDriver().stream(req("openai", false), auth));
+      },
+      empty: async () => {
+        withFetch(sse(responsesEmpty));
+        return collect(new OpenAIResponsesDriver().stream(req("openai", false), auth));
+      },
+      scalar: async () => {
+        withFetch(sse(responsesScalar));
+        return collect(new OpenAIResponsesDriver().stream(req("openai", false), auth));
+      },
+      terminatedEmpty: async () => {
+        withFetch(sse(responsesTerminatedEmpty));
         return collect(new OpenAIResponsesDriver().stream(req("openai", false), auth));
       },
     },
@@ -398,6 +517,18 @@ describe("invariants across drivers", () => {
         withFetch(googleTerminal);
         return collect(new GoogleDriver().stream(req("google", true), auth));
       },
+      empty: async () => {
+        withFetch(googleBody(""));
+        return collect(new GoogleDriver().stream(req("google", false), auth));
+      },
+      scalar: async () => {
+        withFetch(googleBody("12"));
+        return collect(new GoogleDriver().stream(req("google", false), auth));
+      },
+      terminatedEmpty: async () => {
+        withFetch(googleTerminatedEmpty());
+        return collect(new GoogleDriver().stream(req("google", true), auth));
+      },
     },
   ];
 
@@ -415,6 +546,28 @@ describe("invariants across drivers", () => {
       expect(events.at(-1), row.driver).toMatchObject({ type: "done", reason: "tool_use" });
     });
 
+    it(`${row.driver}: F2 empty args on an unterminated stream do not run`, async () => {
+      const events = await row.empty();
+      expect(published(events), row.driver).toBe(false);
+      expect(events.some((event) => event.type === "done"), row.driver).toBe(false);
+      expect(cutoff(events)?.retryable, row.driver).toBe(false);
+    });
+
+    it(`${row.driver}: F2 a scalar argument prefix on an unterminated stream does not run`, async () => {
+      const events = await row.scalar();
+      expect(published(events), row.driver).toBe(false);
+      expect(events.some((event) => event.type === "done"), row.driver).toBe(false);
+      expect(cutoff(events)?.retryable, row.driver).toBe(false);
+    });
+
+    it(`${row.driver}: F2 a terminated stream with no argument bytes still runs`, async () => {
+      const events = await row.terminatedEmpty();
+      expect(published(events), row.driver).toBe(true);
+      const ended = events.find((event) => event.type === "tool_call_end");
+      expect(ended?.type === "tool_call_end" && ended.toolCall.args, row.driver).toEqual({});
+      expect(cutoff(events), row.driver).toBeUndefined();
+    });
+
     it(`${row.driver}: I3 strict and normal terminals stay as they are`, async () => {
       const strictEvents = await row.strict();
       expect(published(strictEvents), row.driver).toBe(false);
@@ -427,6 +580,38 @@ describe("invariants across drivers", () => {
       expect(cutoff(terminalEvents), row.driver).toBeUndefined();
     });
   }
+});
+
+describe("lenient flush of an open call", () => {
+  it("drops an empty buffer and a non-object prefix, and keeps a finished {}", () => {
+    const empty = new ToolCallAccumulator();
+    empty.processChunk({ index: 0, id: "call_empty", name: "read_file" });
+    expect(empty.flush({ allowRepair: false })).toEqual({ calls: [], droppedIds: ["call_empty"] });
+
+    const spaces = new ToolCallAccumulator();
+    spaces.processChunk({ index: 0, id: "call_spaces", name: "read_file", argsDelta: "   " });
+    expect(spaces.flush({ allowRepair: false }).droppedIds).toEqual(["call_spaces"]);
+
+    const number = new ToolCallAccumulator();
+    number.processChunk({ index: 0, id: "call_num", name: "read_file", argsDelta: "12" });
+    expect(number.flush({ allowRepair: false })).toEqual({ calls: [], droppedIds: ["call_num"] });
+
+    const flag = new ToolCallAccumulator();
+    flag.processChunk({ index: 0, id: "call_bool", name: "read_file", argsDelta: "true" });
+    expect(flag.flush({ allowRepair: false }).droppedIds).toEqual(["call_bool"]);
+
+    const object = new ToolCallAccumulator();
+    object.processChunk({ index: 0, id: "call_obj", name: "read_file", argsDelta: "{}" });
+    const kept = object.flush({ allowRepair: false });
+    expect(kept.droppedIds).toEqual([]);
+    expect(kept.calls[0]?.args).toEqual({});
+
+    const finished = new ToolCallAccumulator();
+    finished.processChunk({ index: 0, id: "call_done", name: "read_file" });
+    const terminated = finished.flush();
+    expect(terminated.droppedIds).toEqual([]);
+    expect(terminated.calls[0]?.args).toEqual({});
+  });
 });
 
 describe("OpenAI frames after finish_reason", () => {

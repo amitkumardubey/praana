@@ -112,16 +112,20 @@ export class ToolCallAccumulator {
 
   /**
    * Finalize any remaining unclosed in-flight tool calls.
-   * `allowRepair: false` drops calls whose arguments did not parse as sent
-   * and reports their ids. The default keeps today's repair behaviour.
+   * `allowRepair: false` is the unterminated lenient path. It drops a call
+   * whose arguments did not parse as sent, whose buffer is empty, or whose
+   * trimmed text does not start with `{`, and reports those ids. A finished
+   * stream keeps the default, including a zero-argument `{}`.
    */
   flush(opts?: { allowRepair?: boolean }): { calls: ToolCall[]; droppedIds: string[] } {
     const allowRepair = opts?.allowRepair !== false;
     const calls: ToolCall[] = [];
     const droppedIds: string[] = [];
     for (const [, call] of this.inFlight.entries()) {
+      const trimmed = call.argsBuffer.trim();
       const parsed = parseToolArguments(call.argsBuffer);
-      if (!parsed.clean && !allowRepair) {
+      const completeObject = trimmed.startsWith("{") && parsed.clean;
+      if (!allowRepair && !completeObject) {
         droppedIds.push(call.id);
         continue;
       }

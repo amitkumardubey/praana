@@ -94,9 +94,10 @@ export function isDefaultHostedEndpoint(provider: string, baseUrl?: string): boo
  * Explicit `strict` / `lenient` apply to every provider. `auto` is strict only
  * for {@link isDefaultHostedEndpoint}. An omitted check is `auto`.
  *
- * Lenient keeps text already streamed. A tool call whose arguments parsed as
- * sent may still run. A call that was still open, or whose arguments had to
- * be repaired, is not run: the stream ends with {@link toolCutoffError}
+ * Lenient keeps text already streamed. A tool call whose arguments are a
+ * complete JSON object as sent may still run. A call that was still open,
+ * whose argument text is empty or does not start with `{`, or whose arguments
+ * had to be repaired, is not run: the stream ends with {@link toolCutoffError}
  * (non-retryable) and the text already streamed stays. Strict reports
  * `premature_end` and does not run tools from that close.
  */

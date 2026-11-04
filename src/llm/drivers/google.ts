@@ -80,6 +80,7 @@ export class GoogleDriver implements LlmDriver {
     let sawTerminal = false;
     let emittedDelta = false;
     let lenientArgsNeedRepair = false;
+    let lenientArgsNotObject = false;
 
     const haltedMessage = (): AssistantMessage => ({
       role: "assistant",
@@ -169,6 +170,7 @@ export class GoogleDriver implements LlmDriver {
               if (typeof rawArgs === "string") {
                 const parsed = parseToolArguments(rawArgs);
                 if (!parsed.clean) lenientArgsNeedRepair = true;
+                if (!rawArgs.trim().startsWith("{")) lenientArgsNotObject = true;
                 args = parsed.clean ? parsed.args : (rawArgs as unknown as Record<string, unknown>);
               } else if (rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)) {
                 args = rawArgs as Record<string, unknown>;
@@ -204,7 +206,7 @@ export class GoogleDriver implements LlmDriver {
             events.push(prematureEndError("finishReason", !emittedDelta));
             return events;
           }
-          if (lenientArgsNeedRepair) return [toolCutoffError()];
+          if (lenientArgsNeedRepair || lenientArgsNotObject) return [toolCutoffError()];
           logLenientStreamEnd(req.provider);
         }
 
