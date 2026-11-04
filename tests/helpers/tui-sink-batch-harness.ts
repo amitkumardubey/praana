@@ -13,20 +13,20 @@
  *      no pending without a timer and no idle timer.
  *   I5 batch 0 is a pure pass-through.
  */
-import { describe, expect, it } from "bun:test";
 import { OpenTuiSink, type StreamBatchScheduler } from "../../src/ui/tui/sink.js";
 import { TranscriptProjection } from "../../src/ui/tui/transcript/projection.js";
 import { createTranscriptStore, type TranscriptStoreApi } from "../../src/ui/tui/transcript/store.js";
 import type { TranscriptMount } from "../../src/ui/tui/transcript/mount.js";
-import type { IndexedTranscriptEntry } from "../../src/ui/tui/transcript/index.js";
 import type { ToolEntry } from "../../src/ui/tui/transcript/model.js";
 import type { ToastApi } from "../../src/ui/tui/shell-ui.js";
 import { formatTurnFooterDigest } from "../../src/ui/tui/tool-icons.js";
+import type { MemoryBannerStats } from "../../src/ui-events.js";
 
 export const BATCH_MS = 33;
 export const SEEDS = 300;
+export const OPS_PER_SCENARIO = 70;
 
-class FakeScheduler implements StreamBatchScheduler {
+export class FakeScheduler implements StreamBatchScheduler {
   now = 0;
   private timers = new Map<number, { at: number; fn: () => void }>();
   private nextId = 1;
@@ -41,7 +41,14 @@ class FakeScheduler implements StreamBatchScheduler {
   advance(ms: number): void {
     if (ms < 0) throw new Error("negative advance");
     this.now += ms;
+    let iterations = 0;
+    const maxIterations = 10_000;
     for (;;) {
+      if (++iterations > maxIterations) {
+        throw new Error(
+          `FakeScheduler.advance exceeded max iterations (${maxIterations}); possible zero-delay timer loop`,
+        );
+      }
       const due = [...this.timers.entries()]
         .filter(([, t]) => t.at <= this.now)
         .sort((a, b) => a[1].at - b[1].at);
@@ -50,30 +57,6 @@ class FakeScheduler implements StreamBatchScheduler {
         if (this.timers.delete(id)) t.fn();
       }
     }
-  }
-}
-
-/** Counts delta text deliveries to the transcript (observable flush marker). */
-class SpyMount implements TranscriptMount {
-  deltaApplies = 0;
-  constructor(private readonly inner: TranscriptMount) {}
-  appendEntry(entry: IndexedTranscriptEntry): void {
-    if (entry.role === "assistant" || entry.role === "thinking") this.deltaApplies++;
-    this.inner.appendEntry(entry);
-  }
-  appendAssistantDelta(id: string, delta: string): boolean {
-    this.deltaApplies++;
-    return this.inner.appendAssistantDelta(id, delta);
-  }
-  appendThinkingDelta(id: string, delta: string): boolean {
-    this.deltaApplies++;
-    return this.inner.appendThinkingDelta(id, delta);
-  }
-  patchToolResult(id: string, entry: ToolEntry): boolean {
-    return this.inner.patchToolResult(id, entry);
-  }
-  finalizeStreams(ids: Array<string | null | undefined>): void {
-    this.inner.finalizeStreams?.(ids);
   }
 }
 
@@ -88,7 +71,7 @@ export function mulberry32(seed: number): () => number {
   };
 }
 
-type Op =
+export type Op =
   | { kind: "user" }
   | { kind: "adelta" }
   | { kind: "tdelta" }
@@ -100,12 +83,15 @@ type Op =
   | { kind: "pause" }
   | { kind: "turn" }
   | { kind: "toolgo" }
+  | { kind: "syslines" }
+  | { kind: "slashresult" }
+  | { kind: "memorybanner" }
   | { kind: "advance"; ms: number }
   | { kind: "dispose" };
 
 const TEXT_POOL = ["a", "bc", "def", " gh", "i", "jk", "lmn", "opq ", "rs", "tuv", "w", "xyz"];
 
-interface SinkLike {
+export interface SinkLike {
   appendUser(text: string): void;
   onTextDelta(delta: string): void;
   onThinkingDelta(delta: string): void;
@@ -117,20 +103,23 @@ interface SinkLike {
   flushText(): void;
   nextGroup(): void;
   onToolCallsStart(): void;
+  onSystemLines(lines: string[]): void;
+  onSlashCommandResult(lines: string[]): void;
+  onMemoryBanner(stats: MemoryBannerStats): void;
   dispose(): void;
 }
 
-type Snapshot = { entries: Array<Record<string, unknown>>; streamingIds: string[] };
+export type Snapshot = { entries: Array<Record<string, unknown>>; streamingIds: string[] };
 
-interface Pair {
+export interface Pair {
   batched: SinkLike;
   ref: SinkLike;
   scheduler: FakeScheduler;
   batchedStore: TranscriptStoreApi;
   refStore: TranscriptStoreApi;
-  spy: SpyMount;
   batchedPersist: unknown[];
   refPersist: unknown[];
+  startedTools: string[];
 }
 
 export function snapshotStore(store: TranscriptStoreApi): Snapshot {
@@ -140,14 +129,19 @@ export function snapshotStore(store: TranscriptStoreApi): Snapshot {
   };
 }
 
-const entryKey = (e: Record<string, unknown>) =>
-  `${String(e.id)}|${String(e.role)}|${String(e.group)}|${String(e.text ?? "")}`;
+export const entryKey = (e: Record<string, unknown>): string => {
+  if (e.role === "assistant" || e.role === "thinking") {
+    return `${String(e.id)}|${String(e.role)}|${String(e.group)}|${String(e.text ?? "")}`;
+  }
+  return JSON.stringify(e);
+};
 
-export function makePair(batchMs: number, makeBatched: (mount: TranscriptMount, persist: (e: unknown) => void, scheduler: FakeScheduler) => SinkLike): Pair {
+export function makePair(
+  makeBatched: (mount: TranscriptMount, persist: (e: unknown) => void, scheduler: FakeScheduler) => SinkLike,
+): Pair {
   const scheduler = new FakeScheduler();
   const batchedStore = createTranscriptStore();
   const refStore = createTranscriptStore();
-  const spy = new SpyMount(batchedStore.mount);
   const batchedPersist: unknown[] = [];
   const refPersist: unknown[] = [];
   const ref = new OpenTuiSink(refStore.mount, {} as unknown as ToastApi, {
@@ -161,14 +155,14 @@ export function makePair(batchMs: number, makeBatched: (mount: TranscriptMount, 
     streamBatchMs: 0,
   });
   return {
-    batched: makeBatched(spy, (e) => batchedPersist.push(JSON.parse(JSON.stringify(e))), scheduler),
+    batched: makeBatched(batchedStore.mount, (e) => batchedPersist.push(JSON.parse(JSON.stringify(e))), scheduler),
     ref,
     scheduler,
     batchedStore,
     refStore,
-    spy,
     batchedPersist,
     refPersist,
+    startedTools: [],
   };
 }
 
@@ -198,12 +192,13 @@ export function feedOp(p: Pair, op: Op, seq: number, rand: () => number): void {
     }
     case "toolstart": {
       const id = `t${seq}`;
+      p.startedTools.push(id);
       p.batched.onToolCall(id, "shell", { command: "ls" });
       p.ref.onToolCall(id, "shell", { command: "ls" });
       break;
     }
     case "toolfinish": {
-      const id = `t${seq}`;
+      const id = p.startedTools.shift() ?? `t${seq}`;
       p.batched.onToolResult(id, "shell", "ok");
       p.ref.onToolResult(id, "shell", "ok");
       break;
@@ -231,6 +226,8 @@ export function feedOp(p: Pair, op: Op, seq: number, rand: () => number): void {
       break;
     }
     case "turn": {
+      p.batched.appendTurnFooter(10 + seq);
+      p.ref.appendTurnFooter(10 + seq);
       p.batched.nextGroup();
       p.ref.nextGroup();
       break;
@@ -238,6 +235,24 @@ export function feedOp(p: Pair, op: Op, seq: number, rand: () => number): void {
     case "toolgo": {
       p.batched.onToolCallsStart();
       p.ref.onToolCallsStart();
+      break;
+    }
+    case "syslines": {
+      const lines = [`sys line 1 (${seq})`, `sys line 2 (${seq})`];
+      p.batched.onSystemLines(lines);
+      p.ref.onSystemLines(lines);
+      break;
+    }
+    case "slashresult": {
+      const lines = [`slash output (${seq})`];
+      p.batched.onSlashCommandResult(lines);
+      p.ref.onSlashCommandResult(lines);
+      break;
+    }
+    case "memorybanner": {
+      const stats = { recallCalls: 2, recallHits: 1, nudge: `nudge ${seq}` };
+      p.batched.onMemoryBanner(stats);
+      p.ref.onMemoryBanner(stats);
       break;
     }
     case "advance": {
@@ -311,16 +326,19 @@ export function generateOps(rand: () => number, length: number): Op[] {
   for (let i = 0; i < length; i++) {
     const r = rand();
     if (r < 0.04) ops.push({ kind: "user" });
-    else if (r < 0.29) ops.push({ kind: "adelta" });
-    else if (r < 0.47) ops.push({ kind: "tdelta" });
-    else if (r < 0.53) ops.push({ kind: "toolstart" });
-    else if (r < 0.59) ops.push({ kind: "toolfinish" });
-    else if (r < 0.65) ops.push({ kind: "notice" });
-    else if (r < 0.69) ops.push({ kind: "warn" });
-    else if (r < 0.74) ops.push({ kind: "footer" });
-    else if (r < 0.78) ops.push({ kind: "pause" });
-    else if (r < 0.81) ops.push({ kind: "turn" });
-    else if (r < 0.84) ops.push({ kind: "toolgo" });
+    else if (r < 0.27) ops.push({ kind: "adelta" });
+    else if (r < 0.44) ops.push({ kind: "tdelta" });
+    else if (r < 0.50) ops.push({ kind: "toolstart" });
+    else if (r < 0.56) ops.push({ kind: "toolfinish" });
+    else if (r < 0.61) ops.push({ kind: "notice" });
+    else if (r < 0.65) ops.push({ kind: "warn" });
+    else if (r < 0.70) ops.push({ kind: "footer" });
+    else if (r < 0.74) ops.push({ kind: "pause" });
+    else if (r < 0.77) ops.push({ kind: "turn" });
+    else if (r < 0.80) ops.push({ kind: "toolgo" });
+    else if (r < 0.83) ops.push({ kind: "syslines" });
+    else if (r < 0.86) ops.push({ kind: "slashresult" });
+    else if (r < 0.89) ops.push({ kind: "memorybanner" });
     else {
       const ms = rand() < 0.15 ? Math.floor(rand() * 400) : Math.floor(rand() * 2 * BATCH_MS);
       ops.push({ kind: "advance", ms });
@@ -335,18 +353,24 @@ interface RunState {
   disposed: boolean;
 }
 
-export function runScenario(seed: number, batchMs: number, ops: Op[], makeBatched: (mount: TranscriptMount, persist: (e: unknown) => void, scheduler: FakeScheduler) => SinkLike): string[] {
+export function runScenario(
+  seed: number,
+  batchMs: number,
+  ops: Op[],
+  makeBatched: (mount: TranscriptMount, persist: (e: unknown) => void, scheduler: FakeScheduler) => SinkLike,
+): string[] {
   const rand = mulberry32(seed);
-  const p = makePair(batchMs, makeBatched);
+  const textRand = mulberry32((seed ^ 0x9e3779b9) >>> 0);
+  const p = makePair(makeBatched);
   const failures: string[] = [];
   const st: RunState = { lagRole: null, pendingSince: 0, disposed: false };
 
-  const check = (op: Op, seq: number, phase: string) => {
+  const check = (op: Op, seq: number) => {
     const b = snapshotStore(p.batchedStore);
     const r = snapshotStore(p.refStore);
     const lag = consistentWithReference(b, r);
     if (!lag.ok) {
-      failures.push(`${phase} I2 seq${seq}: ${lag.error}`);
+      failures.push(`I2 seq${seq}: ${lag.error}`);
       st.lagRole = null;
       return;
     }
@@ -355,43 +379,51 @@ export function runScenario(seed: number, batchMs: number, ops: Op[], makeBatche
       if (lag.role) st.pendingSince = p.scheduler.now;
     }
     // I4: pending and timer must be paired; never two timers.
-    if (p.scheduler.pendingTimers > 1) failures.push(`${phase} I4 seq${seq}: ${p.scheduler.pendingTimers} concurrent timers`);
+    if (p.scheduler.pendingTimers > 1) {
+      failures.push(`I4 seq${seq}: ${p.scheduler.pendingTimers} concurrent timers`);
+    }
     if (lag.role && p.scheduler.pendingTimers === 0 && !st.disposed) {
-      failures.push(`${phase} I4 seq${seq}: pending without timer`);
+      failures.push(`I4 seq${seq}: pending without timer`);
     }
     if (!lag.role && p.scheduler.pendingTimers > 0 && !st.disposed) {
-      failures.push(`${phase} I4 seq${seq}: idle timer with no pending`);
+      failures.push(`I4 seq${seq}: idle timer with no pending`);
     }
     // I3: liveness — overdue pending is a violation.
     if (lag.role && p.scheduler.now - st.pendingSince >= batchMs) {
-      failures.push(`${phase} I3 seq${seq}: overdue pending (${lag.role}) since clock ${st.pendingSince}, now ${p.scheduler.now}`);
+      failures.push(`I3 seq${seq}: overdue pending (${lag.role}) since clock ${st.pendingSince}, now ${p.scheduler.now}`);
     }
     // I2: after non-delta events the transcript must be fully caught up.
     const allowLag = op.kind === "adelta" || op.kind === "tdelta" || op.kind === "advance";
     if (!allowLag && lag.role) {
-      failures.push(`${phase} I2 seq${seq}: non-delta event left pending ${lag.role}`);
+      failures.push(`I2 seq${seq}: non-delta event left pending ${lag.role}`);
     }
   };
 
-  const finalCheck = (phase: string) => {
-    // Final equality covers entries and persisted entries. The streamingIds
-    // set is a transient UI flag: a stream whose first deltas coalesce into
-    // one append never gets flagged (the flag is only added on successful
-    // delta appends), so it may differ from the unbatched run without any
-    // content/order/persistence change. Mid-run subset checks still enforce
-    // that batching never adds a streaming id the reference lacks.
+  const finalCheck = () => {
     const b = snapshotStore(p.batchedStore);
     const r = snapshotStore(p.refStore);
     const entriesEqual =
       b.entries.length === r.entries.length &&
       b.entries.every((e, i) => entryKey(e) === entryKey(r.entries[i]!));
-    if (!entriesEqual) failures.push(`${phase} I1: final transcript diverged`);
+    if (!entriesEqual) failures.push("final I1: final transcript diverged");
     if (JSON.stringify(p.batchedPersist) !== JSON.stringify(p.refPersist)) {
-      failures.push(`${phase} I1: persisted entries diverged`);
+      failures.push("final I1: persisted entries diverged");
     }
-    if (p.scheduler.pendingTimers !== 0) failures.push(`${phase} I4: ${p.scheduler.pendingTimers} timers after dispose`);
+    if (p.scheduler.pendingTimers !== 0) {
+      failures.push(`final I4: ${p.scheduler.pendingTimers} timers after dispose`);
+    }
     const lag = consistentWithReference(b, r);
-    if (!lag.ok || lag.role) failures.push(`${phase} I4: pending after dispose`);
+    if (!lag.ok || lag.role) failures.push("final I4: pending after dispose");
+
+    // After dispose / finalize, streaming ids must match reference and be empty.
+    const bStreaming = [...b.streamingIds].sort();
+    const rStreaming = [...r.streamingIds].sort();
+    if (JSON.stringify(bStreaming) !== JSON.stringify(rStreaming)) {
+      failures.push(`final I1: streaming ids diverged (${bStreaming.join(",")} vs ${rStreaming.join(",")})`);
+    }
+    if (bStreaming.length !== 0) {
+      failures.push(`final I4: streaming ids not empty after dispose (${bStreaming.join(",")})`);
+    }
   };
 
   ops.forEach((op, seq) => {
@@ -405,8 +437,8 @@ export function runScenario(seed: number, batchMs: number, ops: Op[], makeBatche
       finalDeltaAndDispose();
       return;
     }
-    feedOp(p, op, seq, rand);
-    check(op, seq, "");
+    feedOp(p, op, seq, textRand);
+    check(op, seq);
   });
 
   if (!st.disposed) {
@@ -425,17 +457,23 @@ export function runScenario(seed: number, batchMs: number, ops: Op[], makeBatche
   }
 
   function finalDeltaAndDispose(): void {
-    const t = textFor(rand);
+    const t = textFor(textRand);
     p.batched.onTextDelta(t);
     p.ref.onTextDelta(t);
     p.batched.dispose();
     p.ref.dispose();
+    p.batched.appendTurnFooter(0);
+    p.ref.appendTurnFooter(0);
     st.disposed = true;
-    finalCheck("final");
+    finalCheck();
   }
 }
 
-export function realBatched(mount: TranscriptMount, persist: (e: unknown) => void, scheduler: FakeScheduler): SinkLike {
+export function realBatched(
+  mount: TranscriptMount,
+  persist: (e: unknown) => void,
+  scheduler: FakeScheduler,
+): SinkLike {
   return new OpenTuiSink(mount, {} as unknown as ToastApi, {
     ambient: "inline",
     showThinking: () => true,
@@ -449,7 +487,6 @@ export function realBatched(mount: TranscriptMount, persist: (e: unknown) => voi
   });
 }
 
-
 // ---------------------------------------------------------------------------
 // Removal checks: take out each protection one at a time, feed the same
 // seeded generator to a deliberately naive batched sink, and show the
@@ -457,9 +494,11 @@ export function realBatched(mount: TranscriptMount, persist: (e: unknown) => voi
 // protection's removal.
 // ---------------------------------------------------------------------------
 
-interface NaiveOpts {
+export interface NaiveOpts {
   /** remove flush-before-non-delta-event */
   flushBeforeEvents: boolean;
+  /** remove flush before tool events specifically */
+  flushBeforeTool?: boolean;
   /** remove flush-on-stream-change (merges cross-stream text) */
   flushOnStreamChange: boolean;
   /** remove flush-on-dispose */
@@ -481,6 +520,7 @@ class NaiveBatchedSink implements SinkLike {
   private disposed = false;
   private assistantStreamId: string | null = null;
   private thinkingStreamId: string | null = null;
+  private bufferedStats: MemoryBannerStats | null = null;
   private group = 1;
   private nextLocalId = 1;
 
@@ -505,10 +545,10 @@ class NaiveBatchedSink implements SinkLike {
     this.queueDelta("thinking", this.thinkingStreamId, this.group, delta);
   }
   onToolCall(toolCallId: string, toolName: string, args: Record<string, unknown>): void {
-    this.applyNonDelta({ type: "tool_call_started", id: toolCallId, group: this.group, toolName, args });
+    this.applyTool({ type: "tool_call_started", id: toolCallId, group: this.group, toolName, args });
   }
   onToolResult(toolCallId: string, toolName: string, resultText: string, isError = false): void {
-    this.applyNonDelta({ type: "tool_call_finished", id: toolCallId, group: this.group, toolName, resultText, isError });
+    this.applyTool({ type: "tool_call_finished", id: toolCallId, group: this.group, toolName, resultText, isError });
   }
   onFallback(text: string): void {
     this.applyNonDelta({ type: "system_line", id: this.nextId("system"), group: this.group, text });
@@ -516,13 +556,18 @@ class NaiveBatchedSink implements SinkLike {
   onError(entry: { level: string; domain: string; message: string }): void {
     if (entry.level !== "error" && entry.level !== "warn") return;
     if (entry.domain === "llm") return;
-    this.applyNonDelta({ type: "system_line", id: this.nextId("system"), group: this.group, text: `[${entry.domain}] ${entry.message}` });
+    this.applyNonDelta({
+      type: "system_line",
+      id: this.nextId("system"),
+      group: this.group,
+      text: `[${entry.domain}] ${entry.message}`,
+    });
   }
   appendTurnFooter(durationMs: number): void {
     this.finalizeStreams();
     const text = formatTurnFooterDigest({
       durationMs,
-      stats: undefined,
+      stats: this.bufferedStats ?? undefined,
       ambient: "inline",
       editCount: 0,
       writeCount: 0,
@@ -542,12 +587,55 @@ class NaiveBatchedSink implements SinkLike {
   nextGroup(): void {
     this.flush();
     this.group++;
+    this.bufferedStats = null;
     this.assistantStreamId = null;
     this.thinkingStreamId = null;
     this.projection.apply({ type: "turn_started", group: this.group });
   }
   onToolCallsStart(): void {
-    this.finalizeStreams();
+    if (this.opts.flushBeforeTool !== false && this.opts.flushBeforeEvents) {
+      this.finalizeStreams();
+    } else {
+      this.projection.apply({ type: "streams_finalized", group: this.group });
+      const entries = this.projection.entries();
+      const assistant = entries.find((e) => e.id === this.assistantStreamId);
+      const thinking = entries.find((e) => e.id === this.thinkingStreamId);
+      if (assistant) this.persist(assistant);
+      if (thinking) this.persist(thinking);
+      this.mount.finalizeStreams?.([this.assistantStreamId, this.thinkingStreamId]);
+      this.assistantStreamId = null;
+      this.thinkingStreamId = null;
+    }
+  }
+  onSystemLines(lines: string[]): void {
+    for (const line of lines) {
+      this.onFallback(line);
+    }
+  }
+  onSlashCommandResult(lines: string[]): void {
+    if (this.opts.flushBeforeEvents) this.flush();
+    for (const line of lines) {
+      this.onFallback(line);
+    }
+  }
+  onMemoryBanner(stats: MemoryBannerStats): void {
+    this.bufferedStats = stats;
+    if (stats.nudge) {
+      this.applyNonDelta({ type: "system_line", id: this.nextId("nudge"), group: this.group, text: stats.nudge });
+    }
+    if (stats.recallCalls > 0) {
+      const preview =
+        stats.recallHits > 0
+          ? `${stats.recallHits} hit${stats.recallHits === 1 ? "" : "s"}`
+          : "memory";
+      this.applyNonDelta({
+        type: "recall_chip",
+        id: this.nextId("recall"),
+        group: this.group,
+        preview,
+        count: stats.recallHits || stats.recallCalls,
+      });
+    }
   }
   dispose(): void {
     if (this.disposed) return;
@@ -627,8 +715,10 @@ class NaiveBatchedSink implements SinkLike {
     }
   }
 
-  private applyNonDelta(event: Parameters<TranscriptProjection["apply"]>[0]): void {
-    if (this.opts.flushBeforeEvents) this.flush();
+  private applyTool(event: Parameters<TranscriptProjection["apply"]>[0]): void {
+    if (this.opts.flushBeforeTool !== false && this.opts.flushBeforeEvents) {
+      this.flush();
+    }
     const changed = this.projection.apply(event);
     if (event.type === "tool_call_finished") {
       if (!changed || changed.role !== "tool" || !this.mount.patchToolResult(changed.id, changed as ToolEntry)) {
@@ -640,32 +730,47 @@ class NaiveBatchedSink implements SinkLike {
     if (changed) this.persist(changed);
   }
 
+  private applyNonDelta(event: Parameters<TranscriptProjection["apply"]>[0]): void {
+    if (this.opts.flushBeforeEvents) this.flush();
+    const changed = this.projection.apply(event);
+    if (changed) {
+      this.mount.appendEntry(changed);
+      this.persist(changed);
+    }
+  }
+
   private nextId(prefix: string): string {
     return `${prefix}-${this.group}-${this.nextLocalId++}`;
   }
 }
 
-export function naiveBatched(opts: NaiveOpts): (mount: TranscriptMount, persist: (e: unknown) => void, scheduler: FakeScheduler) => SinkLike {
+export function naiveBatched(
+  opts: NaiveOpts,
+): (mount: TranscriptMount, persist: (e: unknown) => void, scheduler: FakeScheduler) => SinkLike {
   return (mount, persist, scheduler) =>
     new NaiveBatchedSink(opts, mount, new TranscriptProjection({ useUnicode: false }), BATCH_MS, scheduler, persist);
 }
 
 export const CORRECT: NaiveOpts = {
   flushBeforeEvents: true,
+  flushBeforeTool: true,
   flushOnStreamChange: true,
   flushOnDispose: true,
   clearTimerOnFlush: true,
   trailing: false,
 };
 
-export function removalFailureKinds(opts: NaiveOpts, seeds: number): Map<string, number> {
+export function removalFailureKinds(
+  opts: NaiveOpts,
+  seeds: number,
+  opsCount: number = OPS_PER_SCENARIO,
+): Map<string, number> {
   const agg = new Map<string, number>();
   for (let seed = 0; seed < seeds; seed++) {
-    const ops = generateOps(mulberry32(seed), 70);
+    const ops = generateOps(mulberry32(seed), opsCount);
     for (const f of runScenario(seed, BATCH_MS, ops, naiveBatched(opts))) {
       agg.set(f, (agg.get(f) ?? 0) + 1);
     }
   }
   return agg;
 }
-

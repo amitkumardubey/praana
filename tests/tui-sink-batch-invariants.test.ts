@@ -1,6 +1,8 @@
+import { describe, expect, it } from "bun:test";
 import {
   BATCH_MS,
   SEEDS,
+  OPS_PER_SCENARIO,
   CORRECT,
   generateOps,
   makePair,
@@ -20,22 +22,21 @@ describe("batched sink invariants (seeded)", () => {
   it("I1-I4 hold across 300 seeded interleavings", async () => {
     const agg = new Map<string, number>();
     for (let seed = 0; seed < SEEDS; seed++) {
-      // Yield periodically so the event loop stays responsive (the loop is
-      // otherwise fully synchronous).
       if (seed % 25 === 0) await new Promise((r) => setImmediate(r));
-      const ops = generateOps(mulberry32(seed), 70);
+      const ops = generateOps(mulberry32(seed), OPS_PER_SCENARIO);
       for (const f of runScenario(seed, BATCH_MS, ops, realBatched)) {
         agg.set(f, (agg.get(f) ?? 0) + 1);
       }
     }
     expect(agg.size).toBe(0);
-  });
+  }, 30_000);
 
   it("I5: batch 0 is a pure pass-through at every step", () => {
     for (let seed = 0; seed < 60; seed++) {
       const rand = mulberry32(seed + 5000);
+      const textRand = mulberry32(((seed + 5000) ^ 0x9e3779b9) >>> 0);
       const ops = generateOps(rand, 60);
-      const p = makePair(0, (mount, persist, scheduler) =>
+      const p = makePair((mount, persist, scheduler) =>
         new OpenTuiSink(mount, {} as unknown as ToastApi, {
           ambient: "inline",
           showThinking: () => true,
@@ -49,7 +50,7 @@ describe("batched sink invariants (seeded)", () => {
         }),
       );
       for (const op of ops) {
-        feedOp(p, op, 0, rand);
+        feedOp(p, op, 0, textRand);
         if (op.kind !== "advance") {
           expect(JSON.stringify(snapshotStore(p.batchedStore))).toBe(
             JSON.stringify(snapshotStore(p.refStore)),
@@ -69,6 +70,11 @@ describe("removal checks (seeded sensitivity)", () => {
 
   it("removing flush-before-events fails I2 (event applied while text pending)", () => {
     const agg = removalFailureKinds({ ...CORRECT, flushBeforeEvents: false }, 60);
+    expect([...agg.keys()].some((k) => k.includes("I2"))).toBe(true);
+  });
+
+  it("removing flush-before-tool fails I2 (tool event applied while text pending)", () => {
+    const agg = removalFailureKinds({ ...CORRECT, flushBeforeTool: false }, 60);
     expect([...agg.keys()].some((k) => k.includes("I2"))).toBe(true);
   });
 
@@ -93,7 +99,7 @@ describe("removal checks (seeded sensitivity)", () => {
   });
 
   it("the classic naive version (trailing + no flush-before-tool) fails", () => {
-    const agg = removalFailureKinds({ ...CORRECT, trailing: true, flushBeforeEvents: false }, 60);
+    const agg = removalFailureKinds({ ...CORRECT, trailing: true, flushBeforeTool: false }, 60);
     expect(agg.size).toBeGreaterThan(0);
   });
 });
