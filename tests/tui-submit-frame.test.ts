@@ -17,4 +17,18 @@ it("requests a frame and starts the turn only after it is rendered", async () =>
   renderer.emit("frame");
   await turn;
   expect(events).toEqual(["append user", "start spinner", "request", "run turn"]);
+  expect(renderer.listenerCount("frame")).toBe(0);
+});
+
+it("starts the turn and removes the listener when no frame arrives", async () => {
+  class Renderer extends EventEmitter {
+    requestRender() {}
+  }
+  const renderer = new Renderer();
+  let started = false;
+  const turn = waitForSubmittedFrame(renderer).then(() => { started = true; });
+  await new Promise((resolve) => setTimeout(resolve, 180));
+  expect(started).toBe(true);
+  expect(renderer.listenerCount("frame")).toBe(0);
+  await turn;
 });
