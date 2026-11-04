@@ -399,7 +399,7 @@ describe("LLM fallback", () => {
     let callCount = 0;
     (piStream as any).mockImplementation(() => {
       callCount++;
-      if (callCount <= 2) {
+      if (callCount === 1) {
         return (async function* () {
           yield { type: "error", reason: "timeout", error: { role: "assistant", errorMessage: "request timed out" } };
         })();
@@ -412,6 +412,7 @@ describe("LLM fallback", () => {
 
     const response = await runTurn(session, "hello");
     expect(response).toContain("timeout fallback ok");
+    expect(callCount).toBe(2);
     expect(session.getEffectiveProvider()).toBe("openrouter");
   });
 
@@ -714,7 +715,7 @@ describe("LLM fallback", () => {
     let call = 0;
     (piStream as any).mockImplementation(() => {
       call += 1;
-      if (call <= 2) {
+      if (call === 1) {
         return (async function* () {
           yield { type: "done", reason: "timeout", message: { role: "assistant", content: "" } };
         })();
@@ -988,7 +989,7 @@ describe("timeout history", () => {
     (piStream as any).mockReset();
   });
 
-  it("keeps the step-0 retry history valid after a mid-tool-call idle timeout", async () => {
+  it("does not retry a step-0 idle timeout that ends mid-tool-call", async () => {
     const session = makeMockSession();
     session.config.llm.stream_idle_timeout_ms = 5_000;
     const histories: unknown[] = [];
@@ -1002,7 +1003,7 @@ describe("timeout history", () => {
       sink: { onError: (entry) => errors.push(entry.message) },
     });
 
-    expect(histories.length).toBeGreaterThan(1);
+    expect(histories).toHaveLength(1);
     expect(histories.every((messages) => unpairedToolIds(messages).length === 0)).toBe(true);
     expect(JSON.stringify(histories)).not.toContain("call_partial");
     expect(errors).toContain(IDLE_TIMEOUT_BARE);
@@ -1059,6 +1060,86 @@ describe("timeout history", () => {
     });
     expect(deltas.filter((delta) => delta.source === "assistant").map((delta) => delta.tokensAdded))
       .toEqual([estimateAssistantMessageTokens({ role: "assistant", content: "Partial" })]);
+  });
+
+  it("asks the fallback after one idle timeout without a same-model retry", async () => {
+    const session = makeMockSession();
+    session.config.llm.stream_idle_timeout_ms = 5_000;
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    const lines: string[] = [];
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      if (callCount === 1) {
+        return (async function* () {
+          yield { type: "done", reason: "timeout", message: { role: "assistant", content: "" } };
+        })();
+      }
+      return (async function* () {
+        yield { type: "text_delta", delta: "fallback ok" };
+        yield { type: "done", reason: "stop", message: { role: "assistant", content: "fallback ok" } };
+      })();
+    });
+
+    const response = await runTurn(session, "hello", undefined, {
+      sink: { onSystemLines: (rows) => lines.push(...rows) },
+    });
+
+    expect(callCount).toBe(2);
+    expect(response).toContain("fallback ok");
+    expect(session.getEffectiveProvider()).toBe("openrouter");
+    expect(session.getActiveModelId()).toBe("fallback-model");
+    expect(lines).toContain(
+      "Switched to openrouter/fallback-model after idle timeout after 5s",
+    );
+  });
+
+  it("reports an idle timeout without a same-model retry when no fallback is configured", async () => {
+    const session = makeMockSession();
+    session.config.llm.stream_idle_timeout_ms = 5_000;
+    const errors: string[] = [];
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      return (async function* () {
+        yield { type: "done", reason: "timeout", message: { role: "assistant", content: "" } };
+      })();
+    });
+
+    await runTurn(session, "hello", undefined, {
+      sink: { onError: (entry) => errors.push(entry.message) },
+    });
+
+    expect(callCount).toBe(1);
+    expect(errors).toContain(IDLE_TIMEOUT_BARE);
+    expect(session.getEffectiveProvider()).toBe("umans");
+  });
+
+  it("reports an idle timeout without a same-model retry when fallback is not allowed", async () => {
+    const session = makeMockSession();
+    session.config.llm.stream_idle_timeout_ms = 5_000;
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    session.setProviderOverride("anthropic");
+    session.setModelOverride("claude-sonnet-4");
+    const errors: string[] = [];
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      return (async function* () {
+        yield { type: "done", reason: "timeout", message: { role: "assistant", content: "" } };
+      })();
+    });
+
+    await runTurn(session, "hello", "claude-sonnet-4", {
+      sink: { onError: (entry) => errors.push(entry.message) },
+    });
+
+    expect(callCount).toBe(1);
+    expect(errors).toContain(IDLE_TIMEOUT_BARE);
+    expect(session.getEffectiveProvider()).toBe("anthropic");
+    expect(session.getActiveModelId()).toBe("claude-sonnet-4");
   });
 
   it("does not retry a step-0 idle timeout after partial text", async () => {
@@ -1128,7 +1209,7 @@ describe("timeout history", () => {
       callCount += 1;
       if (callCount === 1) {
         return (async function* () {
-          yield { type: "done", reason: "timeout", message: { role: "assistant", content: "" } };
+          yield { type: "done", reason: "stop", message: { role: "assistant", content: "" } };
         })();
       }
       if (callCount === 2) {

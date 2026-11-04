@@ -216,6 +216,11 @@ function isConnectExhausted(result: LlmStreamResult): boolean {
   return result.errorKind === "connect_timeout";
 }
 
+/** Idle silence (`finalReason === "timeout"`). Not retried on the same model. */
+function isIdleTimeout(result: LlmStreamResult): boolean {
+  return result.finalReason === "timeout";
+}
+
 function configuredIdleTimeoutMs(value: number | undefined): number {
   if (typeof value === "number" && Number.isInteger(value) && value >= 0) return value;
   return DEFAULT_STREAM_IDLE_TIMEOUT_MS;
@@ -1079,14 +1084,17 @@ export async function runTurn(
 
     // On the first step, retry once and then fall back on recoverable failures.
     // Once answer text has reached the UI, another attempt would repeat it.
+    // An idle timeout is not retried on the same model: another silent attempt
+    // would wait the full idle budget again. Go to the fallback when one is
+    // allowed, otherwise surface the error.
     if (
       step === 0 &&
       !streamResult.emittedToUi &&
       (shouldFallback(streamResult) || isPrematureEndRetry(streamResult))
     ) {
-      // A connect timeout already had its one driver-level retry. Do not
-      // spend another full connect budget here; go to the fallback model.
-      if (!isConnectExhausted(streamResult)) {
+      // A connect timeout already had its one driver-level retry. An idle
+      // timeout is not retried here either. Go to the fallback model.
+      if (!isIdleTimeout(streamResult) && !isConnectExhausted(streamResult)) {
         streamResult = await attemptStream();
       }
       // The retry may have streamed text. Do not ask the fallback model after that.
