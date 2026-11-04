@@ -46,7 +46,7 @@ import {
 } from "./context-display.js";
 import { estimateTokens as estimateDisplayTokens } from "./token-estimate.js";
 import { redactSecrets } from "./redact/secrets.js";
-import { checkCircuitBudget, circuitWrapUpInstruction } from "./circuit/budget.js";
+import { checkCircuitBudget } from "./circuit/budget.js";
 import {
   createSessionLogger,
   extractLlmErrorMessage,
@@ -562,6 +562,126 @@ export function buildScorecardNudge(
   }
   return undefined;
 }
+/**
+ * Characters of each tool result kept on a no-tools wrap-up request.
+ * Longer text is cut and ends with `[truncated]` so the excerpt stays within
+ * this cap (the marker counts toward the cap).
+ */
+export const WRAP_UP_TOOL_RESULT_CAP = 2000;
+
+function textPartsOnly(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  let out = "";
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const block = part as { type?: unknown; text?: unknown };
+    if (block.type === "text" && typeof block.text === "string") out += block.text;
+  }
+  return out;
+}
+
+function capWrapUpToolResult(text: string): string {
+  if (text.length <= WRAP_UP_TOOL_RESULT_CAP) return text;
+  const mark = "[truncated]";
+  return text.slice(0, Math.max(0, WRAP_UP_TOOL_RESULT_CAP - mark.length)) + mark;
+}
+
+function isToolUsePart(part: unknown): boolean {
+  if (!part || typeof part !== "object") return false;
+  const type = (part as { type?: unknown }).type;
+  return type === "tool_use" || type === "toolUse" || type === "toolCall";
+}
+
+/** Keep the call's name and id, and cap its arguments the same way as results. */
+function summarizeWrapUpToolCall(call: any): { id?: string; name?: string; args: string } {
+  let id: string | undefined;
+  if (typeof call?.id === "string") id = call.id;
+  else if (typeof call?.toolCallId === "string") id = call.toolCallId;
+  let name: string | undefined;
+  if (typeof call?.name === "string") name = call.name;
+  else if (typeof call?.toolName === "string") name = call.toolName;
+  const args = call?.args ?? call?.arguments ?? call?.input;
+  const raw = typeof args === "string" ? args : JSON.stringify(args ?? {});
+  return { id, name, args: capWrapUpToolResult(raw) };
+}
+
+function wrapUpToolResultText(message: { content?: unknown; result?: unknown }): string {
+  if (Array.isArray(message.content)) return textPartsOnly(message.content);
+  if (typeof message.result === "string") return message.result;
+  if (typeof message.content === "string") return message.content;
+  return textPartsOnly(message.result ?? message.content);
+}
+
+function appendMergedUser(out: Array<{ role: string; content: string }>, text: string): void {
+  const prev = out[out.length - 1];
+  if (prev?.role === "user") {
+    prev.content = prev.content && text ? `${prev.content}\n\n${text}` : `${prev.content}${text}`;
+    return;
+  }
+  out.push({ role: "user", content: text });
+}
+
+/**
+ * History for a no-tools wrap-up call. Tool results become user text (text
+ * parts only, capped), assistant tool calls become text, and adjacent user
+ * messages are merged so providers that require alternating roles accept it.
+ * Does not mutate `messages`.
+ */
+export function flattenWrapUpHistory(messages: readonly any[]): any[] {
+  const out: any[] = [];
+  for (const message of messages) {
+    if (!message || typeof message !== "object") continue;
+    if (message.role === "toolResult" || message.role === "tool_result") {
+      const text = wrapUpToolResultText(message);
+      appendMergedUser(
+        out,
+        `Tool result (${message.toolName ?? "unknown"}, ${message.toolCallId ?? ""}): ${capWrapUpToolResult(text)}`,
+      );
+      continue;
+    }
+    if (message.role === "user") {
+      const text = typeof message.content === "string" ? message.content : textPartsOnly(message.content);
+      appendMergedUser(out, text);
+      continue;
+    }
+    if (message.role === "assistant") {
+      const parts = Array.isArray(message.content) ? message.content : [];
+      const calls = message.toolCalls ?? parts.filter((part: unknown) => isToolUsePart(part));
+      if (!calls?.length) {
+        out.push(message);
+        continue;
+      }
+      const text = typeof message.content === "string" ? message.content : textPartsOnly(message.content);
+      const summarized = (Array.isArray(calls) ? calls : []).map((call: any) => summarizeWrapUpToolCall(call));
+      out.push({
+        role: "assistant",
+        content: `${text}${text ? "\n" : ""}Tool calls: ${JSON.stringify(summarized)}`,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Positive integer, or `fallback`. Config loading already warns and substitutes
+ * defaults; this clamp is silent so a NaN that bypasses validation cannot
+ * make the step loop compare against NaN.
+ */
+function clampTurnInt(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+/** Visible wrap-up text, or null when the reply is empty, whitespace, or thinking-only. */
+function visibleWrapUpText(message: any): string | null {
+  if (!message || typeof message !== "object") return null;
+  const content = message.content;
+  if (typeof content === "string") return content.trim() ? content : null;
+  if (!Array.isArray(content)) return null;
+  const text = textPartsOnly(content);
+  return text.trim() ? text : null;
+}
+
 export async function runTurn(
   session: Session,
   userInput: string,
@@ -956,6 +1076,16 @@ export async function runTurn(
   let fullResponse = "";
   let stepIndex = 0;
   let lastStreamReason: LlmStreamResult["finalReason"] = "stop";
+  // Set around a wrap-up stream so the first visible delta is preceded by a
+  // blank line when this turn already streamed step text.
+  let armWrapSeparator = false;
+  let wrapSeparatorSent = false;
+  let wrapSpinnerOn = false;
+  const stopWrapSpinner = () => {
+    if (!wrapSpinnerOn) return;
+    wrapSpinnerOn = false;
+    s.onSpinnerStop?.();
+  };
   let lastLlmErrorMessage: string | undefined;
   let providerUsage: ProviderUsage | null = null;
   let recordedProviderUsage = false;
@@ -966,7 +1096,20 @@ export async function runTurn(
       timestamp: Date.now(),
     },
   ];
-  const maxSteps = session.config.turn?.max_steps ?? 25;
+  const maxSteps = clampTurnInt(session.config.turn?.max_steps, 25);
+  // Pause/ceiling only when the sink can ask. Headless runs, and any sink
+  // without `onStepPause` (subagents, tests, non-interactive UIs), use
+  // `max_steps` as a hard cap: the last batch executes, then one wrap-up.
+  // User-facing warnings for bad values live in validateConfig. Here a bad
+  // value is only clamped so the loop bound stays a positive integer.
+  const isHeadless = !!session.headless;
+  const pauseAfterSteps = clampTurnInt(session.config.turn?.pause_after_steps, 50);
+  const configuredHardMaxSteps = clampTurnInt(session.config.turn?.hard_max_steps, 300);
+  // Keep the configured ceiling. When it is not above the pause interval the
+  // ceiling is reached first, so the turn stops there and never asks.
+  const hardMaxSteps = configuredHardMaxSteps;
+  const pauseEnabled = !isHeadless && !!s.onStepPause;
+  const loopCap = pauseEnabled ? hardMaxSteps : maxSteps;
   let interrupted = false;
   let surfacedTimeout = false;
   // Tracks whether any step in the turn ran a non-load_skill tool, for markResidentSkillsUsed.
@@ -990,7 +1133,10 @@ export async function runTurn(
     parameters: normalizeToolParameters((def as any).parameters),
   }));
 
-  async function attemptStream(): Promise<LlmStreamResult> {
+  async function attemptStream(
+    toolsForCall: typeof piTools = piTools,
+    historyForCall = history,
+  ): Promise<LlmStreamResult> {
     const reasoningEffort = getReasoningEffort(
       activeModel as Record<string, unknown>,
       activeModelName,
@@ -1003,11 +1149,19 @@ export async function runTurn(
       modelName: activeModelName,
       providerName: activeProviderName,
       compiledPrompt,
-      history,
-      piTools,
+      history: historyForCall,
+      piTools: toolsForCall,
       signal: options?.signal,
       reasoningEffort,
       onTextDelta: (delta) => {
+        if (wrapSpinnerOn && delta.trim()) stopWrapSpinner();
+        if (armWrapSeparator && delta.trim()) {
+          armWrapSeparator = false;
+          if (fullResponse.length > 0) {
+            wrapSeparatorSent = true;
+            s.onTextDelta?.("\n\n");
+          }
+        }
         s.onTextDelta?.(delta);
       },
       onThinkingDelta: (delta) => {
@@ -1131,7 +1285,161 @@ export async function runTurn(
     }
   }
 
-  for (let step = 0; step < maxSteps && !credentialError; step++) {
+  const NOT_EXECUTED_TEXT =
+    "Not executed: the step budget was reached and the turn was stopped.";
+
+  /** Record pending tool calls as errors without running them. */
+  function appendNotExecutedResults(
+    calls: Array<{ toolCallId?: string; toolName: string }>,
+  ): void {
+    for (const tc of calls) {
+      history.push({
+        role: "toolResult",
+        toolCallId: tc.toolCallId,
+        toolName: tc.toolName,
+        content: [{ type: "text", text: NOT_EXECUTED_TEXT }],
+        isError: true,
+        timestamp: Date.now(),
+      });
+    }
+  }
+
+  /** Drop tool calls the wrap-up was told not to make, so they are not stored or run. */
+  function withoutWrapUpToolCalls(message: any): any {
+    if (!message || typeof message !== "object") return message;
+    const hadCalls = Array.isArray(message.toolCalls) && message.toolCalls.length > 0;
+    let content = message.content;
+    let strippedContent = false;
+    if (Array.isArray(content)) {
+      const next = content.filter((part: unknown) => !isToolUsePart(part));
+      strippedContent = next.length !== content.length;
+      content = next;
+    }
+    if (!hadCalls && !strippedContent) return message;
+    const nextMessage = { ...message, content };
+    delete nextMessage.toolCalls;
+    return nextMessage;
+  }
+
+  function logWrapUpFailure(reason: string, error: string | undefined): void {
+    const message = error ?? "LLM stream error";
+    llmLogger.warn("Wrap-up summary stream failed; ending turn", {
+      code: "LLM_STREAM_ERROR",
+      details: {
+        reason,
+        error: message,
+        model: activeModelName,
+        provider: activeProviderName,
+      },
+    });
+    lastStreamReason = "error";
+    lastLlmErrorMessage = message;
+    // When this turn already has text, this is the only report. A tool-only
+    // turn has an empty fullResponse, and the end-of-turn empty-response path
+    // reports the same error once (plus the banner). Calling both doubles it.
+    if (fullResponse.trim()) {
+      s.onError?.({
+        level: "error",
+        domain: "llm",
+        message,
+        code: "LLM_STREAM_ERROR",
+        details: {
+          model: activeModelName,
+          provider: activeProviderName,
+          reason: "error",
+        },
+      });
+    }
+  }
+
+  /**
+   * Stop the turn gracefully at a step budget limit: one no-tool model call
+   * asking for a short summary. The instruction exists only for that call and
+   * is removed afterwards (the reply, when it has visible text, is the record).
+   * Tool calls in the reply are dropped and not executed. A stream error is
+   * logged and reported through `onError`. Ctrl+C sets `interrupted` and
+   * `lastStreamReason` to aborted, keeping any partial text that was stored.
+   */
+  async function wrapUpStep(reason: string): Promise<void> {
+    const instruction = {
+      role: "user",
+      content: `${reason} Reply with a short summary of what was done and what remains. Do not call tools.`,
+      timestamp: Date.now(),
+    };
+    history.push(instruction);
+    const dropInstruction = () => {
+      const idx = history.lastIndexOf(instruction);
+      if (idx >= 0) history.splice(idx, 1);
+    };
+    wrapSeparatorSent = false;
+    armWrapSeparator = true;
+    wrapSpinnerOn = true;
+    s.onSpinnerStart?.("wrapping up…");
+    try {
+      const wrap = await attemptStream([], flattenWrapUpHistory(history));
+      stopWrapSpinner();
+      const streamed = wrap.fullResponse;
+      const fromMessage = visibleWrapUpText(withoutWrapUpToolCalls(wrap.finalMessage));
+      const text = streamed.trim() ? streamed : fromMessage;
+      // Show and count a summary only when it is stored. An errored wrap-up
+      // keeps neither, and an aborted reply with no visible text is not stored.
+      const publishSummary = () => {
+        if (!text) return;
+        if (!streamed.trim()) {
+          if (fullResponse.length > 0) {
+            wrapSeparatorSent = true;
+            s.onTextDelta?.("\n\n");
+          }
+          s.onTextDelta?.(text);
+        }
+        if (wrapSeparatorSent) fullResponse += "\n\n";
+        fullResponse += text;
+        history.push({ role: "assistant", content: text, timestamp: Date.now() });
+        if (wrap.finalMessage && wrap.assistantTokens > 0) {
+          turnHistoryTokens += wrap.assistantTokens;
+          s.onContextHistoryDelta?.({
+            tokensAdded: wrap.assistantTokens,
+            source: "assistant",
+          });
+        }
+      };
+      const aborted =
+        wrap.interrupted ||
+        !!options?.signal?.aborted ||
+        wrap.finalReason === "aborted";
+      if (aborted) {
+        publishSummary();
+        providerUsage = wrap.providerUsage ?? providerUsage;
+        recordedProviderUsage = wrap.recordedProviderUsage || recordedProviderUsage;
+        lastStreamReason = "aborted";
+        interrupted = true;
+        return;
+      }
+      if (wrap.finalReason === "error") {
+        logWrapUpFailure(reason, wrap.errorMessage);
+        return;
+      }
+      lastStreamReason = wrap.finalReason === "toolUse" ? "stop" : wrap.finalReason;
+      lastLlmErrorMessage = undefined;
+      providerUsage = wrap.providerUsage ?? providerUsage;
+      recordedProviderUsage = wrap.recordedProviderUsage || recordedProviderUsage;
+      publishSummary();
+    } catch (err) {
+      stopWrapSpinner();
+      if (options?.signal?.aborted) {
+        lastStreamReason = "aborted";
+        interrupted = true;
+        return;
+      }
+      logWrapUpFailure(reason, err instanceof Error ? err.message : String(err));
+    } finally {
+      stopWrapSpinner();
+      armWrapSeparator = false;
+      dropInstruction();
+    }
+  }
+
+  for (let step = 0; step < loopCap && !credentialError; step++) {
     if (options?.signal?.aborted) {
       interrupted = true;
       break;
@@ -1274,7 +1582,7 @@ export async function runTurn(
     fullResponse += streamResult.fullResponse;
     providerUsage = streamResult.providerUsage;
     recordedProviderUsage = streamResult.recordedProviderUsage;
-    if (streamResult.interrupted) {
+    if (streamResult.interrupted || options?.signal?.aborted) {
       interrupted = true;
       break;
     }
@@ -1306,26 +1614,57 @@ export async function runTurn(
       });
       if (reason) {
         session.scorecard.inc("circuitBudgetWrapups");
-        history.push({
-          role: "user",
-          content: circuitWrapUpInstruction(reason),
-          timestamp: Date.now(),
-        });
-        const wrap = await attemptStream();
-        fullResponse += wrap.fullResponse;
-        providerUsage = wrap.providerUsage ?? providerUsage;
-        if (wrap.finalMessage) {
-          history.push(wrap.finalMessage);
-        }
+        appendNotExecutedResults(pendingToolCalls);
+        await wrapUpStep(`Circuit budget exceeded (${reason}).`);
         break;
       }
     }
 
-    // Check if we've reached the step limit
-    if (step === maxSteps - 1) {
-      // We're on the last step and the model wants more tools — warn the user
-      const limitBanner = `Reached per-turn tool step limit (${maxSteps}/${maxSteps}). Send another message to continue, or raise turn.max_steps in praana.config.toml.`;
-      s.onSystemLines?.([limitBanner]);
+    // Interactive soft pause and hard ceiling. Only when the sink provides
+    // onStepPause. The pending batch is not executed: stopping must not edit
+    // files. Each call is recorded as an error so the wrap-up request is valid.
+    if (pauseEnabled && pendingToolCalls.length > 0) {
+      const stepsUsed = step + 1;
+      if (stepsUsed >= hardMaxSteps) {
+        s.onSystemLines?.([`Reached the step limit (${stepsUsed}).`]);
+        appendNotExecutedResults(pendingToolCalls);
+        await wrapUpStep("Hard per-turn step ceiling reached.");
+        break;
+      }
+      if (stepsUsed % pauseAfterSteps === 0) {
+        const signal = options?.signal;
+        const pauseController = new AbortController();
+        const onAbort = () => pauseController.abort();
+        if (signal?.aborted) onAbort();
+        else signal?.addEventListener("abort", onAbort, { once: true });
+        const aborted = new Promise<boolean>((resolve) => {
+          if (pauseController.signal.aborted) resolve(false);
+          else pauseController.signal.addEventListener("abort", () => resolve(false), { once: true });
+        });
+        let cont: boolean;
+        try {
+          cont = (await Promise.race([Promise.resolve(s.onStepPause!(stepsUsed, pauseController.signal)), aborted])) !== false;
+        } catch (err) {
+          llmLogger.warn("Step pause hook failed; stopping turn", {
+            details: { stepsUsed, error: err instanceof Error ? err.message : String(err) },
+          });
+          cont = false;
+        } finally {
+          signal?.removeEventListener("abort", onAbort);
+          pauseController.abort();
+        }
+        if (options?.signal?.aborted) {
+          appendNotExecutedResults(pendingToolCalls);
+          interrupted = true;
+          break;
+        }
+        if (!cont) {
+          s.onSystemLines?.(["Stopped at the step pause."]);
+          appendNotExecutedResults(pendingToolCalls);
+          await wrapUpStep("Stopped at per-turn step pause.");
+          break;
+        }
+      }
     }
 
     const toolResults: Array<{ toolCallId?: string; toolName: string; result: unknown }> = [];
@@ -1606,6 +1945,14 @@ export async function runTurn(
     stepIndex++;
     if (session.debug) {
       s.onDebugBlock?.(stepIndex, pendingToolCalls, toolResults);
+    }
+
+    // Hard cap for headless runs and sinks that cannot pause: the last batch
+    // has already executed. One no-tool wrap-up, then the turn ends.
+    if (!pauseEnabled && step === maxSteps - 1) {
+      s.onSystemLines?.([`Reached the step limit (${step + 1}).`]);
+      await wrapUpStep("Reached per-turn tool step limit.");
+      break;
     }
   }
 

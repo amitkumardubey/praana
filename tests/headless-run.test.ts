@@ -59,7 +59,7 @@ function baseConfig(): PraanaConfig {
       pressure: { compact_at: 0.7, emergency_at: 0.85 },
     },
     project_detection: { enabled: false },
-    turn: { max_steps: 25 },
+    turn: { max_steps: 25, pause_after_steps: 50, hard_max_steps: 300 },
   };
 }
 
