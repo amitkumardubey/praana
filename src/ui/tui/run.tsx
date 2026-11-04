@@ -35,6 +35,7 @@ import type { TranscriptEntry } from "./transcript/model.js";
 import { TranscriptProjection } from "./transcript/projection.js";
 import { createTranscriptStore } from "./transcript/store.js";
 import { OpenTuiSink } from "./sink.js";
+import { waitForSubmittedFrame } from "./submit-frame.js";
 import { listAllAvailableModels } from "../../model-listing.js";
 import { App } from "./app.js";
 import { createShellUi } from "./shell-ui.js";
@@ -716,6 +717,7 @@ export async function runTui(
     turnRunning = true;
 
     try {
+      await waitForSubmittedFrame(renderer);
       await controller.runUserTurn(input, openTuiSink);
     } finally {
       turnRunning = false;
