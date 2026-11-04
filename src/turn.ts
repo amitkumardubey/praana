@@ -1129,19 +1129,22 @@ export async function runTurn(
     });
     lastStreamReason = "error";
     lastLlmErrorMessage = message;
-    // Same shape as a normal step's stream error, so a failed summary is visible
-    // even when earlier steps already produced text.
-    s.onError?.({
-      level: "error",
-      domain: "llm",
-      message,
-      code: "LLM_STREAM_ERROR",
-      details: {
-        model: activeModelName,
-        provider: activeProviderName,
-        reason: "error",
-      },
-    });
+    // When this turn already has text, this is the only report. A tool-only
+    // turn has an empty fullResponse, and the end-of-turn empty-response path
+    // reports the same error once (plus the banner). Calling both doubles it.
+    if (fullResponse.trim()) {
+      s.onError?.({
+        level: "error",
+        domain: "llm",
+        message,
+        code: "LLM_STREAM_ERROR",
+        details: {
+          model: activeModelName,
+          provider: activeProviderName,
+          reason: "error",
+        },
+      });
+    }
   }
 
   /**
@@ -1168,9 +1171,25 @@ export async function runTurn(
     armWrapSeparator = true;
     try {
       const wrap = await attemptStream([], flattenWrapUpHistory(history));
+      if (wrap.finalMessage && wrap.assistantTokens > 0) {
+        turnHistoryTokens += wrap.assistantTokens;
+        s.onContextHistoryDelta?.({
+          tokensAdded: wrap.assistantTokens,
+          source: "assistant",
+        });
+      }
       const streamed = wrap.fullResponse;
       const fromMessage = visibleWrapUpText(withoutWrapUpToolCalls(wrap.finalMessage));
       const text = streamed.trim() ? streamed : fromMessage;
+      // A provider that sends no text deltas still has to reach streaming
+      // sinks, and a summary after earlier step text needs the blank line.
+      if (!streamed.trim() && text) {
+        if (fullResponse.length > 0) {
+          wrapSeparatorSent = true;
+          s.onTextDelta?.("\n\n");
+        }
+        s.onTextDelta?.(text);
+      }
       const aborted =
         wrap.interrupted ||
         !!options?.signal?.aborted ||
@@ -1195,13 +1214,6 @@ export async function runTurn(
       lastLlmErrorMessage = undefined;
       providerUsage = wrap.providerUsage ?? providerUsage;
       recordedProviderUsage = wrap.recordedProviderUsage || recordedProviderUsage;
-      if (wrap.finalMessage && wrap.assistantTokens > 0) {
-        turnHistoryTokens += wrap.assistantTokens;
-        s.onContextHistoryDelta?.({
-          tokensAdded: wrap.assistantTokens,
-          source: "assistant",
-        });
-      }
       if (text) {
         if (wrapSeparatorSent) fullResponse += "\n\n";
         fullResponse += text;
@@ -1658,6 +1670,10 @@ export async function runTurn(
     // Hard cap for headless runs and sinks that cannot pause: the last batch
     // has already executed. One no-tool wrap-up, then the turn ends.
     if (!pauseEnabled && step === maxSteps - 1) {
+      stepIndex++;
+      if (session.debug) {
+        s.onDebugBlock?.(stepIndex, pendingToolCalls, toolResults);
+      }
       s.onSystemLines?.([`Reached the step limit (${step + 1}).`]);
       await wrapUpStep("Reached per-turn tool step limit.");
       break;

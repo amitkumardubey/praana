@@ -964,6 +964,106 @@ describe("per-turn step budget — interactive soft pause", () => {
     expect(response).not.toContain("[summary]");
   });
 
+  it("reports a tool-only wrap-up failure with one onError", async () => {
+    installLoopStream(1, { failWrapUp: true });
+    const session = makeMockSession({
+      headless: true,
+      config: makeConfig({ turn: { max_steps: 1, pause_after_steps: 50, hard_max_steps: 300 } }),
+    });
+    const errors: string[] = [];
+    await runTurn(session, "tools only", undefined, {
+      sink: { onError: (entry) => errors.push(entry.message) },
+    });
+    expect(errors).toEqual(["wrap-up provider failure"]);
+  });
+
+  it("adds wrap-up assistant tokens when the summary is aborted", async () => {
+    mockStream.mockImplementation((req: FakeStreamRequest) => {
+      const last = [...req.messages].reverse().find((m) => m.role === "user");
+      const text = typeof last?.content === "string" ? last.content : "";
+      if (text.includes("Do not call tools")) {
+        const body = `partial wrap ${"x".repeat(40)}`;
+        return (async function* () {
+          yield { type: "done", reason: "aborted", message: { role: "assistant", content: body } };
+        })();
+      }
+      return makeLoopStream(req, 1);
+    });
+    const session = makeMockSession({
+      headless: true,
+      config: makeConfig({ turn: { max_steps: 1, pause_after_steps: 50, hard_max_steps: 300 } }),
+    });
+    const added: number[] = [];
+    let thrown: unknown;
+    try {
+      await runTurn(session, "abort wrap", undefined, {
+        sink: {
+          onContextHistoryDelta: (delta) => {
+            if (delta.source === "assistant") added.push(delta.tokensAdded);
+          },
+        },
+      });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(TurnAbortedError);
+    expect(added.reduce((sum, n) => sum + n, 0)).toBeGreaterThan(0);
+  });
+
+  it("sends a final-message wrap-up through onTextDelta with a separator", async () => {
+    mockStream.mockImplementation((req: FakeStreamRequest) => {
+      const last = [...req.messages].reverse().find((m) => m.role === "user");
+      const text = typeof last?.content === "string" ? last.content : "";
+      if (text.includes("Do not call tools")) {
+        return (async function* () {
+          yield { type: "done", reason: "stop", message: { role: "assistant", content: "summary from message" } };
+        })();
+      }
+      return (async function* () {
+        yield { type: "text_delta", delta: "did the work" };
+        yield {
+          type: "toolcall_end",
+          toolCall: { id: "call-0", name: "shell", arguments: { command: "echo call-0" } },
+        };
+        yield {
+          type: "done",
+          reason: "toolUse",
+          message: {
+            role: "assistant",
+            content: "did the work",
+            toolCalls: [{ id: "call-0", name: "shell", args: { command: "echo call-0" } }],
+          },
+        };
+      })();
+    });
+    const session = makeMockSession({
+      headless: true,
+      config: makeConfig({ turn: { max_steps: 1, pause_after_steps: 50, hard_max_steps: 300 } }),
+    });
+    const texts: string[] = [];
+    await runTurn(session, "no deltas", undefined, {
+      sink: { onTextDelta: (delta) => texts.push(delta) },
+    });
+    const joined = texts.join("");
+    expect(joined.indexOf("did the work")).toBeGreaterThanOrEqual(0);
+    expect(joined.indexOf("\n\n")).toBeGreaterThan(joined.indexOf("did the work"));
+    expect(joined).toContain("summary from message");
+  });
+
+  it("emits the debug block for the batch that hits the step cap", async () => {
+    installLoopStream(3);
+    const session = makeMockSession({
+      headless: true,
+      debug: true,
+      config: makeConfig({ turn: { max_steps: 1, pause_after_steps: 50, hard_max_steps: 300 } }),
+    });
+    const steps: number[] = [];
+    await runTurn(session, "debug cap", undefined, {
+      sink: { onDebugBlock: (stepIndex) => steps.push(stepIndex) },
+    });
+    expect(steps).toEqual([1]);
+  });
+
   it("stop and hard ceiling serialize every pending tool call id with a result", async () => {
     const stopAt = async (kind: "pause" | "ceiling") => {
       installLoopStream(6, { withToolCalls: true });
