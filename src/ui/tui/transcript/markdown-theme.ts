@@ -8,17 +8,11 @@
  * strikethrough bit; `markup.strikethrough` is dim and coloured instead.
  * `syntaxTheme` is accepted and unused (theme selection is separate).
  *
- * Styles are native resources, so we memoise one SyntaxStyle per syntaxTheme
- * string at module level instead of allocating a fresh one on every JSX prop
- * re-evaluation. Adjusting for OpenTUI 0.8 (where fromStyles takes an owner)
- * means keying this cache by owner too — see note in buildMarkdownSyntaxStyle. */
-import { SyntaxStyle, type StyleDefinitionInput } from "@opentui/core";
+ * Styles are native resources, cached per owner and theme. */
+import { SyntaxStyle, type NativeResourceOwner, type StyleDefinitionInput } from "@opentui/core";
 
 const HEADING: StyleDefinitionInput = { bold: true, fg: "#7aa2f7" };
 const LIST: StyleDefinitionInput = { fg: "#c4887a", dim: true };
-
-/** One shared SyntaxStyle per syntaxTheme string, for the process lifetime. */
-const syntaxStyleCache = new Map<string, SyntaxStyle>();
 
 function buildStyles(): Record<string, StyleDefinitionInput> {
   const styles: Record<string, StyleDefinitionInput> = {
@@ -55,20 +49,38 @@ function buildStyles(): Record<string, StyleDefinitionInput> {
   return styles;
 }
 
-/**
- * Memoised style builder: one SyntaxStyle per syntaxTheme string.
- *
- * OpenTUI 0.5.8's `SyntaxStyle.fromStyles(styles)` takes no owner, so a single
- * module-level cache is safe. On the chore/opentui-0.8 branch this call takes a
- * NativeResourceOwner and that branch already caches per renderer with a
- * releaseMarkdownSyntaxStyles(owner) helper — merging there means keying this
- * cache by the owner as well (or dropping it in favour of the per-renderer
- * cache) and releasing styles with the owner instead of keeping them forever.
- */
-export function buildMarkdownSyntaxStyle(syntaxTheme: string): SyntaxStyle {
-  const cached = syntaxStyleCache.get(syntaxTheme);
-  if (cached) return cached;
-  const style = SyntaxStyle.fromStyles(buildStyles());
-  syntaxStyleCache.set(syntaxTheme, style);
+// OpenTUI 0.6.0 made SyntaxStyle a native resource: fromStyles() requires an
+// owner (renderer.nativeScene / a ResourceContext) and the style dies with its
+// owner. Creating one per <markdown> render was fine when a style was a plain
+// JS object; now each call allocates a native style, so we create exactly one
+// per renderer+theme and share it across every markdown component in that
+// scene. The cache is keyed by the scene object identity and released from
+// run.tsx when the renderer is destroyed (releaseMarkdownSyntaxStyles).
+const styleCache = new Map<NativeResourceOwner, Map<string, SyntaxStyle>>();
+
+export function buildMarkdownSyntaxStyle(
+  owner: NativeResourceOwner,
+  syntaxTheme?: string,
+): SyntaxStyle {
+  const theme = syntaxTheme ?? "default";
+  let byTheme = styleCache.get(owner);
+  if (!byTheme) {
+    byTheme = new Map();
+    styleCache.set(owner, byTheme);
+  }
+  const existing = byTheme.get(theme);
+  if (existing) return existing;
+  const style = SyntaxStyle.fromStyles(buildStyles(), owner);
+  byTheme.set(theme, style);
   return style;
+}
+
+/** Release every style owned by `owner` (call before renderer.destroy()). */
+export function releaseMarkdownSyntaxStyles(owner: NativeResourceOwner): void {
+  const byTheme = styleCache.get(owner);
+  if (!byTheme) return;
+  for (const style of byTheme.values()) {
+    style.destroy();
+  }
+  styleCache.delete(owner);
 }

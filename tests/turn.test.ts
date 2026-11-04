@@ -631,6 +631,39 @@ describe("runTurn", () => {
     expect(resolveModel).toHaveBeenCalled();
   });
 
+  it("does not execute a tool call leaked by a non-tool stream terminal", async () => {
+    for (const reason of ["length", "error", "abort"] as const) {
+      const execute = mock(async () => ({ ok: true, content: "secret" }));
+      (createAllTools as ReturnType<typeof mock>).mockImplementationOnce(() => ({
+        read_file: {
+          description: "Read a file",
+          parameters: z.object({ path: z.string() }),
+          execute,
+        },
+      }));
+      const stream = (async function* () {
+        yield { type: "text_delta", delta: "Partial answer" };
+        yield { type: "tool_call_start", id: "call-1", name: "read_file" };
+        yield {
+          type: "tool_call_end",
+          toolCall: { id: "call-1", name: "read_file", args: { path: "secret.txt" } },
+        };
+        yield {
+          type: "done",
+          reason,
+          message: { role: "assistant", content: "Partial answer" },
+        };
+      })();
+      (piStream as ReturnType<typeof mock>).mockReturnValueOnce(stream as any);
+      const session = makeMockSession();
+      const response = await runTurn(session, "read the secret");
+      expect(response, reason).toContain("Partial answer");
+      expect(execute, reason).not.toHaveBeenCalled();
+      const toolEvents = session.eventLog.readAll().filter((event: { kind: string }) => event.kind === "tool_call");
+      expect(toolEvents, reason).toEqual([]);
+    }
+  });
+
   it("uses the engine compiler when context engine is enabled", async () => {
     const session = makeMockSession({
       config: makeConfig({

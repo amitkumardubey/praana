@@ -17,6 +17,8 @@ import { getUserProviderConfig } from "../provider-registry.js";
 import { resolveProviderWireDefaults } from "./wire-config.js";
 import { OAuthRefreshBusyError, OAuthRefreshError, resolveOAuthModelAuth, resolveCopilotModelAuth } from "../oauth.js";
 import { CredentialLockTimeoutError } from "../credential-lock.js";
+import { resolveStreamEndMode } from "./stream-end.js";
+import { resolveLlmStreamTimeouts } from "./stream-guard.js";
 
 /**
  * Execute a streaming LLM response using the appropriate protocol driver.
@@ -145,12 +147,25 @@ export async function* streamLlmResponse(
     },
   };
 
+  const effectiveBaseUrl = req.baseUrl || mergedAuth.baseUrl;
+  const streamEndCheck = req.streamEndCheck ?? "auto";
+  const timeouts = resolveLlmStreamTimeouts({
+    provider: req.provider,
+    baseUrl: effectiveBaseUrl,
+    connectTimeoutMs: req.connectTimeoutMs,
+    idleTimeoutMs: req.idleTimeoutMs,
+  });
   const mergedReq: StreamRequest = {
     ...req,
-    baseUrl: req.baseUrl || mergedAuth.baseUrl,
+    baseUrl: effectiveBaseUrl,
     headers: mergedAuth.headers,
     compat: req.compat ?? wire.compat,
     api: req.api ?? wire.api,
+    connectTimeoutMs: timeouts.connectTimeoutMs,
+    idleTimeoutMs: timeouts.idleTimeoutMs,
+    strictStreamEnd:
+      req.strictStreamEnd ??
+      resolveStreamEndMode(req.provider, streamEndCheck, effectiveBaseUrl) === "strict",
   };
 
   const driver = getDriverForProvider(req.provider, mergedReq.api);

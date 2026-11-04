@@ -86,7 +86,50 @@ export function signAwsRequest(opts: {
 }
 
 /**
+ * Read AWS event-stream headers. String headers (`:exception-type`,
+ * `:message-type`) are the ones drivers use to spot exception frames.
+ */
+function parseEventStreamHeaders(bytes: Buffer): Record<string, string> {
+  const headers: Record<string, string> = {};
+  let offset = 0;
+  while (offset < bytes.length) {
+    const nameLen = bytes.readUInt8(offset);
+    offset += 1;
+    if (offset + nameLen + 1 > bytes.length) break;
+    const name = bytes.subarray(offset, offset + nameLen).toString("utf8");
+    offset += nameLen;
+    const type = bytes.readUInt8(offset);
+    offset += 1;
+    if (type === 7) {
+      if (offset + 2 > bytes.length) break;
+      const valueLen = bytes.readUInt16BE(offset);
+      offset += 2;
+      if (offset + valueLen > bytes.length) break;
+      headers[name] = bytes.subarray(offset, offset + valueLen).toString("utf8");
+      offset += valueLen;
+      continue;
+    }
+    if (type === 0 || type === 1) {
+      headers[name] = type === 0 ? "true" : "false";
+      continue;
+    }
+    if (type === 6) {
+      if (offset + 2 > bytes.length) break;
+      const len = bytes.readUInt16BE(offset);
+      offset += 2 + len;
+      continue;
+    }
+    const headerValueWidth: Record<number, number> = { 2: 1, 3: 2, 4: 4, 5: 8, 8: 8, 9: 16 };
+    const width = headerValueWidth[type] ?? 0;
+    if (width === 0) break;
+    offset += width;
+  }
+  return headers;
+}
+
+/**
  * Decode AWS binary EventStream chunk frames into JSON message payloads.
+ * Exception frames keep `:message-type` and `:exception-type` from the headers.
  */
 export async function* parseAwsEventStream(
   stream: ReadableStream<Uint8Array>,
@@ -103,30 +146,53 @@ export async function* parseAwsEventStream(
 
       while (buffer.length >= 16) {
         const totalLength = buffer.readUInt32BE(0);
+        const headerLength = buffer.readUInt32BE(4);
+        if (totalLength < 16 || headerLength > totalLength - 16) {
+          throw new Error("Invalid AWS event stream frame length");
+        }
         if (buffer.length < totalLength) {
           // Wait for full frame
           break;
         }
 
-        const headerLength = buffer.readUInt32BE(4);
         const payloadLength = totalLength - headerLength - 16;
         const payloadStart = 12 + headerLength;
+        const headerBytes = buffer.subarray(12, payloadStart);
         const payloadBytes = buffer.subarray(payloadStart, payloadStart + payloadLength);
 
         // Advance buffer past this frame
         buffer = buffer.subarray(totalLength);
 
-        if (payloadBytes.length > 0) {
+        const headers = parseEventStreamHeaders(headerBytes);
+        const payloadStr = payloadBytes.length > 0 ? payloadBytes.toString("utf8") : "";
+        let record: Record<string, unknown> | undefined;
+        if (payloadStr) {
           try {
-            const payloadStr = payloadBytes.toString("utf8");
             const parsed = JSON.parse(payloadStr);
-            if (parsed && typeof parsed === "object") {
-              yield parsed as Record<string, unknown>;
-            }
+            if (parsed && typeof parsed === "object") record = parsed as Record<string, unknown>;
           } catch {
-            // Non-JSON or binary event frame, skip
+            record = undefined;
           }
         }
+        const messageType = headers[":message-type"];
+        const exceptionType = headers[":exception-type"];
+        const errorCode = headers[":error-code"];
+        const errorMessage = headers[":error-message"];
+        const surfaced = messageType === "error" || exceptionType !== undefined || errorCode !== undefined || errorMessage !== undefined;
+        if (!record) {
+          if (!surfaced) continue;
+          record = {};
+          if (payloadStr) record.message = payloadStr;
+        }
+        const eventType = headers[":event-type"];
+        if ((!messageType || messageType === "event") && eventType && !Object.hasOwn(record, eventType)) {
+          record = { [eventType]: record };
+        }
+        if (messageType) record[":message-type"] = messageType;
+        if (exceptionType) record[":exception-type"] = exceptionType;
+        if (errorCode) record[":error-code"] = errorCode;
+        if (errorMessage) record[":error-message"] = errorMessage;
+        yield record;
       }
     }
   } finally {

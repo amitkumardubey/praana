@@ -126,6 +126,23 @@ export interface LlmConfig {
   reasoning_effort?: string;
   /** AWS region for amazon-bedrock catalog + invoke. Ignored by other providers. */
   region?: string;
+  /**
+   * Milliseconds to wait for response headers before aborting the request.
+   * `0` disables the connect timer. Omitted: 60000 for anthropic, openai,
+   * google, vertex, and amazon-bedrock; 300000 for every other provider.
+   * An explicit value applies to every provider.
+   */
+  connect_timeout_ms?: number;
+  /**
+   * Milliseconds of upstream silence before the stream is aborted.
+   * `0` disables. Omitted: 300000 for every provider.
+   */
+  stream_idle_timeout_ms?: number;
+  /**
+   * How to treat a clean stream close that lacks the provider's final signal.
+   * `auto` (default), `strict`, or `lenient`. Invalid values fall back to `auto`.
+   */
+  stream_end_check?: "auto" | "strict" | "lenient";
 }
 
 // ---- User-Declared Providers (declarative config) ----
