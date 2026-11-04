@@ -171,7 +171,7 @@ export class GoogleDriver implements LlmDriver {
                 const parsed = parseToolArguments(rawArgs);
                 if (!parsed.clean) lenientArgsNeedRepair = true;
                 if (!rawArgs.trim().startsWith("{")) lenientArgsNotObject = true;
-                args = parsed.clean ? parsed.args : (rawArgs as unknown as Record<string, unknown>);
+                args = parsed.args;
               } else if (rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)) {
                 args = rawArgs as Record<string, unknown>;
               } else {
