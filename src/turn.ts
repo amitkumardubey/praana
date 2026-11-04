@@ -106,6 +106,8 @@ export interface LlmStreamResult {
   retryable: boolean;
   /** `premature_end` or `connect_timeout` when the driver reported that kind. */
   errorKind?: "premature_end" | "connect_timeout";
+  /** True only after a `done` event. A clean close without one stays false. */
+  doneReceived: boolean;
 }
 
 export function isRecoverableStreamError(result: LlmStreamResult): boolean {
@@ -140,14 +142,21 @@ export function isPrematureEndRetry(result: LlmStreamResult): boolean {
   return result.errorKind === "premature_end";
 }
 
-/** A fallback finished with an answer. Errors, aborts, length, and timeouts do not. */
+/**
+ * A fallback produced a usable answer and a real `done` event.
+ * Empty stops, aborts, a close with no `done`, and a length stop with no text do not.
+ * A length stop that includes text does, and that answer is committed.
+ */
 export function fallbackFinishedCleanly(result: LlmStreamResult): boolean {
-  return (result.finalReason === "stop" || result.finalReason === "toolUse") && result.errorKind === undefined;
+  if (result.interrupted || !result.doneReceived || result.errorKind !== undefined) return false;
+  if (result.finalReason === "length") return result.fullResponse.trim().length > 0;
+  if (result.finalReason !== "stop" && result.finalReason !== "toolUse") return false;
+  return !isEmptyStreamResponse(result);
 }
 
 /** Reason recorded when a fallback is committed. Idle timeout is not "empty response". */
 export function recordedFallbackReason(result: LlmStreamResult, idleTimeoutMs: number): string {
-  if (result.finalReason === "timeout") return idleTimeoutUserMessage(idleTimeoutMs, false);
+  if (result.finalReason === "timeout") return `idle timeout after ${idleTimeoutDuration(idleTimeoutMs)}`;
   if (result.errorMessage) return result.errorMessage;
   if (result.errorKind === "premature_end") return "stream ended before the provider sent a final event";
   if (result.errorKind === "connect_timeout") return "connection timed out";
@@ -158,11 +167,14 @@ export function recordedFallbackReason(result: LlmStreamResult, idleTimeoutMs: n
  * User-facing line when the idle timer ends a stream.
  * The partial-answer sentence is included only when text was actually streamed.
  */
-export function idleTimeoutUserMessage(idleTimeoutMs: number, streamedText = false): string {
-  const duration = idleTimeoutMs < 1000
+function idleTimeoutDuration(idleTimeoutMs: number): string {
+  return idleTimeoutMs < 1000
     ? `${Math.max(0, idleTimeoutMs)}ms`
     : `${Math.round(idleTimeoutMs / 1000)}s`;
-  const base = `The model stopped responding (idle timeout after ${duration}).`;
+}
+
+export function idleTimeoutUserMessage(idleTimeoutMs: number, streamedText = false): string {
+  const base = `The model stopped responding (idle timeout after ${idleTimeoutDuration(idleTimeoutMs)}).`;
   return streamedText ? `${base} The partial answer above was not completed.` : base;
 }
 
@@ -319,6 +331,7 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
   let emittedToolCall = false;
   let retryable = false;
   let errorKind: LlmStreamResult["errorKind"];
+  let doneReceived = false;
 
   for await (const event of stream) {
     if (input.signal?.aborted) {
@@ -359,6 +372,7 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
       });
     }
     if (event.type === "done") {
+      doneReceived = true;
       finalReason = event.reason === "tool_use" ? "toolUse" : (event.reason as any);
       finalMessage = event.message;
       const stepUsage = (event.message as any)?.usage ?? (event as any).usage;
@@ -416,6 +430,7 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
     emittedToolCall,
     retryable,
     errorKind,
+    doneReceived,
   };
 }
 
@@ -1060,6 +1075,7 @@ export async function runTurn(
     }
 
     let streamResult = await attemptStream();
+    let fallbackRejected = false;
 
     // On the first step, retry once and then fall back on recoverable failures.
     // Once answer text has reached the UI, another attempt would repeat it.
@@ -1086,16 +1102,37 @@ export async function runTurn(
           configuredIdleTimeoutMs(session.config.llm.stream_idle_timeout_ms),
         );
 
-        await prepareFallback(fallbackProvider, fallbackModel);
-        const fallbackResult = await attemptStream();
-
-        if (fallbackFinishedCleanly(fallbackResult)) {
-          commitFallback(fallbackProvider, fallbackModel, fallbackReason);
-          streamResult = fallbackResult;
-        } else {
-          // Fallback also failed; keep the failed result for error reporting
-          // but do not commit any session override or event-log entries.
-          streamResult = fallbackResult;
+        // Hold fallback text until the switch is committed. A rejected
+        // fallback must not reach the user, and the primary stays active.
+        const heldText: string[] = [];
+        const heldThinking: string[] = [];
+        const restoreText = s.onTextDelta;
+        const restoreThinking = s.onThinkingDelta;
+        const primaryModel = activeModel;
+        const primaryWindow = contextWindowTokens;
+        s.onTextDelta = (delta) => { heldText.push(delta); };
+        s.onThinkingDelta = (delta) => { heldThinking.push(delta); };
+        let committed = false;
+        try {
+          await prepareFallback(fallbackProvider, fallbackModel);
+          const fallbackResult = await attemptStream();
+          if (fallbackFinishedCleanly(fallbackResult)) {
+            for (const delta of heldText) restoreText?.(delta);
+            for (const delta of heldThinking) restoreThinking?.(delta);
+            commitFallback(fallbackProvider, fallbackModel, fallbackReason);
+            streamResult = fallbackResult;
+            committed = true;
+          }
+        } finally {
+          s.onTextDelta = restoreText;
+          s.onThinkingDelta = restoreThinking;
+          if (!committed) {
+            activeModel = primaryModel;
+            activeModelName = modelName;
+            activeProviderName = providerName;
+            contextWindowTokens = primaryWindow;
+            fallbackRejected = true;
+          }
         }
       }
     }
@@ -1112,13 +1149,13 @@ export async function runTurn(
       };
     }
 
-    // If we switched to a fallback model and it also failed on a recoverable
-    // condition, surface it as an error rather than the empty-response fallback.
-    // An idle timeout is reported below with its own message; don't replace it.
+    // A rejected fallback keeps the primary result. A recoverable primary
+    // failure (rate limit, overload) is still reported as an error. An empty
+    // stop stays an empty response, and an idle timeout keeps its own message.
     if (
       streamResult.finalReason !== "timeout" &&
-      (activeModelName !== modelName || activeProviderName !== providerName) &&
-      shouldFallback(streamResult)
+      fallbackRejected &&
+      isRecoverableStreamError(streamResult)
     ) {
       lastStreamReason = "error";
       lastLlmErrorMessage = streamResult.errorMessage ?? "LLM request failed";

@@ -86,7 +86,13 @@ mock.module("../src/ui.js", () => ({
 }));
 
 const piStream = mockStream;
-import { runTurn, runLlmStream, isRecoverableStreamError } from "../src/turn.js";
+import {
+  runTurn,
+  runLlmStream,
+  isRecoverableStreamError,
+  fallbackFinishedCleanly,
+  recordedFallbackReason,
+} from "../src/turn.js";
 import { StateGraph } from "../src/state-graph.js";
 import { estimateAssistantMessageTokens } from "../src/context-display.js";
 import { createNullScorecard } from "../src/context-engine/telemetry.js";
@@ -316,6 +322,37 @@ describe("runLlmStream", () => {
     expect(result.finalReason).toBe("toolUse");
     expect(result.pendingToolCalls).toHaveLength(1);
     expect(result.pendingToolCalls[0].toolName).toBe("read_file");
+  });
+
+  it("records whether a done event was actually received", async () => {
+    (piStream as any).mockReturnValue((async function* () {
+      yield { type: "text_delta", delta: "hi" };
+      yield { type: "done", reason: "stop", message: { role: "assistant", content: "hi" } };
+    })());
+    const finished = await runLlmStream({
+      model: { id: "m" } as any,
+      modelName: "m",
+      providerName: "p",
+      compiledPrompt: "sys",
+      history: [{ role: "user", content: "hi" }],
+      piTools: [],
+    });
+    expect(finished.doneReceived).toBe(true);
+
+    (piStream as any).mockReturnValue((async function* () {
+      yield { type: "text_delta", delta: "partial" };
+    })());
+    const cut = await runLlmStream({
+      model: { id: "m" } as any,
+      modelName: "m",
+      providerName: "p",
+      compiledPrompt: "sys",
+      history: [{ role: "user", content: "hi" }],
+      piTools: [],
+    });
+    expect(cut.finalReason).toBe("stop");
+    expect(cut.doneReceived).toBe(false);
+    expect(cut.interrupted).toBe(false);
   });
 });
 
@@ -627,32 +664,24 @@ describe("LLM fallback", () => {
     expect(overrides).toEqual([]);
   });
 
-  it("does not commit a fallback that aborted or ended on length", async () => {
-    for (const terminal of ["abort", "length"] as const) {
-      const session = makeMockSession();
-      session.config.llm.fallback_provider = "openrouter";
-      session.config.llm.fallback_model = "fallback-model";
-      let call = 0;
-      (piStream as any).mockImplementation(() => {
-        call += 1;
-        if (call <= 2) return emptyStop();
-        return (async function* () {
-          yield {
-            type: "done",
-            reason: terminal,
-            message: {
-              role: "assistant",
-              content: terminal === "length" ? "cut" : "",
-              toolCalls: terminal === "length"
-                ? [{ id: "call_cut", name: "shell", args: { command: "echo" } }]
-                : [],
-            },
-          };
-        })();
-      });
-      await runTurn(session, "hello");
-      expect(session.getEffectiveProvider(), terminal).toBe("umans");
-    }
+  it("does not commit a fallback whose done reason is abort", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    let call = 0;
+    (piStream as any).mockImplementation(() => {
+      call += 1;
+      if (call <= 2) return emptyStop();
+      return (async function* () {
+        yield {
+          type: "done",
+          reason: "abort",
+          message: { role: "assistant", content: "" },
+        };
+      })();
+    });
+    await runTurn(session, "hello");
+    expect(session.getEffectiveProvider()).toBe("umans");
   });
 
   it("does not commit a fallback whose error kind is set", async () => {
@@ -702,7 +731,7 @@ describe("LLM fallback", () => {
 
     expect(session.getEffectiveProvider()).toBe("openrouter");
     expect(lines).toContain(
-      "Switched to openrouter/fallback-model after The model stopped responding (idle timeout after 5s).",
+      "Switched to openrouter/fallback-model after idle timeout after 5s",
     );
     expect(lines.some((line) => line.includes("empty response"))).toBe(false);
   });
@@ -725,6 +754,176 @@ describe("LLM fallback", () => {
       sink: { onSystemLines: (rows) => lines.push(...rows) },
     });
     expect(lines).toContain("Switched to openrouter/fallback-model after empty response");
+  });
+
+  function primaryThen(fallback: () => AsyncIterable<unknown>): void {
+    let call = 0;
+    (piStream as any).mockImplementation(() => {
+      call += 1;
+      if (call <= 2) return emptyStop();
+      return fallback();
+    });
+  }
+
+  function watchSink() {
+    const lines: string[] = [];
+    const deltas: string[] = [];
+    const errors: Array<{ details?: { model?: string; provider?: string; reason?: string } }> = [];
+    return {
+      lines,
+      deltas,
+      errors,
+      sink: {
+        onSystemLines: (rows: string[]) => lines.push(...rows),
+        onTextDelta: (delta: string) => deltas.push(delta),
+        onError: (entry: { details?: { model?: string; provider?: string; reason?: string } }) => {
+          errors.push(entry);
+        },
+      },
+    };
+  }
+
+  it("does not commit an empty fallback stop or surface it instead of the primary", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    const watched = watchSink();
+    primaryThen(() => emptyStop());
+
+    await runTurn(session, "hello", undefined, { sink: watched.sink });
+
+    expect(session.getEffectiveProvider()).toBe("umans");
+    expect(session.getActiveModelId()).toBe("umans-coder");
+    expect(watched.lines.some((line) => line.startsWith("Switched to"))).toBe(false);
+    expect(watched.errors.at(-1)?.details).toMatchObject({
+      model: "umans-coder",
+      provider: "umans",
+      reason: "stop",
+    });
+  });
+
+  it("does not commit a fallback the user aborted, and does not show its text", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    const watched = watchSink();
+    const controller = new AbortController();
+    primaryThen(() => (async function* () {
+      controller.abort();
+      yield { type: "text_delta", delta: "should-not-surface" };
+      yield { type: "done", reason: "stop", message: { role: "assistant", content: "should-not-surface" } };
+    })());
+
+    const response = await runTurn(session, "hello", undefined, {
+      signal: controller.signal,
+      sink: watched.sink,
+    });
+
+    expect(response).not.toContain("should-not-surface");
+    expect(response).not.toContain("[interrupted]");
+    expect(watched.deltas.join("")).not.toContain("should-not-surface");
+    expect(session.getEffectiveProvider()).toBe("umans");
+    expect(watched.lines.some((line) => line.startsWith("Switched to"))).toBe(false);
+    expect(watched.errors.at(-1)?.details).toMatchObject({
+      model: "umans-coder",
+      provider: "umans",
+    });
+  });
+
+  it("does not commit a fallback stream that ends without a done event", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    const watched = watchSink();
+    primaryThen(() => (async function* () {
+      yield { type: "text_delta", delta: "orphan fallback" };
+    })());
+
+    const response = await runTurn(session, "hello", undefined, { sink: watched.sink });
+
+    expect(response).not.toContain("orphan fallback");
+    expect(watched.deltas.join("")).toBe("");
+    expect(session.getEffectiveProvider()).toBe("umans");
+    expect(session.getActiveModelId()).toBe("umans-coder");
+    expect(watched.lines.some((line) => line.startsWith("Switched to"))).toBe(false);
+    expect(watched.errors.at(-1)?.details).toMatchObject({
+      model: "umans-coder",
+      provider: "umans",
+      reason: "stop",
+    });
+  });
+
+  it("commits a length fallback that includes real text and announces the switch", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    const watched = watchSink();
+    primaryThen(() => (async function* () {
+      yield { type: "text_delta", delta: "partial answer" };
+      yield { type: "done", reason: "length", message: { role: "assistant", content: "partial answer" } };
+    })());
+
+    const response = await runTurn(session, "hello", undefined, { sink: watched.sink });
+
+    expect(response).toContain("partial answer");
+    expect(watched.deltas.join("")).toBe("partial answer");
+    expect(session.getEffectiveProvider()).toBe("openrouter");
+    expect(session.getActiveModelId()).toBe("fallback-model");
+    expect(watched.lines).toContain("Switched to openrouter/fallback-model after empty response");
+  });
+
+  it("does not commit a length fallback with no text, and reports the primary failure", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    const watched = watchSink();
+    primaryThen(() => (async function* () {
+      yield { type: "done", reason: "length", message: { role: "assistant", content: "" } };
+    })());
+
+    const response = await runTurn(session, "hello", undefined, { sink: watched.sink });
+
+    expect(response).not.toContain("fallback-model");
+    expect(session.getEffectiveProvider()).toBe("umans");
+    expect(session.getActiveModelId()).toBe("umans-coder");
+    expect(watched.lines.some((line) => line.startsWith("Switched to"))).toBe(false);
+    expect(watched.errors.at(-1)?.details).toMatchObject({
+      model: "umans-coder",
+      provider: "umans",
+      reason: "stop",
+    });
+  });
+});
+
+describe("fallback commit predicate", () => {
+  const stopped = {
+    interrupted: false,
+    finalReason: "stop",
+    fullResponse: "",
+    pendingToolCalls: [],
+    doneReceived: true,
+    errorKind: undefined,
+  };
+
+  it("rejects an empty stop even when done was received", () => {
+    expect(fallbackFinishedCleanly(stopped as any)).toBe(false);
+  });
+
+  it("rejects an interrupted result and a result with no done event", () => {
+    expect(fallbackFinishedCleanly({ ...stopped, fullResponse: "hi", interrupted: true, doneReceived: false } as any)).toBe(false);
+    expect(fallbackFinishedCleanly({ ...stopped, fullResponse: "hi", doneReceived: false } as any)).toBe(false);
+  });
+
+  it("accepts length with real text and rejects length without text", () => {
+    expect(fallbackFinishedCleanly({ ...stopped, finalReason: "length", fullResponse: "partial answer" } as any)).toBe(true);
+    expect(fallbackFinishedCleanly({ ...stopped, finalReason: "length", fullResponse: "   " } as any)).toBe(false);
+    expect(fallbackFinishedCleanly({ ...stopped, finalReason: "length", fullResponse: "" } as any)).toBe(false);
+  });
+
+  it("records an idle timeout as a lowercase fragment", () => {
+    expect(recordedFallbackReason({ ...stopped, finalReason: "timeout" } as any, 30_000)).toBe("idle timeout after 30s");
+    expect(recordedFallbackReason({ ...stopped, finalReason: "timeout" } as any, 5_000)).toBe("idle timeout after 5s");
+    expect(recordedFallbackReason({ ...stopped, finalReason: "stop" } as any, 30_000)).toBe("empty response");
   });
 });
 
