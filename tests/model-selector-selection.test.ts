@@ -30,12 +30,12 @@ describe("ModelSelection", () => {
     sel.move(orderedStatic, 1); // row 1 = anthropic/claude-sonnet-4
     expect(sel.keyValue).toEqual({ provider: "anthropic", modelId: "claude-sonnet-4" });
 
-    // 30 models sort before claude-sonnet-4 (same provider, smaller ids).
+    // The live catalog inserts 30 newer models before claude-sonnet-4.
     const merged = [
-      ...STATIC,
       ...Array.from({ length: 30 }, (_, i) =>
         m("anthropic", `claude-${String(i).padStart(3, "0")}`),
       ),
+      ...STATIC,
     ];
     const ordered = orderModels(merged, CURRENT.provider, CURRENT.modelId);
     sel.reconcile(ordered);
@@ -53,10 +53,10 @@ describe("ModelSelection", () => {
     sel.move(orderedStatic, 1);
 
     const merged = [
-      ...STATIC,
       ...Array.from({ length: 30 }, (_, i) =>
         m("anthropic", `claude-${String(i).padStart(3, "0")}`),
       ),
+      ...STATIC,
     ];
     const ordered = orderModels(merged, CURRENT.provider, CURRENT.modelId);
     sel.reconcile(ordered);

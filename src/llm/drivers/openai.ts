@@ -20,6 +20,9 @@ import { logLenientStreamEnd, prematureEndError, toolCutoffError } from "../stre
 import { statusForProviderErrorCode } from "../error-status.js";
 import { joinUrl } from "../url.js";
 
+const noReasoningWithTools = new Set<string>();
+const noReasoningWithToolsPatterns = [/^gpt-6\.1-/i];
+
 export class OpenAICompatibleDriver implements LlmDriver {
   readonly protocol: string = "openai-compatible";
 
@@ -39,6 +42,10 @@ export class OpenAICompatibleDriver implements LlmDriver {
     const messages = this.formatMessages(req.messages, req.systemPrompt);
     const tools = this.formatTools(req.tools);
     const compat = req.compat;
+    const firstParty = req.provider === "openai" && !req.endpointUrl &&
+      baseUrl.replace(/\/+$/, "") === "https://api.openai.com/v1";
+    const skipReasoning = firstParty && tools.length > 0 &&
+      (noReasoningWithTools.has(req.model) || noReasoningWithToolsPatterns.some((pattern) => pattern.test(req.model)));
     const maxTokensField = compat?.maxTokensField ?? "max_tokens";
 
     const body: Record<string, unknown> = {
@@ -54,7 +61,10 @@ export class OpenAICompatibleDriver implements LlmDriver {
       body.stream_options = { include_usage: true };
     }
 
-    if (
+    // OpenAI defaults to reasoning when omitted, so tools require an explicit "none".
+    if (skipReasoning) {
+      body.reasoning_effort = "none";
+    } else if (
       compat?.supportsReasoningEffort !== false &&
       req.reasoningEffort &&
       req.reasoningEffort !== "off"
@@ -69,6 +79,7 @@ export class OpenAICompatibleDriver implements LlmDriver {
       };
     }
 
+    let switched = false;
     const accumulator = new ToolCallAccumulator();
     let accumulatedContent = "";
     let accumulatedThinking = "";
@@ -87,6 +98,16 @@ export class OpenAICompatibleDriver implements LlmDriver {
     yield* runGuardedProviderStream({
       req,
       haltedMessage,
+      retryForm: (status, text) => {
+        let detail: { error?: { param?: string; message?: string } } = {};
+        try { detail = JSON.parse(text); } catch { /* not a structured API error */ }
+        if (status !== 400 || !firstParty || tools.length === 0 || body.reasoning_effort === "none" || switched ||
+            detail.error?.param !== "reasoning_effort" || !detail.error.message?.includes("Function tools with reasoning_effort")) return false;
+        switched = true;
+        noReasoningWithTools.add(req.model);
+        body.reasoning_effort = "none";
+        return true;
+      },
       httpErrorLabel: "OpenAI API error",
       emptyBodyMessage: "Empty response body from OpenAI endpoint",
       request: (guard) =>

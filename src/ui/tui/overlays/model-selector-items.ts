@@ -3,9 +3,9 @@
  * and navigation that skips unavailable rows. No Solid/OpenTUI imports —
  * unit-testable.
  */
-import { formatCtx, fuzzyFilter, type ModelListEntry } from "../../../model-listing.js";
+import { formatCtx, type ModelListEntry } from "../../../model-listing.js";
 
-/** Current model pinned to top; otherwise provider, then model id. */
+/** Current model pinned to top; otherwise group providers and preserve catalog order. */
 export function orderModels(
   entries: ModelListEntry[],
   currentProvider: string,
@@ -16,19 +16,62 @@ export function orderModels(
     const bCurrent = b.provider === currentProvider && b.modelId === currentModelId;
     if (aCurrent !== bCurrent) return aCurrent ? -1 : 1;
     const byProvider = a.provider.localeCompare(b.provider);
-    if (byProvider !== 0) return byProvider;
-    return a.modelId.localeCompare(b.modelId);
+    return byProvider;
   });
 }
 
-/** Bare query preserves order; else fuzzy over provider + model id. */
+/** Provider substring hits retain list order; model-only hits use fuzzy ranking. */
 export function filterModelItems(
   entries: ModelListEntry[],
   query: string,
 ): ModelListEntry[] {
-  const q = query.trim();
-  if (!q) return entries;
-  return fuzzyFilter(entries, q, (m) => `${m.provider} ${m.modelId} ${m.provider}/${m.modelId}`);
+  const tokens = query.trim().toLowerCase().split(/[\s/]+/).filter(Boolean);
+  if (!tokens.length) return entries;
+
+  // Same subsequence scoring as fuzzyFilter, applied independently to each token.
+  const scoreToken = (text: string, token: string): number | null => {
+    let qi = 0;
+    let score = 0;
+    let lastMatch = -1;
+    for (let i = 0; i < text.length && qi < token.length; i++) {
+      if (text[i] === token[qi]) {
+        score += lastMatch === i - 1 ? 2 : 1;
+        lastMatch = i;
+        qi++;
+      }
+    }
+    return qi === token.length ? score : null;
+  };
+
+  const providerHits: ModelListEntry[] = [];
+  const modelHits: { item: ModelListEntry; score: number }[] = [];
+  for (const item of entries) {
+    const provider = item.provider.toLowerCase();
+    const modelId = item.modelId.toLowerCase();
+    const label = item.label.toLowerCase();
+    let providerHit = false;
+    let score = 0;
+    let matches = true;
+    for (const token of tokens) {
+      if (provider.includes(token)) {
+        providerHit = true;
+        continue;
+      }
+      const idScore = scoreToken(modelId, token);
+      const labelScore = scoreToken(label, token);
+      if (idScore === null && labelScore === null) {
+        matches = false;
+        break;
+      }
+      score += Math.max(idScore ?? 0, labelScore ?? 0);
+    }
+    if (matches) {
+      if (providerHit) providerHits.push(item);
+      else modelHits.push({ item, score });
+    }
+  }
+  modelHits.sort((a, b) => b.score - a.score);
+  return [...providerHits, ...modelHits.map(({ item }) => item)];
 }
 
 /** First visible index for a scroll window (palette scroll math). */

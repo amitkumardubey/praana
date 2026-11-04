@@ -29,6 +29,14 @@ const ANTHROPIC_ERROR_STATUSES: Record<string, number> = {
   request_too_large: 413,
 };
 
+type ThinkingMode = "adaptive" | "budget";
+const learnedThinkingModes = new Map<string, ThinkingMode>();
+
+function anthropicThinkingMode(modelId: string): ThinkingMode {
+  const match = /^claude-(?:[a-z]+-)?(\d+)-/i.exec(modelId);
+  return match && Number(match[1]) >= 5 ? "adaptive" : "budget";
+}
+
 export class AnthropicDriver implements LlmDriver {
   readonly protocol = "anthropic-messages";
 
@@ -60,13 +68,24 @@ export class AnthropicDriver implements LlmDriver {
       ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
     };
 
-    if (req.reasoningEffort && req.reasoningEffort !== "off") {
-      const budgetTokens = req.reasoningEffort === "high" ? 8192 : req.reasoningEffort === "medium" ? 4096 : 2048;
-      body.thinking = { type: "enabled", budget_tokens: budgetTokens };
-      // When thinking is enabled, Anthropic requires max_tokens > budget_tokens and temperature: 1.0 (or omitted)
-      body.max_tokens = Math.max(maxTokens, budgetTokens + 4096);
+    const thinkingOn = !!req.reasoningEffort && req.reasoningEffort !== "off";
+    let mode = learnedThinkingModes.get(req.model) ?? anthropicThinkingMode(req.model);
+    const applyThinking = () => {
+      if (!thinkingOn) return;
       delete body.temperature;
-    }
+      if (mode === "adaptive") {
+        body.thinking = { type: "adaptive" };
+        body.output_config = { effort: req.reasoningEffort === "medium" ? "medium" : req.reasoningEffort === "high" || req.reasoningEffort === "xhigh" ? "high" : "low" };
+        body.max_tokens = maxTokens;
+      } else {
+        const budgetTokens = req.reasoningEffort === "high" ? 8192 : req.reasoningEffort === "medium" ? 4096 : 2048;
+        body.thinking = { type: "enabled", budget_tokens: budgetTokens };
+        body.max_tokens = Math.max(maxTokens, budgetTokens + 4096);
+        delete body.output_config;
+      }
+    };
+    applyThinking();
+    let switched = false;
 
     const accumulator = new ToolCallAccumulator();
     let accumulatedContent = "";
@@ -95,6 +114,15 @@ export class AnthropicDriver implements LlmDriver {
     yield* runGuardedProviderStream({
       req,
       haltedMessage,
+      retryForm: (status, text) => {
+        const alternate = mode === "budget" ? /thinking\.type\.adaptive/i.test(text) : /adaptive.{0,80}not supported|not supported.{0,80}adaptive/i.test(text);
+        if (status !== 400 || !thinkingOn || switched || !alternate) return false;
+        switched = true;
+        mode = mode === "budget" ? "adaptive" : "budget";
+        learnedThinkingModes.set(req.model, mode);
+        applyThinking();
+        return true;
+      },
       httpErrorLabel: "Anthropic API error",
       emptyBodyMessage: "Empty response body from Anthropic endpoint",
       request: (guard) =>

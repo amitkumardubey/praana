@@ -3,8 +3,9 @@
   "fixture_kind": "provider-v1",
   "oracle_sha256_by_file": {
     "src/llm/auth.ts": "41beb8db735ce7bc4103802b19965193c0d5f72668bb5aaa2ab3796c2b47420a",
+    "src/llm/drivers/anthropic.ts": "03e7c2b436de06d61f0f90c262644c63c493501cebc1b1ea3b298760fcecea52",
     "src/llm/drivers/base.ts": "b0cc64042cef8c21adfdb81c8abda6e8619dea4ee05e90dba105ee38488e8d01",
-    "src/llm/drivers/openai.ts": "e78ef7036eecfd58210ff440352cffc7d755a7163e87c61efa127ecd09c885c5",
+    "src/llm/drivers/openai.ts": "e781aff7ee768d6478c760b556736f106f98c56f21d66ec46d969ac9a59e75bd",
     "src/llm/drivers/responses.ts": "93f6d143c92046cec2ea4f552921ef0ff527fdf5bdd30789ac2327ebe928b6f6",
     "src/llm/resolver.ts": "57f9f08352ca46610f1aaab73fad21645992d5dc1df8a83761bf5d8e25178662",
     "src/llm/retry.ts": "a9906f2d281323ea5f8c2ab1e733279a321577efe9933242f87bcf3b5632cbaa",
@@ -14,7 +15,7 @@
     "src/llm/types.ts": "be4283c29a103c7a23732fd1cc210ff376ce7b3ab01f59f54970e9fb1d4d0739",
     "src/llm/url.ts": "7a3852c7849728c6f5d8939fff9ef1e20d2d99851445d2c80a63b92c6ca406ea",
     "src/llm/wire-config.ts": "1fa8d09c8f1a22895873e09279ac08184636b9f1bf7328d4e5105de93503181d",
-    "src/provider-registry.ts": "a731c0716a8d24c5c4ffa6202d8d8ff65fcfcdf6502fc35f3194caceb23af4c7"
+    "src/provider-registry.ts": "0e7f90149b676189df56f7404c08bf9780c4dde3fa5f5ecd329501f57f463fc6"
   },
   "fixture_sha256_by_file": {
     "README.md": "8285ef84a200b1a6fa73e2eb283393243370e40cd47fa3f1a7c0be474c139335",
