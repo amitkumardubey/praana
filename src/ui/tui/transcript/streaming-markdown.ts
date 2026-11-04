@@ -9,8 +9,12 @@
  *
  * While the answer is still streaming, drop those unfinished tails. A finished
  * answer is passed through unchanged. An open fence is left alone: its
- * trailing characters are code.
+ * trailing characters are code. The TUI additionally opts into withholding
+ * unfinished inline spans, lone syntax lines and partial/header-only tables;
+ * these can otherwise remain raw even after a successful highlight.
  */
+
+import { withholdIncompleteSyntax } from "./streaming-syntax.js";
 
 const FENCE_LINE = /^(?:`{3,}|~{3,})/;
 const INCOMPLETE_LIST_LINE = /(?:^|\n)[ \t]*(?:[-*+]|\d{1,9}[.)])[ \t]*$/;
@@ -24,9 +28,15 @@ function unclosedFence(text: string): boolean {
   return open;
 }
 
-export function stabilizeStreamingMarkdown(text: string): string {
-  if (unclosedFence(text)) return text;
-  let next = text;
+export function stabilizeStreamingMarkdown(
+  text: string,
+  options: { withholdIncomplete?: boolean } = {},
+): string {
+  // Opt-in syntax stabilization also protects finished highlight results from
+  // containing incomplete inline/table syntax. Scroll-only callers retain
+  // the original behavior, including their literal unfinished spans.
+  let next = options.withholdIncomplete ? withholdIncompleteSyntax(text) : text;
+  if (unclosedFence(next)) return next;
   // A trailing newline can hide a bare marker (`-\n`). Strip, then look again.
   for (let pass = 0; pass < 3; pass++) {
     const stripped = next
