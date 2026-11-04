@@ -98,7 +98,7 @@ export interface LlmStreamResult {
   recordedProviderUsage: boolean;
   assistantTokens: number;
   interrupted: boolean;
-  /** Text or thinking was already sent to the UI. A retry would duplicate it. */
+  /** Answer text was already sent to the UI. A retry would duplicate it. */
   emittedToUi: boolean;
   /** A tool-call event was emitted. A premature-end retry would repeat it. */
   emittedToolCall: boolean;
@@ -133,7 +133,7 @@ export function shouldFallback(result: LlmStreamResult): boolean {
   return isRecoverableStreamError(result) || isEmptyStreamResponse(result);
 }
 
-/** Step-0 retry for a clean close that never delivered text, thinking, or a tool call. */
+/** Step-0 retry for a clean close that never delivered text or a tool call. */
 export function isPrematureEndRetry(result: LlmStreamResult): boolean {
   if (result.interrupted || result.emittedToUi || result.emittedToolCall) return false;
   if (result.retryable !== true) return false;
@@ -316,7 +316,6 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
       fullResponse += event.delta;
     }
     if (event.type === "thinking_delta") {
-      emittedToUi = true;
       input.onThinkingDelta?.(event.delta);
     }
     if (
@@ -1048,7 +1047,7 @@ export async function runTurn(
     let streamResult = await attemptStream();
 
     // On the first step, retry once and then fall back on recoverable failures.
-    // Once text or thinking has reached the UI, another attempt would repeat it.
+    // Once answer text has reached the UI, another attempt would repeat it.
     if (
       step === 0 &&
       !streamResult.emittedToUi &&

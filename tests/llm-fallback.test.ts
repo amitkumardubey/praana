@@ -728,6 +728,29 @@ describe("timeout history", () => {
     expect(errors).toContain(IDLE_TIMEOUT_ERROR);
   });
 
+  it("retries and falls back when attempts emit only thinking", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    let calls = 0;
+    (piStream as any).mockImplementation(() => {
+      calls++;
+      const attempt = calls;
+      return (async function* () {
+        if (attempt < 3) {
+          yield { type: "thinking_delta", delta: "thinking" };
+          yield { type: "done", reason: "stop", message: { role: "assistant", content: "" } };
+        } else {
+          yield { type: "text_delta", delta: "answer" };
+          yield { type: "done", reason: "stop", message: { role: "assistant", content: "answer" } };
+        }
+      })();
+    });
+    const result = await runTurn(session, "hello");
+    expect(calls).toBe(3);
+    expect(result).toContain("answer");
+  });
+
   it("does not fall back when the second attempt already streamed text", async () => {
     const session = makeMockSession();
     session.config.llm.stream_idle_timeout_ms = 5_000;
