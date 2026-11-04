@@ -27,7 +27,7 @@
  * `PRAANA_TEST_REAL_HOME=1` opts out (for a rare test that needs the real
  * home); everything below is then a no-op.
  */
-import { beforeEach } from "bun:test";
+import { afterAll, beforeEach } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -94,13 +94,20 @@ if (isolated) {
   beforeEach(applyIsolation);
 
   const dir = tempDir;
-  process.once("exit", () => {
+  let removed = false;
+  const cleanup = (): void => {
+    if (removed) return;
+    removed = true;
     try {
       rmSync(dir, { recursive: true, force: true });
     } catch {
       // Best effort: a stray file lock must not fail the test run.
     }
-  });
+  };
+  // `bun test` does not emit process exit events, so the run-level afterAll
+  // is what actually removes the temp dir; the exit hook covers other runners.
+  afterAll(cleanup);
+  process.once("exit", cleanup);
 }
 
 const info: IsolatedHomeInfo = { realHome, home, praanaHome, tempDir, isolated };
