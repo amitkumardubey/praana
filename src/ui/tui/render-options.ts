@@ -17,8 +17,6 @@ export function parseSynchronizedOutput(value: string | undefined): Synchronized
 export function parseStreamBatchMs(value: string | undefined): number {
   if (value === undefined) return 0;
   const trimmed = value.trim();
-  if (!/^-?\d+$/.test(trimmed)) return 0;
-  const n = Number(trimmed);
-  if (!Number.isFinite(n) || n < 0) return 0;
-  return Math.min(n, 250);
+  if (!/^\d+$/.test(trimmed)) return 0;
+  return Math.min(Number(trimmed), 250);
 }

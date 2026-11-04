@@ -48,6 +48,7 @@ describe("parseStreamBatchMs", () => {
     expect(parseStreamBatchMs("251")).toBe(250);
     expect(parseStreamBatchMs("99999")).toBe(250);
     expect(parseStreamBatchMs("999999999999999999999")).toBe(250);
+    expect(parseStreamBatchMs("9".repeat(400))).toBe(250);
   });
 
   it("accepts surrounding whitespace", () => {
