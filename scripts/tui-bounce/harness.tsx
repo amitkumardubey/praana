@@ -1,0 +1,312 @@
+/**
+ * Terminal-free scroll-bounce harness.
+ *
+ * Mounts the real transcript view (store + scrollbox + markdown entries) in
+ * OpenTUI's test renderer and drives it through OpenTuiSink. After every
+ * applied delta the renderer is stepped until the frame is stable. Every
+ * presented frame is kept: the `frame` event when the loop emits one, otherwise
+ * a snapshot taken after that `renderOnce`.
+ *
+ * Passes: the first paint of a delta can still be the streaming preview.
+ * Tree-sitter highlight then replaces chunks and asks for another frame, and
+ * sticky follow can move the scroll offset on the layout pass after the
+ * content height changes. The loop stops when a pass both starts and finishes
+ * with no code renderable highlighting, or at 6 passes.
+ */
+import { createTestRenderer } from "@opentui/core/testing";
+import type { ScrollBoxRenderable } from "@opentui/core";
+import { render } from "@opentui/solid";
+import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui";
+import { KeymapProvider } from "@opentui/keymap/solid";
+import { OpenTuiSink, type StreamBatchScheduler } from "../../src/ui/tui/sink.js";
+import type { ToastApi } from "../../src/ui/tui/shell-ui.js";
+import { TranscriptProjection } from "../../src/ui/tui/transcript/projection.js";
+import { createTranscriptStore, type TranscriptStoreApi } from "../../src/ui/tui/transcript/store.js";
+import { releaseMarkdownSyntaxStyles } from "../../src/ui/tui/transcript/markdown-theme.js";
+import { TranscriptView } from "../../src/ui/tui/transcript/view.js";
+import type { TranscriptRenderOpts } from "../../src/ui/tui/transcript/opts.js";
+import { STREAM_MARKDOWN, chunkDeltas, wordDeltas } from "./fixture.js";
+import { measureBounce, visibleOf, type BounceFrame } from "./metrics.js";
+import { ManualBatchScheduler } from "./scheduler.js";
+
+const OPTS: TranscriptRenderOpts = {
+  markdownRendering: true,
+  syntaxTheme: "default",
+  backgroundZones: false,
+  useUnicode: true,
+};
+
+const TOAST: ToastApi = {
+  show() {},
+  clearErrors() {},
+  attachConsole() {},
+};
+
+const MAX_PASSES = 6;
+const HIGHLIGHT_TIMEOUT_MS = 8_000;
+
+export interface BounceScenario {
+  width: number;
+  height: number;
+  batchMs: number;
+  deltas: "words" | "chunks";
+  /** Slice size for `chunks`. Default 24. */
+  chunkSize?: number;
+  /** Simulated gap between deltas. Ignored when batchMs is 0. */
+  arrivalMs: number;
+  /** Stop after this many source deltas. Unset streams the whole fixture. */
+  maxDeltas?: number;
+}
+
+export interface BounceReport {
+  scenario: BounceScenario;
+  applied: number;
+  frames: number;
+  bounce: number;
+  scrollReversals: number;
+  lastRowReversals: number;
+  topLineReversals: number;
+  undone: number;
+  heightShrinks: number;
+  markdownShrinks: number;
+  /** Applied deltas whose first presented frame and stable frame disagree by a line. */
+  intermediateShifts: number;
+  maxPasses: number;
+  passHistogram: Record<number, number>;
+  viewportHeight: number;
+  finalScrollTop: number;
+  finalScrollHeight: number;
+  finalText: string;
+  examples: string[];
+}
+
+export const BOUNCE_MATRIX: BounceScenario[] = [
+  { width: 110, height: 40, batchMs: 0, deltas: "words", arrivalMs: 0 },
+  { width: 110, height: 40, batchMs: 33, deltas: "words", arrivalMs: 10 },
+  { width: 80, height: 24, batchMs: 0, deltas: "words", arrivalMs: 0 },
+  { width: 80, height: 24, batchMs: 33, deltas: "words", arrivalMs: 10 },
+  { width: 110, height: 40, batchMs: 0, deltas: "chunks", chunkSize: 8, arrivalMs: 0 },
+  { width: 110, height: 40, batchMs: 33, deltas: "chunks", chunkSize: 8, arrivalMs: 16 },
+  { width: 80, height: 24, batchMs: 0, deltas: "chunks", chunkSize: 8, arrivalMs: 0 },
+  { width: 80, height: 24, batchMs: 33, deltas: "chunks", chunkSize: 8, arrivalMs: 16 },
+];
+
+interface Highlightable {
+  isHighlighting?: boolean;
+  highlightingDone?: Promise<void>;
+  getChildren?: () => unknown[];
+}
+
+function walk(node: unknown, visit: (node: Highlightable) => void): void {
+  if (!node || typeof node !== "object") return;
+  const current = node as Highlightable;
+  visit(current);
+  for (const child of current.getChildren?.() ?? []) walk(child, visit);
+}
+
+async function drainHighlights(root: unknown): Promise<number> {
+  const pending: Promise<void>[] = [];
+  walk(root, (node) => {
+    if (node.isHighlighting && node.highlightingDone) pending.push(node.highlightingDone);
+  });
+  if (pending.length === 0) return 0;
+  await Promise.race([
+    Promise.all(pending),
+    new Promise<void>((resolve) => setTimeout(resolve, HIGHLIGHT_TIMEOUT_MS)),
+  ]);
+  return pending.length;
+}
+
+function assistantTail(store: TranscriptStoreApi): string {
+  for (let i = store.entries.length - 1; i >= 0; i--) {
+    const entry = store.entries[i];
+    if (entry && entry.role === "assistant") return entry.text.slice(-80);
+  }
+  return "";
+}
+
+function scenarioDeltas(scenario: BounceScenario): string[] {
+  const deltas = scenario.deltas === "words"
+    ? wordDeltas(STREAM_MARKDOWN)
+    : chunkDeltas(STREAM_MARKDOWN, scenario.chunkSize ?? 8);
+  return scenario.maxDeltas === undefined ? deltas : deltas.slice(0, scenario.maxDeltas);
+}
+
+export function formatBounceReport(report: BounceReport): string {
+  const { scenario } = report;
+  const head = `${scenario.width}x${scenario.height} batch ${scenario.batchMs} ${scenario.deltas}`;
+  const body = [
+    head,
+    `applied ${report.applied} frames ${report.frames} bounce ${report.bounce} scroll ${report.scrollReversals} shrinks ${report.heightShrinks} mdShrinks ${report.markdownShrinks} lastRow ${report.lastRowReversals} top ${report.topLineReversals} undone ${report.undone} intermediate ${report.intermediateShifts}`,
+    `passes max ${report.maxPasses} hist ${JSON.stringify(report.passHistogram)} viewport ${report.viewportHeight} scroll ${report.finalScrollTop}/${report.finalScrollHeight}`,
+    ...report.examples.map((example) => `  ${example}`),
+  ];
+  return body.join("\n");
+}
+
+export async function runBounceScenario(scenario: BounceScenario): Promise<BounceReport> {
+  const setup = await createTestRenderer({
+    width: scenario.width,
+    height: scenario.height,
+    footerHeight: 0,
+  });
+  const store = createTranscriptStore();
+  const scheduler = new ManualBatchScheduler();
+  const sink = new OpenTuiSink(store.mount, TOAST, {
+    ambient: "quiet",
+    showThinking: () => false,
+    onSpinnerMessage: () => {},
+    ctxWindowTokens: 128_000,
+    engineMode: false,
+    projection: new TranscriptProjection({ useUnicode: true }),
+    streamBatchMs: scenario.batchMs,
+    batchScheduler: scheduler as StreamBatchScheduler,
+  });
+  const keymap = createDefaultOpenTuiKeymap(setup.renderer);
+  const frames: BounceFrame[] = [];
+  let record = false;
+  let sawFrame = false;
+  let box: ScrollBoxRenderable | null = null;
+
+  const scrollBox = (): ScrollBoxRenderable => {
+    if (box) return box;
+    const found = setup.renderer.root.findDescendantById("transcript");
+    if (!found) throw new Error("transcript scrollbox was not mounted");
+    box = found as ScrollBoxRenderable;
+    return box;
+  };
+
+  const markdownHeight = (): number => {
+    let height = 0;
+    walk(setup.renderer.root, (node) => {
+      if (!("_blockStates" in node)) return;
+      const measured = (node as { height?: number }).height;
+      if (typeof measured === "number") height = measured;
+    });
+    return height;
+  };
+
+  const take = (): BounceFrame => {
+    const scroll = scrollBox();
+    const visible = visibleOf(setup.captureCharFrame());
+    return {
+      scrollTop: scroll.scrollTop,
+      scrollHeight: scroll.scrollHeight,
+      markdownHeight: markdownHeight(),
+      first: visible.first,
+      last: visible.last,
+      text: visible.text,
+      sourceTail: assistantTail(store),
+    };
+  };
+
+  const onFrame = () => {
+    sawFrame = true;
+    if (record) frames.push(take());
+  };
+
+  const settle = async (): Promise<number> => {
+    let passes = 0;
+    let followUp = false;
+    while (passes < MAX_PASSES) {
+      sawFrame = false;
+      await setup.renderOnce();
+      if (record && !sawFrame) frames.push(take());
+      passes++;
+      const drained = await drainHighlights(setup.renderer.root);
+      if (!followUp && drained === 0) break;
+      followUp = drained > 0;
+      if (!followUp) break;
+    }
+    return passes;
+  };
+
+  try {
+    await render(
+      () => (
+        <KeymapProvider keymap={keymap}>
+          <box width="100%" height="100%" flexDirection="column">
+            <TranscriptView store={store} opts={OPTS} />
+          </box>
+        </KeymapProvider>
+      ),
+      setup.renderer,
+    );
+    setup.renderer.on("frame", onFrame);
+    await settle();
+    sink.appendUser("Explain why the sky colour changes.");
+    await settle();
+
+    record = true;
+    const passHistogram: Record<number, number> = {};
+    let maxPasses = 0;
+    let intermediateShifts = 0;
+    let applied = 0;
+
+    const applyAndPaint = async (): Promise<void> => {
+      const start = frames.length;
+      const passes = await settle();
+      applied++;
+      passHistogram[passes] = (passHistogram[passes] ?? 0) + 1;
+      maxPasses = Math.max(maxPasses, passes);
+      const end = frames.length;
+      if (end - start >= 2) {
+        const first = frames[start]!;
+        const stable = frames[end - 1]!;
+        const shifted =
+          Math.abs(first.scrollTop - stable.scrollTop) >= 0.5 || first.first !== stable.first;
+        if (shifted) intermediateShifts++;
+      }
+    };
+
+    for (const delta of scenarioDeltas(scenario)) {
+      sink.onTextDelta(delta);
+      if (scenario.batchMs <= 0) {
+        await applyAndPaint();
+        continue;
+      }
+      if (scheduler.advance(scenario.arrivalMs) > 0) await applyAndPaint();
+    }
+    if (scenario.batchMs > 0 && scheduler.advance(scenario.batchMs) > 0) {
+      await applyAndPaint();
+    }
+
+    const metrics = measureBounce(frames);
+    const last = frames[frames.length - 1];
+    const scroll = scrollBox();
+    return {
+      scenario,
+      applied,
+      frames: frames.length,
+      bounce: metrics.bounce,
+      scrollReversals: metrics.scrollReversals,
+      lastRowReversals: metrics.lastRowReversals,
+      topLineReversals: metrics.topLineReversals,
+      undone: metrics.undone,
+      heightShrinks: metrics.heightShrinks,
+      markdownShrinks: metrics.markdownShrinks,
+      intermediateShifts,
+      maxPasses,
+      passHistogram,
+      viewportHeight: scroll.height,
+      finalScrollTop: last?.scrollTop ?? scroll.scrollTop,
+      finalScrollHeight: last?.scrollHeight ?? scroll.scrollHeight,
+      finalText: last?.text ?? "",
+      examples: metrics.examples,
+    };
+  } finally {
+    setup.renderer.off("frame", onFrame);
+    sink.dispose();
+    releaseMarkdownSyntaxStyles(setup.renderer.nativeScene);
+    store.dispose();
+    await setup.dispose();
+  }
+}
+
+export async function runBounceMatrix(
+  scenarios: BounceScenario[] = BOUNCE_MATRIX,
+): Promise<BounceReport[]> {
+  const reports: BounceReport[] = [];
+  for (const scenario of scenarios) reports.push(await runBounceScenario(scenario));
+  return reports;
+}
