@@ -182,6 +182,10 @@ export async function* parseAwsEventStream(
           record = {};
           if (payloadStr) record.message = payloadStr;
         }
+        const eventType = headers[":event-type"];
+        if ((!messageType || messageType === "event") && eventType && !Object.hasOwn(record, eventType)) {
+          record = { [eventType]: record };
+        }
         if (messageType) record[":message-type"] = messageType;
         if (exceptionType) record[":exception-type"] = exceptionType;
         if (errorCode) record[":error-code"] = errorCode;
