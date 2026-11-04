@@ -15,7 +15,9 @@ import type {
 } from "../types.js";
 import { parseSseStream } from "../sse.js";
 import { ToolCallAccumulator } from "../tool-accumulator.js";
-import { withPreEmissionRetry } from "../retry.js";
+import { runGuardedProviderStream } from "../stream-guard.js";
+import { prematureEndError, TOOL_CUTOFF_MESSAGE, toolCutoffError } from "../stream-end.js";
+import { statusForProviderErrorCode } from "../error-status.js";
 import { joinUrl } from "../url.js";
 import { APP_VERSION } from "../../app-version.js";
 import { extractAccountId } from "../jwt.js";
@@ -32,6 +34,36 @@ function headerAccountId(headers: HeadersInit | Record<string, string> | undefin
   } catch {
     return "";
   }
+}
+
+function finiteStatus(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/** Numeric HTTP status from an error body, then a string code such as rate_limit_exceeded. */
+function statusFromErrorBody(body: unknown): number | undefined {
+  const direct = finiteStatus(body);
+  if (direct !== undefined) return direct;
+  if (!body || typeof body !== "object") return undefined;
+  const record = body as Record<string, unknown>;
+  const code = finiteStatus(record.code);
+  if (code !== undefined) return code;
+  const status = finiteStatus(record.status);
+  if (status !== undefined) return status;
+  return statusForProviderErrorCode(record.code ?? record.type);
+}
+
+function responsesErrorStatus(parsed: Record<string, unknown>): number | undefined {
+  const fromError = statusFromErrorBody(parsed.error);
+  if (fromError !== undefined) return fromError;
+  const response = parsed.response;
+  if (response && typeof response === "object") {
+    const nested = statusFromErrorBody((response as { error?: unknown }).error);
+    if (nested !== undefined) return nested;
+  }
+  const top = finiteStatus(parsed.status);
+  if (top !== undefined) return top;
+  return statusForProviderErrorCode(parsed.code);
 }
 
 function finiteToken(value: unknown): number | undefined {
@@ -164,50 +196,23 @@ export class OpenAIResponsesDriver implements LlmDriver {
       body.reasoning = { effort: req.reasoningEffort };
     }
 
-    let response: Response;
-    try {
-      response = await withPreEmissionRetry(
-        async () => {
-          const res = await fetch(endpoint, {
-            method: "POST",
-            headers,
-            body: JSON.stringify(body),
-            signal: req.signal,
-          });
-          if (!res.ok) {
-            const errText = await res.text().catch(() => "");
-            const err: Error & { status?: number } = new Error(
-              `OpenAI Responses API error (${res.status}): ${errText}`,
-            );
-            err.status = res.status;
-            throw err;
-          }
-          if (!res.body) throw new Error("Empty response body from Responses endpoint");
-          return res;
-        },
-        { signal: req.signal },
-      );
-    } catch (err: unknown) {
-      const e = err as { status?: number; message?: string };
-      yield {
-        type: "error",
-        error: err instanceof Error ? err : new Error(String(err)),
-        status: e.status,
-        retryable: false,
-      };
-      return;
-    }
-
     const accumulator = new ToolCallAccumulator();
     let accumulatedContent = "";
     let finishReason: Extract<StreamEvent, { type: "done" }>["reason"] = "stop";
     let latestUsage: Extract<StreamEvent, { type: "usage" }>["usage"] | null = null;
     let itemIndex = 0;
+    let emitted = false;
     const codex = req.provider === "openai-codex";
     let terminalReceived = false;
     const openFunctionCalls = new Set<number | string>();
     const functionCallIndexById = new Map<string, number | string>();
-    const toolCutoffMessage = "The response was cut off while the model was calling a tool";
+    const bufferedArgs = new Map<string, string>();
+    // Opened calls stay "seen" after arguments.done removes them from
+    // openFunctionCalls. output_item.done may repeat the full arguments
+    // string; that fallback is only for a call that was never announced.
+    const openedCallIndexes = new Set<number | string>();
+    const openedCallIds = new Set<string>();
+    const toolCutoffMessage = TOOL_CUTOFF_MESSAGE;
     const unannouncedToolDeltaMessage = "OpenAI Responses stream received function call arguments without an open call";
     const responsesErrorMessage = (parsed: Record<string, unknown>, type: string): string => {
       const resp = parsed.response as {
@@ -220,38 +225,84 @@ export class OpenAIResponsesDriver implements LlmDriver {
         (typeof parsed.message === "string" ? parsed.message : undefined);
       return message || `OpenAI Responses stream ${type}`;
     };
+    const finish = (): StreamEvent[] => {
+      if (finishReason === "length" && (openFunctionCalls.size > 0 || bufferedArgs.size > 0)) {
+        return [{ type: "error", error: new Error(toolCutoffMessage), retryable: false }];
+      }
+      // Entries left here never met output_item.added or output_item.done.
+      if (!codex && bufferedArgs.size > 0) {
+        return [{ type: "error", error: new Error(unannouncedToolDeltaMessage), retryable: false }];
+      }
+      if (codex && !terminalReceived) {
+        return [{
+          type: "error",
+          error: new Error("OpenAI Responses stream ended without a terminal response event"),
+          retryable: false,
+          kind: "premature_end",
+        }];
+      }
+      if (!codex && req.strictStreamEnd === true && !terminalReceived) {
+        return [prematureEndError("response.completed", !emitted)];
+      }
+      const events: StreamEvent[] = [];
+      const lenientOpen = !codex && !terminalReceived;
+      const flushed = accumulator.flush(lenientOpen ? { allowRepair: false } : undefined);
+      if (lenientOpen && flushed.droppedIds.length > 0) return [toolCutoffError()];
+      const completedToolCalls = finishReason === "stop" || finishReason === "tool_use" ? flushed.calls : [];
+      const publishToolCalls = completedToolCalls.length > 0;
+      if (publishToolCalls) {
+        finishReason = "tool_use";
+        for (const tc of completedToolCalls) events.push({ type: "tool_call_end", toolCall: tc });
+      }
+      const finalAssistant: AssistantMessage = {
+        role: "assistant",
+        content: accumulatedContent,
+        toolCalls: publishToolCalls ? completedToolCalls : undefined,
+      };
+      events.push({ type: "done", reason: finishReason, message: finalAssistant });
+      return events;
+    };
 
-    try {
-      for await (const event of parseSseStream(response.body!)) {
-        if (req.signal?.aborted) {
-          yield {
-            type: "done",
-            reason: "abort",
-            message: {
-              role: "assistant",
-              content: accumulatedContent,
-              toolCalls: accumulator.flush(),
-            },
-          };
-          return;
-        }
-
+    yield* runGuardedProviderStream({
+      req,
+      haltedMessage: () => ({
+        role: "assistant",
+        content: accumulatedContent,
+        toolCalls: [],
+      }),
+      httpErrorLabel: "OpenAI Responses API error",
+      emptyBodyMessage: "Empty response body from Responses endpoint",
+      request: (guard) =>
+        guard.fetch(endpoint, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+        }),
+      frames: (byteStream) => parseSseStream(byteStream),
+      onFrame: (event) => {
+        const events: StreamEvent[] = [];
+        const fail = (message: string, status?: number): { events: StreamEvent[]; stop: true } => {
+          events.push({ type: "error", error: new Error(message), status, retryable: false });
+          return { events, stop: true };
+        };
         const dataStr = event.data?.trim();
-        if (!dataStr) continue;
+        if (!dataStr) return { events };
         if (dataStr === "[DONE]") {
-          if (codex) terminalReceived = true;
-          continue;
+          terminalReceived = true;
+          return { events: finish(), stop: true };
         }
         let parsed: Record<string, unknown>;
         try {
           parsed = JSON.parse(dataStr) as Record<string, unknown>;
         } catch {
-          continue;
+          return { events };
         }
 
         const type = String(event.event || parsed.type || "");
-        if (codex && (type === "error" || type === "response.failed")) {
-          throw new Error(responsesErrorMessage(parsed, type));
+        // In-stream failures are errors for every provider. Strictness only
+        // decides a clean close that never sent a terminal event.
+        if (type === "error" || type === "response.failed") {
+          return fail(responsesErrorMessage(parsed, type), responsesErrorStatus(parsed));
         }
         const applyCodexIncomplete = (): "cutoff" | "length" | "error" => {
           const details = (parsed.response as { incomplete_details?: { reason?: string } } | undefined)?.incomplete_details;
@@ -265,72 +316,122 @@ export class OpenAIResponsesDriver implements LlmDriver {
         if (codex && type === "response.incomplete") {
           const outcome = applyCodexIncomplete();
           if (outcome === "cutoff") toolCutoff = true;
-          else if (outcome === "error") throw new Error(responsesErrorMessage(parsed, type));
+          else if (outcome === "error") return fail(responsesErrorMessage(parsed, type), responsesErrorStatus(parsed));
         }
 
         const usage = readResponsesUsage(parsed, latestUsage);
         if (usage) {
           latestUsage = usage;
-          yield { type: "usage", usage: latestUsage };
+          events.push({ type: "usage", usage: latestUsage });
         }
-        if (toolCutoff) {
-          yield {
-            type: "error",
-            error: new Error(toolCutoffMessage),
-            retryable: false,
-          };
-          return;
-        }
+        if (toolCutoff) return fail(toolCutoffMessage);
 
         if (type === "response.output_text.delta" || type === "response.reasoning_text.delta") {
           const delta = String(parsed.delta ?? "");
-          if (!delta) continue;
-          if (type === "response.reasoning_text.delta") {
-            yield { type: "thinking_delta", delta };
-          } else {
-            accumulatedContent += delta;
-            yield { type: "text_delta", delta };
+          if (delta) {
+            emitted = true;
+            if (type === "response.reasoning_text.delta") events.push({ type: "thinking_delta", delta });
+            else {
+              accumulatedContent += delta;
+              events.push({ type: "text_delta", delta });
+            }
           }
-          continue;
+          return { events };
         }
 
         if (type === "response.output_item.added") {
           const item = parsed.item as Record<string, unknown> | undefined;
           if (item?.type === "function_call") {
             const index = (parsed.output_index as number | undefined) ?? itemIndex++;
+            const earlyIds = [item.id, item.call_id].filter(
+              (id): id is string => typeof id === "string" && id.length > 0,
+            );
+            let earlyArgs = "";
+            for (const id of earlyIds) {
+              const piece = bufferedArgs.get(id);
+              if (piece) earlyArgs += piece;
+              bufferedArgs.delete(id);
+            }
+            const itemArgs = typeof item.arguments === "string" ? item.arguments : undefined;
             const res = accumulator.processChunk({
               index,
               id: String(item.call_id ?? item.id ?? ""),
               name: String(item.name ?? ""),
-              argsDelta: typeof item.arguments === "string" ? item.arguments : undefined,
+              argsDelta: itemArgs || earlyArgs || undefined,
             });
             if (res.started) {
+              emitted = true;
               openFunctionCalls.add(index);
-              if (typeof item.call_id === "string" && item.call_id) functionCallIndexById.set(item.call_id, index);
-              if (typeof item.id === "string" && item.id) functionCallIndexById.set(item.id, index);
-              yield { type: "tool_call_start", id: res.started.id, name: res.started.name };
+              openedCallIndexes.add(index);
+              if (typeof item.call_id === "string" && item.call_id) {
+                functionCallIndexById.set(item.call_id, index);
+                openedCallIds.add(item.call_id);
+              }
+              if (typeof item.id === "string" && item.id) {
+                functionCallIndexById.set(item.id, index);
+                openedCallIds.add(item.id);
+              }
+              events.push({ type: "tool_call_start", id: res.started.id, name: res.started.name });
+            }
+            if (earlyArgs && res.delta) {
+              events.push({ type: "tool_call_delta", id: res.delta.id, argsDelta: res.delta.argsDelta });
             }
           }
-          continue;
+          return { events };
         }
 
         if (type === "response.function_call_arguments.done" || type === "response.output_item.done") {
-          const item = parsed.item as { type?: string; id?: string; call_id?: string } | undefined;
+          const item = parsed.item as {
+            type?: string;
+            id?: string;
+            call_id?: string;
+            name?: string;
+            arguments?: string;
+          } | undefined;
+          let matchedOpen = false;
           if (type === "response.function_call_arguments.done" || item?.type === "function_call") {
             const explicit = parsed.output_index;
-            if (typeof explicit === "number") {
+            if (typeof explicit === "number" && openFunctionCalls.has(explicit)) {
               openFunctionCalls.delete(explicit);
+              matchedOpen = true;
             } else {
               const itemId = typeof parsed.item_id === "string" ? parsed.item_id : undefined;
-              const keys = [itemId, item?.id, item?.call_id];
-              for (const key of keys) {
+              for (const key of [itemId, item?.id, item?.call_id]) {
                 if (!key) continue;
                 const index = functionCallIndexById.get(key);
-                if (index !== undefined) {
+                if (index !== undefined && openFunctionCalls.has(index)) {
                   openFunctionCalls.delete(index);
+                  matchedOpen = true;
                   break;
                 }
               }
+            }
+          }
+          if (!codex && !matchedOpen && type === "response.output_item.done" && item?.type === "function_call") {
+            const ids = [typeof parsed.item_id === "string" ? parsed.item_id : undefined, item.id, item.call_id]
+              .filter((id): id is string => typeof id === "string" && id.length > 0);
+            const explicitIndex = typeof parsed.output_index === "number" ? parsed.output_index : undefined;
+            const alreadyOpened =
+              (explicitIndex !== undefined && openedCallIndexes.has(explicitIndex)) ||
+              ids.some((id) => openedCallIds.has(id));
+            if (!alreadyOpened) {
+              const buffered = ids.map((id) => bufferedArgs.get(id)).find((value) => value !== undefined) ?? "";
+              for (const id of ids) bufferedArgs.delete(id);
+              const args = typeof item.arguments === "string" ? item.arguments : buffered;
+              const index = explicitIndex ?? itemIndex++;
+              const res = accumulator.processChunk({
+                index,
+                id: String(item.call_id ?? item.id ?? ""),
+                name: String(item.name ?? ""),
+                argsDelta: args || undefined,
+              });
+              if (res.started) {
+                emitted = true;
+                openedCallIndexes.add(index);
+                for (const id of ids) openedCallIds.add(id);
+                events.push({ type: "tool_call_start", id: res.started.id, name: res.started.name });
+              }
+              if (res.delta) events.push({ type: "tool_call_delta", id: res.delta.id, argsDelta: res.delta.argsDelta });
             }
           }
         }
@@ -343,38 +444,48 @@ export class OpenAIResponsesDriver implements LlmDriver {
             : itemId !== undefined
               ? functionCallIndexById.get(itemId)
               : undefined;
-          // A delta may only extend a call output_item.added already opened.
           if (index === undefined || !openFunctionCalls.has(index)) {
-            yield {
-              type: "error",
-              error: new Error(unannouncedToolDeltaMessage),
-              retryable: false,
-            };
-            return;
+            const alreadyOpened =
+              (typeof explicit === "number" && openedCallIndexes.has(explicit)) ||
+              (itemId !== undefined && openedCallIds.has(itemId));
+            if (!codex && alreadyOpened) return { events };
+            if (!codex && itemId) {
+              const piece = typeof parsed.delta === "string" ? parsed.delta : "";
+              if (piece) bufferedArgs.set(itemId, (bufferedArgs.get(itemId) ?? "") + piece);
+              return { events };
+            }
+            return fail(unannouncedToolDeltaMessage);
           }
           const argsDelta = typeof parsed.delta === "string" ? parsed.delta : "";
-          if (argsDelta === "") continue;
+          if (argsDelta === "") return { events };
           const res = accumulator.processChunk({ index, argsDelta });
           if (res.delta) {
-            yield { type: "tool_call_delta", id: res.delta.id, argsDelta: res.delta.argsDelta };
+            emitted = true;
+            events.push({ type: "tool_call_delta", id: res.delta.id, argsDelta: res.delta.argsDelta });
           }
-          continue;
+          return { events };
+        }
+
+        if (type === "response.done" || type === "response.completed") {
+          const resp = parsed.response as Record<string, unknown> | undefined;
+          const status = typeof resp?.status === "string" ? resp.status : "";
+          if (status === "failed" || status === "cancelled" || parsed.error != null || resp?.error != null) {
+            return fail(responsesErrorMessage(parsed, type), responsesErrorStatus(parsed));
+          }
+        }
+
+        if (!codex && type === "response.done" && (parsed.response as { status?: string } | undefined)?.status === "incomplete") {
+          finishReason = "length";
         }
 
         if (codex && type === "response.done") {
           const resp = parsed.response as Record<string, unknown> | undefined;
           const status = typeof resp?.status === "string" ? resp.status : "";
-          if (status === "failed" || status === "cancelled" || parsed.error != null || resp?.error != null) {
-            throw new Error(responsesErrorMessage(parsed, type));
-          }
           terminalReceived = true;
           if (status === "incomplete") {
             const outcome = applyCodexIncomplete();
-            if (outcome === "error") throw new Error(responsesErrorMessage(parsed, type));
-            if (outcome === "cutoff") {
-              yield { type: "error", error: new Error(toolCutoffMessage), retryable: false };
-              return;
-            }
+            if (outcome === "error") return fail(responsesErrorMessage(parsed, type), responsesErrorStatus(parsed));
+            if (outcome === "cutoff") return fail(toolCutoffMessage);
           }
         } else if (type === "response.completed") {
           const resp = parsed.response as Record<string, unknown> | undefined;
@@ -383,44 +494,32 @@ export class OpenAIResponsesDriver implements LlmDriver {
             terminalReceived = true;
             if (status === "incomplete") {
               const outcome = applyCodexIncomplete();
-              if (outcome === "error") throw new Error(responsesErrorMessage(parsed, type));
-              if (outcome === "cutoff") {
-                yield { type: "error", error: new Error(toolCutoffMessage), retryable: false };
-                return;
-              }
+              if (outcome === "error") return fail(responsesErrorMessage(parsed, type), responsesErrorStatus(parsed));
+              if (outcome === "cutoff") return fail(toolCutoffMessage);
             }
           } else if (status === "incomplete") {
             finishReason = "length";
           }
         }
-      }
 
-      if (codex && !terminalReceived) throw new Error("OpenAI Responses stream ended without a terminal response event");
-
-      const completedToolCalls = accumulator.flush();
-      const publishToolCalls = completedToolCalls.length > 0;
-      if (publishToolCalls) {
-        finishReason = "tool_use";
-        for (const tc of completedToolCalls) {
-          yield { type: "tool_call_end", toolCall: tc };
+        if (type === "response.incomplete") {
+          terminalReceived = true;
+          if (codex) return { events, awaitTrailer: true };
+          finishReason = "length";
         }
-      }
 
-      const finalAssistant: AssistantMessage = {
-        role: "assistant",
-        content: accumulatedContent,
-        toolCalls: publishToolCalls ? completedToolCalls : undefined,
-      };
-      yield { type: "done", reason: finishReason, message: finalAssistant };
-    } catch (err: unknown) {
-      const e = err as { status?: number };
-      yield {
-        type: "error",
-        error: err instanceof Error ? err : new Error(String(err)),
-        status: e.status,
-        retryable: false,
-      };
-    }
+        if (
+          type === "response.completed" ||
+          type === "response.incomplete" ||
+          type === "response.done"
+        ) {
+          terminalReceived = true;
+          return { events: [...events, ...finish()], stop: true };
+        }
+        return { events };
+      },
+      onComplete: () => finish(),
+    });
   }
 
   private formatInput(

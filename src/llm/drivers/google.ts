@@ -13,7 +13,9 @@ import type {
   ToolCall,
 } from "../types.js";
 import { parseSseStream } from "../sse.js";
-import { withPreEmissionRetry } from "../retry.js";
+import { runGuardedProviderStream } from "../stream-guard.js";
+import { logLenientStreamEnd, prematureEndError, toolCutoffError } from "../stream-end.js";
+import { parseToolArguments } from "../tool-accumulator.js";
 import { resolveVertexAccessToken } from "../google-adc.js";
 
 export class GoogleDriver implements LlmDriver {
@@ -70,77 +72,66 @@ export class GoogleDriver implements LlmDriver {
       },
     };
 
-    let response: Response;
-    try {
-      response = await withPreEmissionRetry(
-        async () => {
-          const res = await fetch(endpoint, {
-            method: "POST",
-            headers,
-            body: JSON.stringify(body),
-            signal: req.signal,
-          });
-
-          if (!res.ok) {
-            const errText = await res.text().catch(() => "");
-            const err: any = new Error(`Google Gemini API error (${res.status}): ${errText}`);
-            err.status = res.status;
-            throw err;
-          }
-
-          if (!res.body) {
-            throw new Error("Empty response body from Google Gemini endpoint");
-          }
-
-          return res;
-        },
-        { signal: req.signal },
-      );
-    } catch (err: any) {
-      yield {
-        type: "error",
-        error: err instanceof Error ? err : new Error(String(err)),
-        status: err.status,
-        retryable: false,
-      };
-      return;
-    }
-
     let accumulatedContent = "";
     let accumulatedThinking = "";
     const pendingToolCalls: ToolCall[] = [];
     let finishReason: (Extract<StreamEvent, { type: "done" }>)["reason"] = "stop";
+    let terminalFinish: string | undefined;
+    let sawTerminal = false;
+    let emittedDelta = false;
+    let lenientArgsNeedRepair = false;
+    let lenientArgsNotObject = false;
 
-    try {
-      for await (const event of parseSseStream(response.body!)) {
-        if (req.signal?.aborted) {
-          yield {
-            type: "done",
-            reason: "abort",
-            message: {
-              role: "assistant",
-              content: accumulatedContent,
-              thinking: accumulatedThinking || undefined,
-              toolCalls: pendingToolCalls.length > 0 ? pendingToolCalls : undefined,
-            },
-          };
-          return;
-        }
+    const haltedMessage = (): AssistantMessage => ({
+      role: "assistant",
+      content: accumulatedContent,
+      thinking: accumulatedThinking || undefined,
+    });
 
+    yield* runGuardedProviderStream({
+      req,
+      haltedMessage,
+      httpErrorLabel: "Google Gemini API error",
+      emptyBodyMessage: "Empty response body from Google Gemini endpoint",
+      request: (guard) =>
+        guard.fetch(endpoint, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+        }),
+      frames: (byteStream) => parseSseStream(byteStream),
+      onFrame: (event) => {
+        const events: StreamEvent[] = [];
+        let terminal = false;
         const dataStr = event.data?.trim();
-        if (!dataStr) continue;
+        if (!dataStr) return { events };
 
         let parsed: any;
         try {
           parsed = JSON.parse(dataStr);
         } catch {
-          continue;
+          return { events };
         }
 
-        // Token usage
+        if (parsed.error && typeof parsed.error === "object") {
+          const errBody = parsed.error;
+          const message =
+            typeof errBody.message === "string" && errBody.message
+              ? errBody.message
+              : "Google stream error";
+          const status = typeof errBody.code === "number" ? errBody.code : undefined;
+          events.push({
+            type: "error",
+            error: new Error(message),
+            status,
+            retryable: false,
+          });
+          return { events, stop: true };
+        }
+
         if (parsed.usageMetadata) {
           const u = parsed.usageMetadata;
-          yield {
+          events.push({
             type: "usage",
             usage: {
               input: u.promptTokenCount ?? 0,
@@ -148,60 +139,90 @@ export class GoogleDriver implements LlmDriver {
               totalTokens: u.totalTokenCount ?? 0,
               cacheReadTokens: u.cachedContentTokenCount ?? 0,
             },
-          };
+          });
         }
 
         const candidate = parsed.candidates?.[0];
-        if (!candidate) continue;
+        if (!candidate) return { events };
 
-        if (candidate.finishReason === "STOP") finishReason = "stop";
-        else if (candidate.finishReason === "MAX_TOKENS") finishReason = "length";
+        if (candidate.finishReason) {
+          sawTerminal = true;
+          terminal = true;
+          terminalFinish = String(candidate.finishReason);
+        }
 
         const parts = candidate.content?.parts;
         if (Array.isArray(parts)) {
           for (const part of parts) {
             if (part.thought) {
               accumulatedThinking += part.text || "";
-              yield { type: "thinking_delta", delta: part.text || "" };
+              emittedDelta = true;
+              events.push({ type: "thinking_delta", delta: part.text || "" });
             } else if (part.text) {
               accumulatedContent += part.text;
-              yield { type: "text_delta", delta: part.text };
+              emittedDelta = true;
+              events.push({ type: "text_delta", delta: part.text });
             }
 
             if (part.functionCall) {
+              const rawArgs = part.functionCall.args;
+              let args: Record<string, unknown>;
+              if (typeof rawArgs === "string") {
+                const parsed = parseToolArguments(rawArgs);
+                if (!parsed.clean) lenientArgsNeedRepair = true;
+                if (!rawArgs.trim().startsWith("{")) lenientArgsNotObject = true;
+                args = parsed.args;
+              } else if (rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)) {
+                args = rawArgs as Record<string, unknown>;
+              } else {
+                args = {};
+              }
               const tc: ToolCall = {
                 id: `call_${Math.random().toString(36).slice(2, 10)}`,
                 name: part.functionCall.name,
-                args: part.functionCall.args || {},
+                args,
               };
               pendingToolCalls.push(tc);
-              yield { type: "tool_call_start", id: tc.id, name: tc.name };
-              yield { type: "tool_call_end", toolCall: tc };
-              finishReason = "tool_use";
+              emittedDelta = true;
+              events.push({ type: "tool_call_start", id: tc.id, name: tc.name });
             }
           }
         }
-      }
+        if (terminal) return { events: [...events, ...finishGoogle()], stop: true };
+        return { events };
+      },
+      onComplete: () => finishGoogle(),
+    });
 
-      const finalAssistant: AssistantMessage = {
-        role: "assistant",
-        content: accumulatedContent,
-        thinking: accumulatedThinking || undefined,
-        toolCalls: pendingToolCalls.length > 0 ? pendingToolCalls : undefined,
-      };
+    function finishGoogle(): StreamEvent[] {
+        if (terminalFinish === "MAX_TOKENS") finishReason = "length";
+        else if (terminalFinish && terminalFinish !== "STOP") finishReason = "error";
+        else if (pendingToolCalls.length > 0) finishReason = "tool_use";
+        else finishReason = "stop";
 
-      yield {
-        type: "done",
-        reason: finishReason,
-        message: finalAssistant,
-      };
-    } catch (err: any) {
-      yield {
-        type: "error",
-        error: err instanceof Error ? err : new Error(String(err)),
-        status: err.status,
-        retryable: false,
-      };
+        const events: StreamEvent[] = [];
+        if (!sawTerminal) {
+          if (req.strictStreamEnd !== false) {
+            events.push(prematureEndError("finishReason", !emittedDelta));
+            return events;
+          }
+          if (lenientArgsNeedRepair || lenientArgsNotObject) return [toolCutoffError()];
+          logLenientStreamEnd(req.provider);
+        }
+
+        const completedToolCalls = finishReason === "tool_use" ? pendingToolCalls : [];
+        for (const tc of completedToolCalls) events.push({ type: "tool_call_end", toolCall: tc });
+        events.push({
+          type: "done",
+          reason: finishReason,
+          message: {
+            role: "assistant",
+            content: accumulatedContent,
+            thinking: accumulatedThinking || undefined,
+            toolCalls: completedToolCalls.length > 0 ? completedToolCalls : undefined,
+          },
+        });
+        return events;
     }
   }
 

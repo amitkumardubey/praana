@@ -174,13 +174,11 @@ async function expectMatchesMainGolden(cases: GoldenCase[]): Promise<void> {
   }
 }
 
+// Failure and incomplete fixtures remain in the historical golden, but are
+// tested separately because their termination semantics intentionally changed.
 const OPENAI_MAIN_STREAMS = [
-  "incomplete-length.sse",
-  "incomplete-content-filter.sse",
-  "incomplete-tool-arguments.sse",
   "disconnect-before-created.sse",
   "disconnect-after-reasoning.sse",
-  "response-failed.sse",
 ];
 
 describe("Responses stream termination", () => {
@@ -302,7 +300,7 @@ describe("Responses stream termination", () => {
     expect(last?.type === "error" && last.error.message).toBe("Backend unavailable");
   });
 
-  it("publishes a finished tool call when a later text cutoff hits the output limit", async () => {
+  it("suppresses a finished tool call when a later text cutoff hits the output limit", async () => {
     const events = await run(req, { bearerToken: jwt() }, [
       { type: "response.output_item.added", output_index: 0, item: { type: "function_call", call_id: "call-1", name: "read_file", arguments: "{\"path\":\"a.ts\"}" } },
       { type: "response.function_call_arguments.done", output_index: 0 },
@@ -310,13 +308,12 @@ describe("Responses stream termination", () => {
       { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } },
     ]);
     expect(events.some((event) => event.type === "error")).toBe(false);
-    const ended = events.find((event) => event.type === "tool_call_end");
-    expect(ended?.type === "tool_call_end" && ended.toolCall.name).toBe("read_file");
+    expect(events.some((event) => event.type === "tool_call_end")).toBe(false);
     const done = events.at(-1);
     expect(done?.type).toBe("done");
     if (done?.type === "done") {
-      expect(done.reason).toBe("tool_use");
-      expect(done.message.toolCalls?.[0]?.name).toBe("read_file");
+      expect(done.reason).toBe("length");
+      expect(done.message.toolCalls).toBeUndefined();
       expect(done.message.content).toBe("partial");
     }
   });
@@ -365,7 +362,7 @@ describe("Responses stream termination", () => {
       { type: "response.output_item.added", item: { type: "function_call", id: "fc-b", call_id: "call-b", name: "shell", arguments: "{\"cmd\":\"ls\"}" } },
       { type: "response.output_item.done", item: { type: "function_call", id: "fc-a", call_id: "call-a" } },
       { type: "response.output_item.done", item: { type: "function_call", id: "fc-b", call_id: "call-b" } },
-      { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } },
+      { type: "response.completed", response: { status: "completed" } },
     ]);
     expect(events.some((event) => event.type === "error")).toBe(false);
     expect(events.filter((event) => event.type === "tool_call_end")).toHaveLength(2);
@@ -415,7 +412,7 @@ describe("Responses stream termination", () => {
     await expectMatchesMainGolden(cases);
   });
 
-  it("plain OpenAI incomplete and unterminated streams match main byte for byte", async () => {
+  it("plain OpenAI unterminated streams match main byte for byte", async () => {
     const root = join(import.meta.dir, "../tests/fixtures/rust-v2/providers/v1/openai-responses/streams");
     const cases: GoldenCase[] = [];
     for (const provider of ["openai", "openai-responses"]) {
@@ -600,4 +597,106 @@ it("sends the saved account id when the turn passes the stored token as the requ
     else process.env.PRAANA_HOME = previous;
     rmSync(home, { recursive: true, force: true });
   }
+});
+
+describe("Responses stream guard", () => {
+  it("stops at response.completed and cancels a body that stays open", async () => {
+    let cancelled = false;
+    const enc = new TextEncoder();
+    const chunks = [
+      `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "Hi" })}\n\n`,
+      `data: ${JSON.stringify(completed)}\n\n`,
+    ];
+    let index = 0;
+    globalThis.fetch = (async () => new Response(new ReadableStream({
+      pull(controller) {
+        if (index < chunks.length) {
+          controller.enqueue(enc.encode(chunks[index]));
+          index += 1;
+          return;
+        }
+        return new Promise(() => {});
+      },
+      cancel() { cancelled = true; },
+    }))) as typeof fetch;
+    const events: StreamEvent[] = [];
+    const pending = (async () => {
+      for await (const event of new OpenAIResponsesDriver().stream(
+        { ...req, connectTimeoutMs: 60_000, idleTimeoutMs: 60_000 },
+        { bearerToken: jwt() },
+      )) events.push(event);
+    })();
+    await Promise.race([
+      pending,
+      new Promise((_, reject) => setTimeout(() => reject(new Error("hung after response.completed")), 400)),
+    ]);
+    expect(events.at(-1)).toEqual({ type: "done", reason: "stop", message: { role: "assistant", content: "Hi" } });
+    expect(cancelled).toBe(true);
+  });
+
+  it("reports a strict premature end with a kind marker even if the message changes", async () => {
+    const events = await run(
+      { provider: "openai", model: "gpt-5.4", messages: [{ role: "user", content: "hi" }], strictStreamEnd: true },
+      { apiKey: "synthetic-openai-key" },
+      [{ type: "response.output_text.delta", delta: "partial" }],
+    );
+    const error = events.at(-1);
+    expect(error?.type).toBe("error");
+    if (error?.type === "error") {
+      expect(error.kind).toBe("premature_end");
+      expect(error.retryable).toBe(false);
+    }
+  });
+
+  it("maps response.failed to an error for both strict and lenient non-Codex streams", async () => {
+    const frame = { type: "response.failed", response: { status: "failed", error: { message: "boom" } } };
+    for (const strictStreamEnd of [true, false] as const) {
+      const events = await run(
+        { provider: "openai", model: "gpt-5.4", messages: [{ role: "user", content: "hi" }], strictStreamEnd },
+        { apiKey: "synthetic-openai-key" },
+        [frame],
+      );
+      const error = events.at(-1);
+      expect(error?.type === "error" && error.error.message).toBe("boom");
+      expect(events.some((event) => event.type === "done")).toBe(false);
+    }
+  });
+
+  it("completes a non-Codex tool call announced only at output_item.done", async () => {
+    const events = await run(
+      { provider: "openai", model: "gpt-5.4", messages: [{ role: "user", content: "hi" }] },
+      { apiKey: "synthetic-openai-key" },
+      [
+        { type: "response.function_call_arguments.delta", item_id: "fc-1", delta: '{"path":' },
+        { type: "response.function_call_arguments.delta", item_id: "fc-1", delta: '"a.ts"}' },
+        { type: "response.output_item.done", item: { type: "function_call", id: "fc-1", call_id: "call-1", name: "read_file", arguments: '{"path":"a.ts"}' } },
+        completed,
+      ],
+    );
+    expect(events.some((event) => event.type === "error")).toBe(false);
+    const ended = events.find((event) => event.type === "tool_call_end");
+    expect(ended?.type === "tool_call_end" && ended.toolCall).toMatchObject({
+      id: "call-1",
+      name: "read_file",
+      args: { path: "a.ts" },
+    });
+    expect(events.at(-1)?.type).toBe("done");
+  });
+
+  it("errors when a buffered non-Codex call never receives output_item.done", async () => {
+    const events = await run(
+      { provider: "openai", model: "gpt-5.4", messages: [{ role: "user", content: "hi" }] },
+      { apiKey: "synthetic-openai-key" },
+      [
+        { type: "response.function_call_arguments.delta", item_id: "fc-1", delta: '{"path":"a.ts"}' },
+        completed,
+      ],
+    );
+    expect(events.some((event) => event.type === "done")).toBe(false);
+    const error = events.at(-1);
+    expect(error?.type === "error" && error.retryable).toBe(false);
+    expect(error?.type === "error" && error.error.message).toBe(
+      "OpenAI Responses stream received function call arguments without an open call",
+    );
+  });
 });

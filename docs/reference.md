@@ -138,6 +138,27 @@ Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harb
 
 Provider resolution order: explicit config → credential store (`~/.praana/credentials.json`) → environment-detected key → interactive setup.
 
+### LLM stream timeouts
+
+These keys live in `[llm]`. A value that is not a non-negative integer warns and the provider default is used instead. An integer above `2147483647` is also rejected with a warning and the provider default is used: `setTimeout` overflows past that and the timer would fire immediately. `0` turns that timer off. An explicit value applies to every provider. Omitting a key does not change timeouts for other streams in the process; each request resolves its own budget.
+
+Connect time is time until the first response headers. Local and self-hosted servers often spend that time loading a model or prefilling the prompt, so they get a longer budget than hosted APIs. Idle time is silence from the server after the response has started, including a reasoning model that has not emitted a token yet. It is not reset by the client being slow to read a chunk it already received.
+
+| Key | Default | Behaviour |
+|---|---|---|
+| `connect_timeout_ms` | `60000` when the provider is `anthropic`, `openai`, `google`, `vertex`, or `amazon-bedrock` and the effective base URL is unset or is that provider's built-in host. `300000` when `base_url` points at any other host (including loopback and private addresses), for every other provider, and for a user-declared id even when that id is also in the hosted list. An explicit number always wins. | Abort the request if response headers have not arrived. A connect timeout is fetched at most twice (the first attempt plus one retry, with up to 1.2s of backoff). The turn recognises that failure from a connect-timeout marker on the error, not from the letters ETIMEDOUT in the message, and does not retry it again: if a fallback model is configured, that model is asked next. A mid-stream socket error that merely mentions ETIMEDOUT still gets the turn's one retry. Worst case before the fallback request starts is about 121s on the 60s budget and about 601s on the 300s budget. Other retryable errors still use up to three driver retries and one more turn attempt before the fallback model. An idle timeout does not get that extra turn attempt: the same model is not asked again, and a configured fallback is used when automatic fallback is allowed. No tokens have been emitted yet. |
+| `stream_idle_timeout_ms` | `300000` | Abort if the server stays silent this long. The timer resets when an upstream chunk arrives, including SSE comment keep-alives, and pauses while that chunk is processed. Anthropic finishes at `message_stop` (usage already arrived on `message_delta`) and Google finishes at `finishReason` (usage arrives on that same chunk); both cancel the rest of the body. OpenAI-compatible streams keep reading after `finish_reason` until a usage chunk or `[DONE]`, and Bedrock keeps reading after `messageStop` until `metadata`. That wait ends when the trailer arrives, the body ends, or 2 seconds pass (the idle budget, when that is shorter; 2 seconds when idle is disabled), then the body is cancelled. A connection left open cannot use up the idle budget. The stream ends with reason `timeout` only when the server actually goes silent. Partial text is kept. Tool calls from a stream that did not finish normally are never executed, including tool calls that already looked complete. The turn reports `The model stopped responding (idle timeout after Ns).` and adds `The partial answer above was not completed.` only when some text was streamed. On the first step the turn does not retry the same model after an idle timeout. When a fallback model is configured and automatic fallback is allowed, that model is asked next; otherwise the idle-timeout error is shown immediately. Text already streamed still skips both the retry and the fallback. A premature stream end is still retried once on the same model. A user abort is still reason `abort`. |
+
+A non-OK response body is read under one deadline: the idle budget, capped at 15 seconds (or 15 seconds when idle is disabled). Bytes that trickle in do not reset that deadline. The read also stops after 64 KiB. If the body has not finished by the deadline, the error is the HTTP status plus `response body timed out`. A 429 or other retryable status waits for a `Retry-After` header when one is present, instead of the jittered backoff, and that wait is still capped at 10 seconds. A user abort before the response headers, including one during that wait, ends the stream with reason `abort`, the same as an abort after text has started. After the provider's terminal event, a socket error while reading a usage trailer is treated as the body ending: the completion already in hand is kept, including any tool calls that terminal authorized.
+
+### LLM stream end check
+
+`stream_end_check` lives in `[llm]`. A value other than `auto`, `strict`, or `lenient` warns and falls back to `auto`.
+
+| Key | Default | Behaviour |
+|---|---|---|
+| `stream_end_check` | `auto` | What to do when a stream closes cleanly without the provider's final signal (Anthropic `message_stop` / `stop_reason`, OpenAI-compatible `finish_reason` or `[DONE]`, Responses `response.completed` / `response.incomplete` / `response.done` / `[DONE]`, Google `finishReason`, Bedrock `messageStop`). `strict` returns an error whose event has `kind: "premature_end"` (the turn retries from that marker, not from the message text). `lenient` keeps text received so far. A tool call whose arguments parsed as sent may still run. A call that was still open, whose argument text is empty or does not start with `{`, or whose arguments had to be repaired, is not run; the stream ends with a non-retryable error (`The response was cut off while the model was calling a tool`) and the text already streamed is kept. A lenient accept writes a debug log: `<provider>: stream ended without a final event; accepted (lenient)`. `auto` uses the same hosted rule as the connect budget: strict when the base URL is unset or, ignoring surrounding whitespace, is the built-in host, lenient when `base_url` points at another host. A user-declared id is lenient under `auto` even if that id is also in the hosted list. Explicit `strict` or `lenient` always wins. Codex (`openai-codex`) still reports a missing terminal event as an error when `auto` would otherwise be lenient for that id. A partial SSE line left in the buffer when the socket closes is not dispatched, and that discard is logged once at warn level with its byte count only. |
+
 ### ChatGPT subscription login
 
 Run `/login openai-codex` and choose a method. After sign-in, the default
@@ -287,8 +308,20 @@ plain text finishes with the partial output and reason `length`. A cutoff while 
 tool call is still being sent is an error: `The response was cut off while the
 model was calling a tool.` That check is the same for `response.incomplete`,
 `response.done`, and `response.completed` when the status is incomplete.
-A tool call that has already finished is still published. Other Responses providers keep the previous stream
-behaviour.
+A tool call that has already finished is still published. A function-call
+argument delta with no announced call is a non-retryable error for Codex.
+Other Responses providers buffer those deltas by `item_id` and complete the
+call when `response.output_item.done` arrives with the name, call id, and
+arguments. If that `done` never arrives, the stream ends with the same
+non-retryable error and no assistant `done`. Those providers share the
+connect and idle guard. A clean close with no terminal event stays a normal
+finish unless `stream_end_check` resolves to strict; a strict close is
+`kind: "premature_end"`. An `error` frame, `response.failed`, and a
+`response.done` or `response.completed` whose status is `failed` or
+`cancelled` are errors for every provider and every strictness. Strictness
+does not turn a failed response into a normal finish.
+
+When an attempt streams only reasoning and then ends empty, the turn retries that step and can fall back to another model. The reasoning may appear twice, or from two models. Answer text already shown prevents that retry.
 
 ## Slash command palette
 

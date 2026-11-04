@@ -19,6 +19,7 @@ import {
 import { setUserProviders } from "./provider-registry.js";
 import { parseReasoningEffort } from "./llm.js";
 import { setBedrockConfigRegion } from "./bedrock/region.js";
+import { type StreamEndCheck } from "./llm/stream-end.js";
 import { RISK_CLASS_SET } from "./risk/classes.js";
 
 function configWarn(
@@ -53,6 +54,7 @@ const DEFAULT_CONFIG: PraanaConfig = {
     provider: "",   // empty → main.ts runs guided setup (env keys are not auto-selected)
     model: "",
     reasoning_effort: "medium",
+    stream_end_check: "auto",
   },
   memory: {
     enabled: true,
@@ -175,6 +177,32 @@ const DEFAULT_CONFIG: PraanaConfig = {
     max_steps: 25,
   },
 };
+
+const STREAM_END_CHECK_VALUES = new Set<StreamEndCheck>(["auto", "strict", "lenient"]);
+
+function normalizeStreamEndCheck(value: unknown): StreamEndCheck {
+  if (value === undefined) return "auto";
+  const text = typeof value === "string" ? value.trim() : "";
+  if (STREAM_END_CHECK_VALUES.has(text as StreamEndCheck)) return text as StreamEndCheck;
+  configWarn(`Invalid llm.stream_end_check ${JSON.stringify(value)}, using auto`);
+  return "auto";
+}
+
+/** Largest delay `setTimeout` accepts. Above this, the delay overflows and fires immediately. */
+const MAX_SETTIMEOUT_MS = 2_147_483_647;
+
+function normalizeLlmTimeout(value: unknown, name: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    configWarn(`Invalid llm.${name}, using the provider default`);
+    return undefined;
+  }
+  if (value > MAX_SETTIMEOUT_MS) {
+    configWarn(`Invalid llm.${name} above ${MAX_SETTIMEOUT_MS}, using the provider default`);
+    return undefined;
+  }
+  return value;
+}
 
 function expandHome(p: string): string {
   return p.startsWith("~/") ? p.replace(/^~\//, `${homedir()}/`) : p;
@@ -508,6 +536,15 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
   } else {
     out.llm.reasoning_effort = DEFAULT_CONFIG.llm.reasoning_effort;
   }
+
+  const connectTimeout = normalizeLlmTimeout(out.llm.connect_timeout_ms, "connect_timeout_ms");
+  if (connectTimeout === undefined) delete out.llm.connect_timeout_ms;
+  else out.llm.connect_timeout_ms = connectTimeout;
+  const idleTimeout = normalizeLlmTimeout(out.llm.stream_idle_timeout_ms, "stream_idle_timeout_ms");
+  if (idleTimeout === undefined) delete out.llm.stream_idle_timeout_ms;
+  else out.llm.stream_idle_timeout_ms = idleTimeout;
+
+  out.llm.stream_end_check = normalizeStreamEndCheck(out.llm.stream_end_check);
 
   const hasFallbackProvider = !!out.llm.fallback_provider;
   const hasFallbackModel = !!out.llm.fallback_model;
