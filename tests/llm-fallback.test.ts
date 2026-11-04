@@ -9,6 +9,7 @@ import * as toolsActual from "../src/tools/index.js";
 import * as compileClassicActual from "../src/compile-classic.js";
 import * as autoCompactActual from "../src/auto-compact.js";
 import * as uiActual from "../src/ui.js";
+import * as oauthActual from "../src/oauth.js";
 
 const nativeLlmReal = { ...nativeLlmActual };
 const llmReal = { ...llmActual };
@@ -16,6 +17,9 @@ const toolsReal = { ...toolsActual };
 const compileClassicReal = { ...compileClassicActual };
 const autoCompactReal = { ...autoCompactActual };
 const uiReal = { ...uiActual };
+const oauthReal = { ...oauthActual };
+const mockResolveAuth = mock(async (_provider: string, _signal?: AbortSignal): Promise<any> => null);
+mock.module("../src/oauth.js", () => ({ ...oauthReal, resolveOAuthModelAuth: mockResolveAuth }));
 
 const mockStream = mock();
 
@@ -106,6 +110,7 @@ afterAll(() => {
   mock.module("../src/compile-classic.js", () => compileClassicReal);
   mock.module("../src/auto-compact.js", () => autoCompactReal);
   mock.module("../src/ui.js", () => uiReal);
+  mock.module("../src/oauth.js", () => oauthReal);
 });
 
 const fallbackLogDir = mkdtempSync(join(tmpdir(), "praana-test-sessions-fallback-"));
@@ -166,6 +171,7 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
     readAllUncompressedAfterResetBoundary: mock(() => events.slice()),
     search: mock(),
     clear: mock(() => { events.length = 0; }),
+    markEventsAsCompressed: mock(),
   };
 
   const session: any = {
@@ -353,6 +359,53 @@ describe("runLlmStream", () => {
     expect(cut.finalReason).toBe("stop");
     expect(cut.doneReceived).toBe(false);
     expect(cut.interrupted).toBe(false);
+  });
+});
+
+describe("credential busy retry", () => {
+  afterEach(() => { mockResolveAuth.mockReset(); mockResolveAuth.mockResolvedValue(null); });
+
+  it("retries a busy refresh and recovers on the second retry", async () => {
+    const session = makeMockSession();
+    mockResolveAuth.mockRejectedValueOnce(new oauthReal.OAuthRefreshBusyError("umans"));
+    mockResolveAuth.mockRejectedValueOnce(new oauthReal.OAuthRefreshBusyError("umans"));
+    mockResolveAuth.mockResolvedValueOnce(null);
+    piStream.mockReturnValue((async function* () {
+      yield { type: "text_delta", delta: "ok" };
+      yield { type: "done", reason: "stop", message: { role: "assistant", content: "ok" } };
+    })());
+    const response = await runTurn(session, "hello", undefined, { credentialRetryWait: async () => {} } as any);
+    expect(response).toContain("ok");
+    expect(mockResolveAuth).toHaveBeenCalledTimes(3);
+  });
+
+  it("drops the turn after three busy failures", async () => {
+    const session = makeMockSession();
+    const errors: string[] = [];
+    mockResolveAuth.mockImplementation(async () => { throw new oauthReal.OAuthRefreshBusyError("umans"); });
+    const response = await runTurn(session, "hello", undefined, {
+      sink: { onError: (entry) => errors.push(entry.message) },
+      credentialRetryWait: async () => {},
+    });
+    expect(response).toBe("");
+    expect(mockResolveAuth).toHaveBeenCalledTimes(3);
+    expect(errors).toEqual(["another PRAANA session is refreshing; try again in a moment"]);
+    expect(session.getTurnCount()).toBe(0);
+    expect(session.eventLog.markEventsAsCompressed).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not report a credential error when aborted during the wait", async () => {
+    const session = makeMockSession();
+    const errors: string[] = [];
+    const controller = new AbortController();
+    mockResolveAuth.mockRejectedValue(new oauthReal.OAuthRefreshBusyError("umans"));
+    await expect(runTurn(session, "hello", undefined, {
+      signal: controller.signal,
+      sink: { onError: (entry) => { if (entry.domain === "credentials") errors.push(entry.message); } },
+      credentialRetryWait: async () => { controller.abort(); },
+    })).rejects.toThrow("Turn interrupted");
+    expect(mockResolveAuth).toHaveBeenCalledTimes(1);
+    expect(errors).toEqual([]);
   });
 });
 

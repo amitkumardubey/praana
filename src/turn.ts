@@ -569,6 +569,8 @@ export async function runTurn(
   options?: {
     signal?: AbortSignal;
     sink?: TurnUiSink;
+    /** Override the retry delay for deterministic callers and tests. */
+    credentialRetryWait?: (ms: number, signal?: AbortSignal) => Promise<void>;
   }
 ): Promise<string> {
   /* Always have a sink — default routes to legacy stdout/stderr helpers. */
@@ -892,7 +894,20 @@ export async function runTurn(
   let oauthModelAuth: Awaited<ReturnType<typeof resolveOAuthModelAuth>> = null;
   let credentialError: string | undefined;
   try {
-    oauthModelAuth = await resolveOAuthModelAuth(effectiveLlm.provider, options?.signal);
+    for (let attempt = 0; ; attempt++) {
+      try {
+        oauthModelAuth = await resolveOAuthModelAuth(effectiveLlm.provider, options?.signal);
+        break;
+      } catch (err) {
+        if (!(err instanceof OAuthRefreshBusyError) || attempt >= 2 || options?.signal?.aborted) throw err;
+        const wait = options?.credentialRetryWait ?? (async (ms: number, signal?: AbortSignal) => {
+          const { setTimeout: delay } = await import("node:timers/promises");
+          await delay(ms, undefined, { signal });
+        });
+        await wait((attempt + 1) * 1_000, options?.signal);
+        if (options?.signal?.aborted) throw options.signal.reason;
+      }
+    }
   } catch (err) {
     if (err instanceof OAuthRefreshError || err instanceof OAuthRefreshBusyError) {
       credentialError = err.message;
