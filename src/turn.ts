@@ -451,6 +451,25 @@ function capWrapUpToolResult(text: string): string {
   return text.slice(0, Math.max(0, WRAP_UP_TOOL_RESULT_CAP - mark.length)) + mark;
 }
 
+function isToolUsePart(part: unknown): boolean {
+  if (!part || typeof part !== "object") return false;
+  const type = (part as { type?: unknown }).type;
+  return type === "tool_use" || type === "toolUse" || type === "toolCall";
+}
+
+/** Keep the call's name and id, and cap its arguments the same way as results. */
+function summarizeWrapUpToolCall(call: any): { id?: string; name?: string; args: string } {
+  let id: string | undefined;
+  if (typeof call?.id === "string") id = call.id;
+  else if (typeof call?.toolCallId === "string") id = call.toolCallId;
+  let name: string | undefined;
+  if (typeof call?.name === "string") name = call.name;
+  else if (typeof call?.toolName === "string") name = call.toolName;
+  const args = call?.args ?? call?.arguments ?? call?.input;
+  const raw = typeof args === "string" ? args : JSON.stringify(args ?? {});
+  return { id, name, args: capWrapUpToolResult(raw) };
+}
+
 function appendMergedUser(out: Array<{ role: string; content: string }>, text: string): void {
   const prev = out[out.length - 1];
   if (prev?.role === "user") {
@@ -491,19 +510,16 @@ export function flattenWrapUpHistory(messages: readonly any[]): any[] {
     }
     if (message.role === "assistant") {
       const parts = Array.isArray(message.content) ? message.content : [];
-      const calls =
-        message.toolCalls ??
-        parts.filter(
-          (part: any) => part?.type === "tool_use" || part?.type === "toolUse" || part?.type === "toolCall",
-        );
+      const calls = message.toolCalls ?? parts.filter((part: unknown) => isToolUsePart(part));
       if (!calls?.length) {
         out.push(message);
         continue;
       }
       const text = typeof message.content === "string" ? message.content : textPartsOnly(message.content);
+      const summarized = (Array.isArray(calls) ? calls : []).map((call: any) => summarizeWrapUpToolCall(call));
       out.push({
         role: "assistant",
-        content: `${text}${text ? "\n" : ""}Tool calls: ${JSON.stringify(calls)}`,
+        content: `${text}${text ? "\n" : ""}Tool calls: ${JSON.stringify(summarized)}`,
       });
     }
   }

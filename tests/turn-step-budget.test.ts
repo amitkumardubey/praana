@@ -766,6 +766,23 @@ describe("wrap-up provider request shapes", () => {
       assertAlternatingRoles(providerMessages(body));
     }
   });
+
+  it("caps a 200 KB write_file argument on the wrap-up request", () => {
+    const payload = "x".repeat(200_000);
+    const flat = flattenWrapUpHistory([
+      {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id: "w1", name: "write_file", args: { path: "a.ts", content: payload } }],
+      },
+    ]);
+    const text = String(flat[0]?.content ?? "");
+    expect(text.length).toBeLessThan(WRAP_UP_TOOL_RESULT_CAP + 400);
+    expect(text).toContain("write_file");
+    expect(text).toContain("w1");
+    expect(text).toContain("[truncated]");
+    expect(text).not.toContain(payload);
+  });
 });
 
 describe("per-turn step budget — interactive soft pause", () => {
