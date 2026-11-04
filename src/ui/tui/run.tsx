@@ -101,16 +101,16 @@ function toastToneToType(
   return "info";
 }
 
-/**
- * Whether to surface the AGENTS.md truncation toast for a startup info
- * bundle. Shown at most once per process (boot, or after /new), only when
- * the raw truncation notice was captured during session startup.
- */
 /** Focus the prompt after a step-pause confirm only when nothing else is open. */
 export function focusPromptAfterConfirm(kind: OverlayKind, focusPrompt: () => void): void {
   if (kind === "none") focusPrompt();
 }
 
+/**
+ * Whether to surface the AGENTS.md truncation toast for a startup info
+ * bundle. Shown at most once per process (boot, or after /new), only when
+ * the raw truncation notice was captured during session startup.
+ */
 export function shouldShowAgentsTruncationToast(
   started: Pick<StartupInfo, "agentTruncationNotices">,
   alreadyShown: boolean,

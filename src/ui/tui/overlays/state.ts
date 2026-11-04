@@ -85,22 +85,29 @@ export function createOverlayUi(): OverlayUi {
       resolve: (value: boolean) => void;
       onAbort: () => void;
       settled: boolean;
-      opened: boolean;
     };
     type QueuedOverlay = { type: "overlay"; open: () => void };
     const queue: Array<QueuedConfirm | QueuedOverlay> = [];
 
-    const settleQueued = (entry: QueuedConfirm, value: boolean) => {
-      if (entry.settled) return;
-      entry.settled = true;
-      entry.signal?.removeEventListener("abort", entry.onAbort);
-      entry.resolve(value);
+    // One gate for "this confirm settles exactly once", whether it is queued or visible.
+    const settleOnce = (
+      gate: { settled: boolean },
+      signal: AbortSignal | undefined,
+      onAbort: () => void,
+      resolve: (value: boolean) => void,
+      value: boolean,
+    ): boolean => {
+      if (gate.settled) return false;
+      gate.settled = true;
+      signal?.removeEventListener("abort", onAbort);
+      resolve(value);
+      return true;
     };
 
     const dropQueue = () => {
       const dropped = queue.splice(0);
       for (const entry of dropped) {
-        if (entry.type === "confirm") settleQueued(entry, false);
+        if (entry.type === "confirm") settleOnce(entry, entry.signal, entry.onAbort, entry.resolve, false);
       }
     };
 
@@ -123,10 +130,9 @@ export function createOverlayUi(): OverlayUi {
         }
         if (kind() !== "none" && kind() !== "confirm") return;
         queue.shift();
-        next.opened = true;
         next.signal?.removeEventListener("abort", next.onAbort);
-        if (next.settled || next.signal?.aborted) {
-          settleQueued(next, false);
+        if (next.signal?.aborted) {
+          settleOnce(next, next.signal, next.onAbort, next.resolve, false);
           continue;
         }
         openConfirm(next.message, next.signal, next.resolve, next);
@@ -141,24 +147,15 @@ export function createOverlayUi(): OverlayUi {
       resolve: (value: boolean) => void,
       entry?: QueuedConfirm,
     ) => {
-      if (signal?.aborted) {
-        if (entry) settleQueued(entry, false);
-        else resolve(false);
-        promote();
-        return;
-      }
-      let settled = false;
+      const gate = entry ?? { settled: false };
+      let onAbort = () => {};
       const finish = (cont: boolean) => {
-        if (settled) return;
-        settled = true;
-        if (entry) entry.settled = true;
-        signal?.removeEventListener("abort", onAbort);
+        if (!settleOnce(gate, signal, onAbort, resolve, cont)) return;
         confirmResolver = null;
         setConfirmPrompt(null);
-        resolve(cont);
         promote();
       };
-      const onAbort = () => finish(false);
+      onAbort = () => finish(false);
       if (signal) signal.addEventListener("abort", onAbort, { once: true });
       confirmResolver = finish;
       setConfirmPrompt({ message, id: ++nextConfirmId });
@@ -174,13 +171,12 @@ export function createOverlayUi(): OverlayUi {
           resolve,
           onAbort: () => {},
           settled: false,
-          opened: false,
         };
         entry.onAbort = () => {
-          if (entry.opened || entry.settled) return;
+          if (entry.settled) return;
           const idx = queue.indexOf(entry);
           if (idx >= 0) queue.splice(idx, 1);
-          settleQueued(entry, false);
+          settleOnce(entry, entry.signal, entry.onAbort, entry.resolve, false);
         };
         if (signal) signal.addEventListener("abort", entry.onAbort, { once: true });
         queue.push(entry);
@@ -207,13 +203,7 @@ export function createOverlayUi(): OverlayUi {
     };
 
     const enqueueOverlay = (open: () => void) => {
-      const confirmPending = confirmResolver !== null || queue.some((entry) => entry.type === "confirm");
-      if (!confirmPending) {
-        open();
-        return;
-      }
-      // The confirm is waiting for the visible overlay to close. Replace that
-      // overlay in place; do not answer the confirm.
+      // No visible confirm: open now. A confirm that is only queued stays queued.
       if (!confirmResolver) {
         open();
         return;

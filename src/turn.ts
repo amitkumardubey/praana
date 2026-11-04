@@ -1676,21 +1676,17 @@ export async function runTurn(
 
     if (interrupted) break;
 
-    // Hard cap for headless runs and sinks that cannot pause: the last batch
-    // has already executed. One no-tool wrap-up, then the turn ends.
-    if (!pauseEnabled && step === maxSteps - 1) {
-      stepIndex++;
-      if (session.debug) {
-        s.onDebugBlock?.(stepIndex, pendingToolCalls, toolResults);
-      }
-      s.onSystemLines?.([`Reached the step limit (${step + 1}).`]);
-      await wrapUpStep("Reached per-turn tool step limit.");
-      break;
-    }
-
     stepIndex++;
     if (session.debug) {
       s.onDebugBlock?.(stepIndex, pendingToolCalls, toolResults);
+    }
+
+    // Hard cap for headless runs and sinks that cannot pause: the last batch
+    // has already executed. One no-tool wrap-up, then the turn ends.
+    if (!pauseEnabled && step === maxSteps - 1) {
+      s.onSystemLines?.([`Reached the step limit (${step + 1}).`]);
+      await wrapUpStep("Reached per-turn tool step limit.");
+      break;
     }
   }
 

@@ -5,8 +5,9 @@
  * overlay cannot answer this one. Ctrl+C is never part of that window
  * and is not consumed: the global handler aborts the turn.
  *
- * Other keys are swallowed while the overlay is open. A new confirm
- * prompt id arms Enter and Esc again.
+ * Other keys are swallowed while the overlay is open. The key intercept
+ * re-binds when the prompt changes, so a second confirm arms Enter and Esc
+ * again even when this component stays mounted.
  */
 import { createEffect, onCleanup } from "solid-js";
 import { useKeymap } from "@opentui/keymap/solid";
@@ -42,12 +43,10 @@ export function classifyStepPauseKey(name: string, ctrl: boolean, armed: boolean
 export function ConfirmOverlay(props: ConfirmOverlayProps) {
   const keymap = useKeymap();
 
-  // Re-bind when the prompt identity changes so Enter and Esc arm again.
+  // Re-bind when the prompt changes, including when this component stays mounted.
   createEffect(() => {
     const prompt = props.overlay.confirmPrompt();
     if (!prompt) return;
-    // Prompt identity: a new id (or a replaced prompt object) arms Enter again.
-    void prompt.id;
     const armedAt = Date.now() + (props.armMs ?? CONFIRM_ARM_MS);
     const off = keymap.intercept("key", (ctx) => {
       const e = ctx.event;
