@@ -1344,9 +1344,10 @@ describe("runTurn", () => {
     const onSpinnerStart = mock();
     await runTurn(session, "do many things", undefined, { sink: { onSpinnerStart } });
 
-    expect(onSpinnerStart).toHaveBeenCalledTimes(1);
+    expect(onSpinnerStart).toHaveBeenCalledTimes(2);
     const label = onSpinnerStart.mock.calls[0]![0] as string;
     expect(label).toContain("4");
+    expect(onSpinnerStart.mock.calls[1]![0]).toBe("thinking…");
   });
 
   it("calls onToolCallsStart before tool execution", async () => {
