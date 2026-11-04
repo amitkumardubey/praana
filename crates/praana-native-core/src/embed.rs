@@ -314,6 +314,85 @@ mod tests {
     use super::*;
 
     #[test]
+    fn cache_keys_detect_changes_and_evict_oldest() {
+        use std::fs::{self, File, FileTimes};
+        let root = tempfile::tempdir().unwrap();
+        let make = |name: &str| {
+            let dir = root.path().join(name);
+            fs::create_dir(&dir).unwrap();
+            fs::write(dir.join("tokenizer.json"), b"tokenizer").unwrap();
+            fs::write(dir.join("model.onnx"), b"model").unwrap();
+            dir
+        };
+        let a = make("a");
+        let b = make("b");
+        let c = make("c");
+        let key = |dir: &Path| CacheKey::read(dir, &dir.join("model.onnx")).unwrap();
+        let original = key(&a);
+        assert_eq!(original, key(&a.join(".")));
+        let mut cache = Cache(VecDeque::new());
+        cache.insert(original.clone(), Arc::new(1));
+        assert_eq!(*cache.get(&original).unwrap(), 1);
+        fs::write(a.join("model.onnx"), b"longer model").unwrap();
+        let changed_len = key(&a);
+        assert_ne!(original, changed_len);
+        assert!(cache.get(&changed_len).is_none());
+        let file = File::options()
+            .write(true)
+            .open(a.join("model.onnx"))
+            .unwrap();
+        file.set_times(
+            FileTimes::new()
+                .set_modified(changed_len.weights.modified + std::time::Duration::from_secs(5)),
+        )
+        .unwrap();
+        let changed_time = key(&a);
+        assert_ne!(changed_len, changed_time);
+        cache.insert(changed_time.clone(), Arc::new(2));
+        assert_eq!(cache.0.len(), 1);
+        fs::write(a.join("tokenizer.json"), b"changed tokenizer").unwrap();
+        assert_ne!(changed_time, key(&a));
+        cache.insert(key(&b), Arc::new(3));
+        cache.insert(key(&c), Arc::new(4));
+        assert!(cache.get(&changed_time).is_none());
+        assert!(cache.get(&key(&b)).is_some());
+        assert!(cache.get(&key(&c)).is_some());
+        assert_eq!(cache.0.len(), 2);
+    }
+
+    #[test]
+    fn missing_onnx_reports_original_error() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("tokenizer.json"), b"unused").unwrap();
+        let error = embed_text("hello", dir.path()).unwrap_err();
+        assert_eq!(error.code.as_str(), "unavailable");
+        assert_eq!(
+            error.message,
+            format!("ONNX model not found in {}", dir.path().display())
+        );
+    }
+
+    #[test]
+    #[ignore]
+    fn cached_embedding_matches_and_is_fast() {
+        let dir = std::env::var_os("PRAANA_TEST_MODEL_DIR").expect("PRAANA_TEST_MODEL_DIR");
+        let dir = Path::new(&dir);
+        let start = std::time::Instant::now();
+        let first = embed_text("A small embedding benchmark.", dir).unwrap();
+        let first_time = start.elapsed();
+        let start = std::time::Instant::now();
+        let second = embed_text("A small embedding benchmark.", dir).unwrap();
+        let second_time = start.elapsed();
+        eprintln!("first: {first_time:?}, second: {second_time:?}");
+        let baseline = embed_text_uncached("A small embedding benchmark.", dir).unwrap();
+        assert_eq!(first.embedding, baseline.embedding);
+        assert_eq!(first.dim, baseline.dim);
+        assert_eq!(first.embedding, second.embedding);
+        assert_eq!(first.dim, second.dim);
+        assert!(first_time > second_time * 20);
+    }
+
+    #[test]
     fn missing_model_dir_errors() {
         let r = embed_text("hello", Path::new("/tmp/praana-no-such-model"));
         assert_eq!(r.unwrap_err().code.as_str(), "unavailable");
