@@ -90,6 +90,8 @@ export async function* runGuardedProviderStream<T>(opts: {
   httpErrorLabel: string;
   emptyBodyMessage: string;
   request: (guard: LlmFetchGuard) => Promise<Response>;
+  /** Optionally correct a rejected request form before any stream is emitted. */
+  retryForm?: (status: number, body: string) => boolean;
   frames: (body: ReadableStream<Uint8Array>) => AsyncIterable<T>;
   /**
    * `stop` ends the read now. `awaitTrailer` and `releaseIfIdle` keep reading
@@ -127,13 +129,17 @@ export async function* runGuardedProviderStream<T>(opts: {
   try {
     response = await withPreEmissionRetry(
       async () => {
-        const res = await opts.request(guard);
-        if (!res.ok) {
+        let res = await opts.request(guard);
+        while (!res.ok) {
           let errText = "";
           try {
             errText = await readErrorBody(res, errorBodyTimeoutMs(timeouts.idleTimeoutMs));
           } catch {
             errText = "response body timed out";
+          }
+          if (!opts.req.signal?.aborted && opts.retryForm?.(res.status, errText)) {
+            res = await opts.request(guard);
+            continue;
           }
           const err: Error & { status?: number; headers?: Headers } = new Error(
             `${opts.httpErrorLabel} (${res.status}): ${errText}`,

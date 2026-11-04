@@ -377,7 +377,7 @@ A normal quit — `/exit`, or Ctrl+C with an empty prompt — exits `0` when a s
 | `/stats` | Session + memory stats |
 | `/scorecard` | Per-session telemetry signals |
 | `/events` | Last 20 session log events |
-| `/model [provider] <id>` | Switch model (bare `/model` opens a searchable selector) |
+| `/model [provider] <id>` | Switch model (bare `/model` opens a selector searchable by provider or model) |
 | `/reasoning <level>` | Set reasoning effort (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`) |
 | `/sessions` | List sessions to resume |
 | `/login [provider]` | Add or update a provider credential |
@@ -401,6 +401,22 @@ A normal quit — `/exit`, or Ctrl+C with an empty prompt — exits `0` when a s
 ```
 
 Unknown ids resolve against the bundled pi-ai catalog first, then against the provider's live catalog (HTTP `/models` or Bedrock control-plane APIs; cached 6 hours at `~/.praana/provider-catalog-cache.json`).
+
+### Choosing a model
+
+`/model` with no argument opens a searchable picker; `/model [provider] <id>` switches straight to a model you already know. The picker pins the current model at the top, groups the rest by provider, and lists newest first within a provider when that provider reports creation times. Known non-chat models (embeddings, speech, image, video, moderation, legacy completions) are left out of live lists; built-in fallback lists keep their written order.
+
+**Search** splits the query on spaces and `/`. A word that appears in a provider name narrows the list to that provider's models, and every other word fuzzy-matches model ids:
+
+```text
+anthropic          # everything Anthropic offers
+openai gpt         # OpenAI models matching "gpt"
+openrouter/claude  # OpenRouter models matching "claude"
+```
+
+Live model lists are cached for six hours. When a provider's live list cannot be fetched, the picker shows that provider's built-in list and adds a `live catalog unavailable` note naming the provider.
+
+`/reasoning <level>` sets reasoning effort for the session (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`). Claude 5 models use adaptive thinking, and the effort level maps onto it. On first-party OpenAI, gpt-6.1 models use reasoning effort `none` when tools are present due to a chat completions limitation.
 
 ## Prompt keys
 

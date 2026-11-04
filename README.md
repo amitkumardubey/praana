@@ -4,7 +4,7 @@
 
 ## Why use it
 
-- **Bring your own model.** 18 providers, including Anthropic, OpenAI, Google, DeepSeek, Groq, OpenRouter and Amazon Bedrock, or run fully local with Ollama. Switch models mid-session with `/model`.
+- **Bring your own model.** 18 providers, including Anthropic, OpenAI, Google, DeepSeek, Groq, OpenRouter and Amazon Bedrock, or run fully local with Ollama. Switch models mid-session with `/model`, searching by provider or model.
 - **Asks before risky actions.** `rm`, force-push, package installs and writes outside your project need your OK. `/plan on` blocks every file change until you approve the plan.
 - **Redacts secrets from tool output.** Known key and token patterns are masked in tool results and in the logged tool calls.
 - **Works with what you already have.** Reads your `AGENTS.md` or `CLAUDE.md`, and loads `SKILL.md` skills from `.agents/skills`, `.cursor/skills` and `~/.claude/skills`.

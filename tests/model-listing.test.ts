@@ -405,9 +405,7 @@ describe("listAllAvailableModels (parallel, static-first)", () => {
     }
   });
 
-  it("static snapshot order is stable and sorted per provider even when every live fetch fails", async () => {
-    // Groq's curated catalog is deliberately unsorted (deepseek-r1… before
-    // llama-3.3…), so it proves static ordering is applied, not inherited.
+  it("static snapshot retains curated order when every live fetch fails", async () => {
     process.env.GROQ_API_KEY = "sk-test-groq";
     fetchSpy.mockRejectedValue(new Error("catalog unreachable"));
     const updates: ModelListEntry[][] = [];
@@ -421,12 +419,6 @@ describe("listAllAvailableModels (parallel, static-first)", () => {
     // failing it must equal the final result — order never depends on live
     // success.
     expect(updates[0]).toEqual(result);
-
-    // Each provider's slice is sorted by modelId.
-    for (const provider of new Set(result.map((e) => e.provider))) {
-      const ids = result.filter((e) => e.provider === provider).map((e) => e.modelId);
-      expect([...ids].sort((a, b) => a.localeCompare(b))).toEqual(ids);
-    }
 
     // The failing-live result matches listStaticAvailableModels per provider.
     const staticByProvider = new Map<string, ModelListEntry[]>();
@@ -498,7 +490,7 @@ describe("listAllAvailableModels (parallel, static-first)", () => {
     expect(ids).toEqual([...ids].sort());
   });
 
-  it("listStaticAvailableModels is sorted by modelId within each provider", () => {
+  it("listStaticAvailableModels retains curated order within each provider", () => {
     process.env.GROQ_API_KEY = "sk-test-groq";
     const byProvider = new Map<string, ModelListEntry[]>();
     for (const e of listStaticAvailableModels()) {
@@ -506,9 +498,8 @@ describe("listAllAvailableModels (parallel, static-first)", () => {
       list.push(e);
       byProvider.set(e.provider, list);
     }
-    for (const [, list] of byProvider) {
-      const ids = list.map((e) => e.modelId);
-      expect([...ids].sort((a, b) => a.localeCompare(b))).toEqual(ids);
+    for (const [provider, list] of byProvider) {
+      expect(list.map((e) => e.modelId)).toEqual(getCuratedModels(provider).map((m) => m.id));
     }
   });
 });

@@ -432,7 +432,7 @@ export function ModelSelectorOverlay(props: ModelSelectorOverlayProps) {
           input = el;
         }}
         focused
-        placeholder="search models…"
+        placeholder="search provider or model…"
         onInput={(v: string) => {
           controller?.markUserInteracted();
           setQuery(v);

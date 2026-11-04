@@ -357,6 +357,7 @@ export class AppController {
       this.config = newConfig;
       const agentTruncationNotices: string[] = [];
       this.session = await Session.create(this.cwd, newConfig, {
+        suppressLoggerStderr: true,
         incognito: this.parsed.incognito,
         captureNotice: (line) => {
           if (isAgentsTruncationNotice(line)) {
@@ -396,6 +397,7 @@ export class AppController {
   private async rollbackToFreshSession(config: PraanaConfig): Promise<void> {
     try {
       this.session = await Session.create(this.cwd, config, {
+        suppressLoggerStderr: true,
         incognito: this.parsed.incognito,
         captureNotice: () => {},
       });
