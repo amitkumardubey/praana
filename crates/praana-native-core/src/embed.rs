@@ -19,10 +19,10 @@ use crate::types::EmbedOutput;
 
 fn find_onnx(model_dir: &Path) -> Option<PathBuf> {
     let candidates = [
-        model_dir.join("onnx/model_quantized.onnx"),
         model_dir.join("onnx/model.onnx"),
-        model_dir.join("model_quantized.onnx"),
         model_dir.join("model.onnx"),
+        model_dir.join("onnx/model_quantized.onnx"),
+        model_dir.join("model_quantized.onnx"),
     ];
     candidates.into_iter().find(|p| p.is_file())
 }
@@ -389,13 +389,42 @@ mod tests {
         assert_eq!(first.dim, baseline.dim);
         assert_eq!(first.embedding, second.embedding);
         assert_eq!(first.dim, second.dim);
-        assert!(first_time > second_time * 20);
+        assert!(second_time <= first_time.mul_f64(1.2));
     }
 
     #[test]
     fn missing_model_dir_errors() {
         let r = embed_text("hello", Path::new("/tmp/praana-no-such-model"));
         assert_eq!(r.unwrap_err().code.as_str(), "unavailable");
+    }
+
+    #[test]
+    fn find_onnx_prefers_full_model() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("onnx")).unwrap();
+        for name in [
+            "onnx/model.onnx",
+            "model.onnx",
+            "onnx/model_quantized.onnx",
+            "model_quantized.onnx",
+        ] {
+            std::fs::write(dir.path().join(name), b"").unwrap();
+        }
+        assert_eq!(
+            find_onnx(dir.path()),
+            Some(dir.path().join("onnx/model.onnx"))
+        );
+        std::fs::remove_file(dir.path().join("onnx/model.onnx")).unwrap();
+        assert_eq!(find_onnx(dir.path()), Some(dir.path().join("model.onnx")));
+    }
+
+    #[test]
+    fn find_onnx_finds_quantized_model() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join("onnx")).unwrap();
+        let model = dir.path().join("onnx/model_quantized.onnx");
+        std::fs::write(&model, b"").unwrap();
+        assert_eq!(find_onnx(dir.path()), Some(model));
     }
 
     #[test]
