@@ -1180,35 +1180,37 @@ export async function runTurn(
     try {
       const wrap = await attemptStream([], flattenWrapUpHistory(history));
       stopWrapSpinner();
-      if (wrap.finalMessage && wrap.assistantTokens > 0) {
-        turnHistoryTokens += wrap.assistantTokens;
-        s.onContextHistoryDelta?.({
-          tokensAdded: wrap.assistantTokens,
-          source: "assistant",
-        });
-      }
       const streamed = wrap.fullResponse;
       const fromMessage = visibleWrapUpText(withoutWrapUpToolCalls(wrap.finalMessage));
       const text = streamed.trim() ? streamed : fromMessage;
-      // A provider that sends no text deltas still has to reach streaming
-      // sinks, and a summary after earlier step text needs the blank line.
-      if (!streamed.trim() && text) {
-        if (fullResponse.length > 0) {
-          wrapSeparatorSent = true;
-          s.onTextDelta?.("\n\n");
+      // Show and count a summary only when it is stored. An errored wrap-up
+      // keeps neither, and an aborted reply with no visible text is not stored.
+      const publishSummary = () => {
+        if (!text) return;
+        if (!streamed.trim()) {
+          if (fullResponse.length > 0) {
+            wrapSeparatorSent = true;
+            s.onTextDelta?.("\n\n");
+          }
+          s.onTextDelta?.(text);
         }
-        s.onTextDelta?.(text);
-      }
+        if (wrapSeparatorSent) fullResponse += "\n\n";
+        fullResponse += text;
+        history.push({ role: "assistant", content: text, timestamp: Date.now() });
+        if (wrap.finalMessage && wrap.assistantTokens > 0) {
+          turnHistoryTokens += wrap.assistantTokens;
+          s.onContextHistoryDelta?.({
+            tokensAdded: wrap.assistantTokens,
+            source: "assistant",
+          });
+        }
+      };
       const aborted =
         wrap.interrupted ||
         !!options?.signal?.aborted ||
         wrap.finalReason === "aborted";
       if (aborted) {
-        if (text) {
-          if (wrapSeparatorSent) fullResponse += "\n\n";
-          fullResponse += text;
-          history.push({ role: "assistant", content: text, timestamp: Date.now() });
-        }
+        publishSummary();
         providerUsage = wrap.providerUsage ?? providerUsage;
         recordedProviderUsage = wrap.recordedProviderUsage || recordedProviderUsage;
         lastStreamReason = "aborted";
@@ -1223,11 +1225,7 @@ export async function runTurn(
       lastLlmErrorMessage = undefined;
       providerUsage = wrap.providerUsage ?? providerUsage;
       recordedProviderUsage = wrap.recordedProviderUsage || recordedProviderUsage;
-      if (text) {
-        if (wrapSeparatorSent) fullResponse += "\n\n";
-        fullResponse += text;
-        history.push({ role: "assistant", content: text, timestamp: Date.now() });
-      }
+      publishSummary();
     } catch (err) {
       stopWrapSpinner();
       if (options?.signal?.aborted) {

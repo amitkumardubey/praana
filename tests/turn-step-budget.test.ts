@@ -978,6 +978,116 @@ describe("per-turn step budget — interactive soft pause", () => {
     expect(errors).toEqual(["wrap-up provider failure"]);
   });
 
+  it("does not show or count a final-message summary when the wrap-up errors", async () => {
+    mockStream.mockImplementation((req: FakeStreamRequest) => {
+      const last = [...req.messages].reverse().find((m) => m.role === "user");
+      const text = typeof last?.content === "string" ? last.content : "";
+      if (text.includes("Do not call tools")) {
+        return (async function* () {
+          yield {
+            type: "done",
+            reason: "error",
+            message: { role: "assistant", content: `hidden summary ${"y".repeat(80)}` },
+          };
+        })();
+      }
+      return (async function* () {
+        yield {
+          type: "toolcall_end",
+          toolCall: { id: "call-0", name: "shell", arguments: { command: "echo call-0" } },
+        };
+        yield {
+          type: "done",
+          reason: "toolUse",
+          message: {
+            role: "assistant",
+            content: "",
+            toolCalls: [{ id: "call-0", name: "shell", args: { command: "echo call-0" } }],
+          },
+        };
+      })();
+    });
+    const session = makeMockSession({
+      config: makeConfig({ turn: { max_steps: 25, pause_after_steps: 1, hard_max_steps: 300 } }),
+    });
+    const texts: string[] = [];
+    const errors: string[] = [];
+    let wrapTokens = 0;
+    let wrapStarted = false;
+    const seen = mockStream.getMockImplementation();
+    mockStream.mockImplementation((req: FakeStreamRequest) => {
+      const last = [...req.messages].reverse().find((m) => m.role === "user");
+      const text = typeof last?.content === "string" ? last.content : "";
+      if (text.includes("Do not call tools")) wrapStarted = true;
+      return seen?.(req);
+    });
+    const response = await runTurn(session, "error keeps message", undefined, {
+      sink: {
+        onStepPause: () => false,
+        onTextDelta: (delta) => texts.push(delta),
+        onFallback: (text) => texts.push(text),
+        onError: (entry) => errors.push(entry.message),
+        onContextHistoryDelta: (delta) => {
+          if (wrapStarted && delta.source === "assistant") wrapTokens += delta.tokensAdded;
+        },
+      },
+    });
+    expect(texts.join("")).not.toContain("hidden summary");
+    expect(response).not.toContain("hidden summary");
+    expect(errors.length + texts.filter((line) => line.includes("LLM")).length).toBeGreaterThan(0);
+    expect(wrapTokens).toBe(0);
+    const agent = String(
+      session.eventLog.readAll().filter((e: { kind?: string }) => e.kind === "agent_message").at(-1)?.payload?.text ?? "",
+    );
+    expect(agent).not.toContain("hidden summary");
+  });
+
+  it("does not count tokens for an aborted wrap-up with no visible text", async () => {
+    mockStream.mockImplementation((req: FakeStreamRequest) => {
+      const last = [...req.messages].reverse().find((m) => m.role === "user");
+      const text = typeof last?.content === "string" ? last.content : "";
+      if (text.includes("Do not call tools")) {
+        return (async function* () {
+          yield {
+            type: "done",
+            reason: "aborted",
+            message: { role: "assistant", content: "   ", thinking: `secret ${"z".repeat(40)}` },
+          };
+        })();
+      }
+      return makeLoopStream(req, 1);
+    });
+    const session = makeMockSession({
+      headless: true,
+      config: makeConfig({ turn: { max_steps: 1, pause_after_steps: 50, hard_max_steps: 300 } }),
+    });
+    let wrapTokens = 0;
+    let wrapStarted = false;
+    const seen = mockStream.getMockImplementation();
+    mockStream.mockImplementation((req: FakeStreamRequest) => {
+      const last = [...req.messages].reverse().find((m) => m.role === "user");
+      const text = typeof last?.content === "string" ? last.content : "";
+      if (text.includes("Do not call tools")) wrapStarted = true;
+      return seen?.(req);
+    });
+    let thrown: unknown;
+    try {
+      await runTurn(session, "abort blank wrap", undefined, {
+        sink: {
+          onTextDelta: () => {},
+          onContextHistoryDelta: (delta) => {
+            if (wrapStarted && delta.source === "assistant") wrapTokens += delta.tokensAdded;
+          },
+        },
+      });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(TurnAbortedError);
+    expect(wrapTokens).toBe(0);
+    expect(String((thrown as TurnAbortedError).partialResponse)).not.toContain("secret");
+  });
+
   it("adds wrap-up assistant tokens when the summary is aborted", async () => {
     mockStream.mockImplementation((req: FakeStreamRequest) => {
       const last = [...req.messages].reverse().find((m) => m.role === "user");
