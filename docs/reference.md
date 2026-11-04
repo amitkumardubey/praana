@@ -165,6 +165,10 @@ Set any of the three keys to `0` (or use a non-positive value) to fall back to t
 
 Provider resolution order: explicit config → credential store (`~/.praana/credentials.json`) → environment-detected key → interactive setup.
 
+### LLM fallback
+
+Set both `[llm]` `fallback_provider` and `fallback_model` to use another provider/model after an eligible stream failure or when the primary sign-in cannot be refreshed. An explicit session model or provider override disables automatic fallback. The fallback becomes the session model only after it produces a usable finished answer.
+
 ### LLM stream timeouts
 
 These keys live in `[llm]`. A value that is not a non-negative integer warns and the provider default is used instead. An integer above `2147483647` is also rejected with a warning and the provider default is used: `setTimeout` overflows past that and the timer would fire immediately. `0` turns that timer off. An explicit value applies to every provider. Omitting a key does not change timeouts for other streams in the process; each request resolves its own budget.

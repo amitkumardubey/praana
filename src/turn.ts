@@ -689,6 +689,8 @@ export async function runTurn(
   options?: {
     signal?: AbortSignal;
     sink?: TurnUiSink;
+    /** Override the retry delay for deterministic callers and tests. */
+    credentialRetryWait?: (ms: number, signal?: AbortSignal) => Promise<void>;
   }
 ): Promise<string> {
   /* Always have a sink — default routes to legacy stdout/stderr helpers. */
@@ -1011,10 +1013,27 @@ export async function runTurn(
   // Refresh OAuth access tokens / baseUrl before building the model (no-op when unused).
   let oauthModelAuth: Awaited<ReturnType<typeof resolveOAuthModelAuth>> = null;
   let credentialError: string | undefined;
+  async function resolveAuthWithRetry(provider: string): Promise<Awaited<ReturnType<typeof resolveOAuthModelAuth>>> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await resolveOAuthModelAuth(provider, options?.signal);
+      } catch (err) {
+        if (!(err instanceof OAuthRefreshBusyError) || attempt >= 2 || options?.signal?.aborted) throw err;
+        const wait = options?.credentialRetryWait ?? (async (ms: number, signal?: AbortSignal) => {
+          const { setTimeout: delay } = await import("node:timers/promises");
+          await delay(ms, undefined, { signal });
+        });
+        await wait((attempt + 1) * 1_000, options?.signal);
+        if (options?.signal?.aborted) throw options.signal.reason;
+      }
+    }
+  }
   try {
-    oauthModelAuth = await resolveOAuthModelAuth(effectiveLlm.provider, options?.signal);
+    oauthModelAuth = await resolveAuthWithRetry(effectiveLlm.provider);
   } catch (err) {
-    if (err instanceof OAuthRefreshError || err instanceof OAuthRefreshBusyError) {
+    if (options?.signal?.aborted) {
+      // Cancellation is handled by the normal interrupted-turn path.
+    } else if (err instanceof OAuthRefreshError || err instanceof OAuthRefreshBusyError) {
       credentialError = err.message;
     } else if (err instanceof CredentialLockTimeoutError || (err instanceof Error && err.name === "CredentialStoreReadError")) {
       credentialError = err.message;
@@ -1031,21 +1050,18 @@ export async function runTurn(
     baseUrl?: string;
     __piOptions?: Record<string, unknown>;
   };
-  if (oauthModelAuth) {
-    if (oauthModelAuth.baseUrl) model.baseUrl = oauthModelAuth.baseUrl;
-    model.__piOptions = {
-      ...(model.__piOptions ?? {}),
-      ...(oauthModelAuth.apiKey ? { apiKey: oauthModelAuth.apiKey } : {}),
-      ...(oauthModelAuth.headers
-        ? {
-            headers: {
-              ...((model.__piOptions?.headers as Record<string, string> | undefined) ?? {}),
-              ...oauthModelAuth.headers,
-            },
-          }
+  function applyOAuthAuth(target: typeof model, auth: typeof oauthModelAuth): void {
+    if (!auth) return;
+    if (auth.baseUrl) target.baseUrl = auth.baseUrl;
+    target.__piOptions = {
+      ...(target.__piOptions ?? {}),
+      ...(auth.apiKey ? { apiKey: auth.apiKey } : {}),
+      ...(auth.headers
+        ? { headers: { ...((target.__piOptions?.headers as Record<string, string> | undefined) ?? {}), ...auth.headers } }
         : {}),
     };
   }
+  applyOAuthAuth(model, oauthModelAuth);
 
   const logger = await createSessionLogger({
     sessionId: session.id,
@@ -1227,6 +1243,48 @@ export async function runTurn(
     ]);
   }
 
+  let credentialFallbackResult: LlmStreamResult | undefined;
+  if (credentialError && canFallback() && !options?.signal?.aborted) {
+    const fallbackProvider = session.config.llm.fallback_provider!;
+    const fallbackModel = session.config.llm.fallback_model!;
+    const heldText: string[] = [];
+    const heldThinking: string[] = [];
+    const restoreText = s.onTextDelta;
+    const restoreThinking = s.onThinkingDelta;
+    let fallbackAuth: typeof oauthModelAuth;
+    try {
+      fallbackAuth = await resolveAuthWithRetry(fallbackProvider);
+      await prepareFallback(fallbackProvider, fallbackModel);
+      applyOAuthAuth(activeModel, fallbackAuth);
+      s.onTextDelta = (delta) => { heldText.push(delta); };
+      s.onThinkingDelta = (delta) => { heldThinking.push(delta); };
+      const result = await attemptStream();
+      if (fallbackFinishedCleanly(result)) {
+        credentialError = undefined;
+        credentialFallbackResult = result;
+        for (const delta of heldText) restoreText?.(delta);
+        for (const delta of heldThinking) restoreThinking?.(delta);
+        commitFallback(fallbackProvider, fallbackModel, `${providerName} sign-in unavailable`);
+      } else if (options?.signal?.aborted) {
+        credentialError = undefined;
+      } else {
+        credentialError += " (fallback unavailable)";
+      }
+    } catch (err) {
+      if (options?.signal?.aborted || (err instanceof Error && err.name === "AbortError")) {
+        credentialError = undefined;
+      } else if (err instanceof OAuthRefreshError || err instanceof OAuthRefreshBusyError ||
+        err instanceof CredentialLockTimeoutError || (err instanceof Error && err.name === "CredentialStoreReadError")) {
+        credentialError += " (fallback unavailable)";
+      } else {
+        throw err;
+      }
+    } finally {
+      s.onTextDelta = restoreText;
+      s.onThinkingDelta = restoreThinking;
+    }
+  }
+
   const NOT_EXECUTED_TEXT =
     "Not executed: the step budget was reached and the turn was stopped.";
 
@@ -1387,7 +1445,8 @@ export async function runTurn(
       break;
     }
 
-    let streamResult = await attemptStream();
+    let streamResult = credentialFallbackResult ?? await attemptStream();
+    credentialFallbackResult = undefined;
     let fallbackRejected = false;
 
     // On the first step, retry once and then fall back on recoverable failures.
