@@ -6,6 +6,7 @@ import { useRenderer } from "@opentui/solid";
 import { TUI_STYLE, truncateSegments, type SpanStyle, type TextSegment } from "../theme.js";
 import { wrapContent } from "./render-utils.js";
 import { buildMarkdownSyntaxStyle } from "./markdown-theme.js";
+import { stabilizeStreamingMarkdown } from "./streaming-markdown.js";
 import type { IndexedTranscriptEntry } from "./index.js";
 import type { TranscriptRenderOpts } from "./opts.js";
 
@@ -130,7 +131,7 @@ export function TranscriptEntryView(props: {
           fallback={<text>{e.text}</text>}
         >
           <markdown
-            content={e.text}
+            content={props.streaming ? stabilizeStreamingMarkdown(e.text) : e.text}
             streaming={props.streaming}
             syntaxStyle={buildMarkdownSyntaxStyle(
               renderer.nativeScene,

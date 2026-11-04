@@ -6,8 +6,7 @@
  * (see scripts/tui-bounce/harness.tsx), at 110x40 and 80x24, for word and
  * 8-character chunk deltas, with stream batching off and at 33ms.
  *
- * Marked failing while the transcript still feeds OpenTUI the tails that
- * paint an extra row. The assertion itself requires zero bounce.
+ * The assertion requires zero bounce and zero scroll reversals.
  */
 import { describe, expect, it } from "bun:test";
 import {
@@ -17,7 +16,7 @@ import {
 } from "../scripts/tui-bounce/harness.js";
 
 describe("transcript streaming scroll", () => {
-  it.failing("does not bounce while a markdown answer streams", async () => {
+  it("does not bounce while a markdown answer streams", async () => {
     const reports = await runBounceMatrix(BOUNCE_MATRIX);
     const bad: string[] = [];
     for (const report of reports) {

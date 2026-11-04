@@ -95,6 +95,8 @@ For terminals where streaming answers flicker, set `PRAANA_TUI_SYNC_OUTPUT` to `
 
 To reduce UI churn during rapid streaming, set `PRAANA_TUI_STREAM_BATCH_MS` to coalesce assistant and thinking stream deltas into one redraw per interval (in milliseconds, capped at 250) using a leading-edge timer. Default is `0` (off, per-delta updates); invalid or negative values fall back to 0. Experimental.
 
+While an assistant answer is still streaming, the transcript omits an unfinished list marker, trailing spaces on a list item, and trailing newlines from the markdown view. OpenTUI's streaming preview paints those tails as an extra row and the next frame removes it; following both heights bounced the viewport by one line. The finished answer is rendered in full.
+
 ## First run
 
 ```bash
