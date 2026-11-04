@@ -7,12 +7,20 @@ import {
   VENDOR_PREFIX_ALIASES,
   getUserProviderRegistryEntry,
   isUserDeclaredProvider,
+  type ProviderConfig,
 } from "./provider-registry.js";
 import { OPENAI_COMPATIBLE_API_IDS } from "./provider-registry.js";
 import { getApiKey } from "./credentials.js";
 
 export const PROVIDER_CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
 export const PROVIDER_CATALOG_FETCH_TIMEOUT_MS = 15_000;
+
+/** Anthropic's native `/v1/models` requires an explicit API version header. */
+const ANTHROPIC_MODELS_VERSION = "2023-06-01";
+/** Anthropic caps `limit` at 1000 per page; further pages use `after_id`. */
+const ANTHROPIC_MODELS_PAGE_LIMIT = 1000;
+/** Safety stop for a misbehaving `has_more` loop. */
+const ANTHROPIC_MODELS_MAX_PAGES = 20;
 
 const CACHE_VERSION = 1;
 
@@ -66,6 +74,23 @@ function getSuffixIndex(snapshot: ProviderCatalogSnapshot): Record<string, strin
 
 function isValidWindow(value: unknown): value is number {
   return typeof value === "number" && Number.isFinite(value) && value >= 1000;
+}
+
+/**
+ * API key for a catalog fetch: credential store first, then the provider's
+ * env key (and aliases). Null means keyless.
+ */
+function resolveCatalogApiKey(
+  provider: string,
+  registryEntry: ProviderConfig,
+): string | null {
+  const stored = getApiKey(provider);
+  if (stored) return stored;
+  if (!registryEntry.envKey) return null;
+  const envKey = [registryEntry.envKey, ...(registryEntry.envKeyAliases ?? [])]
+    .map((name) => process.env[name]?.trim())
+    .find((value) => !!value);
+  return envKey ?? null;
 }
 
 function loadDiskCache(): ProviderCatalogCacheFile {
@@ -315,6 +340,66 @@ export function invalidateProviderCatalog(provider: string): void {
   persistDiskCache();
 }
 
+interface AnthropicModelsPage {
+  data?: Array<{ id?: string; max_input_tokens?: number }>;
+  has_more?: boolean;
+  last_id?: string | null;
+}
+
+/**
+ * Anthropic's native `/v1/models`: newest first, cursor-paginated with
+ * `after_id` / `has_more`. Authenticates with `x-api-key` plus an
+ * `anthropic-version` header (not a Bearer token) and reports each model's
+ * input window as `max_input_tokens`.
+ */
+async function fetchAnthropicCatalogModels(
+  apiKey: string | null,
+  signal: AbortSignal,
+): Promise<Record<string, number | null>> {
+  const baseUrl = (
+    PROVIDER_REGISTRY.anthropic?.baseUrl || "https://api.anthropic.com"
+  ).replace(/\/+$/, "");
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    "anthropic-version": ANTHROPIC_MODELS_VERSION,
+    ...(apiKey ? { "x-api-key": apiKey } : {}),
+  };
+
+  const models: Record<string, number | null> = {};
+  let afterId: string | null = null;
+
+  for (let page = 0; page < ANTHROPIC_MODELS_MAX_PAGES; page += 1) {
+    const params = new URLSearchParams({
+      limit: String(ANTHROPIC_MODELS_PAGE_LIMIT),
+    });
+    if (afterId) params.set("after_id", afterId);
+
+    const response = await fetch(`${baseUrl}/v1/models?${params.toString()}`, {
+      headers,
+      signal,
+    });
+    if (!response.ok) {
+      throw new Error(`anthropic models API returned ${response.status}`);
+    }
+
+    const body = (await response.json()) as AnthropicModelsPage;
+    for (const item of body.data ?? []) {
+      if (!item.id) continue;
+      models[item.id] = isValidWindow(item.max_input_tokens)
+        ? item.max_input_tokens
+        : null;
+    }
+
+    if (!body.has_more) break;
+    const next =
+      body.last_id ?? body.data?.[body.data.length - 1]?.id ?? null;
+    if (!next || next === afterId) break;
+    afterId = next;
+  }
+
+  return models;
+}
+
 async function fetchProviderCatalogFresh(
   provider: string,
 ): Promise<Record<string, number | null>> {
@@ -363,6 +448,30 @@ async function fetchProviderCatalogFresh(
         return models;
       }
 
+      // Anthropic's own /models endpoint is not OpenAI-shaped: vendor headers,
+      // cursor pagination, and max_input_tokens instead of context_length.
+      if (provider === "anthropic") {
+        const apiKey = resolveCatalogApiKey(provider, PROVIDER_REGISTRY.anthropic);
+        if (!apiKey) {
+          throw new Error("anthropic models API requires an API key");
+        }
+        const models = await fetchAnthropicCatalogModels(apiKey, controller.signal);
+        if (controller.signal.aborted) {
+          throw new Error("Provider catalog fetch aborted");
+        }
+        if (Object.keys(models).length === 0) {
+          throw new Error("anthropic live catalog returned no models");
+        }
+        const file = loadDiskCache();
+        file.catalogs[provider] = {
+          fetchedAt: Date.now(),
+          models,
+          suffixIndex: buildSuffixIndex(models),
+        };
+        persistDiskCache();
+        return models;
+      }
+
       // Look up base URL, env key, and headers from the user-declared
       // provider config first, then fall back to the shared registry.
       const registryEntry = getUserProviderRegistryEntry(provider) ?? PROVIDER_REGISTRY[provider];
@@ -373,13 +482,7 @@ async function fetchProviderCatalogFresh(
         ...registryEntry.headers,
       };
       // Key resolution: credential store > env_key > keyless.
-      const apiKey = getApiKey(provider)
-        ?? (registryEntry.envKey
-          ? [registryEntry.envKey, ...(registryEntry.envKeyAliases ?? [])]
-              .map((name) => process.env[name]?.trim())
-              .find((v) => !!v)
-          : null)
-        ?? null;
+      const apiKey = resolveCatalogApiKey(provider, registryEntry);
       if (apiKey) headers.Authorization = `Bearer ${apiKey}`;
 
       const url = `${registryEntry.baseUrl.replace(/\/$/, "")}/models`;

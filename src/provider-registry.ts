@@ -328,8 +328,9 @@ export const REASONING_MODEL_HINTS: Record<
 };
 
 /**
- * Providers that expose an OpenAI-compatible `/models` listing endpoint.
- * Used by `provider-catalog.ts` for live catalog fetching.
+ * Providers whose `/models` listing PRAANA fetches live. OpenAI-compatible
+ * endpoints use the generic fetcher; `amazon-bedrock` and `anthropic` have
+ * vendor-specific endpoints (see provider-catalog.ts).
  *
  * Base URLs, env keys, and headers are looked up from `PROVIDER_REGISTRY`
  * at fetch time — no duplication needed here.
@@ -348,6 +349,7 @@ export const LIVE_CATALOG_PROVIDER_IDS: string[] = [
   "poolside",
   "cerebras",
   "amazon-bedrock",
+  "anthropic",
 ];
 
 /**

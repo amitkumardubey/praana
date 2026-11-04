@@ -99,7 +99,9 @@ export async function listModelsForProvider(
       for (const { id, contextWindow } of catalog) {
         const existing = byId.get(id);
         if (existing) {
-          if (existing.contextWindow == null && contextWindow != null) {
+          // The live listing is authoritative for the window: curated entries
+          // are a fallback and may hold placeholder values.
+          if (contextWindow != null) {
             existing.contextWindow = contextWindow;
           }
           continue;

@@ -14,7 +14,7 @@
     "src/llm/types.ts": "03a27697bf3f83819ffbd131c06ee943bca46591160e2debccbedc343298df90",
     "src/llm/url.ts": "7a3852c7849728c6f5d8939fff9ef1e20d2d99851445d2c80a63b92c6ca406ea",
     "src/llm/wire-config.ts": "1fa8d09c8f1a22895873e09279ac08184636b9f1bf7328d4e5105de93503181d",
-    "src/provider-registry.ts": "2501161a005c8e544d5464dc025537be5b01b784fdf1757ba0aabf76d46c3200"
+    "src/provider-registry.ts": "0e7f90149b676189df56f7404c08bf9780c4dde3fa5f5ecd329501f57f463fc6"
   },
   "fixture_sha256_by_file": {
     "README.md": "8285ef84a200b1a6fa73e2eb283393243370e40cd47fa3f1a7c0be474c139335",
