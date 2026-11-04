@@ -139,6 +139,11 @@ export const PROVIDER_REGISTRY: Record<string, ProviderConfig> = {
     provider: "openai",
     envKey: "OPENAI_API_KEY",
     baseUrl: "https://api.openai.com/v1",
+    // OpenAI's own chat models (reasoning, gpt-5/gpt-6 families) reject
+    // max_tokens with HTTP 400 and require max_completion_tokens.
+    compat: {
+      maxTokensField: "max_completion_tokens",
+    },
   },
   deepseek: {
     api: "openai-completions",
