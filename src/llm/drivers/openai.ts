@@ -59,8 +59,10 @@ export class OpenAICompatibleDriver implements LlmDriver {
       body.stream_options = { include_usage: true };
     }
 
-    if (
-      !skipReasoning &&
+    // OpenAI defaults to reasoning when omitted, so tools require an explicit "none".
+    if (skipReasoning) {
+      body.reasoning_effort = "none";
+    } else if (
       compat?.supportsReasoningEffort !== false &&
       req.reasoningEffort &&
       req.reasoningEffort !== "off"
@@ -92,11 +94,11 @@ export class OpenAICompatibleDriver implements LlmDriver {
             let errText = await res.text().catch(() => "");
             let detail: { error?: { param?: string; message?: string } } = {};
             try { detail = JSON.parse(errText); } catch { /* not a structured API error */ }
-            if (res.status === 400 && firstParty && tools.length > 0 && body.reasoning_effort && !switched &&
+            if (res.status === 400 && firstParty && tools.length > 0 && body.reasoning_effort !== "none" && !switched &&
                 detail.error?.param === "reasoning_effort" && detail.error.message?.includes("Function tools with reasoning_effort")) {
               switched = true;
               noReasoningWithTools.add(req.model);
-              delete body.reasoning_effort;
+              body.reasoning_effort = "none";
               res = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify(body), signal: req.signal });
               if (res.ok && res.body) return res;
               errText = await res.text().catch(() => "");

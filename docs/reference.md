@@ -348,7 +348,7 @@ openrouter/claude  # OpenRouter models matching "claude"
 
 Live model lists are cached for six hours. When a provider's live list cannot be fetched, the picker shows that provider's built-in list and adds a `live catalog unavailable` note naming the provider.
 
-`/reasoning <level>` sets reasoning effort for the session (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`). Claude 5 models use adaptive thinking, and the effort level maps onto it.
+`/reasoning <level>` sets reasoning effort for the session (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`). Claude 5 models use adaptive thinking, and the effort level maps onto it. On first-party OpenAI, gpt-6.1 models use reasoning effort `none` when tools are present due to a chat completions limitation.
 
 ## Prompt keys
 
