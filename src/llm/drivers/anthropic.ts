@@ -219,9 +219,22 @@ export class AnthropicDriver implements LlmDriver {
           lenientCalls = flushed.calls;
         }
 
+        const usageEvent: StreamEvent = {
+          type: "usage",
+          usage: {
+            input: inputTokens,
+            output: outputTokens,
+            totalTokens: inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens,
+            cacheReadTokens,
+            cacheWriteTokens,
+          },
+        };
+
         // A refusal that produced no text must not look like an empty stop.
         // A refusal that did produce text stays a normal stop below.
+        // Usage is reported either way; the early return used to skip it.
         if (stopReason === "refusal" && accumulatedContent.trim() === "") {
+          events.push(usageEvent);
           events.push({
             type: "error",
             error: new Error("The model declined to answer"),
@@ -230,17 +243,7 @@ export class AnthropicDriver implements LlmDriver {
           return events;
         }
 
-        const totalTokens = inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens;
-        events.push({
-          type: "usage",
-          usage: {
-            input: inputTokens,
-            output: outputTokens,
-            totalTokens,
-            cacheReadTokens,
-            cacheWriteTokens,
-          },
-        });
+        events.push(usageEvent);
 
         // Block completion alone does not authorize a tool; wait for the message terminal.
         const normalStop = stopReason === undefined || ["tool_use", "end_turn", "stop_sequence", "pause_turn"].includes(stopReason);

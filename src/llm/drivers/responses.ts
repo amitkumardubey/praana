@@ -36,24 +36,34 @@ function headerAccountId(headers: HeadersInit | Record<string, string> | undefin
   }
 }
 
+function finiteStatus(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+/** Numeric HTTP status from an error body, then a string code such as rate_limit_exceeded. */
+function statusFromErrorBody(body: unknown): number | undefined {
+  const direct = finiteStatus(body);
+  if (direct !== undefined) return direct;
+  if (!body || typeof body !== "object") return undefined;
+  const record = body as Record<string, unknown>;
+  const code = finiteStatus(record.code);
+  if (code !== undefined) return code;
+  const status = finiteStatus(record.status);
+  if (status !== undefined) return status;
+  return statusForProviderErrorCode(record.code ?? record.type);
+}
+
 function responsesErrorStatus(parsed: Record<string, unknown>): number | undefined {
-  const candidates: unknown[] = [];
-  if (typeof parsed.code === "string") candidates.push(parsed.code);
-  const pushBody = (body: unknown): void => {
-    if (!body || typeof body !== "object") return;
-    const record = body as Record<string, unknown>;
-    candidates.push(record.code, record.type);
-  };
-  pushBody(parsed.error);
+  const fromError = statusFromErrorBody(parsed.error);
+  if (fromError !== undefined) return fromError;
   const response = parsed.response;
   if (response && typeof response === "object") {
-    pushBody((response as { error?: unknown }).error);
+    const nested = statusFromErrorBody((response as { error?: unknown }).error);
+    if (nested !== undefined) return nested;
   }
-  for (const candidate of candidates) {
-    const status = statusForProviderErrorCode(candidate);
-    if (status !== undefined) return status;
-  }
-  return undefined;
+  const top = finiteStatus(parsed.status);
+  if (top !== undefined) return top;
+  return statusForProviderErrorCode(parsed.code);
 }
 
 function finiteToken(value: unknown): number | undefined {
@@ -306,7 +316,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
         if (codex && type === "response.incomplete") {
           const outcome = applyCodexIncomplete();
           if (outcome === "cutoff") toolCutoff = true;
-          else if (outcome === "error") return fail(responsesErrorMessage(parsed, type));
+          else if (outcome === "error") return fail(responsesErrorMessage(parsed, type), responsesErrorStatus(parsed));
         }
 
         const usage = readResponsesUsage(parsed, latestUsage);
@@ -460,7 +470,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
           const resp = parsed.response as Record<string, unknown> | undefined;
           const status = typeof resp?.status === "string" ? resp.status : "";
           if (status === "failed" || status === "cancelled" || parsed.error != null || resp?.error != null) {
-            return fail(responsesErrorMessage(parsed, type));
+            return fail(responsesErrorMessage(parsed, type), responsesErrorStatus(parsed));
           }
         }
 
@@ -474,7 +484,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
           terminalReceived = true;
           if (status === "incomplete") {
             const outcome = applyCodexIncomplete();
-            if (outcome === "error") return fail(responsesErrorMessage(parsed, type));
+            if (outcome === "error") return fail(responsesErrorMessage(parsed, type), responsesErrorStatus(parsed));
             if (outcome === "cutoff") return fail(toolCutoffMessage);
           }
         } else if (type === "response.completed") {
@@ -484,7 +494,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
             terminalReceived = true;
             if (status === "incomplete") {
               const outcome = applyCodexIncomplete();
-              if (outcome === "error") return fail(responsesErrorMessage(parsed, type));
+              if (outcome === "error") return fail(responsesErrorMessage(parsed, type), responsesErrorStatus(parsed));
               if (outcome === "cutoff") return fail(toolCutoffMessage);
             }
           } else if (status === "incomplete") {

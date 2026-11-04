@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it } from "bun:test";
+import { AnthropicDriver } from "../src/llm/drivers/anthropic.js";
 import { GoogleDriver } from "../src/llm/drivers/google.js";
+import { OpenAIResponsesDriver } from "../src/llm/drivers/responses.js";
 import { parseSseStream } from "../src/llm/sse.js";
+import { isDefaultHostedEndpoint, resolveStreamEndMode } from "../src/llm/stream-end.js";
+import { resolveLlmStreamTimeouts } from "../src/llm/stream-guard.js";
 import { createTestLogger, getAppLogger, setAppLogger, type PraanaLogger } from "../src/logger.js";
 import type { ResolvedAuth, StreamEvent, StreamRequest } from "../src/llm/types.js";
 
@@ -101,5 +105,120 @@ describe("discarded SSE tail", () => {
     const data = await read(['data: {"ok":true}\n\n']);
     expect(data).toEqual(['{"ok":true}']);
     expect(lines.some((line) => line.includes("partial SSE line"))).toBe(false);
+  });
+});
+
+async function drive(
+  driver: { stream: (req: StreamRequest, auth: ResolvedAuth) => AsyncIterable<StreamEvent> },
+  body: string,
+  request: StreamRequest,
+  auth: ResolvedAuth,
+): Promise<StreamEvent[]> {
+  globalThis.fetch = (async () => new Response(body, { status: 200 })) as typeof fetch;
+  const events: StreamEvent[] = [];
+  for await (const event of driver.stream(request, auth)) events.push(event);
+  return events;
+}
+
+const chatReq = (provider: string): StreamRequest => ({
+  model: "m",
+  provider,
+  messages: [{ role: "user", content: "hi" }],
+  strictStreamEnd: true,
+});
+
+describe("Anthropic refusal usage", () => {
+  it("reports token usage before the refusal error", async () => {
+    const events = await drive(
+      new AnthropicDriver(),
+      sse([
+        {
+          type: "message_start",
+          message: {
+            usage: { input_tokens: 11, cache_read_input_tokens: 2, cache_creation_input_tokens: 3 },
+          },
+        },
+        { type: "message_delta", delta: { stop_reason: "refusal" }, usage: { output_tokens: 4 } },
+        { type: "message_stop" },
+      ]),
+      chatReq("anthropic"),
+      { apiKey: "test-key" },
+    );
+    const usageAt = events.findIndex((event) => event.type === "usage");
+    const errorAt = events.findIndex((event) => event.type === "error");
+    expect(usageAt).toBeGreaterThanOrEqual(0);
+    expect(errorAt).toBeGreaterThan(usageAt);
+    expect(events[usageAt]).toEqual({
+      type: "usage",
+      usage: {
+        input: 11,
+        output: 4,
+        totalTokens: 20,
+        cacheReadTokens: 2,
+        cacheWriteTokens: 3,
+      },
+    });
+    expect(events[errorAt]).toMatchObject({
+      type: "error",
+      retryable: false,
+    });
+    expect(events.some((event) => event.type === "done")).toBe(false);
+  });
+});
+
+describe("Responses numeric error status", () => {
+  const auth: ResolvedAuth = { apiKey: "test-key" };
+
+  async function statusOf(frame: unknown, provider = "openai"): Promise<number | undefined> {
+    const events = await drive(
+      new OpenAIResponsesDriver(),
+      sse([frame]),
+      chatReq(provider),
+      provider === "openai-codex"
+        ? { bearerToken: `e30.${Buffer.from(JSON.stringify({ "https://api.openai.com/auth": { chatgpt_account_id: "acct" } })).toString("base64url")}.sig` }
+        : auth,
+    );
+    const error = events.find((event) => event.type === "error");
+    return error?.type === "error" ? error.status : undefined;
+  }
+
+  it("reads a numeric error.code as the HTTP status", async () => {
+    expect(await statusOf({ type: "error", error: { code: 429, message: "slow down" } })).toBe(429);
+  });
+
+  it("reads a numeric error.status as the HTTP status", async () => {
+    expect(await statusOf({ type: "error", error: { status: 503, message: "down" } })).toBe(503);
+  });
+
+  it("reads a numeric code on a failed response.completed", async () => {
+    expect(await statusOf({
+      type: "response.completed",
+      response: { status: "failed", error: { code: 429, message: "slow down" } },
+    })).toBe(429);
+  });
+
+  it("reads a numeric top-level status and a numeric response.error", async () => {
+    expect(await statusOf({ type: "error", status: 503, error: { message: "down" } })).toBe(503);
+    expect(await statusOf({ type: "response.failed", response: { error: 429 } })).toBe(429);
+  });
+
+  it("reads a numeric code on a Codex response.incomplete error", async () => {
+    expect(await statusOf({
+      type: "response.incomplete",
+      response: {
+        status: "incomplete",
+        incomplete_details: { reason: "content_filter" },
+        error: { code: 503, message: "nope" },
+      },
+    }, "openai-codex")).toBe(503);
+  });
+});
+
+describe("hosted endpoint whitespace", () => {
+  it("trims a base URL before the hosted and strict checks", () => {
+    const url = " https://api.openai.com/v1";
+    expect(isDefaultHostedEndpoint("openai", url)).toBe(true);
+    expect(resolveStreamEndMode("openai", "auto", url)).toBe("strict");
+    expect(resolveLlmStreamTimeouts({ provider: "openai", baseUrl: url }).connectTimeoutMs).toBe(60_000);
   });
 });

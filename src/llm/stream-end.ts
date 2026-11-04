@@ -49,21 +49,14 @@ function parseEndpoint(url: string): URL | null {
  * A missing scheme is https, so `api.openai.com/v1` matches the registry host.
  */
 export function endpointOrigin(url: string | undefined): { host: string; protocol: string } | null {
-  if (!url || !url.trim()) return null;
-  const parsed = parseEndpoint(url);
+  const trimmed = url?.trim();
+  if (!trimmed) return null;
+  const parsed = parseEndpoint(trimmed);
   if (!parsed) return null;
   return {
     host: parsed.host.replace(/\.$/, "").toLowerCase(),
     protocol: parsed.protocol,
   };
-}
-
-/** Hostname of an absolute or scheme-relative base URL, or null when it is unset. */
-export function endpointHostname(url: string | undefined): string | null {
-  if (!url || !url.trim()) return null;
-  const parsed = parseEndpoint(url);
-  if (!parsed) return null;
-  return parsed.hostname.replace(/\.$/, "").toLowerCase();
 }
 
 /**
