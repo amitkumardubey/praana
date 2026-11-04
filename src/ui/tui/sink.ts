@@ -501,7 +501,7 @@ export class OpenTuiSink implements TurnUiSink {
     delta: string,
   ): void {
     const batchMs = this.opts.streamBatchMs ?? 0;
-    if (batchMs <= 0) {
+    if (batchMs <= 0 || this.disposed) {
       this.applyTranscriptEvent({
         type: kind === "assistant" ? "assistant_delta" : "thinking_delta",
         id,
@@ -510,7 +510,6 @@ export class OpenTuiSink implements TurnUiSink {
       });
       return;
     }
-    if (this.disposed) return;
     // A delta for a different stream than the pending one flushes the old
     // stream first so relative order across assistant/thinking is preserved.
     if (this.pendingDelta && this.pendingDelta.id !== id) {

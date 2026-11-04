@@ -340,14 +340,39 @@ describe("OpenTuiSink stream batching", () => {
     expect(scheduler.pendingTimers).toBe(0);
   });
 
-  it("deltas after dispose are ignored (no timer, no transcript change)", () => {
+  it("same call sequence with batch 0 and batch 33 after dispose gives the same transcript", () => {
     const scheduler = new FakeScheduler();
-    const { sink, mount } = makeSink({ streamBatchMs: 33, scheduler });
-    sink.onTextDelta("a");
-    sink.dispose();
-    sink.onTextDelta("b");
-    expect(mount.calls).toHaveLength(2);
+    const batchedStore = createTranscriptStore();
+    const unbatchedStore = createTranscriptStore();
+    const { sink: batched } = makeSink({
+      streamBatchMs: 33,
+      scheduler,
+      mount: batchedStore.mount,
+    });
+    const { sink: unbatched } = makeSink({
+      streamBatchMs: 0,
+      mount: unbatchedStore.mount,
+    });
+
+    batched.onTextDelta("hello ");
+    unbatched.onTextDelta("hello ");
+    scheduler.advance(10);
+    batched.dispose();
+    unbatched.dispose();
+
+    // Late deltas after dispose (e.g. from an aborted turn)
+    batched.onTextDelta("late text");
+    unbatched.onTextDelta("late text");
+    batched.onThinkingDelta("late thought");
+    unbatched.onThinkingDelta("late thought");
+
     expect(scheduler.pendingTimers).toBe(0);
+    expect(JSON.stringify(batchedStore.entries)).toBe(
+      JSON.stringify(unbatchedStore.entries),
+    );
+
+    batchedStore.dispose();
+    unbatchedStore.dispose();
   });
 
   it("real transcript store keeps a consistent view with batching", () => {
