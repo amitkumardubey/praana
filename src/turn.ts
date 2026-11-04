@@ -470,6 +470,13 @@ function summarizeWrapUpToolCall(call: any): { id?: string; name?: string; args:
   return { id, name, args: capWrapUpToolResult(raw) };
 }
 
+function wrapUpToolResultText(message: { content?: unknown; result?: unknown }): string {
+  if (Array.isArray(message.content)) return textPartsOnly(message.content);
+  if (typeof message.result === "string") return message.result;
+  if (typeof message.content === "string") return message.content;
+  return textPartsOnly(message.result ?? message.content);
+}
+
 function appendMergedUser(out: Array<{ role: string; content: string }>, text: string): void {
   const prev = out[out.length - 1];
   if (prev?.role === "user") {
@@ -490,13 +497,7 @@ export function flattenWrapUpHistory(messages: readonly any[]): any[] {
   for (const message of messages) {
     if (!message || typeof message !== "object") continue;
     if (message.role === "toolResult" || message.role === "tool_result") {
-      const text = Array.isArray(message.content)
-        ? textPartsOnly(message.content)
-        : typeof message.result === "string"
-          ? message.result
-          : typeof message.content === "string"
-            ? message.content
-            : textPartsOnly(message.result ?? message.content);
+      const text = wrapUpToolResultText(message);
       appendMergedUser(
         out,
         `Tool result (${message.toolName ?? "unknown"}, ${message.toolCallId ?? ""}): ${capWrapUpToolResult(text)}`,
@@ -1105,10 +1106,7 @@ export async function runTurn(
     let content = message.content;
     let strippedContent = false;
     if (Array.isArray(content)) {
-      const next = content.filter((part: any) => {
-        if (!part || typeof part !== "object") return true;
-        return part.type !== "tool_use" && part.type !== "toolUse" && part.type !== "toolCall";
-      });
+      const next = content.filter((part: unknown) => !isToolUsePart(part));
       strippedContent = next.length !== content.length;
       content = next;
     }
