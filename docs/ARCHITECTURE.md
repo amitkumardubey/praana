@@ -578,7 +578,7 @@ log_dir = "~/.praana/sessions"
 
 ### Mid-session model switching
 
-`/model` is handled by `model-resolver.ts` and validated before the switch toast appears. Bare `/model` opens a searchable TUI selector.
+`/model` is handled by `model-resolver.ts` and validated before the switch toast appears. Bare `/model` opens a searchable TUI selector (search by provider or model id).
 
 **Syntax:** `/model [provider] <model-id>` — provider is optional and space-separated only (not `provider/model` as a single token unless it is the model id on the current provider).
 

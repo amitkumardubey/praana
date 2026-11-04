@@ -334,7 +334,21 @@ A normal quit — `/exit`, or Ctrl+C with an empty prompt — exits `0` when a s
 
 Unknown ids resolve against the bundled pi-ai catalog first, then against the provider's live catalog (HTTP `/models` or Bedrock control-plane APIs; cached 6 hours at `~/.praana/provider-catalog-cache.json`).
 
-Live model lists hide known non-chat models and show newest first when creation times are available; the current model stays pinned in the selector. Curated fallback lists retain their written order. Claude 5 uses adaptive thinking when reasoning is enabled.
+### Choosing a model
+
+`/model` with no argument opens a searchable picker; `/model [provider] <id>` switches straight to a model you already know. The picker pins the current model at the top, groups the rest by provider, and lists newest first within a provider when that provider reports creation times. Known non-chat models (embeddings, speech, image, video, moderation, legacy completions) are left out of live lists; built-in fallback lists keep their written order.
+
+**Search** splits the query on spaces and `/`. A word that appears in a provider name narrows the list to that provider's models, and every other word fuzzy-matches model ids:
+
+```text
+anthropic          # everything Anthropic offers
+openai gpt         # OpenAI models matching "gpt"
+openrouter/claude  # OpenRouter models matching "claude"
+```
+
+Live model lists are cached for six hours. When a provider's live list cannot be fetched, the picker shows that provider's built-in list and adds a `live catalog unavailable` note naming the provider.
+
+`/reasoning <level>` sets reasoning effort for the session (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`). Claude 5 models use adaptive thinking, and the effort level maps onto it.
 
 ## Prompt keys
 
