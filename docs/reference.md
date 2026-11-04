@@ -93,6 +93,8 @@ PRAANA pins `@opentui/core`, `@opentui/solid`, and `@opentui/keymap` to exactly 
 
 For terminals where streaming answers flicker, set `PRAANA_TUI_SYNC_OUTPUT` to `always` to force synchronized output or `never` to disable it. Values are case-insensitive; `auto`, an unset variable, or any other value uses OpenTUI's default.
 
+To reduce UI churn during rapid streaming, set `PRAANA_TUI_STREAM_BATCH_MS` to coalesce assistant and thinking stream deltas into one redraw per interval (in milliseconds, capped at 250) using a leading-edge timer. Default is `0` (off, per-delta updates); invalid or negative values fall back to 0. Experimental.
+
 ## First run
 
 ```bash
