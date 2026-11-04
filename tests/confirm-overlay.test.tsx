@@ -1,7 +1,7 @@
 /**
- * Step-pause confirm overlay. Enter continues once the arm delay has
- * elapsed. Esc stops (wrap-up). Ctrl+C is not consumed, including during
- * the arm window, so the global handler can abort the turn.
+ * Step-pause confirm overlay. Enter continues and Esc stops only after the
+ * arm delay. Ctrl+C is not consumed, including during that window, so the
+ * global handler can abort the turn.
  */
 import { describe, expect, it } from "bun:test";
 import { createTestRenderer } from "@opentui/core/testing";
@@ -78,7 +78,7 @@ describe("ConfirmOverlay arm delay", () => {
   it("classifies Ctrl+C as a hard abort inside and outside the arm window", () => {
     expect(classifyStepPauseKey("c", true, false)).toBe("passthrough");
     expect(classifyStepPauseKey("c", true, true)).toBe("passthrough");
-    expect(classifyStepPauseKey("escape", false, false)).toBe("stop");
+    expect(classifyStepPauseKey("escape", false, false)).toBe("ignore");
     expect(classifyStepPauseKey("esc", false, true)).toBe("stop");
     expect(classifyStepPauseKey("enter", false, false)).toBe("ignore");
     expect(classifyStepPauseKey("return", false, true)).toBe("continue");
@@ -102,10 +102,37 @@ describe("ConfirmOverlay arm delay", () => {
     overlay.dispose();
   });
 
-  it("stops on Esc while the arm window is open", async () => {
+  it("ignores Esc while the arm window is open", async () => {
     const { setup, pending, overlay } = await mount(60_000);
     setup.mockInput.pressEscape();
-    expect(await settledSoon(pending)).toEqual({ settled: true, value: false });
+    expect(await settledSoon(pending)).toEqual({ settled: false });
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+
+  it("does not stop when a second Esc follows a palette dismiss inside the arm window", async () => {
+    const overlay = createOverlayUi();
+    overlay.showPalette();
+    const pending = overlay.showConfirm("Continue?");
+    expect(overlay.kind()).toBe("palette");
+    overlay.dismiss();
+    expect(overlay.kind()).toBe("confirm");
+    const setup = await createTestRenderer({ width: 80, height: 24 });
+    const keymap = createDefaultOpenTuiKeymap(setup.renderer);
+    await render(
+      () =>
+        createComponent(KeymapProvider, {
+          keymap,
+          get children() {
+            return createComponent(ConfirmOverlay, { overlay, armMs: 60_000 });
+          },
+        }),
+      setup.renderer,
+    );
+    for (let i = 0; i < 4; i++) await setup.renderOnce();
+    await setup.flush();
+    setup.mockInput.pressEscape();
+    expect(await settledSoon(pending)).toEqual({ settled: false });
     setup.renderer.destroy();
     overlay.dispose();
   });
