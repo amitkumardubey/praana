@@ -25,27 +25,20 @@
  * reset the next file (or a timer that outlives its test) would read
  * `~/.praana` of the real home again.
  *
- * The ONNX weight cache is shared between runs (`<tmpdir>/praana-test-model-
- * cache`) and warmed before the tests start: a cold home made the embedder
- * download ~23 MB from HuggingFace inside whichever test needed it first, and
- * `native-status` only allows 5s.
+ * This preload is hermetic: it never touches the network. It does not fetch or
+ * seed the ONNX weights the embedder wants (that is an unpinned ~23 MB download
+ * from HuggingFace), so a test that runs a real `Session.create` starts with an
+ * empty model cache. Tests that only care about a non-memory probe must keep
+ * the embedder from downloading inside their own timeout — see the recorded
+ * consent in `tests/native-status.test.ts`.
  *
  * `PRAANA_TEST_REAL_HOME=1` opts out (for a rare test that needs the real
  * home); everything below is then a no-op.
  */
 import { afterAll, afterEach, beforeEach } from "bun:test";
-import {
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  renameSync,
-  rmSync,
-  symlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { appHomePath } from "../../src/app-identity.js";
+import { join } from "node:path";
 import { providerEnvKeyNames } from "./provider-env-keys.js";
 
 /**
@@ -91,37 +84,6 @@ let tempDir: string | null = null;
 let home = envValue("HOME");
 let praanaHome = envValue("PRAANA_HOME");
 
-/** Preset the app downloads for `embedder = "auto"` (see src/memory/transformers-models.ts). */
-const MODEL_ID = "Xenova/all-MiniLM-L6-v2";
-const MODEL_FILES = ["tokenizer.json", "onnx/model_quantized.onnx"];
-
-/** Best effort: fetch the default ONNX weights into the shared cache. */
-async function prewarmModelCache(cacheDir: string): Promise<void> {
-  const modelDir = join(cacheDir, MODEL_ID);
-  if (MODEL_FILES.every((rel) => existsSync(join(modelDir, rel)))) return;
-
-  // Capture the real fetch: tests replace globalThis.fetch with spies.
-  const realFetch = globalThis.fetch;
-  const signal = AbortSignal.timeout(30_000);
-  try {
-    for (const rel of MODEL_FILES) {
-      const dest = join(modelDir, rel);
-      if (existsSync(dest)) continue;
-      const res = await realFetch(
-        `https://huggingface.co/${MODEL_ID}/resolve/main/${rel}`,
-        { signal },
-      );
-      if (!res.ok) return;
-      const body = Buffer.from(await res.arrayBuffer());
-      mkdirSync(dirname(dest), { recursive: true });
-      writeFileSync(`${dest}.tmp`, body);
-      renameSync(`${dest}.tmp`, dest);
-    }
-  } catch {
-    // Offline or slow network: leave the cache cold, tests behave as before.
-  }
-}
-
 if (isolated) {
   tempDir = mkdtempSync(join(tmpdir(), "praana-test-home-"));
   home = tempDir;
@@ -142,20 +104,6 @@ if (isolated) {
   // (session-end consolidation, log flushes) can land in the gap after its own
   // afterEach deleted PRAANA_HOME, and would then write to the real home.
   afterEach(applyIsolation);
-
-  // Share one ONNX weight cache between runs and warm it before the tests:
-  // a cold home makes the embedder download inside whichever test needs it
-  // first, and `native-status` only allows 5s for that probe.
-  const modelCacheDir = join(tmpdir(), "praana-test-model-cache");
-  const modelsPath = appHomePath("models");
-  mkdirSync(modelCacheDir, { recursive: true });
-  mkdirSync(appHomePath(), { recursive: true });
-  try {
-    symlinkSync(modelCacheDir, modelsPath, process.platform === "win32" ? "junction" : "dir");
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-  }
-  await prewarmModelCache(modelCacheDir);
 
   const dir = tempDir;
   let removed = false;
