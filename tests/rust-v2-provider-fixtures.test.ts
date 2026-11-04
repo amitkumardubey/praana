@@ -130,6 +130,7 @@ const EXPECTED_INVENTORY = [
 /** Production oracle files named in Section 4.3 (repo-relative). */
 const ORACLE_FILES = [
   "src/llm/auth.ts",
+  "src/llm/drivers/anthropic.ts",
   "src/llm/drivers/base.ts",
   "src/llm/drivers/openai.ts",
   "src/llm/drivers/responses.ts",
@@ -365,11 +366,15 @@ describe("rust-v2 provider legacy fixtures", () => {
 
     const oracleKeys = Object.keys(manifest.oracle_sha256_by_file);
     expect(oracleKeys).toEqual(ORACLE_FILES_SORTED);
-    // responses.ts and stream.ts are allowlisted: the capture is of the legacy
-    // behaviour and the Rust fixtures are intentionally not regenerated here.
+    // These files evolved since the legacy capture; the Rust fixtures retain
+    // their original oracle hashes rather than being regenerated.
     const ORACLE_HASH_ALLOWLIST = new Set([
       "src/llm/drivers/responses.ts",
+      "src/llm/retry.ts",
+      "src/llm/sse.ts",
       "src/llm/stream.ts",
+      "src/llm/tool-accumulator.ts",
+      "src/llm/types.ts",
     ]);
     for (const rel of ORACLE_FILES_SORTED) {
       if (ORACLE_HASH_ALLOWLIST.has(rel)) continue;

@@ -70,9 +70,20 @@ export type StreamEvent =
       reason: "stop" | "tool_use" | "length" | "abort" | "error" | "rate_limit" | "timeout";
       message: AssistantMessage;
     }
-  | { type: "error"; error: Error; status?: number; retryable: boolean };
+  | {
+      type: "error";
+      error: Error;
+      status?: number;
+      retryable: boolean;
+      /**
+       * `premature_end`: a clean close never delivered the provider's final event.
+       * `connect_timeout`: response headers did not arrive within the connect budget.
+       */
+      kind?: "premature_end" | "connect_timeout";
+    };
 
 import type { ProviderWireCompat } from "../provider-registry.js";
+import type { StreamEndCheck } from "./stream-end.js";
 
 /** Resolved credentials passed to drivers. */
 export interface ResolvedAuth {
@@ -109,6 +120,24 @@ export interface StreamRequest {
   /** Request-level credential overlay (OAuth refresh / RuntimeModel). */
   apiKey?: string;
   bearerToken?: string;
+  /**
+   * When false, a clean close without the provider's final signal is a normal
+   * finish. `streamLlmResponse` sets this from `streamEndCheck`.
+   * When omitted, Responses is lenient except for Codex; other drivers are strict.
+   */
+  strictStreamEnd?: boolean;
+  /** How `strictStreamEnd` was chosen. Omitted means `auto`. */
+  streamEndCheck?: StreamEndCheck;
+  /**
+   * Milliseconds to wait for response headers. `0` disables.
+   * Omitted: 60s for hosted first-party providers, 300s otherwise.
+   */
+  connectTimeoutMs?: number;
+  /**
+   * Milliseconds of upstream silence before the stream is aborted. `0` disables.
+   * Omitted: 300s.
+   */
+  idleTimeoutMs?: number;
 }
 
 /** Aggregated result of an LLM turn stream. */

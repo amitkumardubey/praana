@@ -15,7 +15,19 @@ import type {
 } from "../types.js";
 import { parseSseStream } from "../sse.js";
 import { ToolCallAccumulator } from "../tool-accumulator.js";
-import { withPreEmissionRetry } from "../retry.js";
+import { runGuardedProviderStream } from "../stream-guard.js";
+import { logLenientStreamEnd, prematureEndError, toolCutoffError } from "../stream-end.js";
+
+const ANTHROPIC_ERROR_STATUSES: Record<string, number> = {
+  overloaded_error: 529,
+  rate_limit_error: 429,
+  api_error: 500,
+  authentication_error: 401,
+  permission_error: 403,
+  not_found_error: 404,
+  invalid_request_error: 400,
+  request_too_large: 413,
+};
 
 type ThinkingMode = "adaptive" | "budget";
 const learnedThinkingModes = new Map<string, ThinkingMode>();
@@ -75,52 +87,6 @@ export class AnthropicDriver implements LlmDriver {
     applyThinking();
     let switched = false;
 
-    let response: Response;
-    try {
-      response = await withPreEmissionRetry(
-        async () => {
-          let res = await fetch(endpoint, {
-            method: "POST",
-            headers,
-            body: JSON.stringify(body),
-            signal: req.signal,
-          });
-
-          if (!res.ok) {
-            let errText = await res.text().catch(() => "");
-            const alternate = mode === "budget" ? /thinking\.type\.adaptive/i.test(errText) : /adaptive.{0,80}not supported|not supported.{0,80}adaptive/i.test(errText);
-            if (res.status === 400 && thinkingOn && !switched && alternate) {
-              switched = true;
-              mode = mode === "budget" ? "adaptive" : "budget";
-              learnedThinkingModes.set(req.model, mode);
-              applyThinking();
-              res = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify(body), signal: req.signal });
-              if (res.ok && res.body) return res;
-              errText = await res.text().catch(() => "");
-            }
-            const err: any = new Error(`Anthropic API error (${res.status}): ${errText}`);
-            err.status = res.status;
-            throw err;
-          }
-
-          if (!res.body) {
-            throw new Error("Empty response body from Anthropic endpoint");
-          }
-
-          return res;
-        },
-        { signal: req.signal },
-      );
-    } catch (err: any) {
-      yield {
-        type: "error",
-        error: err instanceof Error ? err : new Error(String(err)),
-        status: err.status,
-        retryable: false,
-      };
-      return;
-    }
-
     const accumulator = new ToolCallAccumulator();
     let accumulatedContent = "";
     let accumulatedThinking = "";
@@ -133,36 +99,70 @@ export class AnthropicDriver implements LlmDriver {
     let cacheWriteTokens = 0;
 
     let currentBlockIndex = -1;
-    let currentBlockType: string | null = null;
+    let stopReason: string | undefined;
+    let sawTerminal = false;
+    let emittedDelta = false;
 
-    try {
-      for await (const event of parseSseStream(response.body!)) {
-        if (req.signal?.aborted) {
-          yield {
-            type: "done",
-            reason: "abort",
-            message: {
-              role: "assistant",
-              content: accumulatedContent,
-              thinking: accumulatedThinking || undefined,
-              thinkingSignature,
-              toolCalls: accumulator.flush(),
-            },
-          };
-          return;
-        }
+    const haltedMessage = (): AssistantMessage => ({
+      role: "assistant",
+      content: accumulatedContent,
+      thinking: accumulatedThinking || undefined,
+      thinkingSignature,
+      toolCalls: [],
+    });
 
+    yield* runGuardedProviderStream({
+      req,
+      haltedMessage,
+      retryForm: (status, text) => {
+        const alternate = mode === "budget" ? /thinking\.type\.adaptive/i.test(text) : /adaptive.{0,80}not supported|not supported.{0,80}adaptive/i.test(text);
+        if (status !== 400 || !thinkingOn || switched || !alternate) return false;
+        switched = true;
+        mode = mode === "budget" ? "adaptive" : "budget";
+        learnedThinkingModes.set(req.model, mode);
+        applyThinking();
+        return true;
+      },
+      httpErrorLabel: "Anthropic API error",
+      emptyBodyMessage: "Empty response body from Anthropic endpoint",
+      request: (guard) =>
+        guard.fetch(endpoint, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+        }),
+      frames: (byteStream) => parseSseStream(byteStream),
+      onFrame: (event) => {
+        const events: StreamEvent[] = [];
+        let terminal = false;
         const dataStr = event.data?.trim();
-        if (!dataStr) continue;
+        if (!dataStr) return { events };
 
         let parsed: any;
         try {
           parsed = JSON.parse(dataStr);
         } catch {
-          continue;
+          return { events };
         }
 
         const type = parsed.type;
+
+        if (event.event === "error" || type === "error") {
+          const errBody = parsed.error ?? {};
+          const errType = typeof errBody.type === "string" ? errBody.type : "";
+          const message =
+            typeof errBody.message === "string" && errBody.message
+              ? errBody.message
+              : "Anthropic stream error";
+          const status = typeof errBody.status === "number" ? errBody.status : ANTHROPIC_ERROR_STATUSES[errType];
+          events.push({
+            type: "error",
+            error: new Error(message),
+            status,
+            retryable: false,
+          });
+          return { events, stop: true };
+        }
 
         if (type === "message_start") {
           const usage = parsed.message?.usage;
@@ -174,28 +174,29 @@ export class AnthropicDriver implements LlmDriver {
         } else if (type === "content_block_start") {
           currentBlockIndex = parsed.index ?? 0;
           const block = parsed.content_block;
-          currentBlockType = block?.type ?? null;
-
-          if (currentBlockType === "tool_use") {
+          if (block?.type === "tool_use") {
             const res = accumulator.processChunk({
               index: currentBlockIndex,
               id: block.id,
               name: block.name,
             });
             if (res.started) {
-              yield { type: "tool_call_start", id: res.started.id, name: res.started.name };
+              emittedDelta = true;
+              events.push({ type: "tool_call_start", id: res.started.id, name: res.started.name });
             }
           }
         } else if (type === "content_block_delta") {
           const delta = parsed.delta;
-          if (!delta) continue;
+          if (!delta) return { events };
 
           if (delta.type === "text_delta") {
             accumulatedContent += delta.text;
-            yield { type: "text_delta", delta: delta.text };
+            emittedDelta = true;
+            events.push({ type: "text_delta", delta: delta.text });
           } else if (delta.type === "thinking_delta") {
             accumulatedThinking += delta.thinking;
-            yield { type: "thinking_delta", delta: delta.thinking };
+            emittedDelta = true;
+            events.push({ type: "thinking_delta", delta: delta.thinking });
           } else if (delta.type === "signature_delta") {
             thinkingSignature = (thinkingSignature || "") + delta.signature;
           } else if (delta.type === "input_json_delta") {
@@ -204,72 +205,98 @@ export class AnthropicDriver implements LlmDriver {
               argsDelta: delta.partial_json,
             });
             if (res.delta) {
-              yield { type: "tool_call_delta", id: res.delta.id, argsDelta: res.delta.argsDelta };
+              emittedDelta = true;
+              events.push({ type: "tool_call_delta", id: res.delta.id, argsDelta: res.delta.argsDelta });
             }
           }
-        } else if (type === "content_block_stop") {
-          if (currentBlockType === "tool_use") {
-            accumulator.processChunk({
-              index: currentBlockIndex,
-              isComplete: true,
-            });
-          }
-          currentBlockType = null;
         } else if (type === "message_delta") {
           const delta = parsed.delta;
           if (delta?.stop_reason) {
+            sawTerminal = true;
+            terminal = true;
+            stopReason = delta.stop_reason;
             if (delta.stop_reason === "tool_use") finishReason = "tool_use";
-            else if (delta.stop_reason === "max_tokens") finishReason = "length";
+            else if (delta.stop_reason === "max_tokens" || delta.stop_reason === "model_context_window_exceeded") finishReason = "length";
             else finishReason = "stop";
           }
           const usage = parsed.usage;
           if (usage) {
             outputTokens += usage.output_tokens ?? 0;
           }
+        } else if (type === "message_stop") {
+          sawTerminal = true;
+          terminal = true;
         }
-      }
+        if (terminal) return { events: [...events, ...finishAnthropic()], stop: true };
+        return { events };
+      },
+      onComplete: () => finishAnthropic(),
+    });
 
-      // Emit normalized usage
-      const totalTokens = inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens;
-      yield {
-        type: "usage",
-        usage: {
-          input: inputTokens,
-          output: outputTokens,
-          totalTokens,
-          cacheReadTokens,
-          cacheWriteTokens,
-        },
-      };
-
-      const completedToolCalls = accumulator.flush();
-      if (completedToolCalls.length > 0) {
-        finishReason = "tool_use";
-        for (const tc of completedToolCalls) {
-          yield { type: "tool_call_end", toolCall: tc };
+    function finishAnthropic(): StreamEvent[] {
+        const events: StreamEvent[] = [];
+        let lenientCalls: ToolCall[] | undefined;
+        if (!sawTerminal) {
+          if (req.strictStreamEnd !== false) {
+            events.push(prematureEndError("message_stop", !emittedDelta));
+            return events;
+          }
+          const flushed = accumulator.flush({ allowRepair: false });
+          if (flushed.droppedIds.length > 0) return [toolCutoffError()];
+          logLenientStreamEnd(req.provider);
+          lenientCalls = flushed.calls;
         }
-      }
 
-      const finalAssistant: AssistantMessage = {
-        role: "assistant",
-        content: accumulatedContent,
-        thinking: accumulatedThinking || undefined,
-        thinkingSignature: thinkingSignature || undefined,
-        toolCalls: completedToolCalls.length > 0 ? completedToolCalls : undefined,
-      };
+        const usageEvent: StreamEvent = {
+          type: "usage",
+          usage: {
+            input: inputTokens,
+            output: outputTokens,
+            totalTokens: inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens,
+            cacheReadTokens,
+            cacheWriteTokens,
+          },
+        };
 
-      yield {
-        type: "done",
-        reason: finishReason,
-        message: finalAssistant,
-      };
-    } catch (err: any) {
-      yield {
-        type: "error",
-        error: err instanceof Error ? err : new Error(String(err)),
-        status: err.status,
-        retryable: false,
-      };
+        // A refusal that produced no text must not look like an empty stop.
+        // A refusal that did produce text stays a normal stop below.
+        // Usage is reported either way; the early return used to skip it.
+        if (stopReason === "refusal" && accumulatedContent.trim() === "") {
+          events.push(usageEvent);
+          events.push({
+            type: "error",
+            error: new Error("The model declined to answer"),
+            retryable: false,
+          });
+          return events;
+        }
+
+        events.push(usageEvent);
+
+        // Block completion alone does not authorize a tool; wait for the message terminal.
+        const normalStop = stopReason === undefined || ["tool_use", "end_turn", "stop_sequence", "pause_turn"].includes(stopReason);
+        const completedToolCalls = lenientCalls ?? (normalStop ? accumulator.flush().calls : []);
+        if (completedToolCalls.length > 0) {
+          finishReason = "tool_use";
+          for (const tc of completedToolCalls) {
+            events.push({ type: "tool_call_end", toolCall: tc });
+          }
+        }
+
+        const finalAssistant: AssistantMessage = {
+          role: "assistant",
+          content: accumulatedContent,
+          thinking: accumulatedThinking || undefined,
+          thinkingSignature: thinkingSignature || undefined,
+          toolCalls: completedToolCalls.length > 0 ? completedToolCalls : undefined,
+        };
+
+        events.push({
+          type: "done",
+          reason: finishReason,
+          message: finalAssistant,
+        });
+        return events;
     }
   }
 

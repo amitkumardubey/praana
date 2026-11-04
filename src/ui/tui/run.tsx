@@ -34,10 +34,12 @@ import {
 import type { TranscriptEntry } from "./transcript/model.js";
 import { TranscriptProjection } from "./transcript/projection.js";
 import { createTranscriptStore } from "./transcript/store.js";
+import { releaseMarkdownSyntaxStyles } from "./transcript/markdown-theme.js";
 import { OpenTuiSink } from "./sink.js";
 import { listAllAvailableModels } from "../../model-listing.js";
 import { App } from "./app.js";
 import { createShellUi } from "./shell-ui.js";
+import { parseSynchronizedOutput } from "./render-options.js";
 import { createOverlayUi } from "./overlays/state.js";
 import type { PromptHandle } from "./prompt/index.js";
 import { DEFAULT_CONTEXT_WINDOW } from "../../status-bar.js";
@@ -165,6 +167,7 @@ export async function runTui(
     width: process.stdout.columns ?? 80,
     height: process.stdout.rows ?? 24,
     exitOnCtrlC: false,
+    synchronizedOutput: parseSynchronizedOutput(process.env.PRAANA_TUI_SYNC_OUTPUT),
     consoleOptions: {
       position: ConsolePosition.BOTTOM,
       sizePercent: 25,
@@ -520,7 +523,17 @@ export async function runTui(
     transcript.dispose();
     overlay.dispose();
     ui.dispose();
+    // OpenTUI 0.6.0+ destroys the renderer asynchronously (terminal restore);
+    // await renderer.closed so the shell is left clean before process.exit().
+    // Also release the per-scene markdown SyntaxStyle cache before the scene
+    // owns native resources that stop working once the renderer is destroyed.
+    releaseMarkdownSyntaxStyles(renderer.nativeScene);
     renderer.destroy();
+    try {
+      await renderer.closed;
+    } catch {
+      // Renderer teardown failure: still exit with the requested code.
+    }
     if (!session) {
       process.exit(exitCode);
       return;

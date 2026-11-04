@@ -5,6 +5,7 @@ import {
   type AssistantMessage,
   type StreamRequest,
 } from "./llm/index.js";
+import { DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./llm/stream-guard.js";
 import { appendFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, resolve, isAbsolute } from "node:path";
 import { resolveDefaultSessionLogDir } from "./app-identity.js";
@@ -73,6 +74,9 @@ export interface LlmStreamInput {
   piTools: Array<{ name: string; description: string; parameters: Record<string, unknown> }>;
   signal?: AbortSignal;
   reasoningEffort?: string;
+  connectTimeoutMs?: number;
+  idleTimeoutMs?: number;
+  streamEndCheck?: StreamRequest["streamEndCheck"];
   onTextDelta?: (delta: string) => void;
   onThinkingDelta?: (delta: string) => void;
   onProviderUsage?: (update: ProviderUsageUpdate) => void;
@@ -88,20 +92,33 @@ export interface LlmStreamResult {
   finalMessage: any | null;
   finalReason: "stop" | "length" | "toolUse" | "error" | "aborted" | "timeout" | "rate_limit";
   errorMessage?: string;
+  /** HTTP status from a provider error event, when the driver reported one. */
+  status?: number;
   providerUsage: ProviderUsage | null;
   recordedProviderUsage: boolean;
   assistantTokens: number;
   interrupted: boolean;
+  /** Answer text was already sent to the UI. A retry would duplicate it. */
+  emittedToUi: boolean;
+  /** A tool-call event was emitted. A premature-end retry would repeat it. */
+  emittedToolCall: boolean;
+  /** Driver said this failure can be retried. Read for a premature stream end. */
+  retryable: boolean;
+  /** `premature_end` or `connect_timeout` when the driver reported that kind. */
+  errorKind?: "premature_end" | "connect_timeout";
+  /** True only after a `done` event. A clean close without one stays false. */
+  doneReceived: boolean;
 }
 
 export function isRecoverableStreamError(result: LlmStreamResult): boolean {
   if (result.interrupted) return false;
+  if (result.status === 429 || result.status === 529) return true;
   const reason = result.finalReason;
   const msg = (result.errorMessage ?? "").toLowerCase();
   return (
     reason === "timeout" ||
     reason === "rate_limit" ||
-    /\b(timeout|rate[ _-]?(?:limit|limited)|429|too\s+many\s+requests)\b/i.test(msg)
+    /\b(timeout|rate[ _-]?(?:limit|limited)|too\s+many\s+requests|overload(?:ed)?)\b|\b(?:status|http)\s*[:=]?\s*(?:429|529)\b/i.test(msg)
   );
 }
 
@@ -116,6 +133,97 @@ export function isEmptyStreamResponse(result: LlmStreamResult): boolean {
 
 export function shouldFallback(result: LlmStreamResult): boolean {
   return isRecoverableStreamError(result) || isEmptyStreamResponse(result);
+}
+
+/** Step-0 retry for a clean close that never delivered text or a tool call. */
+export function isPrematureEndRetry(result: LlmStreamResult): boolean {
+  if (result.interrupted || result.emittedToUi || result.emittedToolCall) return false;
+  if (result.retryable !== true) return false;
+  return result.errorKind === "premature_end";
+}
+
+/**
+ * A fallback produced a usable answer and a real `done` event.
+ * Empty stops, aborts, a close with no `done`, and a length stop with no text do not.
+ * A length stop that includes text does, and that answer is committed.
+ */
+export function fallbackFinishedCleanly(result: LlmStreamResult): boolean {
+  if (result.interrupted || !result.doneReceived || result.errorKind !== undefined) return false;
+  if (result.finalReason === "length") return result.fullResponse.trim().length > 0;
+  if (result.finalReason !== "stop" && result.finalReason !== "toolUse") return false;
+  return !isEmptyStreamResponse(result);
+}
+
+/** Reason recorded when a fallback is committed. Idle timeout is not "empty response". */
+export function recordedFallbackReason(result: LlmStreamResult, idleTimeoutMs: number): string {
+  if (result.finalReason === "timeout") return `idle timeout after ${idleTimeoutDuration(idleTimeoutMs)}`;
+  if (result.errorMessage) return result.errorMessage;
+  if (result.errorKind === "premature_end") return "stream ended before the provider sent a final event";
+  if (result.errorKind === "connect_timeout") return "connection timed out";
+  return "empty response";
+}
+
+/**
+ * User-facing line when the idle timer ends a stream.
+ * The partial-answer sentence is included only when text was actually streamed.
+ */
+function idleTimeoutDuration(idleTimeoutMs: number): string {
+  return idleTimeoutMs < 1000
+    ? `${Math.max(0, idleTimeoutMs)}ms`
+    : `${Math.round(idleTimeoutMs / 1000)}s`;
+}
+
+export function idleTimeoutUserMessage(idleTimeoutMs: number, streamedText = false): string {
+  const base = `The model stopped responding (idle timeout after ${idleTimeoutDuration(idleTimeoutMs)}).`;
+  return streamedText ? `${base} The partial answer above was not completed.` : base;
+}
+
+/**
+ * Text kept from a timed-out assistant message.
+ * Tool calls are dropped: a timeout does not run tools, so keeping them would
+ * send a tool call with no tool result on the next request.
+ * Returns null when no text remains.
+ */
+export function assistantTextAfterTimeout(message: unknown): AssistantMessage | null {
+  if (!message || typeof message !== "object") return null;
+  const record = message as {
+    content?: unknown;
+    thinking?: unknown;
+    thinkingSignature?: unknown;
+  };
+  let text = "";
+  if (typeof record.content === "string") {
+    text = record.content;
+  } else if (Array.isArray(record.content)) {
+    text = record.content
+      .filter(
+        (part): part is { type?: string; text?: string } =>
+          !!part && typeof part === "object" && (part as { type?: string }).type === "text",
+      )
+      .map((part) => (typeof part.text === "string" ? part.text : ""))
+      .join("");
+  }
+  if (!text.trim()) return null;
+  const kept: AssistantMessage = { role: "assistant", content: text };
+  if (typeof record.thinking === "string" && record.thinking) kept.thinking = record.thinking;
+  if (typeof record.thinkingSignature === "string" && record.thinkingSignature) {
+    kept.thinkingSignature = record.thinkingSignature;
+  }
+  return kept;
+}
+
+function isConnectExhausted(result: LlmStreamResult): boolean {
+  return result.errorKind === "connect_timeout";
+}
+
+/** Idle silence (`finalReason === "timeout"`). Not retried on the same model. */
+function isIdleTimeout(result: LlmStreamResult): boolean {
+  return result.finalReason === "timeout";
+}
+
+function configuredIdleTimeoutMs(value: number | undefined): number {
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0) return value;
+  return DEFAULT_STREAM_IDLE_TIMEOUT_MS;
 }
 
 export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResult> {
@@ -209,6 +317,9 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
     apiKey: piOpts.apiKey,
     bearerToken: piOpts.bearerToken,
     maxTokens: typeof runtime.maxTokens === "number" ? runtime.maxTokens : undefined,
+    connectTimeoutMs: input.connectTimeoutMs,
+    idleTimeoutMs: input.idleTimeoutMs,
+    streamEndCheck: input.streamEndCheck,
   });
 
   let fullResponse = "";
@@ -220,6 +331,12 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
   let finalReason: LlmStreamResult["finalReason"] = "stop";
   let finalMessage: any = null;
   let errorMessage: string | undefined;
+  let errorStatus: number | undefined;
+  let emittedToUi = false;
+  let emittedToolCall = false;
+  let retryable = false;
+  let errorKind: LlmStreamResult["errorKind"];
+  let doneReceived = false;
 
   for await (const event of stream) {
     if (input.signal?.aborted) {
@@ -227,11 +344,20 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
       break;
     }
     if (event.type === "text_delta") {
+      emittedToUi = true;
       input.onTextDelta?.(event.delta);
       fullResponse += event.delta;
     }
     if (event.type === "thinking_delta") {
       input.onThinkingDelta?.(event.delta);
+    }
+    if (
+      event.type === "tool_call_start" ||
+      event.type === "tool_call_delta" ||
+      event.type === "tool_call_end" ||
+      (event as { type?: string }).type === "toolcall_end"
+    ) {
+      emittedToolCall = true;
     }
     if (event.type === "tool_call_end" || (event as any).type === "toolcall_end") {
       const tc = (event as any).toolCall;
@@ -251,6 +377,7 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
       });
     }
     if (event.type === "done") {
+      doneReceived = true;
       finalReason = event.reason === "tool_use" ? "toolUse" : (event.reason as any);
       finalMessage = event.message;
       const stepUsage = (event.message as any)?.usage ?? (event as any).usage;
@@ -271,6 +398,9 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
     }
     if (event.type === "error") {
       finalReason = (event as any).reason ?? "error";
+      if (typeof event.status === "number") errorStatus = event.status;
+      retryable = event.retryable;
+      if (event.kind === "premature_end" || event.kind === "connect_timeout") errorKind = event.kind;
       const err = (event as any).error;
       if (err) {
         if (typeof err === "string") {
@@ -296,10 +426,16 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
     finalMessage,
     finalReason,
     errorMessage,
+    status: errorStatus,
     providerUsage,
     recordedProviderUsage,
     assistantTokens,
     interrupted,
+    emittedToUi,
+    emittedToolCall,
+    retryable,
+    errorKind,
+    doneReceived,
   };
 }
 
@@ -816,6 +952,7 @@ export async function runTurn(
   ];
   const maxSteps = session.config.turn?.max_steps ?? 25;
   let interrupted = false;
+  let surfacedTimeout = false;
   // Tracks whether any step in the turn ran a non-load_skill tool, for markResidentSkillsUsed.
   let hadNonLoadSkillTool = false;
   const nudgeStart = snapshotScorecardNudge(session);
@@ -865,6 +1002,9 @@ export async function runTurn(
         session.recordOutputTokens(update.step.output);
         s.onProviderUsage?.(update);
       },
+      connectTimeoutMs: session.config.llm.connect_timeout_ms,
+      idleTimeoutMs: session.config.llm.stream_idle_timeout_ms,
+      streamEndCheck: session.config.llm.stream_end_check,
     });
   }
 
@@ -940,34 +1080,90 @@ export async function runTurn(
     }
 
     let streamResult = await attemptStream();
+    let fallbackRejected = false;
 
     // On the first step, retry once and then fall back on recoverable failures.
-    if (step === 0 && shouldFallback(streamResult)) {
-      streamResult = await attemptStream();
-      if (shouldFallback(streamResult) && canFallback()) {
+    // Once answer text has reached the UI, another attempt would repeat it.
+    // An idle timeout is not retried on the same model: another silent attempt
+    // would wait the full idle budget again. Go to the fallback when one is
+    // allowed, otherwise surface the error.
+    if (
+      step === 0 &&
+      !streamResult.emittedToUi &&
+      (shouldFallback(streamResult) || isPrematureEndRetry(streamResult))
+    ) {
+      // A connect timeout already had its one driver-level retry. An idle
+      // timeout is not retried here either. Go to the fallback model.
+      if (!isIdleTimeout(streamResult) && !isConnectExhausted(streamResult)) {
+        streamResult = await attemptStream();
+      }
+      // The retry may have streamed text. Do not ask the fallback model after that.
+      if (
+        !streamResult.emittedToUi &&
+        (shouldFallback(streamResult) || isPrematureEndRetry(streamResult)) &&
+        canFallback()
+      ) {
         const fallbackProvider = session.config.llm.fallback_provider!;
         const fallbackModel = session.config.llm.fallback_model!;
-        const fallbackReason = streamResult.errorMessage ?? "empty response";
+        const fallbackReason = recordedFallbackReason(
+          streamResult,
+          configuredIdleTimeoutMs(session.config.llm.stream_idle_timeout_ms),
+        );
 
-        await prepareFallback(fallbackProvider, fallbackModel);
-        const fallbackResult = await attemptStream();
-
-        if (!shouldFallback(fallbackResult)) {
-          commitFallback(fallbackProvider, fallbackModel, fallbackReason);
-          streamResult = fallbackResult;
-        } else {
-          // Fallback also failed; keep the failed result for error reporting
-          // but do not commit any session override or event-log entries.
-          streamResult = fallbackResult;
+        // Hold fallback text until the switch is committed. A rejected
+        // fallback must not reach the user, and the primary stays active.
+        const heldText: string[] = [];
+        const heldThinking: string[] = [];
+        const restoreText = s.onTextDelta;
+        const restoreThinking = s.onThinkingDelta;
+        const primaryModel = activeModel;
+        const primaryWindow = contextWindowTokens;
+        s.onTextDelta = (delta) => { heldText.push(delta); };
+        s.onThinkingDelta = (delta) => { heldThinking.push(delta); };
+        let committed = false;
+        try {
+          await prepareFallback(fallbackProvider, fallbackModel);
+          const fallbackResult = await attemptStream();
+          if (fallbackFinishedCleanly(fallbackResult)) {
+            for (const delta of heldText) restoreText?.(delta);
+            for (const delta of heldThinking) restoreThinking?.(delta);
+            commitFallback(fallbackProvider, fallbackModel, fallbackReason);
+            streamResult = fallbackResult;
+            committed = true;
+          }
+        } finally {
+          s.onTextDelta = restoreText;
+          s.onThinkingDelta = restoreThinking;
+          if (!committed) {
+            activeModel = primaryModel;
+            activeModelName = modelName;
+            activeProviderName = providerName;
+            contextWindowTokens = primaryWindow;
+            fallbackRejected = true;
+          }
         }
       }
     }
 
-    // If we switched to a fallback model and it also failed on a recoverable
-    // condition, surface it as an error rather than the empty-response fallback.
+    let streamedTimeoutText = false;
+    if (streamResult.finalReason === "timeout" || isConnectExhausted(streamResult)) {
+      const kept = assistantTextAfterTimeout(streamResult.finalMessage);
+      streamedTimeoutText = streamResult.finalReason === "timeout" && kept !== null;
+      streamResult = {
+        ...streamResult,
+        pendingToolCalls: [],
+        finalMessage: kept,
+        assistantTokens: kept ? estimateAssistantMessageTokens(kept) : 0,
+      };
+    }
+
+    // A rejected fallback keeps the primary result. A recoverable primary
+    // failure (rate limit, overload) is still reported as an error. An empty
+    // stop stays an empty response, and an idle timeout keeps its own message.
     if (
-      (activeModelName !== modelName || activeProviderName !== providerName) &&
-      shouldFallback(streamResult)
+      streamResult.finalReason !== "timeout" &&
+      fallbackRejected &&
+      isRecoverableStreamError(streamResult)
     ) {
       lastStreamReason = "error";
       lastLlmErrorMessage = streamResult.errorMessage ?? "LLM request failed";
@@ -975,8 +1171,18 @@ export async function runTurn(
     }
 
     // Log errors from the final stream attempt.
-    if (streamResult.finalReason === "error" || streamResult.finalReason === "aborted") {
-      const llmMessage = streamResult.errorMessage;
+    if (
+      streamResult.finalReason === "error" ||
+      streamResult.finalReason === "aborted" ||
+      streamResult.finalReason === "timeout"
+    ) {
+      const llmMessage =
+        streamResult.finalReason === "timeout"
+          ? idleTimeoutUserMessage(
+              configuredIdleTimeoutMs(session.config.llm.stream_idle_timeout_ms),
+              streamedTimeoutText,
+            )
+          : streamResult.errorMessage;
       lastStreamReason = streamResult.finalReason;
       lastLlmErrorMessage = llmMessage;
       if (streamResult.finalReason === "aborted") {
@@ -997,6 +1203,7 @@ export async function runTurn(
           details: { model: activeModelName, provider: activeProviderName, reason: streamResult.finalReason },
         };
         s.onError?.(errorEntry);
+        if (streamResult.finalReason === "timeout") surfacedTimeout = true;
       }
     }
 
@@ -1398,39 +1605,43 @@ export async function runTurn(
   }
 
   if (!fullResponse.trim()) {
-    const code =
-      lastStreamReason === "error"
-        ? "LLM_STREAM_ERROR"
-        : lastStreamReason === "aborted"
-          ? "LLM_ABORTED"
-          : "LLM_EMPTY_RESPONSE";
-    if (lastStreamReason !== "error" && lastStreamReason !== "aborted") {
-      llmLogger.warn("LLM returned no text content", {
-        code: "LLM_EMPTY_RESPONSE",
-        details: { model: activeModelName, provider: activeProviderName, reason: lastStreamReason },
-      });
-    }
-    const fallback = formatUserFacingLlmError({
-      reason: lastStreamReason,
-      llmMessage: lastLlmErrorMessage,
-      model: activeModelName,
-      provider: activeProviderName,
-    });
-    const errorEntry: LogEntry = {
-      level: lastStreamReason === "error" ? "error" : "warn",
-      domain: "llm",
-      message: lastLlmErrorMessage ?? "No text content in LLM response",
-      code,
-      details: { model: activeModelName, provider: activeProviderName, reason: lastStreamReason },
-    };
-    s.onError?.(errorEntry);
-    s.onFallback?.(fallback);
-    // For errors, append a graceful message to the transcript instead of the raw error.
-    // The fallback (with raw error details) is still shown to the user via onFallback.
-    if (lastStreamReason === "error") {
-      fullResponse = "I encountered an error while processing your request. Please try again.";
+    if (surfacedTimeout && lastLlmErrorMessage) {
+      fullResponse = lastLlmErrorMessage;
     } else {
-      fullResponse = fallback;
+      const code =
+        lastStreamReason === "error"
+          ? "LLM_STREAM_ERROR"
+          : lastStreamReason === "aborted"
+            ? "LLM_ABORTED"
+            : "LLM_EMPTY_RESPONSE";
+      if (lastStreamReason !== "error" && lastStreamReason !== "aborted") {
+        llmLogger.warn("LLM returned no text content", {
+          code: "LLM_EMPTY_RESPONSE",
+          details: { model: activeModelName, provider: activeProviderName, reason: lastStreamReason },
+        });
+      }
+      const fallback = formatUserFacingLlmError({
+        reason: lastStreamReason,
+        llmMessage: lastLlmErrorMessage,
+        model: activeModelName,
+        provider: activeProviderName,
+      });
+      const errorEntry: LogEntry = {
+        level: lastStreamReason === "error" ? "error" : "warn",
+        domain: "llm",
+        message: lastLlmErrorMessage ?? "No text content in LLM response",
+        code,
+        details: { model: activeModelName, provider: activeProviderName, reason: lastStreamReason },
+      };
+      s.onError?.(errorEntry);
+      s.onFallback?.(fallback);
+      // For errors, append a graceful message to the transcript instead of the raw error.
+      // The fallback (with raw error details) is still shown to the user via onFallback.
+      if (lastStreamReason === "error") {
+        fullResponse = "I encountered an error while processing your request. Please try again.";
+      } else {
+        fullResponse = fallback;
+      }
     }
   }
 

@@ -9,6 +9,7 @@ const sse = [
   { type: "content_block_start", index: 0, content_block: { type: "thinking" } },
   { type: "content_block_delta", index: 0, delta: { type: "thinking_delta", thinking: "thought" } },
   { type: "content_block_delta", index: 0, delta: { type: "signature_delta", signature: "signed" } },
+  { type: "message_delta", delta: { stop_reason: "end_turn" }, usage: { output_tokens: 3 } },
 ].map(x => `data: ${JSON.stringify(x)}\n\n`).join("");
 async function run(req: StreamRequest, reject?: string) {
   const bodies: any[] = [];
@@ -31,5 +32,6 @@ test("older Claude budget and off requests", async () => {
 test("retry and remember adaptive capability", async () => {
   const first = await run(request("claude-unknown-retry"), 'Use thinking.type.adaptive');
   expect(first.bodies).toHaveLength(2); expect(first.bodies[1].thinking).toEqual({type: "adaptive"});
+  expect(first.events.at(-1)).toMatchObject({type: "done", reason: "stop"});
   const next = await run(request("claude-unknown-retry")); expect(next.bodies[0].thinking).toEqual({type: "adaptive"});
 });

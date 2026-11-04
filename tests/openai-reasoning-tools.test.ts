@@ -34,6 +34,13 @@ test("specific 400 retries with none, streams, and remembers model", async () =>
   expect((await run(req("gpt-future-retry", "https://gateway.example/v1"))).bodies[0].reasoning_effort).toBe("high");
 });
 
+test("form correction composes with the streamed terminal event", async () => {
+  const { bodies, events } = await run(req("gpt-form-composition"), 1);
+  expect(bodies.map(body => body.reasoning_effort)).toEqual(["high", "none"]);
+  expect(events).toContainEqual({ type: "text_delta", delta: "ok" });
+  expect(events.at(-1)).toMatchObject({ type: "done", reason: "stop", message: { content: "ok" } });
+});
+
 test("off or no tools leaves ordinary requests unchanged", async () => {
   expect((await run({...req("gpt-normal-off"), reasoningEffort: "off"})).bodies[0].reasoning_effort).toBeUndefined();
   expect((await run({...req("gpt-6.1-terra"), tools: []})).bodies[0].reasoning_effort).toBe("high");
