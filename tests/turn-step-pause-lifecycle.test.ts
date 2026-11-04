@@ -36,7 +36,6 @@ import * as autoCompactActual from "../src/auto-compact.js";
 import * as uiActual from "../src/ui.js";
 import * as nativeLlmActual from "../src/llm/index.js";
 import * as loggerActual from "../src/logger.js";
-import * as oauthActual from "../src/oauth.js";
 
 const mockStream = mock();
 let abortDuringTool: (() => void) | null = null;
@@ -53,7 +52,6 @@ mock.module("../src/llm/index.js", () => ({
   ...nativeLlmActual,
   streamLlmResponse: mockStream,
 }));
-mock.module("../src/oauth.js", () => ({ ...oauthActual, resolveOAuthModelAuth: async () => null }));
 mock.module("../src/compiler.js", () => ({}));
 mock.module("../src/context-engine/index.js", () => ({
   ...contextEngineActual,
@@ -124,7 +122,6 @@ afterAll(() => {
   mock.module("../src/ui.js", () => uiReal);
   mock.module("../src/llm/index.js", () => nativeLlmReal);
   mock.module("../src/logger.js", () => loggerActual);
-  mock.module("../src/oauth.js", () => oauthActual);
   mock.module("../src/compiler.js", () => ({}));
 });
 
@@ -256,7 +253,7 @@ function makeSession(logDir: string, limit: Limit) {
         ? { max_steps: 25, pause_after_steps: 1, hard_max_steps: 1 }
         : { max_steps: 25, pause_after_steps: 1, hard_max_steps: 300 };
   const config = {
-    llm: { provider: "openrouter", model: "test-model" },
+    llm: { provider: "lifecycle-test", model: "test-model" },
     memory: { enabled: false, summarizer: "openrouter", db_path: ":memory:", embedder: "auto", ollama_url: "http://localhost:11434", ollama_model: "nomic-embed-text" },
     compiler: { token_budget: 100_000, recent_turns: 10, recent_turns_token_budget: 30_000 },
     tiers: { idle_soft_after_turns: 3, idle_hard_after_turns: 6 },
