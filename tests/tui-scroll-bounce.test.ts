@@ -1,0 +1,57 @@
+/**
+ * Streaming transcript scroll bounce.
+ *
+ * The viewport must not reverse direction while an assistant markdown answer
+ * only grows. Metrics come from every frame the test renderer presents
+ * (see scripts/tui-bounce/harness.tsx), at 110x40 and 80x24, for word and
+ * 8-character chunk deltas.
+ *
+ * The assertion requires zero bounce and zero scroll reversals.
+ */
+import { describe, expect, it } from "bun:test";
+import { ATOMIC_HABITS_MARKDOWN } from "../scripts/tui-bounce/fixture.js";
+import {
+  BOUNCE_MATRIX,
+  formatBounceReport,
+  runBounceMatrix,
+} from "../scripts/tui-bounce/harness.js";
+
+describe("transcript streaming scroll", () => {
+  it("does not bounce while a markdown answer streams", async () => {
+    const reports = await runBounceMatrix(BOUNCE_MATRIX);
+    const bad: string[] = [];
+    for (const report of reports) {
+      console.log(formatBounceReport(report));
+      expect(report.finalText).toContain("The last line of the answer is this one.");
+      expect(report.rawSyntaxFrames).toBe(0);
+      const { width, height, deltas } = report.scenario;
+      if (report.bounce !== 0 || report.scrollReversals !== 0) {
+        bad.push(
+          `${width}x${height} ${deltas} bounce ${report.bounce} scroll ${report.scrollReversals}`,
+        );
+      }
+    }
+    expect(bad).toEqual([]);
+  }, { timeout: 180_000 });
+
+  it("never paints raw syntax while provider arrivals race async highlighting", async () => {
+    const reports = await runBounceMatrix([
+      { width: 110, height: 40, deltas: "chunks", arrivalMs: 8 },
+      { width: 80, height: 24, deltas: "chunks", arrivalMs: 8 },
+    ].map((scenario) => ({
+      ...scenario,
+      deltas: "chunks" as const,
+      chunkSize: 8,
+      realtime: true,
+      text: ATOMIC_HABITS_MARKDOWN,
+    })));
+    for (const report of reports) console.log(formatBounceReport(report));
+    expect(reports.map((report) => report.rawSyntaxFrames)).toEqual([0, 0]);
+    for (const report of reports) {
+      expect(report.frames).toBeGreaterThan(10);
+      expect(report.finalText).toContain("Make good habits obvious");
+      expect(report.bounce).toBe(0);
+      expect(report.scrollReversals).toBe(0);
+    }
+  }, { timeout: 30_000 });
+});

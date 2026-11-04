@@ -6,6 +6,12 @@ import { buildClassicSystemFrame } from "../src/compile-classic.js";
 import { Session } from "../src/session.js";
 import { loadConfig, getConfigWarnings } from "../src/config.js";
 import { resetNativeLoadCache, setNativeEnabled } from "../src/native/index.js";
+import {
+  getEmbedderConsent,
+  setEmbedderConsent,
+  type EmbedderConsent,
+} from "../src/memory/embedder-consent.js";
+import { appHomePath } from "../src/app-identity.js";
 import { rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -122,16 +128,31 @@ describe("buildClassicSystemFrame native addon", () => {
 
 describe("Session nativeStatus probing", () => {
   let tmpDir: string;
+  let previousConsent: EmbedderConsent | null;
 
   beforeEach(() => {
     resetNativeLoadCache();
     getConfigWarnings();
     tmpDir = join(tmpdir(), `praana-native-status-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+    // These tests are about the native/fff probe, not memory. `Session.create`
+    // also builds the embedder, and with a cold model cache (the test preload
+    // is hermetic and fetches nothing) that means an unpinned ~23 MB download
+    // from HuggingFace inside the test — which is what made the real-probe test
+    // time out. Recording the same "skip" answer a user who declines gives
+    // (src/memory/transformers-embedder.ts ensureModelFiles) keeps recall
+    // keyword-only here and the probe network-free.
+    previousConsent = getEmbedderConsent();
+    setEmbedderConsent("skip");
   });
 
   afterEach(async () => {
     resetNativeLoadCache();
     setNativeEnabled(true);
+    if (previousConsent === null) {
+      rmSync(join(appHomePath(), ".embedder-consent"), { force: true });
+    } else {
+      setEmbedderConsent(previousConsent);
+    }
     if (existsSync(tmpDir)) rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -148,6 +169,8 @@ describe("Session nativeStatus probing", () => {
   });
 
   it("sets available or unavailable via real probe", async () => {
+    // The embedder is consent-skipped in beforeEach, so the only probe this
+    // test waits on is the native one (plus fffStatus) — no model download.
     const config = loadConfig();
     config.native = { enabled: true, require: false };
     config.session.log_dir = join(tmpDir, "sessions");

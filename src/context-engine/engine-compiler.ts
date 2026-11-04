@@ -567,7 +567,8 @@ async function compileEnginePass(
   );
 
   let precomputedVectors: Map<string, Float32Array> | undefined;
-  if (input.embedder && input.userInput?.trim()) {
+  if (input.embedder && input.userInput?.trim() && (weights.w_semantic ?? 0) > 0 &&
+      (recentUnits.length > 0 || olderUnits.length > 0)) {
     const cache = input.embeddingCache ?? new EmbeddingCache();
     const candidateTexts = [
       userInput,

@@ -336,6 +336,31 @@ describe("engine compiler", () => {
     expect(scored.breakdown.relevance).toBe(scored.breakdown.bm25);
   });
 
+  it("does not embed when no unit can be semantically scored", async () => {
+    let calls = 0;
+    const embedder: Embedder = { dim: 1, embed: async () => { calls++; return new Float32Array([1]); } };
+    const result = await compileEngineWithMetrics({
+      stateGraph: emptyStateGraph(), memoryDigest: null, recentEvents: [],
+      userInput: "new question", toolSchemas: [], cwd: "/proj", sessionId: "empty",
+      tokenBudget: 100_000, checkpointSection: "", currentTurn: 1,
+      turnRecords: [], activityEntries: [], engineConfig: ENGINE_CONFIG, embedder,
+    });
+    expect(calls).toBe(0);
+    expect(result.scoreRecords).toEqual([]);
+  });
+
+  it("preserves semantic scores with yielded versus sequential vectors", async () => {
+    const embedder: Embedder = { dim: 2, embed: async (text) => new Float32Array([text.length, 2]) };
+    const texts = ["question", "candidate"];
+    const sequential = new Map<string, Float32Array>();
+    for (const text of texts) sequential.set(text, await embedder.embed(text));
+    const yielded = await precomputeVectors(texts, embedder, new EmbeddingCache());
+    const unit: ContextUnit = { id: "u", type: "turn_digest", content: "candidate", tokens: 2, sourceTurn: 1, score: 0, pinned: false, artifactRefs: [] };
+    expect([...yielded.entries()]).toEqual([...sequential.entries()]);
+    expect(scoreContextUnit(unit, 5, "question", ENGINE_CONFIG.scoring, undefined, yielded))
+      .toEqual(scoreContextUnit(unit, 5, "question", ENGINE_CONFIG.scoring, undefined, sequential));
+  });
+
   it("applies semantic scoring through compileEngineWithMetrics when embedder is provided", async () => {
     const embedder: Embedder = {
       dim: 3,
