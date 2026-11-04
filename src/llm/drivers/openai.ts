@@ -18,6 +18,9 @@ import { ToolCallAccumulator } from "../tool-accumulator.js";
 import { withPreEmissionRetry } from "../retry.js";
 import { joinUrl } from "../url.js";
 
+const noReasoningWithTools = new Set<string>();
+const noReasoningWithToolsPatterns = [/^gpt-6\.1-/i];
+
 export class OpenAICompatibleDriver implements LlmDriver {
   readonly protocol: string = "openai-compatible";
 
@@ -37,6 +40,10 @@ export class OpenAICompatibleDriver implements LlmDriver {
     const messages = this.formatMessages(req.messages, req.systemPrompt);
     const tools = this.formatTools(req.tools);
     const compat = req.compat;
+    const firstParty = req.provider === "openai" && !req.endpointUrl &&
+      baseUrl.replace(/\/+$/, "") === "https://api.openai.com/v1";
+    const skipReasoning = firstParty && tools.length > 0 &&
+      (noReasoningWithTools.has(req.model) || noReasoningWithToolsPatterns.some((pattern) => pattern.test(req.model)));
     const maxTokensField = compat?.maxTokensField ?? "max_tokens";
 
     const body: Record<string, unknown> = {
@@ -53,6 +60,7 @@ export class OpenAICompatibleDriver implements LlmDriver {
     }
 
     if (
+      !skipReasoning &&
       compat?.supportsReasoningEffort !== false &&
       req.reasoningEffort &&
       req.reasoningEffort !== "off"
@@ -69,10 +77,11 @@ export class OpenAICompatibleDriver implements LlmDriver {
 
     // Execute HTTP request with pre-emission retry safety
     let response: Response;
+    let switched = false;
     try {
       response = await withPreEmissionRetry(
         async () => {
-          const res = await fetch(endpoint, {
+          let res = await fetch(endpoint, {
             method: "POST",
             headers,
             body: JSON.stringify(body),
@@ -80,7 +89,18 @@ export class OpenAICompatibleDriver implements LlmDriver {
           });
 
           if (!res.ok) {
-            const errText = await res.text().catch(() => "");
+            let errText = await res.text().catch(() => "");
+            let detail: { error?: { param?: string; message?: string } } = {};
+            try { detail = JSON.parse(errText); } catch { /* not a structured API error */ }
+            if (res.status === 400 && firstParty && tools.length > 0 && body.reasoning_effort && !switched &&
+                detail.error?.param === "reasoning_effort" && detail.error.message?.includes("Function tools with reasoning_effort")) {
+              switched = true;
+              noReasoningWithTools.add(req.model);
+              delete body.reasoning_effort;
+              res = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify(body), signal: req.signal });
+              if (res.ok && res.body) return res;
+              errText = await res.text().catch(() => "");
+            }
             const err: any = new Error(`OpenAI API error (${res.status}): ${errText}`);
             err.status = res.status;
             throw err;
