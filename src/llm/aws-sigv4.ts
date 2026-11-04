@@ -93,7 +93,6 @@ function parseEventStreamHeaders(bytes: Buffer): Record<string, string> {
   const headers: Record<string, string> = {};
   let offset = 0;
   while (offset < bytes.length) {
-    if (offset + 1 > bytes.length) break;
     const nameLen = bytes.readUInt8(offset);
     offset += 1;
     if (offset + nameLen + 1 > bytes.length) break;
@@ -147,12 +146,15 @@ export async function* parseAwsEventStream(
 
       while (buffer.length >= 16) {
         const totalLength = buffer.readUInt32BE(0);
+        const headerLength = buffer.readUInt32BE(4);
+        if (totalLength < 16 || headerLength > totalLength - 16) {
+          throw new Error("Invalid AWS event stream frame length");
+        }
         if (buffer.length < totalLength) {
           // Wait for full frame
           break;
         }
 
-        const headerLength = buffer.readUInt32BE(4);
         const payloadLength = totalLength - headerLength - 16;
         const payloadStart = 12 + headerLength;
         const headerBytes = buffer.subarray(12, payloadStart);
