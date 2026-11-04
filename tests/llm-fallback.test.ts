@@ -94,6 +94,7 @@ import {
   recordedFallbackReason,
 } from "../src/turn.js";
 import { StateGraph } from "../src/state-graph.js";
+import { TurnAbortedError } from "../src/turn-control.js";
 import { estimateAssistantMessageTokens } from "../src/context-display.js";
 import { createNullScorecard } from "../src/context-engine/telemetry.js";
 import { createBuiltinHookRegistry } from "../src/hooks/index.js";
@@ -815,20 +816,23 @@ describe("LLM fallback", () => {
       yield { type: "done", reason: "stop", message: { role: "assistant", content: "should-not-surface" } };
     })());
 
-    const response = await runTurn(session, "hello", undefined, {
+    // A user abort ends the turn as an interruption (TurnAbortedError), like
+    // Esc or Ctrl+C: nothing from the aborted stream is surfaced or stored.
+    const outcome = await runTurn(session, "hello", undefined, {
       signal: controller.signal,
       sink: watched.sink,
-    });
+    }).then(
+      (response) => ({ response, error: undefined as unknown }),
+      (error: unknown) => ({ response: undefined as string | undefined, error }),
+    );
 
-    expect(response).not.toContain("should-not-surface");
-    expect(response).not.toContain("[interrupted]");
+    expect(outcome.error).toBeInstanceOf(TurnAbortedError);
+    expect((outcome.error as TurnAbortedError).partialResponse).not.toContain("should-not-surface");
     expect(watched.deltas.join("")).not.toContain("should-not-surface");
     expect(session.getEffectiveProvider()).toBe("umans");
     expect(watched.lines.some((line) => line.startsWith("Switched to"))).toBe(false);
-    expect(watched.errors.at(-1)?.details).toMatchObject({
-      model: "umans-coder",
-      provider: "umans",
-    });
+    // A user abort is not an LLM error.
+    expect(watched.errors).toHaveLength(0);
   });
 
   it("does not commit a fallback stream that ends without a done event", async () => {
