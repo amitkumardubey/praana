@@ -367,4 +367,44 @@ describe("OpenTuiSink stream batching", () => {
     expect(store.streamingIds()).toEqual(new Set([entries[0]!.id]));
     store.dispose();
   });
+
+  it("dispose is exception-safe: marks disposed, clears timer, no later timer fire", () => {
+    const scheduler = new FakeScheduler();
+    const mount: TranscriptMount = {
+      appendEntry: () => {
+        throw new Error("mount exploded");
+      },
+      appendAssistantDelta: () => {
+        throw new Error("mount exploded");
+      },
+      appendThinkingDelta: () => true,
+      patchToolResult: () => true,
+    };
+    const { sink } = makeSink({ streamBatchMs: 33, scheduler, mount });
+    sink.onTextDelta("delta 1");
+    expect(scheduler.pendingTimers).toBe(1);
+    expect(() => sink.dispose()).toThrow("mount exploded");
+    expect(sink.isDisposed).toBe(true);
+    expect(scheduler.pendingTimers).toBe(0);
+    // Advancing should not fire any timers
+    expect(() => scheduler.advance(100)).not.toThrow();
+  });
+
+  it("timer callback that throws does not become an uncaught exception", () => {
+    const scheduler = new FakeScheduler();
+    let fail = false;
+    const mount: TranscriptMount = {
+      appendEntry: () => {},
+      appendAssistantDelta: () => {
+        if (fail) throw new Error("timer exploded");
+        return true;
+      },
+      appendThinkingDelta: () => true,
+      patchToolResult: () => true,
+    };
+    const { sink } = makeSink({ streamBatchMs: 33, scheduler, mount });
+    sink.onTextDelta("delta 1");
+    fail = true;
+    expect(() => scheduler.advance(50)).not.toThrow();
+  });
 });

@@ -2,7 +2,7 @@
  * TurnUiSink → transcript mount routing (design §4 ambient signals).
  */
 import type { TurnUiSink, MemoryBannerStats, ProviderUsageUpdate } from "../../ui-events.js";
-import type { LogEntry } from "../../logger.js";
+import { getAppLogger, type LogEntry } from "../../logger.js";
 import {
   type TranscriptEntry,
   type ToolEntry,
@@ -89,6 +89,7 @@ export class OpenTuiSink implements TurnUiSink {
   } | null = null;
   private batchTimer: { clear(): void } | null = null;
   private disposed = false;
+  private readonly batchScheduler: StreamBatchScheduler;
 
   constructor(
     transcript: TranscriptMount,
@@ -98,6 +99,11 @@ export class OpenTuiSink implements TurnUiSink {
     this.transcript = transcript;
     this.toast = toast;
     this.opts = opts;
+    this.batchScheduler = opts.batchScheduler ?? defaultStreamBatchScheduler();
+  }
+
+  get isDisposed(): boolean {
+    return this.disposed;
   }
 
   get currentGroup(): number {
@@ -110,11 +116,14 @@ export class OpenTuiSink implements TurnUiSink {
    */
   dispose(): void {
     if (this.disposed) return;
-    this.flushPending();
-    this.disposed = true;
-    if (this.batchTimer) {
-      this.batchTimer.clear();
-      this.batchTimer = null;
+    try {
+      this.flushPending();
+    } finally {
+      this.disposed = true;
+      if (this.batchTimer) {
+        this.batchTimer.clear();
+        this.batchTimer = null;
+      }
     }
   }
 
@@ -513,11 +522,15 @@ export class OpenTuiSink implements TurnUiSink {
       return;
     }
     this.pendingDelta = { kind, id, group, text: delta };
-    const handle =
-      this.opts.batchScheduler ?? defaultStreamBatchScheduler();
-    this.batchTimer = handle.schedule(() => {
+    this.batchTimer = this.batchScheduler.schedule(() => {
       this.batchTimer = null;
-      this.flushPending();
+      try {
+        this.flushPending();
+      } catch (err) {
+        getAppLogger().child("app").warn("Stream batch timer callback failed", {
+          cause: err as Error,
+        });
+      }
     }, batchMs);
   }
 
@@ -530,12 +543,23 @@ export class OpenTuiSink implements TurnUiSink {
       this.batchTimer.clear();
       this.batchTimer = null;
     }
-    this.applyTranscriptEvent({
-      type: pending.kind === "assistant" ? "assistant_delta" : "thinking_delta",
-      id: pending.id,
-      group: pending.group,
-      delta: pending.text,
-    });
+    try {
+      this.applyTranscriptEvent({
+        type: pending.kind === "assistant" ? "assistant_delta" : "thinking_delta",
+        id: pending.id,
+        group: pending.group,
+        delta: pending.text,
+      });
+    } catch (err) {
+      getAppLogger().child("app").warn("Failed to apply pending stream batch delta", {
+        cause: err as Error,
+        details: {
+          id: pending.id,
+          kind: pending.kind,
+        },
+      });
+      throw err;
+    }
   }
 
   private extractRecallPreview(resultText: string): string | null {

@@ -13,6 +13,7 @@ import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui";
 import { KeymapProvider, useBindings } from "@opentui/keymap/solid";
 import type { JSX } from "solid-js";
 import type { AppController, StartupInfo } from "../../app-controller.js";
+import { getAppLogger } from "../../logger.js";
 import {
   APP_VERSION,
   formatSessionEndEpilogue,
@@ -520,7 +521,13 @@ export async function runTui(
     });
     setSpinnerSink();
     offSlashCtrlCHook();
-    openTuiSink?.dispose();
+    try {
+      openTuiSink?.dispose();
+    } catch (err) {
+      getAppLogger().child("app").warn("Error disposing OpenTuiSink", {
+        cause: err as Error,
+      });
+    }
     transcript.dispose();
     overlay.dispose();
     ui.dispose();
