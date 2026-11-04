@@ -2,6 +2,8 @@
 // PRAANA — High-Performance Zero-Dependency SSE Parser
 // ============================================================
 
+import { getAppLogger } from "../logger.js";
+
 export interface SseEvent {
   event?: string;
   data: string;
@@ -112,7 +114,12 @@ export async function* parseSseStream(
       yield* applyLine(line);
     }
     // A leftover here is a partial line. Do not dispatch the event it belongs to.
-    if (buffer === "") {
+    // Log the discard once per stream: byte count only, never the text.
+    if (buffer !== "") {
+      getAppLogger().child("llm").warn("discarded a partial SSE line at end of stream", {
+        details: { bytes: Buffer.byteLength(buffer) },
+      });
+    } else {
       const tail = dispatch();
       if (tail) yield tail;
     }
