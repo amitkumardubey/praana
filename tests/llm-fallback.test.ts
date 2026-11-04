@@ -374,7 +374,7 @@ describe("credential busy retry", () => {
       yield { type: "text_delta", delta: "ok" };
       yield { type: "done", reason: "stop", message: { role: "assistant", content: "ok" } };
     })());
-    const response = await runTurn(session, "hello", undefined, { credentialRetryWait: async () => {} } as any);
+    const response = await runTurn(session, "hello", undefined, { credentialRetryWait: async () => {} });
     expect(response).toContain("ok");
     expect(mockResolveAuth).toHaveBeenCalledTimes(3);
   });
@@ -406,6 +406,121 @@ describe("credential busy retry", () => {
     })).rejects.toThrow("Turn interrupted");
     expect(mockResolveAuth).toHaveBeenCalledTimes(1);
     expect(errors).toEqual([]);
+  });
+});
+
+describe("credential fallback", () => {
+  beforeEach(() => { mockResolveAuth.mockReset(); piStream.mockReset(); });
+  afterEach(() => { mockResolveAuth.mockReset(); mockResolveAuth.mockResolvedValue(null); });
+
+  function configured() {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "backup";
+    return session;
+  }
+
+  it("answers on the fallback and commits only after a clean finish", async () => {
+    const session = configured();
+    const lines: string[] = [];
+    const errors: string[] = [];
+    mockResolveAuth.mockImplementation(async (provider) => {
+      if (provider === "umans") throw new oauthReal.OAuthRefreshError("umans", "Umans", "expired");
+      return { apiKey: "fallback-test-key", baseUrl: "https://fallback.invalid", headers: { "x-test": "fallback" } };
+    });
+    piStream.mockImplementation((request: any) => (async function* () {
+      expect(request.apiKey).toBe("fallback-test-key");
+      expect(request.baseUrl).toBe("https://fallback.invalid");
+      expect(request.headers["x-test"]).toBe("fallback");
+      expect(session.getProviderOverride()).toBeNull();
+      yield { type: "text_delta", delta: "backup answer" };
+      yield { type: "done", reason: "stop", message: { role: "assistant", content: "backup answer" } };
+    })());
+    const response = await runTurn(session, "hello", undefined, { sink: {
+      onSystemLines: (value) => lines.push(...value), onError: (entry) => errors.push(entry.message),
+    } });
+    expect(response).toContain("backup answer");
+    expect(lines).toEqual(["Switched to openrouter/backup after umans sign-in unavailable"]);
+    expect(errors).toEqual([]);
+    expect(session.getProviderOverride()).toBe("openrouter");
+    expect(session.getModelOverride()).toBe("backup");
+    expect(session.getTurnCount()).toBe(1);
+    expect(mockResolveAuth.mock.calls.map((call) => call[0])).toEqual(["umans", "openrouter"]);
+  });
+
+  it("drops the turn with one primary error if fallback credentials fail", async () => {
+    const session = configured();
+    const errors: string[] = [];
+    mockResolveAuth.mockImplementation(async (provider) => { throw new oauthReal.OAuthRefreshError(provider, provider, "expired"); });
+    const result = await runTurn(session, "hello", undefined, { sink: { onError: (entry) => errors.push(entry.message) } });
+    expect(result).toBe("");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("umans session expired");
+    expect(errors[0]).toContain("fallback unavailable");
+    expect(errors[0]).not.toContain("openrouter session expired");
+    expect(session.getTurnCount()).toBe(0);
+    expect(session.getProviderOverride()).toBeNull();
+  });
+
+  it("does not commit or surface partial text when the fallback stream fails", async () => {
+    const session = configured();
+    const errors: string[] = [];
+    const text: string[] = [];
+    mockResolveAuth.mockImplementation(async (provider) => {
+      if (provider === "umans") throw new oauthReal.OAuthRefreshError("umans", "umans", "expired");
+      return null;
+    });
+    piStream.mockReturnValue((async function* () {
+      yield { type: "text_delta", delta: "partial" };
+      yield { type: "error", reason: "error", error: { role: "assistant", errorMessage: "failed" } };
+    })());
+    const result = await runTurn(session, "hello", undefined, { sink: {
+      onTextDelta: (delta) => text.push(delta), onError: (entry) => errors.push(entry.message),
+    } });
+    expect(result).toBe("");
+    expect(text).toEqual([]);
+    expect(errors).toHaveLength(1);
+    expect(session.getProviderOverride()).toBeNull();
+    expect(session.getTurnCount()).toBe(0);
+  });
+
+  it("preserves the original failure when no fallback is configured", async () => {
+    const session = makeMockSession();
+    const errors: string[] = [];
+    mockResolveAuth.mockRejectedValue(new oauthReal.OAuthRefreshError("umans", "umans", "expired"));
+    await runTurn(session, "hello", undefined, { sink: { onError: (entry) => errors.push(entry.message) } });
+    expect(errors).toEqual(["umans session expired and could not be refreshed: expired. Run /login umans again."]);
+    expect(mockResolveAuth).toHaveBeenCalledTimes(1);
+    expect(session.getTurnCount()).toBe(0);
+  });
+
+  it("uses the fallback after busy retries are exhausted", async () => {
+    const session = configured();
+    const waits: number[] = [];
+    mockResolveAuth.mockImplementation(async (provider) => {
+      if (provider === "umans") throw new oauthReal.OAuthRefreshBusyError(provider);
+      return null;
+    });
+    piStream.mockReturnValue((async function* () {
+      yield { type: "text_delta", delta: "backup" };
+      yield { type: "done", reason: "stop", message: { role: "assistant", content: "backup" } };
+    })());
+    const response = await runTurn(session, "hello", undefined, {
+      sink: {}, credentialRetryWait: async (ms) => { waits.push(ms); },
+    });
+    expect(response).toContain("backup");
+    expect(waits).toEqual([1000, 2000]);
+    expect(mockResolveAuth.mock.calls.map((call) => call[0])).toEqual(["umans", "umans", "umans", "openrouter"]);
+  });
+
+  it("does not switch when a user override is set", async () => {
+    const session = configured();
+    session.setModelOverride("custom");
+    mockResolveAuth.mockRejectedValue(new oauthReal.OAuthRefreshError("umans", "umans", "expired"));
+    await runTurn(session, "hello", undefined, { sink: {} });
+    expect(mockResolveAuth).toHaveBeenCalledTimes(1);
+    expect(session.getProviderOverride()).toBeNull();
+    expect(session.getTurnCount()).toBe(0);
   });
 });
 
