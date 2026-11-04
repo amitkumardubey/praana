@@ -691,8 +691,16 @@ async function runSeed(schedule: Schedule, logDir: string): Promise<void> {
     }
 
     let outcome: { value?: string; error?: unknown } = {};
+    let finished = false;
+    let finishedOnNextTick: Promise<boolean> | undefined;
+    abort.signal.addEventListener("abort", () => {
+      finishedOnNextTick = new Promise((resolve) => setImmediate(() => resolve(finished)));
+    }, { once: true });
     const histories = await historyArrays(userInput, async () => {
-      const run = runTurnBounded(session, userInput, sink, abort.signal);
+      const run = runTurnBounded(session, userInput, sink, abort.signal).then((result) => {
+        finished = true;
+        return result;
+      });
       if (schedule.io !== "memory") {
         const deadline = Date.now() + 200;
         while (trace.pauseCalls.length === 0 && Date.now() < deadline) {
@@ -710,6 +718,10 @@ async function runSeed(schedule: Schedule, logDir: string): Promise<void> {
     });
     restoreIo?.();
     const elapsed = Date.now() - started;
+    if (schedule.answer === "never" && schedule.abortAt === "during-pause") {
+      expect(finishedOnNextTick).toBeDefined();
+      expect(await finishedOnNextTick).toBe(true);
+    }
     const threw = outcome.error && !(outcome.error instanceof TurnAbortedError) ? outcome.error : undefined;
     if (expectsAbort(schedule)) {
       expect(outcome.error).toBeInstanceOf(TurnAbortedError);
