@@ -54,9 +54,9 @@ export interface OverlayUi {
    * Open a small confirm overlay; resolves true on Enter, false on Esc
    * or when `signal` aborts. Ctrl+C is not answered here: it aborts the
    * turn signal, which settles this promise false and skips the wrap-up.
-   * If another overlay or confirm is already open, this waits until that
-   * one closes, then shows. Aborting `signal` while waiting resolves false
-   * and drops just this request.
+   * If an interactive overlay or confirm is already open, this waits until
+   * that one closes, then shows. A passive slash panel is cleared instead.
+   * Aborting `signal` while waiting resolves false and drops just this request.
    */
   showConfirm(message: string, signal?: AbortSignal): Promise<boolean>;
   resolveConfirm(cont: boolean): void;
@@ -189,6 +189,13 @@ export function createOverlayUi(): OverlayUi {
 
     const showConfirm = (message: string, signal?: AbortSignal): Promise<boolean> => {
       if (signal?.aborted) return Promise.resolve(false);
+      // A slash panel closes on any key. Leave it up and the pause looks hung,
+      // because the spinner is already stopped. Clear it and ask immediately.
+      // Interactive overlays (palette, model, login, logout, setup, consent) still defer.
+      if (kind() === "slash") {
+        setSlashLines([]);
+        setKind("none");
+      }
       const blocked = confirmResolver !== null || kind() !== "none" || queue.length > 0;
       if (!blocked) return new Promise((resolve) => openConfirm(message, signal, resolve));
       const pending = enqueueConfirm(message, signal);

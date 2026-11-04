@@ -3,8 +3,9 @@
  *
  * A pending step-pause confirm takes priority: other show* calls wait until
  * it resolves or its signal aborts, and they do not count as "stop".
- * A confirm requested while another overlay is open waits for that overlay
- * to close. Each confirm listens to its own signal. A later non-confirm
+ * A confirm requested while an interactive overlay is open waits for that
+ * overlay to close. A passive slash panel is cleared and the confirm opens
+ * immediately. Each confirm listens to its own signal. A later non-confirm
  * request does not settle a queued confirm.
  *
  * Interleaving invariants:
@@ -90,6 +91,34 @@ describe("createOverlayUi", () => {
     ui.resolveConfirm(false);
     expect(await second).toBe(false);
     expect(ui.kind()).toBe("none");
+    ui.dispose();
+  });
+
+  it("clears a passive slash panel and opens the step-pause confirm immediately", async () => {
+    const ui = createOverlayUi();
+    ui.showSlash(["help", "text"]);
+    const pending = ui.showConfirm("continue?");
+    expect(ui.kind()).toBe("confirm");
+    expect(ui.slashLines()).toEqual([]);
+    expect(ui.confirmPrompt()?.message).toBe("continue?");
+    expect(await settled(pending)).toEqual({ settled: false });
+    ui.resolveConfirm(true);
+    expect(await pending).toBe(true);
+    expect(ui.kind()).toBe("none");
+    ui.dispose();
+  });
+
+  it("still defers the step-pause confirm while an interactive overlay is open", async () => {
+    const ui = createOverlayUi();
+    ui.showPalette();
+    const pending = ui.showConfirm("continue?");
+    expect(ui.kind()).toBe("palette");
+    expect(await settled(pending)).toEqual({ settled: false });
+    ui.dismiss();
+    expect(ui.kind()).toBe("confirm");
+    expect(await settled(pending)).toEqual({ settled: false });
+    ui.resolveConfirm(true);
+    expect(await pending).toBe(true);
     ui.dispose();
   });
 
@@ -210,7 +239,10 @@ async function runOverlayInterleave(seed: number): Promise<void> {
           rec.value = value;
         });
         await flushMicro();
-        if (beforeKind !== "none" && beforeKind !== "confirm" && ui.kind() !== beforeKind) {
+        if (beforeKind === "slash") {
+          if (ui.kind() !== "confirm") fail(`slash blocked the pause (still ${ui.kind()})`);
+          if (ui.slashLines().length !== 0) fail("slash lines left behind the pause");
+        } else if (beforeKind !== "none" && beforeKind !== "confirm" && ui.kind() !== beforeKind) {
           fail(`O2/O3 confirm displaced open ${beforeKind} (now ${ui.kind()})`);
         }
         if (beforeKind !== "none" && beforeKind !== "confirm" && rec.settles !== 0) {
