@@ -1175,6 +1175,110 @@ describe("per-turn step budget — interactive soft pause", () => {
     expect(wrapUpCalls() - before).toBe(1);
   });
 
+  function pauseForSpinner() {
+    return makeMockSession({
+      config: makeConfig({ turn: { max_steps: 25, pause_after_steps: 1, hard_max_steps: 300 } }),
+    });
+  }
+
+  function toolThenWrap(
+    events: string[],
+    wrap: () => AsyncGenerator<unknown>,
+  ): void {
+    mockStream.mockImplementation((req: FakeStreamRequest) => {
+      const last = [...req.messages].reverse().find((m) => m.role === "user");
+      const text = typeof last?.content === "string" ? last.content : "";
+      if (text.includes("Do not call tools")) {
+        events.push("request");
+        return wrap();
+      }
+      return (async function* () {
+        yield {
+          type: "toolcall_end",
+          toolCall: { id: "call-0", name: "shell", arguments: { command: "echo call-0" } },
+        };
+        yield {
+          type: "done",
+          reason: "toolUse",
+          message: {
+            role: "assistant",
+            content: "",
+            toolCalls: [{ id: "call-0", name: "shell", args: { command: "echo call-0" } }],
+          },
+        };
+      })();
+    });
+  }
+
+  function spinnerSink(events: string[]): TurnUiSink {
+    return {
+      onStepPause: () => false,
+      onSpinnerStart: (text: string) => {
+        events.push(`start:${text}`);
+      },
+      onSpinnerStop: () => {
+        events.push("stop");
+      },
+    };
+  }
+
+  function expectWrapSpinner(events: string[], stopBefore?: string): void {
+    const starts = events.filter((event) => event.startsWith("start:"));
+    expect(starts).toEqual(["start:wrapping up…"]);
+    expect(starts[0]).not.toMatch(/\d/);
+    const startAt = events.indexOf("start:wrapping up…");
+    const requestAt = events.indexOf("request");
+    const stops = events.filter((event) => event === "stop");
+    expect(stops).toHaveLength(1);
+    expect(startAt).toBeGreaterThanOrEqual(0);
+    expect(startAt).toBeLessThan(requestAt);
+    if (stopBefore) {
+      expect(events.indexOf("stop")).toBeLessThan(events.indexOf(stopBefore));
+    } else {
+      expect(events.indexOf("stop")).toBeGreaterThan(requestAt);
+    }
+  }
+
+  it("shows wrapping up until the first summary text", async () => {
+    const events: string[] = [];
+    toolThenWrap(events, async function* () {
+      yield { type: "text_delta", delta: "summary" };
+      events.push("after-delta");
+      yield { type: "done", reason: "stop", message: { role: "assistant", content: "summary" } };
+    });
+    await runTurn(pauseForSpinner(), "spin success", undefined, { sink: spinnerSink(events) });
+    expectWrapSpinner(events, "after-delta");
+  });
+
+  it("stops the wrapping up spinner once when the summary fails", async () => {
+    const events: string[] = [];
+    toolThenWrap(events, async function* () {
+      yield { type: "error", error: new Error("wrap-up provider 500"), retryable: false };
+    });
+    await runTurn(pauseForSpinner(), "spin fail", undefined, { sink: spinnerSink(events) });
+    expectWrapSpinner(events);
+  });
+
+  it("stops the wrapping up spinner once when the summary is aborted", async () => {
+    const abort = new AbortController();
+    const events: string[] = [];
+    toolThenWrap(events, async function* () {
+      abort.abort();
+      yield { type: "done", reason: "aborted", message: { role: "assistant", content: "" } };
+    });
+    let thrown: unknown;
+    try {
+      await runTurn(pauseForSpinner(), "spin abort", undefined, {
+        sink: spinnerSink(events),
+        signal: abort.signal,
+      });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(TurnAbortedError);
+    expectWrapSpinner(events);
+  });
+
   it("Ctrl+C during wrap-up finalizes the turn as an interrupt", async () => {
     const abort = new AbortController();
     installLoopStream(6, { wrapUp: "interrupt", abort });

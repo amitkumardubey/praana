@@ -928,6 +928,12 @@ export async function runTurn(
   // blank line when this turn already streamed step text.
   let armWrapSeparator = false;
   let wrapSeparatorSent = false;
+  let wrapSpinnerOn = false;
+  const stopWrapSpinner = () => {
+    if (!wrapSpinnerOn) return;
+    wrapSpinnerOn = false;
+    s.onSpinnerStop?.();
+  };
   let lastLlmErrorMessage: string | undefined;
   let providerUsage: ProviderUsage | null = null;
   let recordedProviderUsage = false;
@@ -995,6 +1001,7 @@ export async function runTurn(
       signal: options?.signal,
       reasoningEffort,
       onTextDelta: (delta) => {
+        if (wrapSpinnerOn && delta.trim()) stopWrapSpinner();
         if (armWrapSeparator && delta.trim()) {
           armWrapSeparator = false;
           if (fullResponse.length > 0) {
@@ -1156,7 +1163,6 @@ export async function runTurn(
    * `lastStreamReason` to aborted, keeping any partial text that was stored.
    */
   async function wrapUpStep(reason: string): Promise<void> {
-    s.onSpinnerStop?.();
     const instruction = {
       role: "user",
       content: `${reason} Reply with a short summary of what was done and what remains. Do not call tools.`,
@@ -1169,8 +1175,11 @@ export async function runTurn(
     };
     wrapSeparatorSent = false;
     armWrapSeparator = true;
+    wrapSpinnerOn = true;
+    s.onSpinnerStart?.("wrapping up…");
     try {
       const wrap = await attemptStream([], flattenWrapUpHistory(history));
+      stopWrapSpinner();
       if (wrap.finalMessage && wrap.assistantTokens > 0) {
         turnHistoryTokens += wrap.assistantTokens;
         s.onContextHistoryDelta?.({
@@ -1220,6 +1229,7 @@ export async function runTurn(
         history.push({ role: "assistant", content: text, timestamp: Date.now() });
       }
     } catch (err) {
+      stopWrapSpinner();
       if (options?.signal?.aborted) {
         lastStreamReason = "aborted";
         interrupted = true;
@@ -1227,6 +1237,7 @@ export async function runTurn(
       }
       logWrapUpFailure(reason, err instanceof Error ? err.message : String(err));
     } finally {
+      stopWrapSpinner();
       armWrapSeparator = false;
       dropInstruction();
     }

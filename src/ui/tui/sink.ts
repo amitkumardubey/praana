@@ -21,6 +21,8 @@ export interface SinkOpts {
   ambient: "inline" | "quiet";
   showThinking: () => boolean;
   onSpinnerMessage: (msg: string) => void;
+  /** Hide the activity spinner. `onSpinnerMessage` shows it. */
+  onSpinnerStop?: () => void;
   ctxWindowTokens: number;
   engineMode: boolean;
   /** Called when the live context preview changes (glance bar). */
@@ -269,8 +271,12 @@ export class OpenTuiSink implements TurnUiSink {
     }
   }
 
-  onSpinnerStart(): void {}
-  onSpinnerStop(): void {}
+  onSpinnerStart(text: string): void {
+    this.opts.onSpinnerMessage(text);
+  }
+  onSpinnerStop(): void {
+    this.opts.onSpinnerStop?.();
+  }
   onNewline(): void {}
 
   onFallback(text: string): void {

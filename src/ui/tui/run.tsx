@@ -886,6 +886,9 @@ export async function runTui(
               onSpinnerMessage: (msg: string) => {
                 ui.spinner.setMessage(msg);
               },
+              onSpinnerStop: () => {
+                ui.spinner.stop();
+              },
               ctxWindowTokens: ctxWindow,
               engineMode: live.isContextEngineEnabled(),
               projection,
