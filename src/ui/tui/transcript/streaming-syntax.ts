@@ -15,6 +15,10 @@ export function withholdIncompleteSyntax(text: string): string {
     const line = lines[index]!;
     const lastLine = offset >= lastLineOffset;
     const fenceMatch = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    if (!fence && (!line.trim() || fenceMatch || /^ {0,3}(?:#{1,6}(?:\s|$)|[-+*]\s|\d{1,9}[.)]\s|>|\|)/.test(line))) {
+      open.length = 0;
+      inlineCode = undefined;
+    }
     if (fenceMatch) {
       const marker = fenceMatch[1]!;
       if (!fence) fence = { marker: marker[0]!, length: marker.length };

@@ -44,6 +44,17 @@ describe("streaming syntax stabilization (opt-in)", () => {
     expect(stable("Before *italic **nested")).toBe("Before");
   });
 
+  it("releases unmatched spans at paragraph and block boundaries", () => {
+    for (const first of ["def f(*args, **kwargs)", "int *p", "src/**/*.ts", "stray `code", "stray _word"]) {
+      expect(stable(`${first}\n\nLater paragraph`)).toBe(`${first}\n\nLater paragraph`);
+    }
+    for (const block of ["# Heading", "- item", "1. item", "> quote", "```ts\ncode\n```", "| a | b |\n| --- | --- |\n| c | d |"]) {
+      const text = `int *p\n${block}`;
+      expect(stable(text)).toBe(text);
+    }
+    expect(stable("Earlier paragraph\n\ndef f(*args, **kwargs)")).toBe("Earlier paragraph\n\ndef f(");
+  });
+
   it("withholds lone marker lines, including their trailing newline", () => {
     for (const marker of ["**", "*", "_", "__", "`", "#", "##", "###"]) {
       expect(stable(`Safe text\n${marker}\n`)).toBe("Safe text");

@@ -1753,7 +1753,7 @@ export async function runTurn(
         }),
       );
 
-      s.onSpinnerStop?.();
+      s.onSpinnerStart?.("thinking…");
 
       // Collect recalled entries from all recall calls in the batch.
       for (const { tc, result, isError } of executedResults) {

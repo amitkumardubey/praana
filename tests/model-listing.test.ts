@@ -338,7 +338,7 @@ describe("listAllAvailableModels (parallel, static-first)", () => {
         return okJson([{ id: "gpt-4o", context_length: 128_000 }, { id: "gpt-5", context_length: 262_144 }]);
       }
       if (url.includes("openrouter.ai")) {
-        return okJson([{ id: "openai/gpt-4o-mini", context_length: 128_000 }, { id: "openrouter/only-live", context_length: 327_68 }]);
+        return okJson([{ id: "openai/gpt-4o-mini", context_length: 128_000 }, { id: "openrouter/only-chat", context_length: 327_68 }]);
       }
       return okJson([]);
     });
@@ -385,7 +385,7 @@ describe("listAllAvailableModels (parallel, static-first)", () => {
       if (failProvider && url.includes(new URL(PROVIDER_REGISTRY[failProvider].baseUrl).host)) {
         throw new Error(`${failProvider} catalog unreachable`);
       }
-      return okJson([{ id: "shared/live-model", context_length: 64_000 }]);
+      return okJson([{ id: "shared/chat-model", context_length: 64_000 }]);
     });
 
     const failures: string[] = [];
@@ -396,7 +396,7 @@ describe("listAllAvailableModels (parallel, static-first)", () => {
     });
 
     // Other providers' live results are merged in…
-    expect(result.some((m) => m.modelId === "shared/live-model")).toBe(true);
+    expect(result.some((m) => m.modelId === "shared/chat-model")).toBe(true);
     if (failProvider) {
       // …the failing provider contributes nothing (no curated models to
       // keep), and the failure is reported to the UI.

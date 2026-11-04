@@ -1285,6 +1285,37 @@ describe("per-turn step budget — interactive soft pause", () => {
     expect(wrapUpCalls() - before).toBe(1);
   });
 
+  it("restores the turn spinner after a batch and hides it for pause and turn end", async () => {
+    let label: string | null = "thinking…";
+    let afterBatch: string | null = null;
+    let duringPause: string | null = "not paused";
+    const session = makeMockSession({
+      config: makeConfig({ turn: { max_steps: 25, pause_after_steps: 2, hard_max_steps: 300 } }),
+    });
+    mockStream.mockImplementation((req: FakeStreamRequest) => {
+      const count = req.messages.filter((m) => m.role === "tool_result").length;
+      if (count === 1) afterBatch = label;
+      return makeLoopStream(req, 3);
+    });
+    const sink: TurnUiSink = {
+      onSpinnerStart: (text) => { label = text; },
+      onSpinnerStop: () => { label = null; },
+      onStepPause: () => {
+        label = null; // The TUI stops its spinner before opening the overlay.
+        duringPause = label;
+        return false;
+      },
+    };
+    try {
+      await runTurn(session, "spinner lifecycle", undefined, { sink });
+    } finally {
+      label = null; // The TUI stops its spinner at turn end.
+    }
+    expect(afterBatch).toBe("thinking…");
+    expect(duringPause).toBeNull();
+    expect(label).toBeNull();
+  });
+
   function pauseForSpinner() {
     return makeMockSession({
       config: makeConfig({ turn: { max_steps: 25, pause_after_steps: 1, hard_max_steps: 300 } }),
