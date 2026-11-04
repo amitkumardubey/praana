@@ -198,7 +198,7 @@ function normalizeLlmTimeout(value: unknown, name: string): number | undefined {
     return undefined;
   }
   if (value > MAX_SETTIMEOUT_MS) {
-    configWarn(`Invalid llm.${name} above 2147483647, using the provider default`);
+    configWarn(`Invalid llm.${name} above ${MAX_SETTIMEOUT_MS}, using the provider default`);
     return undefined;
   }
   return value;

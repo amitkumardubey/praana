@@ -295,6 +295,10 @@ describe("connect timeout retry budget", () => {
 });
 
 describe("idle timeout wording", () => {
+  it("shows milliseconds for sub-second timeouts", () => {
+    expect(idleTimeoutUserMessage(250)).toBe("The model stopped responding (idle timeout after 250ms).");
+  });
+
   it("mentions the partial answer only when text was streamed", () => {
     expect(idleTimeoutUserMessage(5_000, false)).toBe(
       "The model stopped responding (idle timeout after 5s).",

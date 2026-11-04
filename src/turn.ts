@@ -145,8 +145,10 @@ export function isPrematureEndRetry(result: LlmStreamResult): boolean {
  * The partial-answer sentence is included only when text was actually streamed.
  */
 export function idleTimeoutUserMessage(idleTimeoutMs: number, streamedText = false): string {
-  const seconds = Math.max(0, Math.round(idleTimeoutMs / 1000));
-  const base = `The model stopped responding (idle timeout after ${seconds}s).`;
+  const duration = idleTimeoutMs < 1000
+    ? `${Math.max(0, idleTimeoutMs)}ms`
+    : `${Math.round(idleTimeoutMs / 1000)}s`;
+  const base = `The model stopped responding (idle timeout after ${duration}).`;
   return streamedText ? `${base} The partial answer above was not completed.` : base;
 }
 

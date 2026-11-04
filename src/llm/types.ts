@@ -80,6 +80,7 @@ export type StreamEvent =
     };
 
 import type { ProviderWireCompat } from "../provider-registry.js";
+import type { StreamEndCheck } from "./stream-end.js";
 
 /** Resolved credentials passed to drivers. */
 export interface ResolvedAuth {
@@ -119,11 +120,11 @@ export interface StreamRequest {
   /**
    * When false, a clean close without the provider's final signal is a normal
    * finish. `streamLlmResponse` sets this from `streamEndCheck`.
-   * Omitted means strict.
+   * When omitted, Responses is lenient except for Codex; other drivers are strict.
    */
   strictStreamEnd?: boolean;
   /** How `strictStreamEnd` was chosen. Omitted means `auto`. */
-  streamEndCheck?: "auto" | "strict" | "lenient";
+  streamEndCheck?: StreamEndCheck;
   /**
    * Milliseconds to wait for response headers. `0` disables.
    * Omitted: 60s for hosted first-party providers, 300s otherwise.

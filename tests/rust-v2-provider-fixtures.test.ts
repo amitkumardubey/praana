@@ -371,6 +371,7 @@ describe("rust-v2 provider legacy fixtures", () => {
       "src/llm/drivers/responses.ts",
       "src/llm/retry.ts",
       "src/llm/stream.ts",
+      "src/llm/types.ts",
     ]);
     for (const rel of ORACLE_FILES_SORTED) {
       if (ORACLE_HASH_ALLOWLIST.has(rel)) continue;
