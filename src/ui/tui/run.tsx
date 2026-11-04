@@ -319,7 +319,7 @@ export async function runTui(
       void doShutdown(setupOutcome);
       return;
     }
-    focusPrompt();
+    focusPromptAfterConfirm(overlay.kind(), focusPrompt);
   };
 
   const handleSlashTrigger = () => {
@@ -483,7 +483,7 @@ export async function runTui(
     }
     setupOutcome = result.success ? "completed" : "failed";
     void applySetupToLiveSession(result);
-    focusPrompt();
+    focusPromptAfterConfirm(overlay.kind(), focusPrompt);
   };
 
   const handleConsentComplete = (proceed: boolean) => {
@@ -792,7 +792,6 @@ export async function runTui(
                 handlePaletteCancel();
               } else {
                 dismissOverlay();
-                focusPrompt();
               }
               renderer.requestRender();
               return;
@@ -806,7 +805,6 @@ export async function runTui(
               handlePaletteCancel();
             } else if (overlay.kind() === "model") {
               dismissOverlay();
-              focusPrompt();
             }
             if (!session) {
               void doShutdown(setupOutcome);

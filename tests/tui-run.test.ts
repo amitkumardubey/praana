@@ -5,6 +5,7 @@
  *
  * Prefer those focused suites over a heavy FakeCliRenderer mock.module harness.
  */
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "bun:test";
 import { createOverlayUi } from "../src/ui/tui/overlays/state.js";
 import { createShellUi } from "../src/ui/tui/shell-ui.js";
@@ -41,6 +42,42 @@ describe("step-pause confirm focus", () => {
     focusPromptAfterConfirm("palette", focus);
     focusPromptAfterConfirm("confirm", focus);
     expect(focuses).toBe(1);
+  });
+
+  it("does not focus the prompt when dismiss promotes a queued confirm", () => {
+    const overlay = createOverlayUi();
+    const pending = overlay.showConfirm("continue?");
+    overlay.showModel();
+    let focuses = 0;
+    overlay.dismiss();
+    focusPromptAfterConfirm(overlay.kind(), () => {
+      focuses += 1;
+    });
+    expect(overlay.kind()).toBe("model");
+    expect(focuses).toBe(0);
+    overlay.resolveConfirm(false);
+    void pending;
+    overlay.dispose();
+  });
+
+  it("refocuses from dismissOverlay only when that dismiss leaves nothing open", () => {
+    const src = readFileSync(new URL("../src/ui/tui/run.tsx", import.meta.url), "utf8");
+    const dismiss = src.slice(
+      src.indexOf("const dismissOverlay = () => {"),
+      src.indexOf("const handleSlashTrigger"),
+    );
+    expect(dismiss).toContain("focusPromptAfterConfirm(overlay.kind(), focusPrompt)");
+    expect(dismiss).not.toContain("focusPrompt();");
+    const ctrlC = src.slice(
+      src.indexOf("if (ctrlC.action === \"cancel_overlay\")"),
+      src.indexOf("if (!session)"),
+    );
+    expect(ctrlC).not.toContain("focusPrompt();");
+    const setup = src.slice(
+      src.indexOf("const handleSetupComplete"),
+      src.indexOf("const handleConsentComplete"),
+    );
+    expect(setup).not.toContain("focusPrompt();");
   });
 });
 
