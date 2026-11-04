@@ -164,7 +164,14 @@ export async function runBounceScenario(scenario: BounceScenario): Promise<Bounc
   });
   const store = createTranscriptStore();
   const scheduler = new ManualBatchScheduler();
-  const sink = new OpenTuiSink(store.mount, TOAST, {
+  let applied = 0;
+  const sink = new OpenTuiSink({
+    ...store.mount,
+    appendAssistantDelta(id, delta) {
+      applied++;
+      return store.mount.appendAssistantDelta(id, delta);
+    },
+  }, TOAST, {
     ambient: "quiet",
     showThinking: () => false,
     onSpinnerMessage: () => {},
@@ -269,12 +276,10 @@ export async function runBounceScenario(scenario: BounceScenario): Promise<Bounc
     const passHistogram: Record<number, number> = {};
     let maxPasses = 0;
     let intermediateShifts = 0;
-    let applied = 0;
 
     const applyAndPaint = async (): Promise<void> => {
       const start = frames.length;
       const passes = await settle();
-      applied++;
       passHistogram[passes] = (passHistogram[passes] ?? 0) + 1;
       maxPasses = Math.max(maxPasses, passes);
       const end = frames.length;
@@ -290,7 +295,6 @@ export async function runBounceScenario(scenario: BounceScenario): Promise<Bounc
     for (const delta of scenarioDeltas(scenario)) {
       sink.onTextDelta(delta);
       if (scenario.realtime) {
-        applied++;
         // Let the real renderer and worker race the next provider delta. The
         // frame listener stays attached throughout, including between deltas.
         await Bun.sleep(scenario.arrivalMs);
