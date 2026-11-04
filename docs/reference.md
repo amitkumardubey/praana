@@ -316,7 +316,8 @@ finish unless `stream_end_check` resolves to strict; a strict close is
 `response.done` or `response.completed` whose status is `failed` or
 `cancelled` are errors for every provider and every strictness. Strictness
 does not turn a failed response into a normal finish.
-A first-step empty response that showed only thinking can be retried and can fall back; answer text prevents retry.
+
+When an attempt streams only reasoning and then ends empty, the turn retries that step and can fall back to another model. The reasoning may appear twice, or from two models. Answer text already shown prevents that retry.
 
 ## Slash command palette
 
