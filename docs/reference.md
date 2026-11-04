@@ -93,6 +93,8 @@ PRAANA pins `@opentui/core`, `@opentui/solid`, and `@opentui/keymap` to exactly 
 
 For terminals where streaming answers flicker, set `PRAANA_TUI_SYNC_OUTPUT` to `always` to force synchronized output or `never` to disable it. Values are case-insensitive; `auto`, an unset variable, or any other value uses OpenTUI's default.
 
+While an assistant answer is still streaming, the transcript omits an unfinished list marker, trailing spaces on a list item, and trailing newlines from the markdown view. OpenTUI's streaming preview paints those tails as an extra row and the next frame removes it; following both heights bounced the viewport by one line. The finished answer is rendered in full.
+
 ## First run
 
 ```bash
