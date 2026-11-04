@@ -80,7 +80,7 @@ export class AnthropicDriver implements LlmDriver {
     let cacheWriteTokens = 0;
 
     let currentBlockIndex = -1;
-    let currentBlockType: string | null = null;
+    let stopReason: string | undefined;
     let sawTerminal = false;
     let emittedDelta = false;
 
@@ -89,7 +89,7 @@ export class AnthropicDriver implements LlmDriver {
       content: accumulatedContent,
       thinking: accumulatedThinking || undefined,
       thinkingSignature,
-      toolCalls: accumulator.flush(),
+      toolCalls: [],
     });
 
     yield* runGuardedProviderStream({
@@ -146,9 +146,7 @@ export class AnthropicDriver implements LlmDriver {
         } else if (type === "content_block_start") {
           currentBlockIndex = parsed.index ?? 0;
           const block = parsed.content_block;
-          currentBlockType = block?.type ?? null;
-
-          if (currentBlockType === "tool_use") {
+          if (block?.type === "tool_use") {
             const res = accumulator.processChunk({
               index: currentBlockIndex,
               id: block.id,
@@ -183,19 +181,12 @@ export class AnthropicDriver implements LlmDriver {
               events.push({ type: "tool_call_delta", id: res.delta.id, argsDelta: res.delta.argsDelta });
             }
           }
-        } else if (type === "content_block_stop") {
-          if (currentBlockType === "tool_use") {
-            accumulator.processChunk({
-              index: currentBlockIndex,
-              isComplete: true,
-            });
-          }
-          currentBlockType = null;
         } else if (type === "message_delta") {
           const delta = parsed.delta;
           if (delta?.stop_reason) {
             sawTerminal = true;
             terminal = true;
+            stopReason = delta.stop_reason;
             if (delta.stop_reason === "tool_use") finishReason = "tool_use";
             else if (delta.stop_reason === "max_tokens") finishReason = "length";
             else finishReason = "stop";
@@ -236,7 +227,9 @@ export class AnthropicDriver implements LlmDriver {
           },
         });
 
-        const completedToolCalls = accumulator.flush();
+        // Block completion alone does not authorize a tool; wait for the message terminal.
+        const normalStop = stopReason === undefined || ["tool_use", "end_turn", "stop_sequence", "pause_turn"].includes(stopReason);
+        const completedToolCalls = normalStop ? accumulator.flush() : [];
         if (completedToolCalls.length > 0) {
           finishReason = "tool_use";
           for (const tc of completedToolCalls) {

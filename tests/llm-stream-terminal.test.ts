@@ -126,6 +126,38 @@ describe("terminal stream events", () => {
       expect(events.at(-1)).toMatchObject({ type: "done", reason: "tool_use" });
     });
   }
+  for (const [terminal, reason] of [["max_tokens", "length"], ["refusal", "stop"], ["unexpected", "stop"]] as const) {
+    for (const blockStopped of [false, true]) {
+      it(`does not publish Anthropic partial tool calls on ${terminal} (block stopped: ${blockStopped})`, async () => {
+        const frames: unknown[] = [
+          { type: "message_start", message: { usage: { input_tokens: 3 } } },
+          { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+          { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Partial" } },
+          { type: "content_block_stop", index: 0 },
+          { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "toolu_1", name: "read_file", input: {} } },
+          { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '{"path":"a' } },
+        ];
+        if (blockStopped) frames.push({ type: "content_block_stop", index: 1 });
+        frames.push({ type: "message_delta", delta: { stop_reason: terminal }, usage: { output_tokens: 4 } }, { type: "message_stop" });
+        const events = await collect(new AnthropicDriver(), frames.map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join(""), user("anthropic"), keyAuth);
+        expect(events).toContainEqual({ type: "text_delta", delta: "Partial" });
+        expect(events.some((ev) => (ev as { type: string }).type === "tool_call_end")).toBe(false);
+        expect(events.some((ev) => (ev as { type: string }).type === "error")).toBe(false);
+        expect(events.at(-1)).toEqual({ type: "done", reason, message: { role: "assistant", content: "Partial" } });
+      });
+    }
+  }
+  it("drops Anthropic partial tool calls on user abort", async () => {
+    const body = [
+      { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Partial" } },
+      { type: "content_block_start", index: 1, content_block: { type: "tool_use", id: "toolu_1", name: "read_file" } },
+      { type: "content_block_delta", index: 1, delta: { type: "input_json_delta", partial_json: '{"path":"a' } },
+      { type: "message_delta", delta: { stop_reason: "tool_use" } },
+    ].map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("");
+    const events = await collect(new AnthropicDriver(), body, user("anthropic"), keyAuth, { abortOnToolDelta: true });
+    expect(events.some((ev) => (ev as { type: string }).type === "tool_call_end")).toBe(false);
+    expect(events.at(-1)).toEqual({ type: "done", reason: "abort", message: { role: "assistant", content: "Partial", toolCalls: [] } });
+  });
   it("snapshots a normal Anthropic text stream", async () => {
     const body = [
       'data: {"type":"message_start","message":{"usage":{"input_tokens":5,"cache_read_input_tokens":1,"cache_creation_input_tokens":2}}}\n\n',
@@ -163,7 +195,8 @@ describe("terminal stream events", () => {
         type: "usage",
         usage: { input: 3, output: 4, totalTokens: 7, cacheReadTokens: 0, cacheWriteTokens: 0 },
       },
-      { type: "done", reason: "tool_use", message: { role: "assistant", content: "" } },
+      { type: "tool_call_end", toolCall: { id: "toolu_1", name: "read_file", args: { path: "a.ts" }, rawArgs: '{"path":"a.ts"}' } },
+      { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [{ id: "toolu_1", name: "read_file", args: { path: "a.ts" }, rawArgs: '{"path":"a.ts"}' }] } },
     ]);
   });
 
