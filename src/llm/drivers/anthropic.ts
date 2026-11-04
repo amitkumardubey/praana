@@ -17,6 +17,14 @@ import { parseSseStream } from "../sse.js";
 import { ToolCallAccumulator } from "../tool-accumulator.js";
 import { withPreEmissionRetry } from "../retry.js";
 
+type ThinkingMode = "adaptive" | "budget";
+const learnedThinkingModes = new Map<string, ThinkingMode>();
+
+function anthropicThinkingMode(modelId: string): ThinkingMode {
+  const match = /^claude-(?:[a-z]+-)?(\d+)-/i.exec(modelId);
+  return match && Number(match[1]) >= 5 ? "adaptive" : "budget";
+}
+
 export class AnthropicDriver implements LlmDriver {
   readonly protocol = "anthropic-messages";
 
@@ -48,19 +56,30 @@ export class AnthropicDriver implements LlmDriver {
       ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
     };
 
-    if (req.reasoningEffort && req.reasoningEffort !== "off") {
-      const budgetTokens = req.reasoningEffort === "high" ? 8192 : req.reasoningEffort === "medium" ? 4096 : 2048;
-      body.thinking = { type: "enabled", budget_tokens: budgetTokens };
-      // When thinking is enabled, Anthropic requires max_tokens > budget_tokens and temperature: 1.0 (or omitted)
-      body.max_tokens = Math.max(maxTokens, budgetTokens + 4096);
+    const thinkingOn = !!req.reasoningEffort && req.reasoningEffort !== "off";
+    let mode = learnedThinkingModes.get(req.model) ?? anthropicThinkingMode(req.model);
+    const applyThinking = () => {
+      if (!thinkingOn) return;
       delete body.temperature;
-    }
+      if (mode === "adaptive") {
+        body.thinking = { type: "adaptive" };
+        body.output_config = { effort: req.reasoningEffort === "medium" ? "medium" : req.reasoningEffort === "high" || req.reasoningEffort === "xhigh" ? "high" : "low" };
+        body.max_tokens = maxTokens;
+      } else {
+        const budgetTokens = req.reasoningEffort === "high" ? 8192 : req.reasoningEffort === "medium" ? 4096 : 2048;
+        body.thinking = { type: "enabled", budget_tokens: budgetTokens };
+        body.max_tokens = Math.max(maxTokens, budgetTokens + 4096);
+        delete body.output_config;
+      }
+    };
+    applyThinking();
+    let switched = false;
 
     let response: Response;
     try {
       response = await withPreEmissionRetry(
         async () => {
-          const res = await fetch(endpoint, {
+          let res = await fetch(endpoint, {
             method: "POST",
             headers,
             body: JSON.stringify(body),
@@ -68,7 +87,17 @@ export class AnthropicDriver implements LlmDriver {
           });
 
           if (!res.ok) {
-            const errText = await res.text().catch(() => "");
+            let errText = await res.text().catch(() => "");
+            const alternate = mode === "budget" ? /thinking\.type\.adaptive/i.test(errText) : /adaptive.{0,80}not supported|not supported.{0,80}adaptive/i.test(errText);
+            if (res.status === 400 && thinkingOn && !switched && alternate) {
+              switched = true;
+              mode = mode === "budget" ? "adaptive" : "budget";
+              learnedThinkingModes.set(req.model, mode);
+              applyThinking();
+              res = await fetch(endpoint, { method: "POST", headers, body: JSON.stringify(body), signal: req.signal });
+              if (res.ok && res.body) return res;
+              errText = await res.text().catch(() => "");
+            }
             const err: any = new Error(`Anthropic API error (${res.status}): ${errText}`);
             err.status = res.status;
             throw err;
