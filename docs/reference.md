@@ -334,6 +334,8 @@ A normal quit — `/exit`, or Ctrl+C with an empty prompt — exits `0` when a s
 
 Unknown ids resolve against the bundled pi-ai catalog first, then against the provider's live catalog (HTTP `/models` or Bedrock control-plane APIs; cached 6 hours at `~/.praana/provider-catalog-cache.json`).
 
+Live model lists hide known non-chat models and show newest first when creation times are available; the current model stays pinned in the selector. Curated fallback lists retain their written order. Claude 5 uses adaptive thinking when reasoning is enabled.
+
 ## Prompt keys
 
 - **Enter** — send the message
