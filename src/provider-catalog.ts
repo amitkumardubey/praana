@@ -12,10 +12,24 @@ import {
 import { OPENAI_COMPATIBLE_API_IDS } from "./provider-registry.js";
 import { getApiKey } from "./credentials.js";
 
+const MODEL_TOKEN_START = "(?:^|[-_.])";
+const MODEL_TOKEN_END = "(?:[-_.]|$)";
+const NON_CHAT_TOKENS = [
+  "embed(?:ding|dings|der)?", // Embeddings
+  "whisper|tts|transcribe|transcription", // Speech
+  "realtime|live", // Realtime/live
+  "dall-e|imagen|veo|sora", // Image/video generation
+  "moderation", // Moderation
+  "davinci|babbage|aqa", // Legacy completion
+].join("|");
+const NON_CHAT = new RegExp(
+  `${MODEL_TOKEN_START}(?:${NON_CHAT_TOKENS})${MODEL_TOKEN_END}|gpt-image|audio|^gpt-3\\.5-turbo-instruct|image-generation|speech`,
+);
+
 /** Exclude known non-conversational model families from live pickers. */
 export function isChatToolModel(id: string): boolean {
   const name = id.toLowerCase().split("/").pop() ?? "";
-  return !/^(?:text-embedding|embedding|gemini-embedding|whisper|tts(?:[-_]|$)|dall-e|gpt-image|imagen|veo(?:[-_]|$)|sora(?:[-_]|$)|omni-moderation|davinci|babbage|gpt-3\.5-turbo-instruct|aqa$)|(?:^|[-_])embed(?:ding)?(?:[-_]|$)|^(?:qwen2-audio|gpt-4o-audio|gpt-realtime|gpt-4o-transcribe)(?:[-_]|$)/.test(name);
+  return !NON_CHAT.test(name);
 }
 
 export const PROVIDER_CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
