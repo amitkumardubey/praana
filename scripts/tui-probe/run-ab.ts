@@ -1,9 +1,19 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir, loadavg } from "node:os";
 import { join, resolve } from "node:path";
-import { capture, parseSize } from "./capture";
+import { capture, collectEnvArgs, parseSize } from "./capture";
 import { analyzeSamples, readSamples, type Report } from "./analyze";
 import { startMock } from "./mock-llm";
+
+export function resolveAbEnv(args: string[]): { envA: string[]; envB: string[] } {
+  const common = collectEnvArgs(args, "--env");
+  const a = collectEnvArgs(args, "--env-a");
+  const b = collectEnvArgs(args, "--env-b");
+  return {
+    envA: [...common, ...a],
+    envB: [...common, ...b],
+  };
+}
 
 const metrics = ["regressions", "scrollReversals", "aba", "styleFlips"] as const;
 type Metric = typeof metrics[number];
@@ -44,6 +54,7 @@ async function main() {
   const out = resolve(value("--out", join(homedir(), ".cache/probe-scratch/ab", new Date().toISOString().replaceAll(":", "-")))!); mkdirSync(out, { recursive: true });
   const thresholds: Thresholds = {};
   for (const m of metrics) { const v = value(`--${m}`); if (v !== undefined) { const n = Number(v); if (!Number.isFinite(n) || n < 0) throw new Error(`Invalid threshold ${m}`); thresholds[m] = n; } }
+  const { envA, envB } = resolveAbEnv(args);
   const server = startMock(9779, delay);
   await new Promise<void>((ok, fail) => { server.once("listening", ok); server.once("error", fail); });
   let failed = false;
@@ -51,10 +62,10 @@ async function main() {
     for (const size of sizes) {
       const startLoad = loadavg(); const reportsA: Report[] = [], reportsB: Report[] = [];
       console.log(`Batch ${size} start load ${startLoad.join(" ")}`);
-      for (let i = 1; i <= runs; i++) for (const [path, label, reports] of [[a, labelA, reportsA], ...(noise ? [] : [[b!, labelB, reportsB]])] as [string, string, Report[]][]) {
+      for (let i = 1; i <= runs; i++) for (const [path, label, reports, env] of [[a, labelA, reportsA, envA], ...(noise ? [] : [[b!, labelB, reportsB, envB]])] as [string, string, Report[], string[]][]) {
         for (let attempt = 0; attempt <= 2; attempt++) {
           const file = join(out, `${size}-${label}-${i}-attempt${attempt + 1}.jsonl`);
-          const result = await capture(path, label, size, 120, file);
+          const result = await capture(path, label, size, 120, file, env);
           const report = analyzeSamples(await readSamples(file), { height: parseSize(size).height });
           writeFileSync(file + ".report.json", JSON.stringify(report, null, 2));
           console.log(`${size} ${label} run ${i} attempt ${attempt + 1}: ${result.hz.toFixed(2)} Hz ${result.hz < 60 ? "INVALID" : "valid"} ${file}`);
@@ -66,7 +77,7 @@ async function main() {
       const summaryA = summarize(reportsA), summaryB = summarize(noise ? reportsA : reportsB);
       const table = formatTable(labelA, summaryA, noise ? `${labelA} noise` : labelB, summaryB);
       console.log(table); console.log(`Batch ${size} end load ${endLoad.join(" ")}`);
-      writeFileSync(join(out, `${size}-summary.json`), JSON.stringify({ startLoad, endLoad, labelA, labelB: noise ? labelA : labelB, summaryA, summaryB, filesA: reportsA.map(r => ({ hz: r.achievedHz, sampleCount: r.sampleCount })), filesB: reportsB.map(r => ({ hz: r.achievedHz, sampleCount: r.sampleCount })), table }, null, 2));
+      writeFileSync(join(out, `${size}-summary.json`), JSON.stringify({ startLoad, endLoad, labelA, labelB: noise ? labelA : labelB, summaryA, summaryB, filesA: reportsA.map(r => ({ hz: r.achievedHz, sampleCount: r.sampleCount })), filesB: reportsB.map(r => ({ hz: r.achievedHz, sampleCount: r.sampleCount })), table, envA, envB }, null, 2));
       if (args.includes("--check")) { const violations = checkThresholds(noise ? reportsA : reportsB, thresholds); if (violations.length) { console.error(`Thresholds exceeded: ${violations.join(", ")}`); failed = true; } }
     }
   } finally { server.close(); }

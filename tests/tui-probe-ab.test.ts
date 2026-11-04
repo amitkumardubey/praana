@@ -1,5 +1,10 @@
 import { expect, test } from "bun:test";
-import { summarize, formatTable, checkThresholds } from "../scripts/tui-probe/run-ab";
+import {
+  summarize,
+  formatTable,
+  checkThresholds,
+  resolveAbEnv,
+} from "../scripts/tui-probe/run-ab";
 import type { Report } from "../scripts/tui-probe/analyze";
 
 const report = (regressions: number, styleFlips: number): Report => ({ sampleCount: 1000, achievedHz: 100, unmatchedRatio: 0.1, regressions, styleFlips, scrollReversals: 0, aba: 0, durationMs: 1, distinctScreens: 1, samples: [], offenders: [] });
@@ -12,4 +17,22 @@ test("summarizes counts and per-thousand rates across runs", () => {
 test("checks defaults and optional style rate", () => {
   expect(checkThresholds([report(0, 5)], {})).toEqual([]);
   expect(checkThresholds([report(1, 5)], { styleFlips: 4 })).toEqual(["regressions", "styleFlips"]);
+});
+test("resolveAbEnv splits common, side-A, and side-B env args", () => {
+  expect(resolveAbEnv([])).toEqual({ envA: [], envB: [] });
+
+  const args = [
+    "--env",
+    "COMMON=1",
+    "--env-a",
+    "BATCH=0",
+    "--env-b",
+    "BATCH=33",
+    "--env",
+    "COMMON2=2",
+  ];
+  expect(resolveAbEnv(args)).toEqual({
+    envA: ["COMMON=1", "COMMON2=2", "BATCH=0"],
+    envB: ["COMMON=1", "COMMON2=2", "BATCH=33"],
+  });
 });

@@ -11,7 +11,13 @@ bun scripts/tui-probe/mock-llm.ts --port 9779 --delay-ms 12
 bun scripts/tui-probe/capture.ts --worktree /path/to/praana --label build-a --size 110x40
 ```
 
-The driver writes JSONL in `~/.cache/probe-scratch/`, with a header containing the label, size, commit, and achieved Hz. Analyze it (height must match the capture):
+The driver writes JSONL in `~/.cache/probe-scratch/`, with a header containing the label, size, commit, achieved Hz, and any supplied `--env` settings. Pass repeatable `--env KEY=VAL` to test environment overrides:
+
+```sh
+bun scripts/tui-probe/capture.ts --worktree /path/to/praana --label batch-33 --env PRAANA_TUI_STREAM_BATCH_MS=33
+```
+
+Analyze it (height must match the capture):
 
 ```sh
 bun -e 'import { analyzeSamples, readSamples } from "./scripts/tui-probe/analyze"; const r = analyzeSamples(await readSamples(process.argv[1]), {height: 40}); console.log(JSON.stringify(r, null, 2));' ~/.cache/probe-scratch/build-a-1.jsonl
@@ -34,11 +40,12 @@ Tmux samples emulated screen states, not Windows Terminal. It only sees glitches
 
 ## A/B, noise and checks
 
-The runner starts its own mock on port 9779, captures A and B in interleaved order, and retains captures and reports under `~/.cache/probe-scratch/ab/` by default. It retries captures below 60 Hz twice and records batch load averages. Supply `--out` to choose a directory, `--runs` (default 5), `--delay-ms` (default 12), and repeat `--size` for multiple batches.
+The runner starts its own mock on port 9779, captures A and B in interleaved order, and retains captures and reports under `~/.cache/probe-scratch/ab/` by default. It retries captures below 60 Hz twice and records batch load averages. Supply `--out` to choose a directory, `--runs` (default 5), `--delay-ms` (default 12), and repeat `--size` for multiple batches. Supply repeatable `--env KEY=VAL` for common settings, or `--env-a KEY=VAL` / `--env-b KEY=VAL` for per-side settings:
 
 ```sh
 bun scripts/tui-probe/run-ab.ts --a /path/to/a --b /path/to/b --label-a old --label-b new --runs 5 --size 110x40 --size 80x24
 bun scripts/tui-probe/run-ab.ts --noise /path/to/a --runs 5 --size 110x40
+bun scripts/tui-probe/run-ab.ts --a . --b . --label-a batch0 --label-b batch33 --env-a PRAANA_TUI_STREAM_BATCH_MS=0 --env-b PRAANA_TUI_STREAM_BATCH_MS=33
 bun scripts/tui-probe/run-ab.ts --a /path/to/a --b /path/to/b --check --regressions 0 --scrollReversals 0 --aba 0 --styleFlips 20
 ```
 

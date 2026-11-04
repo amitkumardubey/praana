@@ -22,7 +22,55 @@ function tmux(socket: string, ...args: string[]) {
   return result.stdout;
 }
 
-export async function capture(worktree: string, label: string, size = "110x40", timeout = 120, outputPath?: string) {
+export function shellQuote(s: string): string {
+  return `'${s.replaceAll("'", "'\\''")}'`;
+}
+
+export function collectEnvArgs(args: string[], flag = "--env"): string[] {
+  const result: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === flag) {
+      if (!args[i + 1] || args[i + 1]!.startsWith("--")) throw new Error(`Missing value for ${flag}`);
+      result.push(args[i + 1]!);
+    }
+  }
+  return result;
+}
+
+export function buildCaptureCommand(worktree: string, isolatedHome: string, home: string, env: string[] = []): string {
+  const envPairs = [
+    `HOME=${shellQuote(home)}`,
+    "TERM=xterm-256color",
+    `PATH=${shellQuote(process.env.PATH ?? "/usr/bin:/bin")}`,
+    `PRAANA_HOME=${shellQuote(isolatedHome)}`,
+    "PRAANA_NO_UPDATE_CHECK=1",
+    "OPENAI_API_KEY=sk-mock",
+    ...env.map((entry) => {
+      const eq = entry.indexOf("=");
+      if (eq <= 0) throw new Error(`Invalid env format, expected KEY=VAL: ${entry}`);
+      const k = entry.slice(0, eq);
+      const v = entry.slice(eq + 1);
+      return shellQuote(`${k}=${v}`);
+    }),
+  ];
+  return `cd ${shellQuote(resolve(worktree))} && exec env -i ${envPairs.join(" ")} bun src/main.ts`;
+}
+
+export function buildCaptureHeader(label: string, size: string, commit: string, achievedHz: number, env: string[] = []): Record<string, unknown> {
+  const header: Record<string, unknown> = {
+    type: "header",
+    label,
+    size,
+    commit,
+    achievedHz,
+  };
+  if (env.length > 0) {
+    header.env = [...env];
+  }
+  return header;
+}
+
+export async function capture(worktree: string, label: string, size = "110x40", timeout = 120, outputPath?: string, env: string[] = []) {
   if (!Number.isFinite(timeout) || timeout <= 0) throw new Error("Invalid timeout");
   const deadline = Date.now() + timeout * 1000;
   const git = spawnSync("git", ["-C", worktree, "rev-parse", "HEAD"], { encoding: "utf8", timeout: 5000 });
@@ -43,8 +91,7 @@ export async function capture(worktree: string, label: string, size = "110x40", 
   while (await Bun.file(join(scratch, `${label}-${n}.jsonl`)).exists()) n++;
   const output = outputPath ?? join(scratch, `${label}-${n}.jsonl`);
   mkdirSync(resolve(output, ".."), { recursive: true });
-  const shellQuote = (s: string) => `'${s.replaceAll("'", "'\\''")}'`;
-  const command = `cd ${shellQuote(resolve(worktree))} && exec env -i HOME=${shellQuote(home)} TERM=xterm-256color PATH=${shellQuote(process.env.PATH ?? "/usr/bin:/bin")} PRAANA_HOME=${shellQuote(isolated)} PRAANA_NO_UPDATE_CHECK=1 OPENAI_API_KEY=sk-mock bun src/main.ts`;
+  const command = buildCaptureCommand(worktree, isolated, home, env);
   let interrupted = "";
   const interrupt = (signal: string) => { interrupted = signal; spawnSync("tmux", ["-S", socket, "kill-session", "-t", session], { stdio: "ignore" }); };
   const onInt = () => interrupt("SIGINT");
@@ -75,7 +122,8 @@ export async function capture(worktree: string, label: string, size = "110x40", 
       busy = state.busy;
       if (state.finished) {
         const hz = count > 1 ? (count - 1) * 1000 / (timestamp - firstTimestamp) : 0;
-        writeFileSync(output, JSON.stringify({ type: "header", label, size, commit, achievedHz: hz }) + "\n" + readFileSync(output, "utf8"));
+        const header = buildCaptureHeader(label, size, commit, hz, env);
+        writeFileSync(output, JSON.stringify(header) + "\n" + readFileSync(output, "utf8"));
         return { output, count, hz };
       }
       // Let signal handlers and an in-process mock service their events between samples.
@@ -97,5 +145,6 @@ if (import.meta.main) {
   };
   const worktree = arg("--worktree");
   if (!worktree) throw new Error("--worktree is required");
-  console.log(await capture(worktree, arg("--label", "capture"), arg("--size", "110x40"), Number(arg("--timeout", "120"))));
+  const env = collectEnvArgs(args, "--env");
+  console.log(await capture(worktree, arg("--label", "capture"), arg("--size", "110x40"), Number(arg("--timeout", "120")), undefined, env));
 }
