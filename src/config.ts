@@ -856,16 +856,13 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
     "turn.hard_max_steps",
     turnDefaults.hard_max_steps,
   );
-  // A ceiling below the pause interval stops the turn before the first pause,
-  // with no warning. Raise the ceiling to the pause interval (keep the user's
-  // pause spacing) rather than shortening the pause, which would ask sooner
-  // than they configured. When the two are equal, the ceiling still wins on
-  // that shared step and stops without asking.
-  if (out.turn.hard_max_steps < out.turn.pause_after_steps) {
+  // A ceiling that is not above the pause interval never gets to ask: the
+  // shared step (or an earlier ceiling) stops the turn first. Keep the user's
+  // ceiling and disable the pause so the turn stops there with a wrap-up.
+  if (out.turn.hard_max_steps <= out.turn.pause_after_steps) {
     configWarn(
-      `turn.hard_max_steps (${out.turn.hard_max_steps}) is below turn.pause_after_steps (${out.turn.pause_after_steps}); raising hard_max_steps to ${out.turn.pause_after_steps} so the ceiling is not lower than the pause interval. The pause spacing is kept; the ceiling moves up to meet it.`,
+      `turn.hard_max_steps (${out.turn.hard_max_steps}) is not above turn.pause_after_steps (${out.turn.pause_after_steps}); the pause is disabled and the turn stops at the ceiling (${out.turn.hard_max_steps}) with a wrap-up.`,
     );
-    out.turn.hard_max_steps = out.turn.pause_after_steps;
   }
 
   // User-declared providers validation ([providers.<id>] sections)

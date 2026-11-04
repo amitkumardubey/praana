@@ -412,12 +412,14 @@ export interface TurnConfig {
   max_steps: number;
   /**
    * Soft-pause interval when the sink provides `onStepPause`. Default: 50.
-   * If `hard_max_steps` is lower, config raises the ceiling to this value.
+   * If `hard_max_steps` is not above this value, the pause is disabled and
+   * the turn stops at the ceiling with a wrap-up.
    */
   pause_after_steps: number;
   /**
    * Absolute ceiling when the sink provides `onStepPause` (wrap-up without
    * prompting; the pending batch is not executed). Default: 300.
+   * When this is not above `pause_after_steps`, the pause is disabled.
    */
   hard_max_steps: number;
 }

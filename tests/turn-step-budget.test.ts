@@ -878,14 +878,15 @@ describe("per-turn step budget — interactive soft pause", () => {
     expect(sink.texts.join("")).toContain("[summary] wrapped up");
   });
 
-  it("raises a directly constructed hard ceiling to the pause interval without warning again", async () => {
+  it("keeps a directly constructed ceiling that is not above the pause interval and does not ask", async () => {
     llmWarns.length = 0;
     installLoopStream(10);
     const session = makeMockSession({ config: makeConfig({ turn: { max_steps: 25, pause_after_steps: 4, hard_max_steps: 2 } }) });
     const sink = makePauseSink();
     await runTurn(session, "invalid ceiling", undefined, { sink });
-    expect(streamRequestCalls()).toHaveLength(5);
-    expect(shellExecuteCount()).toBe(3);
+    expect(sink.pauseCalls).toEqual([]);
+    expect(streamRequestCalls()).toHaveLength(3);
+    expect(shellExecuteCount()).toBe(1);
     expect(llmWarns.some((w) => w.message.includes("hard_max_steps") && w.message.includes("pause_after_steps"))).toBe(false);
   });
 
@@ -1564,17 +1565,37 @@ describe("per-turn step budget — config validation", () => {
     expect(warnings.some((w) => w.includes("turn.hard_max_steps"))).toBe(true);
   });
 
-  it("raises hard_max_steps to pause_after_steps when the ceiling is lower", () => {
+  it("disables the pause when hard_max_steps is below pause_after_steps and keeps the ceiling", () => {
+    getConfigWarnings();
     writeTurnConfig("[turn]\npause_after_steps = 40\nhard_max_steps = 10\n");
     const config = loadConfig();
     const t = config.turn as TurnConfig;
     expect(t.pause_after_steps).toBe(40);
+    expect(t.hard_max_steps).toBe(10);
+    expect(getConfigWarnings()).toContain(
+      "turn.hard_max_steps (10) is not above turn.pause_after_steps (40); the pause is disabled and the turn stops at the ceiling (10) with a wrap-up.",
+    );
+  });
+
+  it("disables the pause when hard_max_steps equals pause_after_steps", () => {
+    getConfigWarnings();
+    writeTurnConfig("[turn]\npause_after_steps = 40\nhard_max_steps = 40\n");
+    const config = loadConfig();
+    const t = config.turn as TurnConfig;
+    expect(t.pause_after_steps).toBe(40);
     expect(t.hard_max_steps).toBe(40);
-    const warnings = getConfigWarnings();
-    expect(
-      warnings.some(
-        (w) => w.includes("hard_max_steps") && w.includes("pause_after_steps"),
-      ),
-    ).toBe(true);
+    expect(getConfigWarnings()).toContain(
+      "turn.hard_max_steps (40) is not above turn.pause_after_steps (40); the pause is disabled and the turn stops at the ceiling (40) with a wrap-up.",
+    );
+  });
+
+  it("keeps both values when hard_max_steps is above pause_after_steps", () => {
+    getConfigWarnings();
+    writeTurnConfig("[turn]\npause_after_steps = 7\nhard_max_steps = 99\n");
+    const config = loadConfig();
+    const t = config.turn as TurnConfig;
+    expect(t.pause_after_steps).toBe(7);
+    expect(t.hard_max_steps).toBe(99);
+    expect(getConfigWarnings().some((w) => w.includes("pause is disabled"))).toBe(false);
   });
 });

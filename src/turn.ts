@@ -946,7 +946,9 @@ export async function runTurn(
   const isHeadless = !!session.headless;
   const pauseAfterSteps = clampTurnInt(session.config.turn?.pause_after_steps, 50);
   const configuredHardMaxSteps = clampTurnInt(session.config.turn?.hard_max_steps, 300);
-  const hardMaxSteps = Math.max(configuredHardMaxSteps, pauseAfterSteps);
+  // Keep the configured ceiling. When it is not above the pause interval the
+  // ceiling is reached first, so the turn stops there and never asks.
+  const hardMaxSteps = configuredHardMaxSteps;
   const pauseEnabled = !isHeadless && !!s.onStepPause;
   const loopCap = pauseEnabled ? hardMaxSteps : maxSteps;
   let interrupted = false;

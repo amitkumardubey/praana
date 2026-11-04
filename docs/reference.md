@@ -116,7 +116,7 @@ A *step* is one model round-trip (it may contain several parallel tool calls). T
 |---|---|---|
 | `max_steps` | 25 | Hard cap on steps per user message when the session is **headless** (`praana run`, Harbor, CI) **or** the UI sink does not provide `onStepPause` (non-interactive sinks, subagents, tests). `--max-steps N` overrides it for one headless run. Reaching the cap executes the current tool batch, then runs the wrap-up. |
 | `pause_after_steps` | 50 | When the sink provides `onStepPause`, the session pauses before executing the next tool batch every time steps used reaches a multiple of this value. |
-| `hard_max_steps` | 300 | Absolute ceiling for those interactive sessions: reaching it stops *without asking* and writes the wrap-up summary. If this is set below `pause_after_steps`, PRAANA warns and raises it to `pause_after_steps` so the ceiling is not lower than the pause interval (the pause spacing is kept; the ceiling moves up). When the two are equal, that shared step still stops without asking, because the ceiling is checked first. |
+| `hard_max_steps` | 300 | Absolute ceiling for those interactive sessions: reaching it stops *without asking* and writes the wrap-up summary. If this is not above `pause_after_steps` (lower or equal), PRAANA warns, keeps this ceiling, and disables the pause: the turn stops at the ceiling with a wrap-up and does not ask. |
 
 The pause/ceiling path runs only when the sink provides `onStepPause`. Headless runs and every other sink use `max_steps` and never prompt.
 
