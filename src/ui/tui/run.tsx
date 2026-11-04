@@ -35,6 +35,7 @@ import type { TranscriptEntry } from "./transcript/model.js";
 import { TranscriptProjection } from "./transcript/projection.js";
 import { createTranscriptStore } from "./transcript/store.js";
 import { OpenTuiSink } from "./sink.js";
+import type { OverlayKind } from "./overlays/state.js";
 import { listAllAvailableModels } from "../../model-listing.js";
 import { App } from "./app.js";
 import { createShellUi } from "./shell-ui.js";
@@ -105,6 +106,11 @@ function toastToneToType(
  * bundle. Shown at most once per process (boot, or after /new), only when
  * the raw truncation notice was captured during session startup.
  */
+/** Focus the prompt after a step-pause confirm only when nothing else is open. */
+export function focusPromptAfterConfirm(kind: OverlayKind, focusPrompt: () => void): void {
+  if (kind === "none") focusPrompt();
+}
+
 export function shouldShowAgentsTruncationToast(
   started: Pick<StartupInfo, "agentTruncationNotices">,
   alreadyShown: boolean,
@@ -496,16 +502,16 @@ export async function runTui(
     // showConfirm closes itself when `signal` aborts, so a cancelled turn
     // cannot leave "Continue?" or its key intercept on screen.
     const pending = overlay.showConfirm(`Used ${stepsUsed} steps this turn. Continue?`, signal);
-    const onAbort = () => renderer.requestRender();
-    signal.addEventListener("abort", onAbort, { once: true });
     renderer.requestRender();
     try {
       const cont = await pending;
-      focusPrompt();
+      // showConfirm already settles on abort and updates overlay kind, and
+      // the host re-renders when kind changes. The finally below requests
+      // another frame, so a separate abort listener is not required.
+      focusPromptAfterConfirm(overlay.kind(), focusPrompt);
       if (cont && !signal.aborted) ui.spinner.start("working…");
       return cont && !signal.aborted;
     } finally {
-      signal.removeEventListener("abort", onAbort);
       renderer.requestRender();
     }
   };

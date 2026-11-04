@@ -10,7 +10,7 @@ import { createOverlayUi } from "../src/ui/tui/overlays/state.js";
 import { createShellUi } from "../src/ui/tui/shell-ui.js";
 import { createTranscriptStore } from "../src/ui/tui/transcript/store.js";
 import { segmentsToPlainText } from "../src/ui/tui/theme.js";
-import { shouldShowAgentsTruncationToast } from "../src/ui/tui/run.tsx";
+import { focusPromptAfterConfirm, shouldShowAgentsTruncationToast } from "../src/ui/tui/run.tsx";
 
 describe("AGENTS truncation toast on /new", () => {
   it("surfaces the notice for a fresh startup info when not yet shown", () => {
@@ -26,6 +26,21 @@ describe("AGENTS truncation toast on /new", () => {
     expect(
       shouldShowAgentsTruncationToast({ agentTruncationNotices: ["n"] }, true),
     ).toBe(false);
+  });
+});
+
+describe("step-pause confirm focus", () => {
+  it("returns focus to the prompt only when no overlay is left open", () => {
+    let focuses = 0;
+    const focus = () => {
+      focuses += 1;
+    };
+    focusPromptAfterConfirm("none", focus);
+    expect(focuses).toBe(1);
+    focusPromptAfterConfirm("model", focus);
+    focusPromptAfterConfirm("palette", focus);
+    focusPromptAfterConfirm("confirm", focus);
+    expect(focuses).toBe(1);
   });
 });
 
