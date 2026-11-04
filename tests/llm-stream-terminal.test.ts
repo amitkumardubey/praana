@@ -28,15 +28,16 @@ async function collect(
   body: BodyInit,
   req: StreamRequest,
   auth: ResolvedAuth,
-  opts?: { abortOnText?: boolean },
+  opts?: { abortOnText?: boolean; abortOnToolDelta?: boolean },
 ): Promise<unknown[]> {
   const ac = new AbortController();
   globalThis.fetch = (async () => new Response(body, { status: 200 })) as typeof fetch;
   const events: unknown[] = [];
-  const streamReq = opts?.abortOnText ? { ...req, signal: ac.signal } : req;
+  const streamReq = opts?.abortOnText || opts?.abortOnToolDelta ? { ...req, signal: ac.signal } : req;
   for await (const ev of driver.stream(streamReq, auth)) {
     events.push(normalize(ev));
     if (opts?.abortOnText && ev.type === "text_delta") ac.abort();
+    if (opts?.abortOnToolDelta && ev.type === "tool_call_delta") ac.abort();
   }
   return events;
 }
@@ -91,6 +92,40 @@ const keyAuth: ResolvedAuth = { apiKey: "test-key" };
 const bearerAuth: ResolvedAuth = { bearerToken: "bearer-fixture" };
 
 describe("terminal stream events", () => {
+  for (const [terminal, reason] of [["length", "length"], ["content_filter", "error"], ["unexpected", "error"]] as const) {
+    it(`does not publish OpenAI partial tool calls on ${terminal}`, async () => {
+      const body = [
+        { choices: [{ delta: { content: "Partial" } }] },
+        { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "read_file", arguments: '{"path":"a' } }] } }] },
+        { choices: [{ delta: {}, finish_reason: terminal }] },
+      ].map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("") + "data: [DONE]\n\n";
+      const events = await collect(new OpenAICompatibleDriver(), body, user("openai"), keyAuth);
+      expect(events).toContainEqual({ type: "text_delta", delta: "Partial" });
+      expect(events.some((ev) => (ev as { type: string }).type === "tool_call_end")).toBe(false);
+      expect(events.at(-1)).toEqual({ type: "done", reason, message: { role: "assistant", content: "Partial" } });
+    });
+  }
+  it("drops OpenAI partial tool calls on user abort", async () => {
+    const body = [
+      { choices: [{ delta: { content: "Partial" } }] },
+      { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "read_file", arguments: '{"path":"a' } }] } }] },
+      { choices: [{ delta: {}, finish_reason: "tool_calls" }] },
+    ].map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("");
+    const events = await collect(new OpenAICompatibleDriver(), body, user("openai"), keyAuth, { abortOnToolDelta: true });
+    expect(events.some((ev) => (ev as { type: string }).type === "tool_call_end")).toBe(false);
+    expect(events.at(-1)).toEqual({ type: "done", reason: "abort", message: { role: "assistant", content: "Partial", toolCalls: [] } });
+  });
+  for (const terminal of ["tool_calls", "function_call", "stop"]) {
+    it(`keeps OpenAI tool calls on normal ${terminal}`, async () => {
+      const body = [
+        { choices: [{ delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "read_file", arguments: '{"path":"a.ts"}' } }] } }] },
+        { choices: [{ delta: {}, finish_reason: terminal }] },
+      ].map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("") + "data: [DONE]\n\n";
+      const events = await collect(new OpenAICompatibleDriver(), body, user("openai"), keyAuth);
+      expect(events).toContainEqual({ type: "tool_call_end", toolCall: { id: "call_1", name: "read_file", args: { path: "a.ts" }, rawArgs: '{"path":"a.ts"}' } });
+      expect(events.at(-1)).toMatchObject({ type: "done", reason: "tool_use" });
+    });
+  }
   it("snapshots a normal Anthropic text stream", async () => {
     const body = [
       'data: {"type":"message_start","message":{"usage":{"input_tokens":5,"cache_read_input_tokens":1,"cache_creation_input_tokens":2}}}\n\n',

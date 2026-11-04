@@ -368,6 +368,7 @@ describe("rust-v2 provider legacy fixtures", () => {
     // These files evolved since the legacy capture; the Rust fixtures retain
     // their original oracle hashes rather than being regenerated.
     const ORACLE_HASH_ALLOWLIST = new Set([
+      "src/llm/drivers/openai.ts",
       "src/llm/drivers/responses.ts",
       "src/llm/retry.ts",
       "src/llm/stream.ts",

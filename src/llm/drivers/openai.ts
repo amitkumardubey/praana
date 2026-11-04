@@ -80,7 +80,7 @@ export class OpenAICompatibleDriver implements LlmDriver {
       role: "assistant",
       content: accumulatedContent,
       thinking: accumulatedThinking || undefined,
-      toolCalls: accumulator.flush(),
+      toolCalls: [],
     });
 
     yield* runGuardedProviderStream({
@@ -159,9 +159,10 @@ export class OpenAICompatibleDriver implements LlmDriver {
         if (choice.finish_reason) {
           sawTerminal = true;
           justFinished = true;
-          if (choice.finish_reason === "tool_calls") finishReason = "tool_use";
+          if (choice.finish_reason === "tool_calls" || choice.finish_reason === "function_call") finishReason = "tool_use";
           else if (choice.finish_reason === "length") finishReason = "length";
-          else finishReason = "stop";
+          else if (choice.finish_reason === "stop") finishReason = "stop";
+          else finishReason = "error";
         }
 
         const delta = choice.delta;
@@ -220,7 +221,7 @@ export class OpenAICompatibleDriver implements LlmDriver {
           logLenientStreamEnd(req.provider);
         }
 
-        const completedToolCalls = accumulator.flush();
+        const completedToolCalls = finishReason === "stop" || finishReason === "tool_use" ? accumulator.flush() : [];
         if (completedToolCalls.length > 0) {
           finishReason = "tool_use";
           for (const tc of completedToolCalls) {
