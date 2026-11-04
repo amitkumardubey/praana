@@ -52,8 +52,9 @@ export interface OverlayUi {
   showConsent(): void;
   /**
    * Open a small confirm overlay; resolves true on Enter, false on Esc/Ctrl+C
-   * or when `signal` aborts. A confirm that is already open stays open: this
-   * call waits and runs after it (see the priority rule on `createOverlayUi`).
+   * or when `signal` aborts. If another overlay or confirm is already open,
+   * this waits until that one closes, then shows. Aborting `signal` while
+   * waiting resolves false and drops just this request.
    */
   showConfirm(message: string, signal?: AbortSignal): Promise<boolean>;
   resolveConfirm(cont: boolean): void;
@@ -70,71 +71,147 @@ export function createOverlayUi(): OverlayUi {
     const [confirmPrompt, setConfirmPrompt] = createSignal<ConfirmPromptState | null>(null);
     let confirmResolver: ((cont: boolean) => void) | null = null;
     let nextConfirmId = 0;
-    // Latest overlay requested while a step-pause confirm is open. Applied
-    // when that confirm resolves or its signal aborts. It does not answer
-    // the confirm. A newer request replaces the previous one; a replaced
-    // queued confirm resolves false so its caller does not hang. dismiss
-    // and dispose drop the queue.
-    let deferredOverlay: (() => void) | null = null;
-    let abandonDeferred: (() => void) | null = null;
+    // Confirms and overlays waiting to be shown. A confirm requested while
+    // something else is open waits here and listens to its own signal.
+    // Non-confirm requests queue behind an open confirm (a later one replaces
+    // only a trailing overlay, never a confirm). dismiss/dispose of an open
+    // confirm drops the queue. Closing any other overlay promotes it.
+    type QueuedConfirm = {
+      type: "confirm";
+      message: string;
+      signal?: AbortSignal;
+      resolve: (value: boolean) => void;
+      onAbort: () => void;
+      settled: boolean;
+      opened: boolean;
+    };
+    type QueuedOverlay = { type: "overlay"; open: () => void };
+    const queue: Array<QueuedConfirm | QueuedOverlay> = [];
 
-    const queueOverlay = (open: () => void, abandon?: () => void) => {
-      const previous = abandonDeferred;
-      deferredOverlay = open;
-      abandonDeferred = abandon ?? null;
-      previous?.();
+    const settleQueued = (entry: QueuedConfirm, value: boolean) => {
+      if (entry.settled) return;
+      entry.settled = true;
+      entry.signal?.removeEventListener("abort", entry.onAbort);
+      entry.resolve(value);
     };
 
-    const takeDeferred = (): (() => void) | null => {
-      const next = deferredOverlay;
-      deferredOverlay = null;
-      abandonDeferred = null;
-      return next;
+    const dropQueue = () => {
+      const dropped = queue.splice(0);
+      for (const entry of dropped) {
+        if (entry.type === "confirm") settleQueued(entry, false);
+      }
     };
 
-    const dropDeferred = () => {
-      const abandon = abandonDeferred;
-      deferredOverlay = null;
-      abandonDeferred = null;
-      abandon?.();
+    const clearOverlayFields = () => {
+      setSlashLines([]);
+      setLoginHint(undefined);
+      setLogoutHint(undefined);
+    };
+
+    const promote = () => {
+      if (confirmResolver) return;
+      while (queue.length > 0) {
+        const next = queue[0]!;
+        if (next.type === "overlay") {
+          if (kind() !== "none" && kind() !== "confirm") return;
+          queue.shift();
+          setConfirmPrompt(null);
+          next.open();
+          return;
+        }
+        if (kind() !== "none" && kind() !== "confirm") return;
+        queue.shift();
+        next.opened = true;
+        next.signal?.removeEventListener("abort", next.onAbort);
+        if (next.settled || next.signal?.aborted) {
+          settleQueued(next, false);
+          continue;
+        }
+        openConfirm(next.message, next.signal, next.resolve, next);
+        return;
+      }
+      if (kind() === "confirm") setKind("none");
+    };
+
+    const openConfirm = (
+      message: string,
+      signal: AbortSignal | undefined,
+      resolve: (value: boolean) => void,
+      entry?: QueuedConfirm,
+    ) => {
+      if (signal?.aborted) {
+        if (entry) settleQueued(entry, false);
+        else resolve(false);
+        promote();
+        return;
+      }
+      let settled = false;
+      const finish = (cont: boolean) => {
+        if (settled) return;
+        settled = true;
+        if (entry) entry.settled = true;
+        signal?.removeEventListener("abort", onAbort);
+        confirmResolver = null;
+        setConfirmPrompt(null);
+        resolve(cont);
+        promote();
+      };
+      const onAbort = () => finish(false);
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
+      confirmResolver = finish;
+      setConfirmPrompt({ message, id: ++nextConfirmId });
+      setKind("confirm");
+    };
+
+    const enqueueConfirm = (message: string, signal?: AbortSignal): Promise<boolean> => {
+      return new Promise((resolve) => {
+        const entry: QueuedConfirm = {
+          type: "confirm",
+          message,
+          signal,
+          resolve,
+          onAbort: () => {},
+          settled: false,
+          opened: false,
+        };
+        entry.onAbort = () => {
+          if (entry.opened || entry.settled) return;
+          const idx = queue.indexOf(entry);
+          if (idx >= 0) queue.splice(idx, 1);
+          settleQueued(entry, false);
+        };
+        if (signal) signal.addEventListener("abort", entry.onAbort, { once: true });
+        queue.push(entry);
+      });
     };
 
     const showConfirm = (message: string, signal?: AbortSignal): Promise<boolean> => {
       if (signal?.aborted) return Promise.resolve(false);
-      if (confirmResolver) {
-        return new Promise((resolve) => {
-          queueOverlay(
-            () => {
-              void showConfirm(message, signal).then(resolve);
-            },
-            () => resolve(false),
-          );
-        });
-      }
-      return new Promise((resolve) => {
-        let settled = false;
-        const finish = (cont: boolean) => {
-          if (settled) return;
-          settled = true;
-          signal?.removeEventListener("abort", onAbort);
-          confirmResolver = null;
-          setConfirmPrompt(null);
-          const next = takeDeferred();
-          if (!next) setKind((current) => (current === "confirm" ? "none" : current));
-          resolve(cont);
-          next?.();
-        };
-        const onAbort = () => finish(false);
-        if (signal) signal.addEventListener("abort", onAbort, { once: true });
-        confirmResolver = finish;
-        setConfirmPrompt({ message, id: ++nextConfirmId });
-        setKind("confirm");
-      });
+      const blocked = confirmResolver !== null || kind() !== "none" || queue.length > 0;
+      if (!blocked) return new Promise((resolve) => openConfirm(message, signal, resolve));
+      const pending = enqueueConfirm(message, signal);
+      if (!confirmResolver && kind() === "none") promote();
+      return pending;
     };
 
-    const openUnlessPaused = (open: () => void) => {
-      if (confirmResolver) queueOverlay(open);
-      else open();
+    const enqueueOverlay = (open: () => void) => {
+      const confirmPending = confirmResolver !== null || queue.some((entry) => entry.type === "confirm");
+      if (!confirmPending) {
+        open();
+        return;
+      }
+      // The confirm is waiting for the visible overlay to close. Replace that
+      // overlay in place; do not answer the confirm.
+      if (!confirmResolver) {
+        open();
+        return;
+      }
+      const last = queue[queue.length - 1];
+      if (last?.type === "overlay") {
+        queue[queue.length - 1] = { type: "overlay", open };
+        return;
+      }
+      queue.push({ type: "overlay", open });
     };
 
     return {
@@ -144,49 +221,54 @@ export function createOverlayUi(): OverlayUi {
       logoutHint,
       confirmPrompt,
       showSlash(lines: string[]) {
-        openUnlessPaused(() => {
+        enqueueOverlay(() => {
           setSlashLines(lines);
           setKind("slash");
         });
       },
       showModel() {
-        openUnlessPaused(() => setKind("model"));
+        enqueueOverlay(() => setKind("model"));
       },
       showLogin(providerHint?: string) {
-        openUnlessPaused(() => {
+        enqueueOverlay(() => {
           setLoginHint(providerHint);
           setKind("login");
         });
       },
       showLogout(providerHint?: string) {
-        openUnlessPaused(() => {
+        enqueueOverlay(() => {
           setLogoutHint(providerHint);
           setKind("logout");
         });
       },
       showPalette() {
-        openUnlessPaused(() => setKind("palette"));
+        enqueueOverlay(() => setKind("palette"));
       },
       showSetup() {
-        openUnlessPaused(() => setKind("setup"));
+        enqueueOverlay(() => setKind("setup"));
       },
       showConsent() {
-        openUnlessPaused(() => setKind("consent"));
+        enqueueOverlay(() => setKind("consent"));
       },
       showConfirm,
       resolveConfirm(cont: boolean) {
         confirmResolver?.(cont);
       },
       dismiss() {
-        dropDeferred();
-        if (confirmResolver) confirmResolver(false);
+        if (confirmResolver) {
+          dropQueue();
+          confirmResolver(false);
+          setKind("none");
+          setConfirmPrompt(null);
+          clearOverlayFields();
+          return;
+        }
         setKind("none");
-        setSlashLines([]);
-        setLoginHint(undefined);
-        setLogoutHint(undefined);
+        clearOverlayFields();
+        promote();
       },
       dispose() {
-        dropDeferred();
+        dropQueue();
         if (confirmResolver) confirmResolver(false);
         dispose();
       },

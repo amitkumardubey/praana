@@ -166,8 +166,8 @@ export function OverlayHost(props: OverlayHostProps) {
         <Show when={kind() === "consent"}>
           <ConsentOverlay onComplete={props.onConsentComplete} />
         </Show>
-        <Show when={kind() === "confirm"}>
-          <ConfirmOverlay overlay={props.overlay} />
+        <Show when={kind() === "confirm" ? props.overlay.confirmPrompt() : null} keyed>
+          {(_prompt) => <ConfirmOverlay overlay={props.overlay} />}
         </Show>
         <Show when={kind() === "palette"}>
           <PaletteOverlay

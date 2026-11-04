@@ -146,6 +146,8 @@ interface Schedule {
   io: Io;
   wrap: Wrap;
   otherOverlay: boolean;
+  /** Open a palette before the confirm so the pause must not replace it. */
+  overlayBeforeConfirm: boolean;
 }
 
 function mulberry32(seed: number): () => number {
@@ -213,8 +215,23 @@ function buildSchedule(seed: number): Schedule {
   if (!reachesWrap) wrap = "success";
   if (abortAt === "during-wrap") wrap = "interrupted";
   if (limit !== "pause") otherOverlay = false;
+  // Drawn last so earlier fields stay stable for a given seed.
+  let overlayBeforeConfirm = rng() < 0.5;
+  if (!otherOverlay) overlayBeforeConfirm = false;
 
-  return { seed, turns, limit, hasHook, answer, answerDelay, abortAt, io, wrap, otherOverlay };
+  return {
+    seed,
+    turns,
+    limit,
+    hasHook,
+    answer,
+    answerDelay,
+    abortAt,
+    io,
+    wrap,
+    otherOverlay,
+    overlayBeforeConfirm,
+  };
 }
 
 function seedList(): number[] {
@@ -463,12 +480,23 @@ function checkI1(trace: TurnTrace, schedule: Schedule): void {
   }
   if (
     schedule.otherOverlay &&
+    !schedule.overlayBeforeConfirm &&
     schedule.abortAt !== "during-pause" &&
     schedule.answer !== "throw" &&
     schedule.answer !== "reject"
   ) {
     expect(trace.overlayStolen).toBe(false);
     expect(trace.overlayAfter).toBe("model");
+  }
+  if (
+    schedule.otherOverlay &&
+    schedule.overlayBeforeConfirm &&
+    schedule.abortAt !== "during-pause" &&
+    schedule.answer !== "throw" &&
+    schedule.answer !== "reject"
+  ) {
+    expect(trace.overlayStolen).toBe(false);
+    expect(trace.overlayAfter).toBe("none");
   }
   if (schedule.otherOverlay && schedule.abortAt === "during-pause") {
     expect(trace.overlayAfter).not.toBe("confirm");
@@ -611,9 +639,15 @@ async function runSeed(schedule: Schedule, logDir: string): Promise<void> {
       if (schedule.answer === "reject") return Promise.reject(new Error("pause hook rejected"));
       trace.pending = true;
       if (schedule.otherOverlay && overlay && signal) {
+        if (schedule.overlayBeforeConfirm) overlay.showPalette();
         const pending = overlay.showConfirm(`Used ${steps}?`, signal);
-        overlay.showModel();
-        if (overlay.kind() !== "confirm") trace.overlayStolen = true;
+        if (schedule.overlayBeforeConfirm) {
+          if (overlay.kind() !== "palette") trace.overlayStolen = true;
+          overlay.dismiss();
+        } else {
+          overlay.showModel();
+          if (overlay.kind() !== "confirm") trace.overlayStolen = true;
+        }
         if (schedule.abortAt === "during-pause") abort.abort();
         if (schedule.answer === "never") {
           return pending.then((value) => {
