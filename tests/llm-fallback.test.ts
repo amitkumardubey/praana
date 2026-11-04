@@ -88,6 +88,7 @@ mock.module("../src/ui.js", () => ({
 const piStream = mockStream;
 import { runTurn, runLlmStream, isRecoverableStreamError } from "../src/turn.js";
 import { StateGraph } from "../src/state-graph.js";
+import { estimateAssistantMessageTokens } from "../src/context-display.js";
 import { createNullScorecard } from "../src/context-engine/telemetry.js";
 import { createBuiltinHookRegistry } from "../src/hooks/index.js";
 import type { Event } from "../src/types.js";
@@ -693,6 +694,26 @@ describe("timeout history", () => {
     expect(texts).toEqual(["Partial answer"]);
     expect(response).toContain("Partial answer");
     expect(errors).toContain(IDLE_TIMEOUT_ERROR);
+  });
+
+  it("counts only the retained assistant text after a timeout", async () => {
+    const session = makeMockSession();
+    const deltas: Array<{ tokensAdded: number; source: string }> = [];
+    (piStream as any).mockImplementation(() => (async function* () {
+      yield { type: "text_delta", delta: "Partial" };
+      yield { type: "tool_call_start", id: "big", name: "shell" };
+      yield { type: "done", reason: "timeout", message: {
+        role: "assistant", content: [
+          { type: "text", text: "Partial" },
+          { type: "tool_use", id: "big", name: "shell", arguments: { command: "x".repeat(4000) } },
+        ],
+      } };
+    })());
+    await runTurn(session, "hello", undefined, {
+      sink: { onContextHistoryDelta: (delta) => deltas.push(delta) },
+    });
+    expect(deltas.filter((delta) => delta.source === "assistant").map((delta) => delta.tokensAdded))
+      .toEqual([estimateAssistantMessageTokens({ role: "assistant", content: "Partial" })]);
   });
 
   it("does not retry a step-0 idle timeout after partial text", async () => {

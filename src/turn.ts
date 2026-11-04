@@ -1090,6 +1090,7 @@ export async function runTurn(
         ...streamResult,
         pendingToolCalls: [],
         finalMessage: kept,
+        assistantTokens: kept ? estimateAssistantMessageTokens(kept) : 0,
       };
     }
 
