@@ -18,6 +18,19 @@ describe("createTranscriptStore", () => {
     store.dispose();
   });
 
+  it("marks the first assistant delta streaming before the sink appends its entry", () => {
+    const store = createTranscriptStore();
+    try {
+      expect(store.mount.appendAssistantDelta("a1", "**unfinished")).toBe(false);
+      store.mount.appendEntry({ id: "a1", role: "assistant", group: 1, text: "**unfinished" });
+      expect(store.streamingIds().has("a1")).toBe(true);
+      store.mount.finalizeStreams?.(["a1"]);
+      expect(store.streamingIds().has("a1")).toBe(false);
+    } finally {
+      store.dispose();
+    }
+  });
+
   it("patches tool results in place", () => {
     const store = createTranscriptStore();
     store.mount.appendEntry({
