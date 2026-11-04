@@ -66,3 +66,76 @@ The first raw frame logged `streaming: true`, `drawUnstyledText: true`, and
 `isHighlighting: true`, with `painted: "# Atomic"`. The original synchronous
 scroll matrix also exposes raw frames; its old assertions only measured height
 and direction, not syntax visibility.
+
+A second raw path exists at `index.bun.js:12482` (`buildTableContentCache`):
+when the parsed table has no data rows, it returns no table cache and
+`createTableBlock` (**12619**) falls back to a markdown CodeRenderable. The
+header and separator can therefore remain literal even after highlighting.
+
+## Wrapper and regression checks
+
+`src/ui/tui/transcript/retained-markdown.ts` retains the last fully transformed
+`StyledText` per markdown CodeRenderable. It uses public `onChunks`,
+`drawUnstyledText` and `updateStreamingPreview` APIs. After an upstream content
+update it restores that snapshot synchronously, before presentation; a new block
+starts empty until its first highlight is ready. Parsing and in-place block
+reconciliation remain upstream's. Theme/capability refreshes retain this behavior
+and preserve hyperlink concealment. No worker throttling or dependency patches
+are involved.
+
+The TUI opts into additional `stabilizeStreamingMarkdown` rules: unfinished
+emphasis/backtick spans, lone syntax lines, and incomplete pipe-led table rows.
+Table candidates wait for both the separator and first complete data row.
+Fenced code is exempt, and the original source is used unchanged at completion.
+The store now marks the first assistant delta live even when the sink must append
+a new entry on that delta. Scroll-only stabilizer callers keep their old behavior.
+
+Tests:
+
+- `tests/tui-scroll-bounce.test.ts`: all eight original forced-pass scenarios
+  and both real-timer Atomic Habits scenarios require zero raw-syntax frames;
+  bounce and scroll-reversal assertions remain zero.
+- `tests/tui-retained-markdown.test.ts`: a controlled slow **real** highlight
+  holds the exact previous styled frame, then publishes new text. At 80 and
+  110 columns, whole-answer character and styled-span captures after streaming
+  are byte-identical to the unwrapped upstream renderer. Intentionally unfinished
+  final syntax is restored too. Late hyperlink capabilities also match upstream.
+- `tests/streaming-markdown.test.ts`: original expectations remain unchanged;
+  additional opt-in tests cover incomplete spans, escapes, intraword underscores,
+  nesting, lone markers, fences and table construction.
+
+Removal checks (working-file edits, restored immediately; no history rewriting):
+
+1. Change only `<retained_markdown>` back to `<markdown>` in `entries.tsx`,
+   keeping the syntax stabilization enabled. Run
+   `bun test tests/tui-scroll-bounce.test.ts --test-name-pattern 'never paints raw syntax'`.
+   The zero-raw assertion failed with **[49, 24]** raw frames.
+2. Restore the wrapper; remove only `{ withholdIncomplete: true }` from its
+   stabilizer call. The same test failed with **[9, 14]** raw frames.
+3. Restore both changes and rerun the tests/gate. Exact real-timer frame counts
+   vary; the required fixed count is always **0**.
+
+For an upstream solution, expose a Markdown option to disable the synchronous
+inline preview: omit `initialStyledText` and keep `drawUnstyledText: false`, using
+CodeRenderable's existing retain-previous-buffer branch. Keep markdown streaming
+parsing enabled. Separately, render a header-only table structurally rather than
+falling back to raw source. The app still needs a policy for unfinished inline
+syntax that could otherwise legitimately remain literal until completion.
+
+## Verification snapshot
+
+With the fix, the final gate recorded **0/60** raw frames at 110x40 unbatched
+and **0/54** at 80x24 with real 33ms batching. All eight original scroll-matrix
+scenarios also had zero raw frames, zero bounce and zero scroll reversals.
+
+The isolated-home, provider-key-free `bun typecheck && bun test tests/` gate
+passed typechecking and ran **2,843 tests across 236 files**: 2,842 passed, and
+the known real native-status probe exceeded its 5s timeout. Rerunning that exact
+probe alone under another isolated home passed at the default timeout (4.59s,
+1 pass / 0 fail). Earlier full gates passed 2,829 and 2,836 tests without failures.
+
+This is a Linux native-memory renderer verification, not a Windows Terminal
+transport/visual verification. The Atomic Habits fixture matches the recorded
+structures and representative text; its synthetic delta boundaries/timing are
+not a capture of the owner's provider stream. The owner must re-record the real
+Windows Terminal session to confirm the visual symptom is gone there.

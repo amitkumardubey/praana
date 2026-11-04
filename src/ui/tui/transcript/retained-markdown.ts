@@ -21,10 +21,21 @@ interface StyledSnapshot {
  */
 export class RetainedMarkdownRenderable extends MarkdownRenderable {
   private readonly snapshots = new WeakMap<CodeRenderable, StyledSnapshot>();
+  private hyperlinks: boolean | undefined;
+  private readonly refreshForCapabilities = () => {
+    const hyperlinks = this.ctx.capabilities?.hyperlinks;
+    if (hyperlinks === this.hyperlinks) return;
+    this.hyperlinks = hyperlinks;
+    // OpenTUI recognizes its own onChunks function by identity on capability
+    // changes. Ours wraps it, so explicitly refresh link concealment instead.
+    this.refreshStyles();
+  };
 
   constructor(ctx: RenderContext, options: MarkdownOptions) {
     super(ctx, options);
     this.retainStyledBuffers();
+    this.hyperlinks = ctx.capabilities?.hyperlinks;
+    ctx.on("capabilities", this.refreshForCapabilities);
   }
 
   override get content(): string {
@@ -62,6 +73,11 @@ export class RetainedMarkdownRenderable extends MarkdownRenderable {
   override refreshStyles(): void {
     super.refreshStyles();
     this.retainStyledBuffers();
+  }
+
+  protected override destroySelf(): void {
+    this.ctx.off("capabilities", this.refreshForCapabilities);
+    super.destroySelf();
   }
 
   private retainStyledBuffers(): void {
