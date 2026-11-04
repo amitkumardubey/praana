@@ -18,6 +18,17 @@ import { ToolCallAccumulator } from "../tool-accumulator.js";
 import { runGuardedProviderStream } from "../stream-guard.js";
 import { logLenientStreamEnd, prematureEndError } from "../stream-end.js";
 
+const ANTHROPIC_ERROR_STATUSES: Record<string, number> = {
+  overloaded_error: 529,
+  rate_limit_error: 429,
+  api_error: 500,
+  authentication_error: 401,
+  permission_error: 403,
+  not_found_error: 404,
+  invalid_request_error: 400,
+  request_too_large: 413,
+};
+
 export class AnthropicDriver implements LlmDriver {
   readonly protocol = "anthropic-messages";
 
@@ -115,17 +126,7 @@ export class AnthropicDriver implements LlmDriver {
             typeof errBody.message === "string" && errBody.message
               ? errBody.message
               : "Anthropic stream error";
-          const known: Record<string, number> = {
-            overloaded_error: 529,
-            rate_limit_error: 429,
-            api_error: 500,
-            authentication_error: 401,
-            permission_error: 403,
-            not_found_error: 404,
-            invalid_request_error: 400,
-            request_too_large: 413,
-          };
-          const status = typeof errBody.status === "number" ? errBody.status : known[errType];
+          const status = typeof errBody.status === "number" ? errBody.status : ANTHROPIC_ERROR_STATUSES[errType];
           events.push({
             type: "error",
             error: new Error(message),

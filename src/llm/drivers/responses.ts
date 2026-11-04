@@ -320,9 +320,8 @@ export class OpenAIResponsesDriver implements LlmDriver {
               index,
               id: String(item.call_id ?? item.id ?? ""),
               name: String(item.name ?? ""),
-              argsDelta: earlyArgs || undefined,
+              argsDelta: itemArgs || earlyArgs || undefined,
             });
-            if (itemArgs) accumulator.processChunk({ index, argsDelta: itemArgs });
             if (res.started) {
               emitted = true;
               openFunctionCalls.add(index);

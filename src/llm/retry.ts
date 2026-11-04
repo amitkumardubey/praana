@@ -76,7 +76,7 @@ export async function withPreEmissionRetry<T>(
   const maxDelay = opts.maxDelayMs ?? 10000;
 
   let attempt = 0;
-  const cappedFailures = new Map<number, number>();
+  const cappedFailures = new Map<unknown, number>();
 
   while (true) {
     if (opts.signal?.aborted) {
@@ -89,8 +89,9 @@ export async function withPreEmissionRetry<T>(
       attempt++;
       const status = err.status ?? (err.response ? err.response.status : undefined);
       const cap = opts.maxRetriesFor?.(err);
-      const classAttempt = cap === undefined ? 0 : (cappedFailures.get(cap) ?? 0) + 1;
-      if (cap !== undefined) cappedFailures.set(cap, classAttempt);
+      const key = err instanceof Error ? err.constructor : typeof err;
+      const classAttempt = cap === undefined ? 0 : (cappedFailures.get(key) ?? 0) + 1;
+      if (cap !== undefined) cappedFailures.set(key, classAttempt);
 
       if (attempt > maxRetries || (cap !== undefined && classAttempt > cap) || !isRetryableError(err, status)) {
         throw err;

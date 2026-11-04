@@ -63,7 +63,14 @@ export function isDefaultHostedEndpoint(provider: string, baseUrl?: string): boo
   if (!given) return true;
   const builtin = endpointHostname(PROVIDER_REGISTRY[provider]?.baseUrl);
   if (!builtin) return false;
-  return given === builtin;
+  try {
+    const parse = (url: string) => new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(url) ? url : `http://${url}`);
+    const actual = parse(baseUrl!);
+    const expected = parse(PROVIDER_REGISTRY[provider]!.baseUrl!);
+    return given === builtin && actual.host.replace(/\.$/, "") === expected.host.replace(/\.$/, "") && actual.protocol === expected.protocol;
+  } catch {
+    return false;
+  }
 }
 
 /**
