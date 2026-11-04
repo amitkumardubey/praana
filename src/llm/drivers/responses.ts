@@ -195,6 +195,9 @@ export class OpenAIResponsesDriver implements LlmDriver {
       return message || `OpenAI Responses stream ${type}`;
     };
     const finish = (): StreamEvent[] => {
+      if (finishReason === "length" && (openFunctionCalls.size > 0 || bufferedArgs.size > 0)) {
+        return [{ type: "error", error: new Error(toolCutoffMessage), retryable: false }];
+      }
       // Entries left here never met output_item.added or output_item.done.
       if (!codex && bufferedArgs.size > 0) {
         return [{ type: "error", error: new Error(unannouncedToolDeltaMessage), retryable: false }];
@@ -211,7 +214,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
         return [prematureEndError("response.completed", !emitted)];
       }
       const events: StreamEvent[] = [];
-      const completedToolCalls = accumulator.flush();
+      const completedToolCalls = finishReason === "stop" || finishReason === "tool_use" ? accumulator.flush() : [];
       const publishToolCalls = completedToolCalls.length > 0;
       if (publishToolCalls) {
         finishReason = "tool_use";
@@ -231,7 +234,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
       haltedMessage: () => ({
         role: "assistant",
         content: accumulatedContent,
-        toolCalls: accumulator.flush(),
+        toolCalls: [],
       }),
       httpErrorLabel: "OpenAI Responses API error",
       emptyBodyMessage: "Empty response body from Responses endpoint",
@@ -431,6 +434,10 @@ export class OpenAIResponsesDriver implements LlmDriver {
           if (status === "failed" || status === "cancelled" || parsed.error != null || resp?.error != null) {
             return fail(responsesErrorMessage(parsed, type));
           }
+        }
+
+        if (!codex && type === "response.done" && (parsed.response as { status?: string } | undefined)?.status === "incomplete") {
+          finishReason = "length";
         }
 
         if (codex && type === "response.done") {

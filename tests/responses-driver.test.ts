@@ -300,7 +300,7 @@ describe("Responses stream termination", () => {
     expect(last?.type === "error" && last.error.message).toBe("Backend unavailable");
   });
 
-  it("publishes a finished tool call when a later text cutoff hits the output limit", async () => {
+  it("suppresses a finished tool call when a later text cutoff hits the output limit", async () => {
     const events = await run(req, { bearerToken: jwt() }, [
       { type: "response.output_item.added", output_index: 0, item: { type: "function_call", call_id: "call-1", name: "read_file", arguments: "{\"path\":\"a.ts\"}" } },
       { type: "response.function_call_arguments.done", output_index: 0 },
@@ -308,13 +308,12 @@ describe("Responses stream termination", () => {
       { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } },
     ]);
     expect(events.some((event) => event.type === "error")).toBe(false);
-    const ended = events.find((event) => event.type === "tool_call_end");
-    expect(ended?.type === "tool_call_end" && ended.toolCall.name).toBe("read_file");
+    expect(events.some((event) => event.type === "tool_call_end")).toBe(false);
     const done = events.at(-1);
     expect(done?.type).toBe("done");
     if (done?.type === "done") {
-      expect(done.reason).toBe("tool_use");
-      expect(done.message.toolCalls?.[0]?.name).toBe("read_file");
+      expect(done.reason).toBe("length");
+      expect(done.message.toolCalls).toBeUndefined();
       expect(done.message.content).toBe("partial");
     }
   });
@@ -363,7 +362,7 @@ describe("Responses stream termination", () => {
       { type: "response.output_item.added", item: { type: "function_call", id: "fc-b", call_id: "call-b", name: "shell", arguments: "{\"cmd\":\"ls\"}" } },
       { type: "response.output_item.done", item: { type: "function_call", id: "fc-a", call_id: "call-a" } },
       { type: "response.output_item.done", item: { type: "function_call", id: "fc-b", call_id: "call-b" } },
-      { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } },
+      { type: "response.completed", response: { status: "completed" } },
     ]);
     expect(events.some((event) => event.type === "error")).toBe(false);
     expect(events.filter((event) => event.type === "tool_call_end")).toHaveLength(2);
