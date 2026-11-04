@@ -32,6 +32,29 @@ export interface SinkOpts {
   persistEntry?: (entry: TranscriptEntry) => void;
   /** Called when a slash command wants its output shown in an overlay. */
   onSlashCommandResult?: (lines: string[]) => void;
+  /**
+   * Coalesce assistant/thinking stream deltas into one transcript update per
+   * interval (leading-edge-armed). `0` or unset = off (exact current
+   * behavior). Experimental.
+   */
+  streamBatchMs?: number;
+  /** Injectable timer for tests; defaults to setTimeout + unref. */
+  batchScheduler?: StreamBatchScheduler;
+}
+
+export interface StreamBatchScheduler {
+  /** Arm a timer firing `ms` from now; the returned handle cancels it. */
+  schedule(fn: () => void, ms: number): { clear(): void };
+}
+
+function defaultStreamBatchScheduler(): StreamBatchScheduler {
+  return {
+    schedule(fn, ms) {
+      const t = setTimeout(fn, ms);
+      (t as { unref?: () => void }).unref?.();
+      return { clear: () => clearTimeout(t) };
+    },
+  };
 }
 
 export class OpenTuiSink implements TurnUiSink {
@@ -58,6 +81,14 @@ export class OpenTuiSink implements TurnUiSink {
   private assistantStreamId: string | null = null;
   private thinkingStreamId: string | null = null;
   private nextLocalId = 1;
+  private pendingDelta: {
+    kind: "assistant" | "thinking";
+    id: string;
+    group: number;
+    text: string;
+  } | null = null;
+  private batchTimer: { clear(): void } | null = null;
+  private disposed = false;
 
   constructor(
     transcript: TranscriptMount,
@@ -71,6 +102,20 @@ export class OpenTuiSink implements TurnUiSink {
 
   get currentGroup(): number {
     return this.group;
+  }
+
+  /**
+   * Flush any buffered stream delta and stop the batch timer. Safe to call
+   * multiple times; no-op after the first call.
+   */
+  dispose(): void {
+    if (this.disposed) return;
+    this.flushPending();
+    this.disposed = true;
+    if (this.batchTimer) {
+      this.batchTimer.clear();
+      this.batchTimer = null;
+    }
   }
 
   getContextPreview(): ContextDisplaySnapshot | null {
@@ -88,6 +133,7 @@ export class OpenTuiSink implements TurnUiSink {
   }
 
   nextGroup(): void {
+    this.flushPending();
     this.group++;
     this.bufferedStats = null;
     this.pendingToolArgs.clear();
@@ -168,24 +214,14 @@ export class OpenTuiSink implements TurnUiSink {
   onTextDelta(delta: string): void {
     this.opts.onSpinnerMessage("replying…");
     this.assistantStreamId ??= this.nextId("assistant");
-    this.applyTranscriptEvent({
-      type: "assistant_delta",
-      id: this.assistantStreamId,
-      group: this.group,
-      delta,
-    });
+    this.queueDelta("assistant", this.assistantStreamId, this.group, delta);
   }
 
   onThinkingDelta(delta: string): void {
     this.opts.onSpinnerMessage("thinking…");
     if (this.opts.showThinking()) {
       this.thinkingStreamId ??= this.nextId("thinking");
-      this.applyTranscriptEvent({
-        type: "thinking_delta",
-        id: this.thinkingStreamId,
-        group: this.group,
-        delta,
-      });
+      this.queueDelta("thinking", this.thinkingStreamId, this.group, delta);
     }
   }
 
@@ -282,6 +318,7 @@ export class OpenTuiSink implements TurnUiSink {
   }
 
   onSlashCommandResult(lines: string[]): void {
+    this.flushPending();
     if (this.opts.onSlashCommandResult) {
       this.opts.onSlashCommandResult(lines);
     } else {
@@ -341,7 +378,9 @@ export class OpenTuiSink implements TurnUiSink {
     });
   }
 
-  flushText(): void {}
+  flushText(): void {
+    this.flushPending();
+  }
 
   consumeTurnStats(): MemoryBannerStats | null {
     const s = this.bufferedStats;
@@ -391,6 +430,12 @@ export class OpenTuiSink implements TurnUiSink {
   }
 
   private applyTranscriptEvent(event: Parameters<TranscriptProjection["apply"]>[0]): void {
+    // Any event other than a delta coalesces the pending buffer first so the
+    // transcript, projection, streaming ids and persistence never observe
+    // batched text out of order (same text, just at a different moment).
+    if (event.type !== "assistant_delta" && event.type !== "thinking_delta") {
+      this.flushPending();
+    }
     const projection = this.opts.projection;
     const changed = projection.apply(event);
 
@@ -427,6 +472,7 @@ export class OpenTuiSink implements TurnUiSink {
   }
 
   private finalizeStreams(): void {
+    this.flushPending();
     const projection = this.opts.projection;
     projection.apply({ type: "streams_finalized", group: this.group });
     const entries = projection.entries();
@@ -437,6 +483,59 @@ export class OpenTuiSink implements TurnUiSink {
     this.transcript.finalizeStreams?.([this.assistantStreamId, this.thinkingStreamId]);
     this.assistantStreamId = null;
     this.thinkingStreamId = null;
+  }
+
+  private queueDelta(
+    kind: "assistant" | "thinking",
+    id: string,
+    group: number,
+    delta: string,
+  ): void {
+    const batchMs = this.opts.streamBatchMs ?? 0;
+    if (batchMs <= 0) {
+      this.applyTranscriptEvent({
+        type: kind === "assistant" ? "assistant_delta" : "thinking_delta",
+        id,
+        group,
+        delta,
+      });
+      return;
+    }
+    if (this.disposed) return;
+    // A delta for a different stream than the pending one flushes the old
+    // stream first so relative order across assistant/thinking is preserved.
+    if (this.pendingDelta && this.pendingDelta.id !== id) {
+      this.flushPending();
+    }
+    const pending = this.pendingDelta;
+    if (pending && pending.id === id) {
+      pending.text += delta;
+      return;
+    }
+    this.pendingDelta = { kind, id, group, text: delta };
+    const handle =
+      this.opts.batchScheduler ?? defaultStreamBatchScheduler();
+    this.batchTimer = handle.schedule(() => {
+      this.batchTimer = null;
+      this.flushPending();
+    }, batchMs);
+  }
+
+  /** Apply the pending combined delta through the normal delta code path. */
+  private flushPending(): void {
+    if (!this.pendingDelta || this.disposed) return;
+    const pending = this.pendingDelta;
+    this.pendingDelta = null;
+    if (this.batchTimer) {
+      this.batchTimer.clear();
+      this.batchTimer = null;
+    }
+    this.applyTranscriptEvent({
+      type: pending.kind === "assistant" ? "assistant_delta" : "thinking_delta",
+      id: pending.id,
+      group: pending.group,
+      delta: pending.text,
+    });
   }
 
   private extractRecallPreview(resultText: string): string | null {

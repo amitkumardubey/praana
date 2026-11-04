@@ -39,7 +39,7 @@ import { OpenTuiSink } from "./sink.js";
 import { listAllAvailableModels } from "../../model-listing.js";
 import { App } from "./app.js";
 import { createShellUi } from "./shell-ui.js";
-import { parseSynchronizedOutput } from "./render-options.js";
+import { parseStreamBatchMs, parseSynchronizedOutput } from "./render-options.js";
 import { createOverlayUi } from "./overlays/state.js";
 import type { PromptHandle } from "./prompt/index.js";
 import { DEFAULT_CONTEXT_WINDOW } from "../../status-bar.js";
@@ -520,6 +520,7 @@ export async function runTui(
     });
     setSpinnerSink();
     offSlashCtrlCHook();
+    openTuiSink?.dispose();
     transcript.dispose();
     overlay.dispose();
     ui.dispose();
@@ -883,6 +884,7 @@ export async function runTui(
                   preview: snapshot,
                 });
               },
+              streamBatchMs: parseStreamBatchMs(process.env.PRAANA_TUI_STREAM_BATCH_MS),
             });
 
             const line = formatTuiWelcomeLine({
