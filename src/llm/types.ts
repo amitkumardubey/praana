@@ -75,8 +75,11 @@ export type StreamEvent =
       error: Error;
       status?: number;
       retryable: boolean;
-      /** Set by drivers when a clean close never delivered the provider's final event. */
-      kind?: "premature_end";
+      /**
+       * `premature_end`: a clean close never delivered the provider's final event.
+       * `connect_timeout`: response headers did not arrive within the connect budget.
+       */
+      kind?: "premature_end" | "connect_timeout";
     };
 
 import type { ProviderWireCompat } from "../provider-registry.js";

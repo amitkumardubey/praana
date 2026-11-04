@@ -521,7 +521,7 @@ provider = "openrouter"               # openrouter | openai | deepseek | groq | 
 model = "deepseek/deepseek-v4-pro"    # any model supported by the chosen provider
 # region = "us-east-1"                # amazon-bedrock only; else AWS_REGION / AWS_DEFAULT_REGION / us-east-1
 # reasoning_effort = "medium"         # off | minimal | low | medium | high | xhigh
-# Optional fallback used when the primary returns timeout, 429, or empty response.
+# Optional fallback used when the primary returns a timeout, HTTP 429/529, or an empty response.
 # PRAANA retries once on the primary, then switches to the fallback for the rest of the session.
 # fallback_provider = "openrouter"
 # fallback_model = "moonshotai/kimi-k2.7-code"
@@ -593,7 +593,7 @@ log_dir = "~/.praana/sessions"
 
 ### Automatic fallback
 
-If `[llm] fallback_provider` and `fallback_model` are set, `runTurn()` retries once on the primary model after a timeout, `429` rate-limit, or empty response. If the retry also fails, it attempts the configured fallback provider/model. A successful fallback stream appends `provider_override`/`model_override` system notes to the event log, shows a TUI toast, and continues the turn; the override then persists for the rest of the session and survives resume. If the fallback stream also fails, no override is committed and the turn surfaces the error. An explicit `/model` choice from the user takes precedence and disables automatic fallback for that turn.
+If `[llm] fallback_provider` and `fallback_model` are set, `runTurn()` retries once on the primary model after a timeout, an HTTP 429 or 529 (or a provider status of 429 or 529), or an empty response. A bare 429 or 529 in other text, such as a token count, is not a rate limit. A connect timeout is not retried at this step. If the retry also fails, it attempts the configured fallback provider/model. A successful fallback stream appends `provider_override`/`model_override` system notes to the event log, shows a TUI toast, and continues the turn; the override then persists for the rest of the session and survives resume. If the fallback stream also fails, no override is committed and the turn surfaces the error. An explicit `/model` choice from the user takes precedence and disables automatic fallback for that turn.
 
 ## UI and Slash Commands
 

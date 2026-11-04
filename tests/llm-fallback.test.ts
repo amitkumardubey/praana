@@ -555,6 +555,19 @@ describe("LLM fallback", () => {
     expect(isRecoverableStreamError(tooMany)).toBe(true);
   });
 
+  it("does not treat a bare 429 or 529 in free text as a rate limit", () => {
+    const tokens: any = { interrupted: false, finalReason: "error", errorMessage: "used 529 tokens", fullResponse: "", pendingToolCalls: [] };
+    const requestId: any = { interrupted: false, finalReason: "error", errorMessage: "request id 429", fullResponse: "", pendingToolCalls: [] };
+    expect(isRecoverableStreamError(tokens)).toBe(false);
+    expect(isRecoverableStreamError(requestId)).toBe(false);
+    const http: any = { interrupted: false, finalReason: "error", errorMessage: "HTTP 529", fullResponse: "", pendingToolCalls: [] };
+    const status: any = { interrupted: false, finalReason: "error", errorMessage: "status 429", fullResponse: "", pendingToolCalls: [] };
+    expect(isRecoverableStreamError(http)).toBe(true);
+    expect(isRecoverableStreamError(status)).toBe(true);
+    const structured: any = { interrupted: false, finalReason: "error", errorMessage: "used 529 tokens", status: 429, fullResponse: "", pendingToolCalls: [] };
+    expect(isRecoverableStreamError(structured)).toBe(true);
+  });
+
   it("retries a mid-stream overload once the provider status is visible", async () => {
     const session = makeMockSession();
     let callCount = 0;
@@ -904,6 +917,61 @@ describe("premature stream end retry", () => {
             type: "error",
             error: new Error("ETIMEDOUT: connect timeout after 60000ms (llm.connect_timeout_ms)"),
             retryable: false,
+            kind: "connect_timeout",
+          };
+        })();
+      }
+      return (async function* () {
+        yield { type: "text_delta", delta: "fallback" };
+        yield { type: "done", reason: "stop", message: { role: "assistant", content: "fallback" } };
+      })();
+    });
+
+    const response = await runTurn(session, "hello");
+    expect(response).toContain("fallback");
+    expect(callCount).toBe(2);
+    expect(session.getEffectiveProvider()).toBe("openrouter");
+  });
+
+  it("retries a mid-stream ETIMEDOUT that is not a connect timeout", async () => {
+    const session = makeMockSession();
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      if (callCount === 1) {
+        return (async function* () {
+          yield {
+            type: "error",
+            error: new Error("read ETIMEDOUT: timeout while reading the response body"),
+            retryable: false,
+          };
+        })();
+      }
+      return (async function* () {
+        yield { type: "text_delta", delta: "retried" };
+        yield { type: "done", reason: "stop", message: { role: "assistant", content: "retried" } };
+      })();
+    });
+
+    const response = await runTurn(session, "hello");
+    expect(response).toContain("retried");
+    expect(callCount).toBe(2);
+  });
+
+  it("skips the step-0 retry for a connect timeout marker without matching the message text", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      if (callCount === 1) {
+        return (async function* () {
+          yield {
+            type: "error",
+            error: new Error("timeout"),
+            retryable: false,
+            kind: "connect_timeout",
           };
         })();
       }

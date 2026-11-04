@@ -231,6 +231,7 @@ describe("llm stream timeouts", () => {
         const error = events.find((ev) => ev.type === "error");
         expect(error && error.type === "error" ? error.error.message : "").toContain("ETIMEDOUT");
         expect(error && error.type === "error" ? error.error.message : "").toContain("30");
+        expect(String(error && error.type === "error" ? error.kind : "")).toBe("connect_timeout");
         expect(calls).toBe(2);
         expect(events.some((ev) => ev.type === "done" && ev.reason === "stop")).toBe(false);
       } finally {

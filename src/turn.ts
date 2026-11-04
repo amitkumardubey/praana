@@ -104,8 +104,8 @@ export interface LlmStreamResult {
   emittedToolCall: boolean;
   /** Driver said this failure can be retried. Read for a premature stream end. */
   retryable: boolean;
-  /** Set when a driver reports a clean close with no terminal event. */
-  errorKind?: "premature_end";
+  /** `premature_end` or `connect_timeout` when the driver reported that kind. */
+  errorKind?: "premature_end" | "connect_timeout";
 }
 
 export function isRecoverableStreamError(result: LlmStreamResult): boolean {
@@ -116,7 +116,7 @@ export function isRecoverableStreamError(result: LlmStreamResult): boolean {
   return (
     reason === "timeout" ||
     reason === "rate_limit" ||
-    /\b(timeout|rate[ _-]?(?:limit|limited)|429|529|too\s+many\s+requests|overload(?:ed)?)\b/i.test(msg)
+    /\b(timeout|rate[ _-]?(?:limit|limited)|too\s+many\s+requests|overload(?:ed)?)\b|\b(?:status|http)\s*[:=]?\s*(?:429|529)\b/i.test(msg)
   );
 }
 
@@ -187,8 +187,7 @@ export function assistantTextAfterTimeout(message: unknown): AssistantMessage | 
 }
 
 function isConnectExhausted(result: LlmStreamResult): boolean {
-  const msg = result.errorMessage ?? "";
-  return result.finalReason !== "timeout" && /\bETIMEDOUT\b|connect timeout/i.test(msg);
+  return result.errorKind === "connect_timeout";
 }
 
 function configuredIdleTimeoutMs(value: number | undefined): number {
@@ -368,7 +367,7 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
       finalReason = (event as any).reason ?? "error";
       if (typeof event.status === "number") errorStatus = event.status;
       retryable = event.retryable;
-      if (event.kind === "premature_end") errorKind = "premature_end";
+      if (event.kind === "premature_end" || event.kind === "connect_timeout") errorKind = event.kind;
       const err = (event as any).error;
       if (err) {
         if (typeof err === "string") {
@@ -1547,40 +1546,40 @@ export async function runTurn(
     if (surfacedTimeout && lastLlmErrorMessage) {
       fullResponse = lastLlmErrorMessage;
     } else {
-    const code =
-      lastStreamReason === "error"
-        ? "LLM_STREAM_ERROR"
-        : lastStreamReason === "aborted"
-          ? "LLM_ABORTED"
-          : "LLM_EMPTY_RESPONSE";
-    if (lastStreamReason !== "error" && lastStreamReason !== "aborted") {
-      llmLogger.warn("LLM returned no text content", {
-        code: "LLM_EMPTY_RESPONSE",
-        details: { model: activeModelName, provider: activeProviderName, reason: lastStreamReason },
+      const code =
+        lastStreamReason === "error"
+          ? "LLM_STREAM_ERROR"
+          : lastStreamReason === "aborted"
+            ? "LLM_ABORTED"
+            : "LLM_EMPTY_RESPONSE";
+      if (lastStreamReason !== "error" && lastStreamReason !== "aborted") {
+        llmLogger.warn("LLM returned no text content", {
+          code: "LLM_EMPTY_RESPONSE",
+          details: { model: activeModelName, provider: activeProviderName, reason: lastStreamReason },
+        });
+      }
+      const fallback = formatUserFacingLlmError({
+        reason: lastStreamReason,
+        llmMessage: lastLlmErrorMessage,
+        model: activeModelName,
+        provider: activeProviderName,
       });
-    }
-    const fallback = formatUserFacingLlmError({
-      reason: lastStreamReason,
-      llmMessage: lastLlmErrorMessage,
-      model: activeModelName,
-      provider: activeProviderName,
-    });
-    const errorEntry: LogEntry = {
-      level: lastStreamReason === "error" ? "error" : "warn",
-      domain: "llm",
-      message: lastLlmErrorMessage ?? "No text content in LLM response",
-      code,
-      details: { model: activeModelName, provider: activeProviderName, reason: lastStreamReason },
-    };
-    s.onError?.(errorEntry);
-    s.onFallback?.(fallback);
-    // For errors, append a graceful message to the transcript instead of the raw error.
-    // The fallback (with raw error details) is still shown to the user via onFallback.
-    if (lastStreamReason === "error") {
-      fullResponse = "I encountered an error while processing your request. Please try again.";
-    } else {
-      fullResponse = fallback;
-    }
+      const errorEntry: LogEntry = {
+        level: lastStreamReason === "error" ? "error" : "warn",
+        domain: "llm",
+        message: lastLlmErrorMessage ?? "No text content in LLM response",
+        code,
+        details: { model: activeModelName, provider: activeProviderName, reason: lastStreamReason },
+      };
+      s.onError?.(errorEntry);
+      s.onFallback?.(fallback);
+      // For errors, append a graceful message to the transcript instead of the raw error.
+      // The fallback (with raw error details) is still shown to the user via onFallback.
+      if (lastStreamReason === "error") {
+        fullResponse = "I encountered an error while processing your request. Please try again.";
+      } else {
+        fullResponse = fallback;
+      }
     }
   }
 

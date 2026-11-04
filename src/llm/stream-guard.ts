@@ -119,6 +119,7 @@ export async function* runGuardedProviderStream<T>(opts: {
       error: err instanceof Error ? err : new Error(String(err)),
       status,
       retryable: false,
+      ...(err instanceof ConnectTimeoutError ? { kind: "connect_timeout" as const } : {}),
     };
   };
 
