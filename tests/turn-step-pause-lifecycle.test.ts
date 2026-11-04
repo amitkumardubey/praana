@@ -482,7 +482,9 @@ function checkI1(trace: TurnTrace, schedule: Schedule): void {
   }
 }
 
-function checkI2(histories: any[][], events: Array<Record<string, any>>, fromEvent: number): void {
+function checkI2(histories: any[][], events: Array<Record<string, any>>, fromEvent: number, schedule: Schedule): void {
+  // An interrupt before the first response completes can leave the initial array untouched.
+  if (schedule.abortAt !== "before-pause") expect(histories.length).toBeGreaterThan(0);
   for (const history of histories) {
     expect(JSON.stringify(history)).not.toContain(INSTRUCTION);
     expect(JSON.stringify(history)).not.toContain("secret-thought");
@@ -715,8 +717,20 @@ async function runSeed(schedule: Schedule, logDir: string): Promise<void> {
       throw outcome.error;
     }
 
+    const agentEvents = session.eventLog.readAll().slice(fromEvent).filter((event: any) => event.kind === "agent_message");
+    expect(agentEvents).toHaveLength(1);
+    const stored = String(agentEvents[0].payload.text).trim();
+    if (outcome.error instanceof TurnAbortedError) {
+      const partial = outcome.error.partialResponse.trim();
+      expect(stored).toBe(partial ? `${partial}\n\n[interrupted]` : "[interrupted]");
+    } else {
+      expect(stored).toBe(outcome.value?.trim());
+    }
+    if (schedule.wrap === "interrupted") expect(stored).toContain("partial wrap");
+    if (schedule.wrap === "success" && reachesWrap(schedule)) expect(stored).toContain("\n\n[summary] wrapped up");
+
     checkI1(trace, schedule);
-    checkI2(histories, session.eventLog.readAll(), fromEvent);
+    checkI2(histories, session.eventLog.readAll(), fromEvent, schedule);
     checkI3(trace, schedule);
     checkI4(trace, schedule, threw);
     checkI5(trace, schedule, elapsed);
