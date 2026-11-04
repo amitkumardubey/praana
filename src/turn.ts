@@ -140,6 +140,20 @@ export function isPrematureEndRetry(result: LlmStreamResult): boolean {
   return result.errorKind === "premature_end";
 }
 
+/** A fallback finished with an answer. Errors, aborts, length, and timeouts do not. */
+export function fallbackFinishedCleanly(result: LlmStreamResult): boolean {
+  return (result.finalReason === "stop" || result.finalReason === "toolUse") && result.errorKind === undefined;
+}
+
+/** Reason recorded when a fallback is committed. Idle timeout is not "empty response". */
+export function recordedFallbackReason(result: LlmStreamResult, idleTimeoutMs: number): string {
+  if (result.finalReason === "timeout") return idleTimeoutUserMessage(idleTimeoutMs, false);
+  if (result.errorMessage) return result.errorMessage;
+  if (result.errorKind === "premature_end") return "stream ended before the provider sent a final event";
+  if (result.errorKind === "connect_timeout") return "connection timed out";
+  return "empty response";
+}
+
 /**
  * User-facing line when the idle timer ends a stream.
  * The partial-answer sentence is included only when text was actually streamed.
@@ -1067,12 +1081,15 @@ export async function runTurn(
       ) {
         const fallbackProvider = session.config.llm.fallback_provider!;
         const fallbackModel = session.config.llm.fallback_model!;
-        const fallbackReason = streamResult.errorMessage ?? "empty response";
+        const fallbackReason = recordedFallbackReason(
+          streamResult,
+          configuredIdleTimeoutMs(session.config.llm.stream_idle_timeout_ms),
+        );
 
         await prepareFallback(fallbackProvider, fallbackModel);
         const fallbackResult = await attemptStream();
 
-        if (!shouldFallback(fallbackResult) && !isPrematureEndRetry(fallbackResult)) {
+        if (fallbackFinishedCleanly(fallbackResult)) {
           commitFallback(fallbackProvider, fallbackModel, fallbackReason);
           streamResult = fallbackResult;
         } else {

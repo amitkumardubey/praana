@@ -14,7 +14,8 @@ import type {
 } from "../types.js";
 import { parseSseStream } from "../sse.js";
 import { runGuardedProviderStream } from "../stream-guard.js";
-import { logLenientStreamEnd, prematureEndError } from "../stream-end.js";
+import { logLenientStreamEnd, prematureEndError, toolCutoffError } from "../stream-end.js";
+import { parseToolArguments } from "../tool-accumulator.js";
 import { resolveVertexAccessToken } from "../google-adc.js";
 
 export class GoogleDriver implements LlmDriver {
@@ -78,6 +79,7 @@ export class GoogleDriver implements LlmDriver {
     let terminalFinish: string | undefined;
     let sawTerminal = false;
     let emittedDelta = false;
+    let lenientArgsNeedRepair = false;
 
     const haltedMessage = (): AssistantMessage => ({
       role: "assistant",
@@ -162,10 +164,21 @@ export class GoogleDriver implements LlmDriver {
             }
 
             if (part.functionCall) {
+              const rawArgs = part.functionCall.args;
+              let args: Record<string, unknown>;
+              if (typeof rawArgs === "string") {
+                const parsed = parseToolArguments(rawArgs);
+                if (!parsed.clean) lenientArgsNeedRepair = true;
+                args = parsed.clean ? parsed.args : (rawArgs as unknown as Record<string, unknown>);
+              } else if (rawArgs && typeof rawArgs === "object" && !Array.isArray(rawArgs)) {
+                args = rawArgs as Record<string, unknown>;
+              } else {
+                args = {};
+              }
               const tc: ToolCall = {
                 id: `call_${Math.random().toString(36).slice(2, 10)}`,
                 name: part.functionCall.name,
-                args: part.functionCall.args || {},
+                args,
               };
               pendingToolCalls.push(tc);
               emittedDelta = true;
@@ -191,6 +204,7 @@ export class GoogleDriver implements LlmDriver {
             events.push(prematureEndError("finishReason", !emittedDelta));
             return events;
           }
+          if (lenientArgsNeedRepair) return [toolCutoffError()];
           logLenientStreamEnd(req.provider);
         }
 

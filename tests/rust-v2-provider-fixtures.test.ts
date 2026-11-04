@@ -371,7 +371,9 @@ describe("rust-v2 provider legacy fixtures", () => {
       "src/llm/drivers/openai.ts",
       "src/llm/drivers/responses.ts",
       "src/llm/retry.ts",
+      "src/llm/sse.ts",
       "src/llm/stream.ts",
+      "src/llm/tool-accumulator.ts",
       "src/llm/types.ts",
     ]);
     for (const rel of ORACLE_FILES_SORTED) {

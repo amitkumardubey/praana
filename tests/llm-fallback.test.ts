@@ -593,6 +593,139 @@ describe("LLM fallback", () => {
     expect(response).toContain("retried");
     expect(callCount).toBe(2);
   });
+
+  function emptyStop() {
+    return (async function* () {
+      yield { type: "done", reason: "stop", message: { role: "assistant", content: "" } };
+    })();
+  }
+
+  it("does not commit a fallback that ended in a non-recoverable error", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    const lines: string[] = [];
+    let call = 0;
+    (piStream as any).mockImplementation(() => {
+      call += 1;
+      if (call <= 2) return emptyStop();
+      return (async function* () {
+        yield { type: "error", error: new Error("model exploded"), retryable: false };
+      })();
+    });
+
+    await runTurn(session, "hello", undefined, {
+      sink: { onSystemLines: (rows) => lines.push(...rows) },
+    });
+
+    expect(session.getEffectiveProvider()).toBe("umans");
+    expect(session.getActiveModelId()).toBe("umans-coder");
+    expect(lines.some((line) => line.startsWith("Switched to"))).toBe(false);
+    const overrides = session.eventLog.readAll().filter(
+      (event: { kind?: string }) => event.kind === "system_note",
+    );
+    expect(overrides).toEqual([]);
+  });
+
+  it("does not commit a fallback that aborted or ended on length", async () => {
+    for (const terminal of ["abort", "length"] as const) {
+      const session = makeMockSession();
+      session.config.llm.fallback_provider = "openrouter";
+      session.config.llm.fallback_model = "fallback-model";
+      let call = 0;
+      (piStream as any).mockImplementation(() => {
+        call += 1;
+        if (call <= 2) return emptyStop();
+        return (async function* () {
+          yield {
+            type: "done",
+            reason: terminal,
+            message: {
+              role: "assistant",
+              content: terminal === "length" ? "cut" : "",
+              toolCalls: terminal === "length"
+                ? [{ id: "call_cut", name: "shell", args: { command: "echo" } }]
+                : [],
+            },
+          };
+        })();
+      });
+      await runTurn(session, "hello");
+      expect(session.getEffectiveProvider(), terminal).toBe("umans");
+    }
+  });
+
+  it("does not commit a fallback whose error kind is set", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    let call = 0;
+    (piStream as any).mockImplementation(() => {
+      call += 1;
+      if (call <= 2) return emptyStop();
+      return (async function* () {
+        yield {
+          type: "error",
+          error: new Error("stream ended before the provider sent a final event (finish_reason or [DONE])"),
+          retryable: false,
+          kind: "premature_end",
+        };
+      })();
+    });
+    await runTurn(session, "hello");
+    expect(session.getEffectiveProvider()).toBe("umans");
+  });
+
+  it("records an idle timeout as the fallback reason, not an empty response", async () => {
+    const session = makeMockSession();
+    session.config.llm.stream_idle_timeout_ms = 5_000;
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    const lines: string[] = [];
+    let call = 0;
+    (piStream as any).mockImplementation(() => {
+      call += 1;
+      if (call <= 2) {
+        return (async function* () {
+          yield { type: "done", reason: "timeout", message: { role: "assistant", content: "" } };
+        })();
+      }
+      return (async function* () {
+        yield { type: "text_delta", delta: "fallback ok" };
+        yield { type: "done", reason: "stop", message: { role: "assistant", content: "fallback ok" } };
+      })();
+    });
+
+    await runTurn(session, "hello", undefined, {
+      sink: { onSystemLines: (rows) => lines.push(...rows) },
+    });
+
+    expect(session.getEffectiveProvider()).toBe("openrouter");
+    expect(lines).toContain(
+      "Switched to openrouter/fallback-model after The model stopped responding (idle timeout after 5s).",
+    );
+    expect(lines.some((line) => line.includes("empty response"))).toBe(false);
+  });
+
+  it("still records empty response when a clean fallback follows an empty stop", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    const lines: string[] = [];
+    let call = 0;
+    (piStream as any).mockImplementation(() => {
+      call += 1;
+      if (call <= 2) return emptyStop();
+      return (async function* () {
+        yield { type: "text_delta", delta: "fallback ok" };
+        yield { type: "done", reason: "stop", message: { role: "assistant", content: "fallback ok" } };
+      })();
+    });
+    await runTurn(session, "hello", undefined, {
+      sink: { onSystemLines: (rows) => lines.push(...rows) },
+    });
+    expect(lines).toContain("Switched to openrouter/fallback-model after empty response");
+  });
 });
 
 const IDLE_TIMEOUT_ERROR =

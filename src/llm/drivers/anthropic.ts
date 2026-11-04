@@ -16,7 +16,7 @@ import type {
 import { parseSseStream } from "../sse.js";
 import { ToolCallAccumulator } from "../tool-accumulator.js";
 import { runGuardedProviderStream } from "../stream-guard.js";
-import { logLenientStreamEnd, prematureEndError } from "../stream-end.js";
+import { logLenientStreamEnd, prematureEndError, toolCutoffError } from "../stream-end.js";
 
 const ANTHROPIC_ERROR_STATUSES: Record<string, number> = {
   overloaded_error: 529,
@@ -188,7 +188,7 @@ export class AnthropicDriver implements LlmDriver {
             terminal = true;
             stopReason = delta.stop_reason;
             if (delta.stop_reason === "tool_use") finishReason = "tool_use";
-            else if (delta.stop_reason === "max_tokens") finishReason = "length";
+            else if (delta.stop_reason === "max_tokens" || delta.stop_reason === "model_context_window_exceeded") finishReason = "length";
             else finishReason = "stop";
           }
           const usage = parsed.usage;
@@ -207,12 +207,27 @@ export class AnthropicDriver implements LlmDriver {
 
     function finishAnthropic(): StreamEvent[] {
         const events: StreamEvent[] = [];
+        let lenientCalls: ToolCall[] | undefined;
         if (!sawTerminal) {
           if (req.strictStreamEnd !== false) {
             events.push(prematureEndError("message_stop", !emittedDelta));
             return events;
           }
+          const flushed = accumulator.flush({ allowRepair: false });
+          if (flushed.droppedIds.length > 0) return [toolCutoffError()];
           logLenientStreamEnd(req.provider);
+          lenientCalls = flushed.calls;
+        }
+
+        // A refusal that produced no text must not look like an empty stop.
+        // A refusal that did produce text stays a normal stop below.
+        if (stopReason === "refusal" && accumulatedContent.trim() === "") {
+          events.push({
+            type: "error",
+            error: new Error("The model declined to answer"),
+            retryable: false,
+          });
+          return events;
         }
 
         const totalTokens = inputTokens + outputTokens + cacheReadTokens + cacheWriteTokens;
@@ -229,7 +244,7 @@ export class AnthropicDriver implements LlmDriver {
 
         // Block completion alone does not authorize a tool; wait for the message terminal.
         const normalStop = stopReason === undefined || ["tool_use", "end_turn", "stop_sequence", "pause_turn"].includes(stopReason);
-        const completedToolCalls = normalStop ? accumulator.flush() : [];
+        const completedToolCalls = lenientCalls ?? (normalStop ? accumulator.flush().calls : []);
         if (completedToolCalls.length > 0) {
           finishReason = "tool_use";
           for (const tc of completedToolCalls) {

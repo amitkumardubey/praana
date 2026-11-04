@@ -16,7 +16,8 @@ import type {
 import { parseSseStream } from "../sse.js";
 import { ToolCallAccumulator } from "../tool-accumulator.js";
 import { runGuardedProviderStream } from "../stream-guard.js";
-import { logLenientStreamEnd, prematureEndError } from "../stream-end.js";
+import { logLenientStreamEnd, prematureEndError, toolCutoffError } from "../stream-end.js";
+import { statusForProviderErrorCode } from "../error-status.js";
 import { joinUrl } from "../url.js";
 
 export class OpenAICompatibleDriver implements LlmDriver {
@@ -122,11 +123,7 @@ export class OpenAICompatibleDriver implements LlmDriver {
           let status: number | undefined;
           if (typeof errBody.code === "number") status = errBody.code;
           else if (typeof errBody.status === "number") status = errBody.status;
-          else {
-            const code = String(errBody.code ?? errBody.type ?? "");
-            if (/rate_limit|insufficient_quota/.test(code)) status = 429;
-            else if (/server_error|internal_error/.test(code)) status = 500;
-          }
+          else status = statusForProviderErrorCode(errBody.code ?? errBody.type);
           events.push({
             type: "error",
             error: new Error(message),
@@ -204,8 +201,16 @@ export class OpenAICompatibleDriver implements LlmDriver {
             }
           }
         }
-        if (trailer) return { events: [...events, ...finishOpenAI()], stop: true };
-        if (justFinished) return { events, releaseIfIdle: true };
+        const hasPayload = Boolean(
+          delta.reasoning_content ||
+          delta.content ||
+          (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0),
+        );
+        // A finish_reason on a non-final chunk must not stop the read while
+        // later frames still carry content or tool arguments. Content-free
+        // trailers (empty delta, usage-only, choices: []) end above.
+        if (trailer && !hasPayload) return { events: [...events, ...finishOpenAI()], stop: true };
+        if (trailer || justFinished) return { events, releaseIfIdle: true };
         return { events };
       },
       onComplete: () => finishOpenAI(),
@@ -213,15 +218,19 @@ export class OpenAICompatibleDriver implements LlmDriver {
 
     function finishOpenAI(): StreamEvent[] {
         const events: StreamEvent[] = [];
+        let completedToolCalls: ToolCall[] = [];
         if (!sawTerminal) {
           if (req.strictStreamEnd !== false) {
             events.push(prematureEndError("finish_reason or [DONE]", !emittedDelta));
             return events;
           }
+          const flushed = accumulator.flush({ allowRepair: false });
+          if (flushed.droppedIds.length > 0) return [toolCutoffError()];
           logLenientStreamEnd(req.provider);
+          completedToolCalls = flushed.calls;
+        } else if (finishReason === "stop" || finishReason === "tool_use") {
+          completedToolCalls = accumulator.flush().calls;
         }
-
-        const completedToolCalls = finishReason === "stop" || finishReason === "tool_use" ? accumulator.flush() : [];
         if (completedToolCalls.length > 0) {
           finishReason = "tool_use";
           for (const tc of completedToolCalls) {

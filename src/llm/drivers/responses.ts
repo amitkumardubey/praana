@@ -16,7 +16,8 @@ import type {
 import { parseSseStream } from "../sse.js";
 import { ToolCallAccumulator } from "../tool-accumulator.js";
 import { runGuardedProviderStream } from "../stream-guard.js";
-import { prematureEndError } from "../stream-end.js";
+import { prematureEndError, TOOL_CUTOFF_MESSAGE, toolCutoffError } from "../stream-end.js";
+import { statusForProviderErrorCode } from "../error-status.js";
 import { joinUrl } from "../url.js";
 import { APP_VERSION } from "../../app-version.js";
 import { extractAccountId } from "../jwt.js";
@@ -33,6 +34,26 @@ function headerAccountId(headers: HeadersInit | Record<string, string> | undefin
   } catch {
     return "";
   }
+}
+
+function responsesErrorStatus(parsed: Record<string, unknown>): number | undefined {
+  const candidates: unknown[] = [];
+  if (typeof parsed.code === "string") candidates.push(parsed.code);
+  const pushBody = (body: unknown): void => {
+    if (!body || typeof body !== "object") return;
+    const record = body as Record<string, unknown>;
+    candidates.push(record.code, record.type);
+  };
+  pushBody(parsed.error);
+  const response = parsed.response;
+  if (response && typeof response === "object") {
+    pushBody((response as { error?: unknown }).error);
+  }
+  for (const candidate of candidates) {
+    const status = statusForProviderErrorCode(candidate);
+    if (status !== undefined) return status;
+  }
+  return undefined;
 }
 
 function finiteToken(value: unknown): number | undefined {
@@ -181,7 +202,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
     // string; that fallback is only for a call that was never announced.
     const openedCallIndexes = new Set<number | string>();
     const openedCallIds = new Set<string>();
-    const toolCutoffMessage = "The response was cut off while the model was calling a tool";
+    const toolCutoffMessage = TOOL_CUTOFF_MESSAGE;
     const unannouncedToolDeltaMessage = "OpenAI Responses stream received function call arguments without an open call";
     const responsesErrorMessage = (parsed: Record<string, unknown>, type: string): string => {
       const resp = parsed.response as {
@@ -214,7 +235,10 @@ export class OpenAIResponsesDriver implements LlmDriver {
         return [prematureEndError("response.completed", !emitted)];
       }
       const events: StreamEvent[] = [];
-      const completedToolCalls = finishReason === "stop" || finishReason === "tool_use" ? accumulator.flush() : [];
+      const lenientOpen = !codex && !terminalReceived;
+      const flushed = accumulator.flush(lenientOpen ? { allowRepair: false } : undefined);
+      if (lenientOpen && flushed.droppedIds.length > 0) return [toolCutoffError()];
+      const completedToolCalls = finishReason === "stop" || finishReason === "tool_use" ? flushed.calls : [];
       const publishToolCalls = completedToolCalls.length > 0;
       if (publishToolCalls) {
         finishReason = "tool_use";
@@ -268,7 +292,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
         // In-stream failures are errors for every provider. Strictness only
         // decides a clean close that never sent a terminal event.
         if (type === "error" || type === "response.failed") {
-          return fail(responsesErrorMessage(parsed, type));
+          return fail(responsesErrorMessage(parsed, type), responsesErrorStatus(parsed));
         }
         const applyCodexIncomplete = (): "cutoff" | "length" | "error" => {
           const details = (parsed.response as { incomplete_details?: { reason?: string } } | undefined)?.incomplete_details;
@@ -411,6 +435,10 @@ export class OpenAIResponsesDriver implements LlmDriver {
               ? functionCallIndexById.get(itemId)
               : undefined;
           if (index === undefined || !openFunctionCalls.has(index)) {
+            const alreadyOpened =
+              (typeof explicit === "number" && openedCallIndexes.has(explicit)) ||
+              (itemId !== undefined && openedCallIds.has(itemId));
+            if (!codex && alreadyOpened) return { events };
             if (!codex && itemId) {
               const piece = typeof parsed.delta === "string" ? parsed.delta : "";
               if (piece) bufferedArgs.set(itemId, (bufferedArgs.get(itemId) ?? "") + piece);

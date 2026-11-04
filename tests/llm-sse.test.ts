@@ -107,7 +107,7 @@ describe("parseSseStream", () => {
   });
 
   it("dispatches a final event that has no trailing blank line", async () => {
-    const got = await collect([encode("event: message\ndata: hello")]);
+    const got = await collect([encode("event: message\ndata: hello\n")]);
     expect(got).toEqual([{ event: "message", data: "hello", id: null }]);
   });
 

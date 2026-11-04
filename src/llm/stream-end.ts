@@ -34,15 +34,36 @@ export const STREAM_END_STRICT_PROVIDERS: ReadonlySet<string> = new Set([
   "amazon-bedrock",
 ]);
 
-/** Hostname of an absolute or scheme-relative base URL, or null when it is unset. */
-export function endpointHostname(url: string | undefined): string | null {
-  if (!url || !url.trim()) return null;
+const HAS_SCHEME = /^[a-z][a-z0-9+.-]*:\/\//i;
+
+function parseEndpoint(url: string): URL | null {
   try {
-    const withScheme = /^[a-z][a-z0-9+.-]*:\/\//i.test(url) ? url : `http://${url}`;
-    return new URL(withScheme).hostname.replace(/\.$/, "").toLowerCase();
+    return new URL(HAS_SCHEME.test(url) ? url : `https://${url}`);
   } catch {
     return null;
   }
+}
+
+/**
+ * Host (with port) and protocol of a base URL.
+ * A missing scheme is https, so `api.openai.com/v1` matches the registry host.
+ */
+export function endpointOrigin(url: string | undefined): { host: string; protocol: string } | null {
+  if (!url || !url.trim()) return null;
+  const parsed = parseEndpoint(url);
+  if (!parsed) return null;
+  return {
+    host: parsed.host.replace(/\.$/, "").toLowerCase(),
+    protocol: parsed.protocol,
+  };
+}
+
+/** Hostname of an absolute or scheme-relative base URL, or null when it is unset. */
+export function endpointHostname(url: string | undefined): string | null {
+  if (!url || !url.trim()) return null;
+  const parsed = parseEndpoint(url);
+  if (!parsed) return null;
+  return parsed.hostname.replace(/\.$/, "").toLowerCase();
 }
 
 /**
@@ -59,18 +80,11 @@ export function isDefaultHostedEndpoint(provider: string, baseUrl?: string): boo
   if (isUserDeclaredProvider(provider)) return false;
   if (!STREAM_END_STRICT_PROVIDERS.has(provider)) return false;
   if (provider === "vertex" || provider === "amazon-bedrock") return true;
-  const given = endpointHostname(baseUrl);
-  if (!given) return true;
-  const builtin = endpointHostname(PROVIDER_REGISTRY[provider]?.baseUrl);
-  if (!builtin) return false;
-  try {
-    const parse = (url: string) => new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(url) ? url : `http://${url}`);
-    const actual = parse(baseUrl!);
-    const expected = parse(PROVIDER_REGISTRY[provider]!.baseUrl!);
-    return given === builtin && actual.host.replace(/\.$/, "") === expected.host.replace(/\.$/, "") && actual.protocol === expected.protocol;
-  } catch {
-    return false;
-  }
+  if (!baseUrl || !baseUrl.trim()) return true;
+  const actual = endpointOrigin(baseUrl);
+  const expected = endpointOrigin(PROVIDER_REGISTRY[provider]?.baseUrl);
+  if (!actual || !expected) return false;
+  return actual.host === expected.host && actual.protocol === expected.protocol;
 }
 
 /**
@@ -79,6 +93,12 @@ export function isDefaultHostedEndpoint(provider: string, baseUrl?: string): boo
  *
  * Explicit `strict` / `lenient` apply to every provider. `auto` is strict only
  * for {@link isDefaultHostedEndpoint}. An omitted check is `auto`.
+ *
+ * Lenient keeps text already streamed. A tool call whose arguments parsed as
+ * sent may still run. A call that was still open, or whose arguments had to
+ * be repaired, is not run: the stream ends with {@link toolCutoffError}
+ * (non-retryable) and the text already streamed stays. Strict reports
+ * `premature_end` and does not run tools from that close.
  */
 export function resolveStreamEndMode(
   provider: string,
@@ -100,6 +120,18 @@ export function prematureEndError(
     error: new Error(`stream ended before the provider sent a final event (${signal})`),
     retryable,
     kind: "premature_end",
+  };
+}
+
+/** Same sentence the Codex path uses when a tool call is cut off. */
+export const TOOL_CUTOFF_MESSAGE = "The response was cut off while the model was calling a tool";
+
+/** Non-retryable error for a tool call that must not run. Text already streamed stays. */
+export function toolCutoffError(): Extract<StreamEvent, { type: "error" }> {
+  return {
+    type: "error",
+    error: new Error(TOOL_CUTOFF_MESSAGE),
+    retryable: false,
   };
 }
 

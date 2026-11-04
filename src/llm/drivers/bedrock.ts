@@ -252,7 +252,7 @@ export class BedrockDriver implements LlmDriver {
           logLenientStreamEnd(req.provider);
         }
 
-        const completedToolCalls = finishReason === "tool_use" ? accumulator.flush() : [];
+        const completedToolCalls = finishReason === "tool_use" ? accumulator.flush().calls : [];
         if (completedToolCalls.length > 0) {
           finishReason = "tool_use";
           for (const tc of completedToolCalls) {

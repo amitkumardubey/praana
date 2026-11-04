@@ -12,10 +12,12 @@ export interface SseEvent {
  * Parses a byte/string stream of Server-Sent Events (SSE) into discrete events.
  *
  * Event fields may span any number of chunks. Line endings are CRLF, CR, or LF.
- * A trailing CR is held back so a CRLF split across chunks is not read as a
- * bare CR plus an extra blank line. A blank line dispatches the event. At
- * end of stream, a final event with no terminating blank line is dispatched
- * once.
+ * A trailing CR is a line ending. `skipNextLf` drops a following LF so a
+ * CRLF split across chunks is one break, and a CR-CR blank line is
+ * dispatched without waiting for more bytes. A blank line dispatches the
+ * event. At end of stream, an event is dispatched only when every line was
+ * newline-terminated and the blank line is all that is missing. A partial
+ * final line is never dispatched, and it withholds that event.
  */
 export async function* parseSseStream(
   stream: ReadableStream<Uint8Array>,
@@ -25,6 +27,7 @@ export async function* parseSseStream(
   let buffer = "";
   let current: { event?: string; data?: string; id?: string } = {};
   let hasData = false;
+  let skipNextLf = false;
 
   const reset = (): void => {
     current = {};
@@ -73,23 +76,24 @@ export async function* parseSseStream(
   };
 
   /**
-   * Pull complete lines out of `buffer`. When this is not the end of the
-   * stream and the buffer ends in CR, that CR stays buffered: the next byte
-   * may be LF and the pair is one CRLF ending.
+   * Pull complete lines out of `buffer`. A trailing CR is a line ending and
+   * arms `skipNextLf` so the next LF is not a second break. A partial line
+   * stays in `buffer` and is never returned, including at EOF.
    */
   const takeLines = (eof: boolean): string[] => {
-    let heldCr = false;
-    if (!eof && buffer.endsWith("\r")) {
-      buffer = buffer.slice(0, -1);
-      heldCr = true;
+    if (skipNextLf) {
+      if (buffer.startsWith("\n")) {
+        buffer = buffer.slice(1);
+        skipNextLf = false;
+      } else if (buffer.length > 0 || eof) {
+        skipNextLf = false;
+      }
     }
+    const trailingCr = !eof && buffer.endsWith("\r");
     const parts = buffer.split(/\r\n|\r|\n/);
     const incomplete = parts.pop() ?? "";
-    buffer = heldCr ? `${incomplete}\r` : incomplete;
-    if (eof && buffer !== "") {
-      parts.push(buffer);
-      buffer = "";
-    }
+    buffer = incomplete;
+    if (trailingCr) skipNextLf = true;
     return parts;
   };
 
@@ -107,8 +111,11 @@ export async function* parseSseStream(
     for (const line of takeLines(true)) {
       yield* applyLine(line);
     }
-    const tail = dispatch();
-    if (tail) yield tail;
+    // A leftover here is a partial line. Do not dispatch the event it belongs to.
+    if (buffer === "") {
+      const tail = dispatch();
+      if (tail) yield tail;
+    }
   } finally {
     reader.releaseLock();
   }
