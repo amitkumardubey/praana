@@ -36,6 +36,7 @@ import { TranscriptProjection } from "./transcript/projection.js";
 import { createTranscriptStore } from "./transcript/store.js";
 import { releaseMarkdownSyntaxStyles } from "./transcript/markdown-theme.js";
 import { OpenTuiSink } from "./sink.js";
+import type { OverlayKind } from "./overlays/state.js";
 import { waitForSubmittedFrame } from "./submit-frame.js";
 import { listAllAvailableModels } from "../../model-listing.js";
 import { App } from "./app.js";
@@ -101,6 +102,11 @@ function toastToneToType(
   if (tone === "error") return "error";
   if (tone === "success") return "success";
   return "info";
+}
+
+/** Focus the prompt after a step-pause confirm only when nothing else is open. */
+export function focusPromptAfterConfirm(kind: OverlayKind, focusPrompt: () => void): void {
+  if (kind === "none") focusPrompt();
 }
 
 /**
@@ -317,7 +323,7 @@ export async function runTui(
       void doShutdown(setupOutcome);
       return;
     }
-    focusPrompt();
+    focusPromptAfterConfirm(overlay.kind(), focusPrompt);
   };
 
   const handleSlashTrigger = () => {
@@ -481,13 +487,39 @@ export async function runTui(
     }
     setupOutcome = result.success ? "completed" : "failed";
     void applySetupToLiveSession(result);
-    focusPrompt();
+    focusPromptAfterConfirm(overlay.kind(), focusPrompt);
   };
 
   const handleConsentComplete = (proceed: boolean) => {
     setEmbedderConsent(proceed ? "proceed" : "skip");
     overlay.dismiss();
     if (!session) void startSessionFromOverlay();
+  };
+
+  /**
+   * Interactive step-pause: open a small confirm overlay (spinner stopped).
+   * Enter continues. Esc stops and asks for a summary. Ctrl+C is left for
+   * the global handler, which aborts the turn signal; the confirm closes
+   * on that abort and the turn does not request a wrap-up.
+   */
+  const askContinueFromOverlay = async (stepsUsed: number, signal: AbortSignal): Promise<boolean> => {
+    if (signal.aborted) return false;
+    ui.spinner.stop();
+    // showConfirm closes itself when `signal` aborts, so a cancelled turn
+    // cannot leave "Continue?" or its key intercept on screen.
+    const pending = overlay.showConfirm(`Used ${stepsUsed} steps this turn. Continue?`, signal);
+    renderer.requestRender();
+    try {
+      const cont = await pending;
+      // showConfirm already settles on abort and updates overlay kind, and
+      // the host re-renders when kind changes. The finally below requests
+      // another frame, so a separate abort listener is not required.
+      focusPromptAfterConfirm(overlay.kind(), focusPrompt);
+      if (cont && !signal.aborted) ui.spinner.start("working…");
+      return cont && !signal.aborted;
+    } finally {
+      renderer.requestRender();
+    }
   };
 
   const handleLogoutComplete = (result: LogoutWizardResult) => {
@@ -775,7 +807,6 @@ export async function runTui(
                 handlePaletteCancel();
               } else {
                 dismissOverlay();
-                focusPrompt();
               }
               renderer.requestRender();
               return;
@@ -789,7 +820,6 @@ export async function runTui(
               handlePaletteCancel();
             } else if (overlay.kind() === "model") {
               dismissOverlay();
-              focusPrompt();
             }
             if (!session) {
               void doShutdown(setupOutcome);
@@ -869,6 +899,9 @@ export async function runTui(
               onSpinnerMessage: (msg: string) => {
                 ui.spinner.setMessage(msg);
               },
+              onSpinnerStop: () => {
+                ui.spinner.stop();
+              },
               ctxWindowTokens: ctxWindow,
               engineMode: live.isContextEngineEnabled(),
               projection,
@@ -878,6 +911,7 @@ export async function runTui(
                 overlay.showSlash(lines);
                 renderer.requestRender();
               },
+              onStepPause: askContinueFromOverlay,
               onContextPreview: (snapshot: ContextDisplaySnapshot) => {
                 ui.chrome.setStatus(withUpdateFlags(controller.getStatusBarInput()), {
                   showCost: config.ui.show_cost,

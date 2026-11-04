@@ -421,8 +421,24 @@ export interface ProjectDetectionConfig {
 }
 
 export interface TurnConfig {
-  /** Max LLM rounds per user message (each round may batch multiple tool calls). */
+  /**
+   * Hard cap on steps per user message when the session is headless or the
+   * UI sink does not provide `onStepPause`. The last batch executes, then a
+   * wrap-up runs. Default: 25.
+   */
   max_steps: number;
+  /**
+   * Soft-pause interval when the sink provides `onStepPause`. Default: 50.
+   * If `hard_max_steps` is not above this value, the pause is disabled and
+   * the turn stops at the ceiling with a wrap-up.
+   */
+  pause_after_steps: number;
+  /**
+   * Absolute ceiling when the sink provides `onStepPause` (wrap-up without
+   * prompting; the pending batch is not executed). Default: 300.
+   * When this is not above `pause_after_steps`, the pause is disabled.
+   */
+  hard_max_steps: number;
 }
 
 export interface CircuitConfig {

@@ -114,6 +114,31 @@ praana setup   # Interactive provider/config setup wizard (also `praana init` al
 
 Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harbor/CI), `praana resume` (continues your most recent session for the current project when given no id), `praana upgrade` (installs the latest GitHub Release binary + sidecar; alias `praana update`), `praana doctor` (checks config + provider keys), `praana providers` (lists configured providers; `--all` includes unconfigured), `praana models` (lists models), and `praana memory dedupe` (merges duplicate Cognitive Memory entries). See [`praana.config.example.toml`](https://github.com/amitkumardubey/praana/blob/main/praana.config.example.toml) for all settings. Harbor / Terminal-Bench: [`harbor_eval/README.md`](https://github.com/amitkumardubey/praana/blob/main/harbor_eval/README.md).
 
+### Per-turn step budget
+
+A *step* is one model round-trip (it may contain several parallel tool calls). The `[turn]` section controls how long a single turn may keep calling tools:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `max_steps` | 25 | Hard cap on steps per user message when the session is **headless** (`praana run`, Harbor, CI) **or** the UI sink does not provide `onStepPause` (non-interactive sinks, subagents, tests). `--max-steps N` overrides it for one headless run. Reaching the cap executes the current tool batch, then runs the wrap-up. |
+| `pause_after_steps` | 50 | When the sink provides `onStepPause`, the session pauses before executing the next tool batch every time steps used reaches a multiple of this value. |
+| `hard_max_steps` | 300 | Absolute ceiling for those interactive sessions: reaching it stops *without asking* and writes the wrap-up summary. If this is not above `pause_after_steps` (lower or equal), PRAANA warns, keeps this ceiling, and disables the pause: the turn stops at the ceiling with a wrap-up and does not ask. |
+
+The pause/ceiling path runs only when the sink provides `onStepPause`. Headless runs and every other sink use `max_steps` and never prompt.
+
+When an interactive turn reaches a multiple of `pause_after_steps`, PRAANA stops the spinner and shows a small prompt: `Used N steps this turn. Continue?` In the TUI, **Enter** continues, **Esc** stops and asks for a short summary, and **Ctrl+C** aborts the turn without that summary. An Enter or Esc that is already in flight is ignored for a brief moment so the prompt does not continue or stop by accident. Ctrl+C is not delayed. A slash-result panel does not hold that prompt: it closes and the continue question opens immediately. Opening another interactive dialog (palette, model, login, logout, setup) while the prompt is up waits until you answer; it does not count as stop, and the other dialog opens afterwards. Closing the prompt answers only the prompt on screen, so a dialog requested while it was showing still opens, and the keyboard stays with that dialog until nothing is left open. Cancelling the turn closes the prompt. On the plain terminal the prompt says `Enter or y = continue, anything else = stop` — **Enter**, **y**, or **yes** continues, and any other line stops (readline has no Esc key). Ctrl+C there is the terminal interrupt: while a turn is running it aborts that turn and does not ask for a summary. The next pause is another `pause_after_steps` later. Focus returns to the input when the prompt closes and nothing else is open, and the spinner starts again if you continue.
+
+**Wrap-up:** a turn that stops at a limit runs one final model call with **no tools**, asking for a short summary of what was done and what remains. While that request is in flight the spinner reads `wrapping up…` until the first text arrives, or until the request ends, fails, or is aborted. The summary streams like a normal reply, separated from the preceding step text by a blank line. The "do not call tools" instruction is sent only with that call and is not kept in the transcript. The summary is stored only when it has visible text (a thinking-only or blank reply is not stored). If the model still returns tool calls, they are dropped and not executed. If the wrap-up call fails, the error is reported the same way as any other model error (and, when nothing was streamed yet, the turn still ends with the normal banner). A summary that exists only on the final message of a failed wrap-up is not shown or stored, and the context token count includes a wrap-up reply only when that reply is kept. Ctrl+C during the wrap-up interrupts the turn and keeps whatever summary text was already streamed.
+
+Tool results on that no-tools request include text only (image and other non-text parts are omitted). Each result is cut at 2,000 characters and ends with `[truncated]` when it was cut. Adjacent user messages are merged so the request alternates roles.
+
+What is already in history depends on which limit fired:
+
+- **Soft-pause stop** and **hard ceiling** (`hard_max_steps`): the model has already asked for a tool batch, but that batch is **not executed** (stopping must not edit files). Each pending tool call is recorded as an error result: `Not executed: the step budget was reached and the turn was stopped.` Then the wrap-up runs.
+- **Headless cap** and **any sink without `onStepPause`** (`max_steps`): the last tool batch **runs first**, its results stay in history, and then the wrap-up runs.
+
+Set any of the three keys to `0` (or use a non-positive value) to fall back to the default; invalid values log a config warning and use the default. A NaN, fraction, or negative that reaches a turn without going through config loading is clamped to the same default and does not warn again.
+
 ### Supported providers
 
 | Provider | Environment variable |

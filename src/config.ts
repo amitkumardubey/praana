@@ -33,6 +33,15 @@ function configWarn(
   });
 }
 
+/** Keep a positive integer, or warn and use `fallback`. */
+function requirePositiveInt(value: number, key: string, fallback: number): number {
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
+    configWarn(`Invalid ${key}, using default ${fallback}`);
+    return fallback;
+  }
+  return value;
+}
+
 /** Tracks which config files were loaded in the last loadConfig() call. */
 let _loadedSources: string[] = [];
 
@@ -175,6 +184,8 @@ const DEFAULT_CONFIG: PraanaConfig = {
   },
   turn: {
     max_steps: 25,
+    pause_after_steps: 50,
+    hard_max_steps: 300,
   },
 };
 
@@ -863,6 +874,32 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
     if (typeof out.ui.banner !== "boolean") {
       out.ui.banner = DEFAULT_CONFIG.ui.banner;
     }
+  }
+
+  // Turn step budget validation ([turn]) — invalid/zero values fall back to defaults.
+  const turnDefaults = DEFAULT_CONFIG.turn;
+  out.turn.max_steps = requirePositiveInt(
+    out.turn.max_steps,
+    "turn.max_steps",
+    turnDefaults.max_steps,
+  );
+  out.turn.pause_after_steps = requirePositiveInt(
+    out.turn.pause_after_steps,
+    "turn.pause_after_steps",
+    turnDefaults.pause_after_steps,
+  );
+  out.turn.hard_max_steps = requirePositiveInt(
+    out.turn.hard_max_steps,
+    "turn.hard_max_steps",
+    turnDefaults.hard_max_steps,
+  );
+  // A ceiling that is not above the pause interval never gets to ask: the
+  // shared step (or an earlier ceiling) stops the turn first. Keep the user's
+  // ceiling and disable the pause so the turn stops there with a wrap-up.
+  if (out.turn.hard_max_steps <= out.turn.pause_after_steps) {
+    configWarn(
+      `turn.hard_max_steps (${out.turn.hard_max_steps}) is not above turn.pause_after_steps (${out.turn.pause_after_steps}); the pause is disabled and the turn stops at the ceiling (${out.turn.hard_max_steps}) with a wrap-up.`,
+    );
   }
 
   // User-declared providers validation ([providers.<id>] sections)

@@ -21,6 +21,8 @@ export interface SinkOpts {
   ambient: "inline" | "quiet";
   showThinking: () => boolean;
   onSpinnerMessage: (msg: string) => void;
+  /** Hide the activity spinner. `onSpinnerMessage` shows it. */
+  onSpinnerStop?: () => void;
   ctxWindowTokens: number;
   engineMode: boolean;
   /** Called when the live context preview changes (glance bar). */
@@ -32,6 +34,11 @@ export interface SinkOpts {
   persistEntry?: (entry: TranscriptEntry) => void;
   /** Called when a slash command wants its output shown in an overlay. */
   onSlashCommandResult?: (lines: string[]) => void;
+  /**
+   * Interactive step-pause implementation (Enter = continue, Esc = stop).
+   * Absent ⇒ the turn never pauses (headless / non-interactive sinks).
+   */
+  onStepPause?: TurnUiSink["onStepPause"];
 }
 
 export class OpenTuiSink implements TurnUiSink {
@@ -41,6 +48,7 @@ export class OpenTuiSink implements TurnUiSink {
   private readonly transcript: TranscriptMount;
   private readonly toast: ToastApi;
   private readonly opts: SinkOpts;
+  readonly onStepPause: TurnUiSink["onStepPause"];
 
   private group = 1;
   private pendingToolArgs = new Map<string, Record<string, unknown>>();
@@ -67,6 +75,7 @@ export class OpenTuiSink implements TurnUiSink {
     this.transcript = transcript;
     this.toast = toast;
     this.opts = opts;
+    this.onStepPause = opts.onStepPause;
   }
 
   get currentGroup(): number {
@@ -262,8 +271,12 @@ export class OpenTuiSink implements TurnUiSink {
     }
   }
 
-  onSpinnerStart(): void {}
-  onSpinnerStop(): void {}
+  onSpinnerStart(text: string): void {
+    this.opts.onSpinnerMessage(text);
+  }
+  onSpinnerStop(): void {
+    this.opts.onSpinnerStop?.();
+  }
   onNewline(): void {}
 
   onFallback(text: string): void {
