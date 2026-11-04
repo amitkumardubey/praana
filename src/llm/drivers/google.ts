@@ -83,7 +83,6 @@ export class GoogleDriver implements LlmDriver {
       role: "assistant",
       content: accumulatedContent,
       thinking: accumulatedThinking || undefined,
-      toolCalls: pendingToolCalls.length > 0 ? pendingToolCalls : undefined,
     });
 
     yield* runGuardedProviderStream({
@@ -171,8 +170,6 @@ export class GoogleDriver implements LlmDriver {
               pendingToolCalls.push(tc);
               emittedDelta = true;
               events.push({ type: "tool_call_start", id: tc.id, name: tc.name });
-              events.push({ type: "tool_call_end", toolCall: tc });
-              finishReason = "tool_use";
             }
           }
         }
@@ -183,10 +180,10 @@ export class GoogleDriver implements LlmDriver {
     });
 
     function finishGoogle(): StreamEvent[] {
-        if (pendingToolCalls.length > 0) finishReason = "tool_use";
-        else if (terminalFinish === "MAX_TOKENS") finishReason = "length";
+        if (terminalFinish === "MAX_TOKENS") finishReason = "length";
         else if (terminalFinish && terminalFinish !== "STOP") finishReason = "error";
-        else if (terminalFinish === "STOP") finishReason = "stop";
+        else if (pendingToolCalls.length > 0) finishReason = "tool_use";
+        else finishReason = "stop";
 
         const events: StreamEvent[] = [];
         if (!sawTerminal) {
@@ -197,6 +194,8 @@ export class GoogleDriver implements LlmDriver {
           logLenientStreamEnd(req.provider);
         }
 
+        const completedToolCalls = finishReason === "tool_use" ? pendingToolCalls : [];
+        for (const tc of completedToolCalls) events.push({ type: "tool_call_end", toolCall: tc });
         events.push({
           type: "done",
           reason: finishReason,
@@ -204,7 +203,7 @@ export class GoogleDriver implements LlmDriver {
             role: "assistant",
             content: accumulatedContent,
             thinking: accumulatedThinking || undefined,
-            toolCalls: pendingToolCalls.length > 0 ? pendingToolCalls : undefined,
+            toolCalls: completedToolCalls.length > 0 ? completedToolCalls : undefined,
           },
         });
         return events;

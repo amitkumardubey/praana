@@ -28,16 +28,17 @@ async function collect(
   body: BodyInit,
   req: StreamRequest,
   auth: ResolvedAuth,
-  opts?: { abortOnText?: boolean; abortOnToolDelta?: boolean },
+  opts?: { abortOnText?: boolean; abortOnToolDelta?: boolean; abortOnToolStart?: boolean },
 ): Promise<unknown[]> {
   const ac = new AbortController();
   globalThis.fetch = (async () => new Response(body, { status: 200 })) as typeof fetch;
   const events: unknown[] = [];
-  const streamReq = opts?.abortOnText || opts?.abortOnToolDelta ? { ...req, signal: ac.signal } : req;
+  const streamReq = opts?.abortOnText || opts?.abortOnToolDelta || opts?.abortOnToolStart ? { ...req, signal: ac.signal } : req;
   for await (const ev of driver.stream(streamReq, auth)) {
     events.push(normalize(ev));
     if (opts?.abortOnText && ev.type === "text_delta") ac.abort();
     if (opts?.abortOnToolDelta && ev.type === "tool_call_delta") ac.abort();
+    if (opts?.abortOnToolStart && ev.type === "tool_call_start") ac.abort();
   }
   return events;
 }
@@ -396,6 +397,37 @@ describe("terminal stream events", () => {
     ]);
   });
 
+  for (const [terminal, reason] of [["MAX_TOKENS", "length"], ["SAFETY", "error"], ["RECITATION", "error"], ["MALFORMED_FUNCTION_CALL", "error"], ["unexpected", "error"]] as const) {
+    it(`does not publish Google tool calls on ${terminal}`, async () => {
+      const body = [
+        { candidates: [{ content: { parts: [{ text: "Partial" }] } }] },
+        { candidates: [{ content: { parts: [{ functionCall: { name: "read_file", args: { path: "a" } } }] } }] },
+        { candidates: [{ finishReason: terminal }] },
+      ].map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("");
+      const events = await collect(new GoogleDriver(), body, user("google"), keyAuth);
+      expect(events).toContainEqual({ type: "text_delta", delta: "Partial" });
+      expect(events.some((ev) => (ev as { type: string }).type === "tool_call_end")).toBe(false);
+      expect(events.at(-1)).toEqual({ type: "done", reason, message: { role: "assistant", content: "Partial" } });
+    });
+  }
+  it("drops Google tool calls on user abort before STOP", async () => {
+    const body = [
+      { candidates: [{ content: { parts: [{ text: "Partial" }] } }] },
+      { candidates: [{ content: { parts: [{ functionCall: { name: "read_file", args: { path: "a" } } }] } }] },
+      { candidates: [{ finishReason: "STOP" }] },
+    ].map((frame) => `data: ${JSON.stringify(frame)}\n\n`).join("");
+    const events = await collect(new GoogleDriver(), body, user("google"), keyAuth, { abortOnToolStart: true });
+    expect(events.some((ev) => (ev as { type: string }).type === "tool_call_end")).toBe(false);
+    expect(events.at(-1)).toEqual({ type: "done", reason: "abort", message: { role: "assistant", content: "Partial" } });
+  });
+  for (const strict of [true, false]) {
+    it(`Google holds tool publication until an accepted terminal (strict: ${strict})`, async () => {
+      const body = 'data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"read_file","args":{"path":"a.ts"}}}]}}]}\n\n';
+      const events = await collect(new GoogleDriver(), body, { ...user("google"), strictStreamEnd: strict }, keyAuth);
+      expect(events.some((ev) => (ev as { type: string }).type === "tool_call_end")).toBe(!strict);
+      expect(events.at(-1)).toMatchObject(strict ? { type: "error" } : { type: "done", reason: "tool_use" });
+    });
+  }
   it("snapshots a normal Google text stream", async () => {
     const body = [
       'data: {"candidates":[{"content":{"parts":[{"text":"Hello"}]}}]}\n\n',
