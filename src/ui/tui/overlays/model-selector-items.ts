@@ -5,7 +5,7 @@
  */
 import { formatCtx, fuzzyFilter, type ModelListEntry } from "../../../model-listing.js";
 
-/** Current model pinned to top; otherwise provider, then model id. */
+/** Current model pinned to top; otherwise group providers and preserve catalog order. */
 export function orderModels(
   entries: ModelListEntry[],
   currentProvider: string,
@@ -16,8 +16,7 @@ export function orderModels(
     const bCurrent = b.provider === currentProvider && b.modelId === currentModelId;
     if (aCurrent !== bCurrent) return aCurrent ? -1 : 1;
     const byProvider = a.provider.localeCompare(b.provider);
-    if (byProvider !== 0) return byProvider;
-    return a.modelId.localeCompare(b.modelId);
+    return byProvider;
   });
 }
 

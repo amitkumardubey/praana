@@ -46,6 +46,7 @@ interface ProviderCatalogSnapshot {
   fetchedAt: number;
   /** null context window means the model exists but the API did not report a window. */
   models: Record<string, number | null>;
+  created?: Record<string, number>;
   /** Maps bare model name (segment after last /) to full catalog id. */
   suffixIndex?: Record<string, string>;
 }
@@ -245,6 +246,7 @@ export async function isInProviderCatalog(
 export interface ProviderCatalogModelEntry {
   id: string;
   contextWindow: number | null;
+  created?: number;
 }
 
 /**
@@ -258,12 +260,14 @@ export async function listProviderCatalogModels(
   if (!providerSupportsLiveCatalog(provider)) return [];
 
   const models = await fetchProviderCatalog(provider);
+  const created = loadDiskCache().catalogs[provider]?.created;
   return Object.entries(models)
     .map(([id, contextWindow]) => ({
       id,
       contextWindow: isValidWindow(contextWindow) ? contextWindow : null,
+      ...(created?.[id] !== undefined ? { created: created[id] } : {}),
     }))
-    .sort((a, b) => a.id.localeCompare(b.id));
+    .sort((a, b) => (b.created ?? -Infinity) - (a.created ?? -Infinity) || a.id.localeCompare(b.id));
 }
 
 /**
@@ -347,7 +351,7 @@ export function invalidateProviderCatalog(provider: string): void {
 }
 
 interface AnthropicModelsPage {
-  data?: Array<{ id?: string; max_input_tokens?: number }>;
+  data?: Array<{ id?: string; max_input_tokens?: number; created_at?: string }>;
   has_more?: boolean;
   last_id?: string | null;
 }
@@ -361,6 +365,7 @@ interface AnthropicModelsPage {
 async function fetchAnthropicCatalogModels(
   apiKey: string | null,
   signal: AbortSignal,
+  created: Record<string, number>,
 ): Promise<Record<string, number | null>> {
   const baseUrl = (
     PROVIDER_REGISTRY.anthropic?.baseUrl || "https://api.anthropic.com"
@@ -394,6 +399,8 @@ async function fetchAnthropicCatalogModels(
       models[item.id] = isValidWindow(item.max_input_tokens)
         ? item.max_input_tokens
         : null;
+      const timestamp = item.created_at ? Date.parse(item.created_at) : NaN;
+      created[item.id] = Number.isFinite(timestamp) ? timestamp : -(Object.keys(models).length);
     }
 
     if (!body.has_more) break;
@@ -461,7 +468,8 @@ async function fetchProviderCatalogFresh(
         if (!apiKey) {
           throw new Error("anthropic models API requires an API key");
         }
-        const models = await fetchAnthropicCatalogModels(apiKey, controller.signal);
+        const created: Record<string, number> = {};
+        const models = await fetchAnthropicCatalogModels(apiKey, controller.signal, created);
         if (controller.signal.aborted) {
           throw new Error("Provider catalog fetch aborted");
         }
@@ -472,6 +480,7 @@ async function fetchProviderCatalogFresh(
         file.catalogs[provider] = {
           fetchedAt: Date.now(),
           models,
+          created,
           suffixIndex: buildSuffixIndex(models),
         };
         persistDiskCache();
@@ -501,7 +510,7 @@ async function fetchProviderCatalogFresh(
       // Race response.json() against the abort signal to handle hangs during body parsing.
       const body = await Promise.race([
         response.json() as Promise<{
-          data?: Array<{ id?: string; context_length?: number; context_window?: number }>;
+          data?: Array<{ id?: string; context_length?: number; context_window?: number; created?: number; created_at?: string }>;
         }>,
         (() => {
           const { promise, reject } = Promise.withResolvers<never>();
@@ -525,16 +534,20 @@ async function fetchProviderCatalogFresh(
       }
 
       const models: Record<string, number | null> = {};
+      const created: Record<string, number> = {};
       for (const item of body.data ?? []) {
         if (!item.id) continue;
         const contextWindow = item.context_length ?? item.context_window;
         models[item.id] = isValidWindow(contextWindow) ? contextWindow : null;
+        const timestamp = typeof item.created === "number" ? item.created * 1000 : item.created_at ? Date.parse(item.created_at) : NaN;
+        if (Number.isFinite(timestamp)) created[item.id] = timestamp;
       }
 
       const file = loadDiskCache();
       file.catalogs[provider] = {
         fetchedAt: Date.now(),
         models,
+        created,
         suffixIndex: buildSuffixIndex(models),
       };
       persistDiskCache();

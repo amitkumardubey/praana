@@ -4,7 +4,7 @@
   "oracle_sha256_by_file": {
     "src/llm/auth.ts": "41beb8db735ce7bc4103802b19965193c0d5f72668bb5aaa2ab3796c2b47420a",
     "src/llm/drivers/base.ts": "b0cc64042cef8c21adfdb81c8abda6e8619dea4ee05e90dba105ee38488e8d01",
-    "src/llm/drivers/openai.ts": "4b24614a825409fca99acbe26b2b144a06c3591a12a5e42f764666b5c6a97bb7",
+    "src/llm/drivers/openai.ts": "27c4057f90a3e2fd46de6d6a0770fecb6c4b5ff525ef51659d3ba5fdffc7cc8d",
     "src/llm/drivers/responses.ts": "93f6d143c92046cec2ea4f552921ef0ff527fdf5bdd30789ac2327ebe928b6f6",
     "src/llm/resolver.ts": "57f9f08352ca46610f1aaab73fad21645992d5dc1df8a83761bf5d8e25178662",
     "src/llm/retry.ts": "f8787c74f916cc9ac66ae35f2ebc86fd6f0d4d51f3a36ccb58ab3418e9ba108b",

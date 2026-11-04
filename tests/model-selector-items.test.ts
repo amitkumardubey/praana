@@ -25,9 +25,9 @@ describe("orderModels", () => {
     const out = orderModels(L, "openai", "gpt-4o");
     expect(out[0]).toMatchObject({ provider: "openai", modelId: "gpt-4o" });
   });
-  it("keeps provider-then-id order otherwise", () => {
+  it("groups providers while preserving each provider's listing order", () => {
     const out = orderModels(L, "openai", "gpt-4o").slice(1).map((x) => x.modelId);
-    expect(out).toEqual(["claude-haiku", "claude-sonnet-4-5", "gpt-4o-mini"]);
+    expect(out).toEqual(["claude-sonnet-4-5", "claude-haiku", "gpt-4o-mini"]);
   });
   it("does not mutate the input", () => {
     const copy = [...L];
