@@ -51,10 +51,12 @@ export interface OverlayUi {
   showSetup(): void;
   showConsent(): void;
   /**
-   * Open a small confirm overlay; resolves true on Enter, false on Esc/Ctrl+C
-   * or when `signal` aborts. If another overlay or confirm is already open,
-   * this waits until that one closes, then shows. Aborting `signal` while
-   * waiting resolves false and drops just this request.
+   * Open a small confirm overlay; resolves true on Enter, false on Esc
+   * or when `signal` aborts. Ctrl+C is not answered here: it aborts the
+   * turn signal, which settles this promise false and skips the wrap-up.
+   * If another overlay or confirm is already open, this waits until that
+   * one closes, then shows. Aborting `signal` while waiting resolves false
+   * and drops just this request.
    */
   showConfirm(message: string, signal?: AbortSignal): Promise<boolean>;
   resolveConfirm(cont: boolean): void;

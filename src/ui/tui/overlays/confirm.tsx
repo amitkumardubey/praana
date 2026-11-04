@@ -1,12 +1,13 @@
 /**
- * Minimal confirm overlay for the per-turn step pause: Enter continues,
- * Esc / Ctrl+C stops (wrap-up). Every other key is swallowed while it is
- * open so a user interrupt is never dropped or double-handled.
+ * Minimal confirm overlay for the per-turn step pause.
+ * Enter continues. Esc stops and asks for a summary. Ctrl+C is not
+ * consumed, including during the arm window, so the global handler aborts
+ * the turn without a wrap-up request.
  *
- * Keys are swallowed immediately. Enter is ignored until `CONFIRM_ARM_MS`
- * has passed so an Enter already in flight does not auto-continue. Esc and
- * Ctrl+C stop at any time, including during that window. A new confirm
- * prompt id arms Enter again (the component stays mounted across prompts).
+ * Other keys are swallowed. Enter is ignored until `CONFIRM_ARM_MS` has
+ * passed so an Enter already in flight does not auto-continue. A new
+ * confirm prompt id arms Enter again (this component stays mounted across
+ * prompts when the host does not remount it).
  */
 import { createEffect, onCleanup } from "solid-js";
 import { useKeymap } from "@opentui/keymap/solid";
@@ -17,14 +18,26 @@ import type { OverlayUi } from "./state.js";
 /** How long a freshly opened step-pause confirm ignores Enter. */
 export const CONFIRM_ARM_MS = 100;
 
+export const CONFIRM_HINT = "Enter = continue · Esc = stop and summarise · Ctrl+C = abort";
+
 export interface ConfirmOverlayProps {
   overlay: OverlayUi;
   /** Override the arm delay in tests. Defaults to `CONFIRM_ARM_MS`. */
   armMs?: number;
 }
 
-function isStopKey(name: string, ctrl: boolean): boolean {
-  return name === "escape" || name === "esc" || (name === "c" && ctrl);
+export type StepPauseKeyAction = "continue" | "stop" | "ignore" | "passthrough";
+
+/**
+ * Key policy for the step-pause confirm. `passthrough` is not consumed, so
+ * the global Ctrl+C handler can abort the turn.
+ */
+export function classifyStepPauseKey(name: string, ctrl: boolean, armed: boolean): StepPauseKeyAction {
+  if (name === "c" && ctrl) return "passthrough";
+  if (name === "escape" || name === "esc") return "stop";
+  if (!armed) return "ignore";
+  if (name === "enter" || name === "return") return "continue";
+  return "ignore";
 }
 
 export function ConfirmOverlay(props: ConfirmOverlayProps) {
@@ -40,16 +53,12 @@ export function ConfirmOverlay(props: ConfirmOverlayProps) {
     void prompt.id;
     const armedAt = Date.now() + (props.armMs ?? CONFIRM_ARM_MS);
     const off = keymap.intercept("key", (ctx) => {
-      ctx.consume({ preventDefault: true, stopPropagation: true });
       const e = ctx.event;
-      if (isStopKey(e.name, !!e.ctrl)) {
-        props.overlay.resolveConfirm(false);
-        return;
-      }
-      if (Date.now() < armedAt) return;
-      if (e.name === "enter" || e.name === "return") {
-        props.overlay.resolveConfirm(true);
-      }
+      const action = classifyStepPauseKey(e.name, !!e.ctrl, Date.now() >= armedAt);
+      if (action === "passthrough") return;
+      ctx.consume({ preventDefault: true, stopPropagation: true });
+      if (action === "stop") props.overlay.resolveConfirm(false);
+      else if (action === "continue") props.overlay.resolveConfirm(true);
     });
     onCleanup(off);
   });
@@ -57,7 +66,7 @@ export function ConfirmOverlay(props: ConfirmOverlayProps) {
   return (
     <OverlayFrame width={64}>
       <text>{props.overlay.confirmPrompt()?.message ?? ""}</text>
-      <text><span style={TUI_STYLE.muted}>Enter = continue · Esc = stop</span></text>
+      <text><span style={TUI_STYLE.muted}>{CONFIRM_HINT}</span></text>
     </OverlayFrame>
   );
 }

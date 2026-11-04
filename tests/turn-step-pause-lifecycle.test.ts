@@ -20,6 +20,9 @@
  * I4 a sink with no pause hook never pauses; a throw or reject stops
  * I5 the pause signal aborts when the turn ends, and a hook that ignores it
  *    cannot keep the turn blocked after an abort
+ * I6 a Ctrl+C during the pause aborts the turn. Removal checks: no wrap-up
+ *    request, the pause promise settles exactly once, the confirm prompt is
+ *    gone, and focus is restored when no other overlay is open.
  */
 import { describe, expect, it, afterAll, mock } from "bun:test";
 import { z } from "zod";
@@ -111,6 +114,7 @@ import { LoopGate } from "../src/circuit/loop-gate.js";
 import { StateGraph } from "../src/state-graph.js";
 import { createDefaultTurnSink, type TurnUiSink } from "../src/ui-events.js";
 import { createOverlayUi } from "../src/ui/tui/overlays/state.js";
+import { classifyStepPauseKey } from "../src/ui/tui/overlays/confirm.js";
 import type { PraanaConfig } from "../src/types.js";
 
 afterAll(() => {
@@ -148,6 +152,8 @@ interface Schedule {
   otherOverlay: boolean;
   /** Open a palette before the confirm so the pause must not replace it. */
   overlayBeforeConfirm: boolean;
+  /** Ctrl+C at the pause. The key policy decides whether that aborts. */
+  ctrlC: boolean;
 }
 
 function mulberry32(seed: number): () => number {
@@ -218,6 +224,14 @@ function buildSchedule(seed: number): Schedule {
   // Drawn last so earlier fields stay stable for a given seed.
   let overlayBeforeConfirm = rng() < 0.5;
   if (!otherOverlay) overlayBeforeConfirm = false;
+  let ctrlC = rng() < 0.4;
+  if (limit !== "pause" || io !== "memory" || !hasHook) ctrlC = false;
+  if (answer === "throw" || answer === "reject" || answer === "never") ctrlC = false;
+  if (overlayBeforeConfirm) ctrlC = false;
+  if (ctrlC) {
+    abortAt = "none";
+    wrap = "success";
+  }
 
   return {
     seed,
@@ -231,6 +245,7 @@ function buildSchedule(seed: number): Schedule {
     wrap,
     otherOverlay,
     overlayBeforeConfirm,
+    ctrlC,
   };
 }
 
@@ -243,6 +258,7 @@ function seedList(): number[] {
 }
 
 function reachesWrap(s: Schedule): boolean {
+  if (s.ctrlC) return false;
   return (
     s.abortAt !== "before-pause" &&
     s.abortAt !== "during-pause" &&
@@ -252,7 +268,7 @@ function reachesWrap(s: Schedule): boolean {
 }
 
 function expectsAbort(s: Schedule): boolean {
-  return s.abortAt !== "none";
+  return s.abortAt !== "none" || s.ctrlC;
 }
 
 class FakeStdin extends PassThrough {
@@ -369,13 +385,14 @@ function makeSession(logDir: string, limit: Limit) {
   return session;
 }
 
-function installStream(schedule: Schedule, abort: AbortController, turn: number): void {
+function installStream(schedule: Schedule, abort: AbortController, turn: number, trace: TurnTrace): void {
   const callId = `call-${schedule.seed}-${turn}`;
   mockStream.mockImplementation((req: { messages?: Array<{ role?: string; content?: unknown }> }) => {
     const messages = req.messages ?? [];
     const lastUser = [...messages].reverse().find((m) => m.role === "user");
     const lastText = typeof lastUser?.content === "string" ? lastUser.content : "";
     const isWrap = lastText.includes(INSTRUCTION);
+    if (isWrap) trace.wrapRequests += 1;
     const toolResults = messages.filter((m) => m.role === "tool_result").length;
     if (isWrap) return wrapStream(schedule, abort);
     if (schedule.abortAt === "before-pause" && toolResults === 0) {
@@ -448,6 +465,9 @@ interface TurnTrace {
   stdinListeners: number | null;
   stdinPaused: boolean | null;
   stdinBaseline: number | null;
+  wrapRequests: number;
+  pauseSettles: number;
+  confirmLeft: boolean;
 }
 
 function historyArrays(userInput: string, run: () => Promise<void>): Promise<any[][]> {
@@ -617,12 +637,15 @@ async function runSeed(schedule: Schedule, logDir: string): Promise<void> {
       stdinListeners: null,
       stdinPaused: null,
       stdinBaseline: null,
+      wrapRequests: 0,
+      pauseSettles: 0,
+      confirmLeft: false,
     };
-    installStream(schedule, abort, n);
+    installStream(schedule, abort, n, trace);
     abortDuringTool = schedule.abortAt === "during-tool" ? () => abort.abort() : null;
     const fromEvent = session.eventLog.readAll().length;
     const started = Date.now();
-    const overlay = schedule.otherOverlay ? createOverlayUi() : null;
+    const overlay = schedule.otherOverlay || schedule.ctrlC ? createOverlayUi() : null;
 
     const answerValue = schedule.answer === "continue";
     const memoryPause = (steps: number, signal?: AbortSignal): boolean | Promise<boolean> => {
@@ -638,15 +661,44 @@ async function runSeed(schedule: Schedule, logDir: string): Promise<void> {
       if (schedule.answer === "throw") throw new Error("pause hook failed");
       if (schedule.answer === "reject") return Promise.reject(new Error("pause hook rejected"));
       trace.pending = true;
-      if (schedule.otherOverlay && overlay && signal) {
+      if ((schedule.otherOverlay || schedule.ctrlC) && overlay && signal) {
         if (schedule.overlayBeforeConfirm) overlay.showPalette();
         const pending = overlay.showConfirm(`Used ${steps}?`, signal);
+        let settles = 0;
+        pending.then(() => {
+          settles += 1;
+        });
+        const track = (value: boolean) => {
+          trace.pauseSettles = settles;
+          trace.overlayAfter = overlay.kind();
+          trace.confirmLeft = overlay.kind() === "confirm" || overlay.confirmPrompt() !== null;
+          trace.focused = overlay.kind() === "none";
+          trace.pending = false;
+          trace.spinner = value ? "running" : "stopped";
+          return value;
+        };
+        const applyCtrlC = () => {
+          const decision = classifyStepPauseKey("c", true, schedule.answerDelay === "delayed");
+          if (decision === "passthrough") abort.abort();
+          else if (decision === "stop") overlay.resolveConfirm(false);
+          else if (decision === "continue") overlay.resolveConfirm(true);
+          return pending.then((value) => track(value));
+        };
         if (schedule.overlayBeforeConfirm) {
           if (overlay.kind() !== "palette") trace.overlayStolen = true;
           overlay.dismiss();
-        } else {
+        } else if (schedule.otherOverlay) {
           overlay.showModel();
           if (overlay.kind() !== "confirm") trace.overlayStolen = true;
+        }
+        if (schedule.ctrlC) {
+          if (schedule.answerDelay === "delayed") {
+            return (async () => {
+              await new Promise((r) => setTimeout(r, 0));
+              return applyCtrlC();
+            })();
+          }
+          return applyCtrlC();
         }
         if (schedule.abortAt === "during-pause") abort.abort();
         if (schedule.answer === "never") {
@@ -741,7 +793,10 @@ async function runSeed(schedule: Schedule, logDir: string): Promise<void> {
         else abort.abort();
       }
       outcome = await run;
-      if (overlay) trace.overlayAfter = overlay.kind();
+      if (overlay) {
+        trace.overlayAfter = overlay.kind();
+        trace.confirmLeft = overlay.kind() === "confirm" || overlay.confirmPrompt() !== null;
+      }
       if (stdin) {
         trace.stdinListeners = stdin.listenerCount("data");
         trace.stdinPaused = stdin.isPaused();
@@ -772,6 +827,13 @@ async function runSeed(schedule: Schedule, logDir: string): Promise<void> {
     if (schedule.wrap === "interrupted") expect(stored).toContain("partial wrap");
     if (schedule.wrap === "success" && reachesWrap(schedule)) expect(stored).toContain("\n\n[summary] wrapped up");
 
+    if (schedule.ctrlC) {
+      expect(trace.wrapRequests).toBe(0);
+      expect(trace.pauseSettles).toBe(1);
+      expect(trace.overlayAfter).not.toBe("confirm");
+      expect(trace.confirmLeft).toBe(false);
+      expect(trace.focused).toBe(!schedule.otherOverlay);
+    }
     checkI1(trace, schedule);
     checkI2(histories, session.eventLog.readAll(), fromEvent, schedule);
     checkI3(trace, schedule);
@@ -782,19 +844,23 @@ async function runSeed(schedule: Schedule, logDir: string): Promise<void> {
 }
 
 describe("step pause lifecycle", () => {
-  it("I1-I5 hold for every seeded schedule", async () => {
+  it("I1-I6 hold for every seeded schedule", async () => {
     const root = join(homedir(), ".cache", "steps5-scratch");
     mkdirSync(root, { recursive: true });
     const logDir = mkdtempSync(join(root, "life-"));
+    const failures: string[] = [];
     try {
       for (const seed of seedList()) {
         const schedule = buildSchedule(seed);
         try {
           await runSeed(schedule, logDir);
         } catch (err) {
-          const detail = err instanceof Error ? `${err.message}\n${err.stack ?? ""}` : String(err);
-          throw new Error(`seed=${seed} schedule=${JSON.stringify(schedule)}\n${detail}`);
+          const detail = err instanceof Error ? err.message : String(err);
+          failures.push(`seed=${seed} ctrlC=${schedule.ctrlC} ${detail}`);
         }
+      }
+      if (failures.length > 0) {
+        throw new Error(`${failures.length} seeds failed\n${failures.slice(0, 8).join("\n")}`);
       }
     } finally {
       rmSync(logDir, { recursive: true, force: true });

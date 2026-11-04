@@ -1133,6 +1133,48 @@ describe("per-turn step budget — interactive soft pause", () => {
     expect(shellExecuteCount()).toBe(0);
   });
 
+  function wrapUpCalls(): number {
+    return streamRequestCalls().filter((call) =>
+      JSON.stringify(call.messages).includes("Do not call tools"),
+    ).length;
+  }
+
+  it("does not wrap up when the pause resolves false because the turn aborted", async () => {
+    installLoopStream(4);
+    const session = makeMockSession({
+      config: makeConfig({ turn: { max_steps: 25, pause_after_steps: 1, hard_max_steps: 300 } }),
+    });
+    const abort = new AbortController();
+    const before = wrapUpCalls();
+    const sink: TurnUiSink = {
+      onStepPause: (_steps, signal) => {
+        signal.addEventListener("abort", () => {}, { once: true });
+        abort.abort();
+        return false;
+      },
+    };
+    let thrown: unknown;
+    try {
+      await runTurn(session, "ctrl+c at pause", undefined, { sink, signal: abort.signal });
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(TurnAbortedError);
+    expect(wrapUpCalls() - before).toBe(0);
+  });
+
+  it("wraps up exactly once when the pause stops without an abort", async () => {
+    installLoopStream(4);
+    const session = makeMockSession({
+      config: makeConfig({ turn: { max_steps: 25, pause_after_steps: 1, hard_max_steps: 300 } }),
+    });
+    const before = wrapUpCalls();
+    await runTurn(session, "esc at pause", undefined, {
+      sink: { onStepPause: () => false },
+    });
+    expect(wrapUpCalls() - before).toBe(1);
+  });
+
   it("Ctrl+C during wrap-up finalizes the turn as an interrupt", async () => {
     const abort = new AbortController();
     installLoopStream(6, { wrapUp: "interrupt", abort });

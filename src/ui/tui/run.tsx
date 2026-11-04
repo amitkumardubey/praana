@@ -493,8 +493,10 @@ export async function runTui(
   };
 
   /**
-   * Interactive step-pause: open a small confirm overlay (spinner stopped)
-   * and resolve on Enter (continue) / Esc/Ctrl+C (stop → wrap-up).
+   * Interactive step-pause: open a small confirm overlay (spinner stopped).
+   * Enter continues. Esc stops and asks for a summary. Ctrl+C is left for
+   * the global handler, which aborts the turn signal; the confirm closes
+   * on that abort and the turn does not request a wrap-up.
    */
   const askContinueFromOverlay = async (stepsUsed: number, signal: AbortSignal): Promise<boolean> => {
     if (signal.aborted) return false;
