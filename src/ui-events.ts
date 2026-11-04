@@ -131,8 +131,7 @@ async function promptContinueSteps(stepsUsed: number, signal: AbortSignal): Prom
       settled = true;
       signal.removeEventListener("abort", onAbort);
       rl.close();
-      if (wasFlowing === true) process.stdin.resume();
-      else process.stdin.pause();
+      restoreStdinFlow(wasFlowing);
       resolve(answer);
     };
     const onAbort = () => finish("no");
@@ -146,6 +145,25 @@ async function promptContinueSteps(stepsUsed: number, signal: AbortSignal): Prom
   });
   const normalized = answer.trim().toLowerCase();
   return normalized === "" || normalized === "y" || normalized === "yes";
+}
+
+/**
+ * Readline pauses its input when the prompt closes. Resume only a stream
+ * that was already flowing, and pause only one that was already paused.
+ * An untouched stream (no consumer yet) must not stay explicitly paused,
+ * or a later "data" listener receives nothing.
+ */
+function restoreStdinFlow(wasFlowing: boolean | null): void {
+  if (wasFlowing === true) {
+    process.stdin.resume();
+    return;
+  }
+  if (wasFlowing === false) {
+    process.stdin.pause();
+    return;
+  }
+  const state = (process.stdin as { _readableState?: { flowing: boolean | null } })._readableState;
+  if (state) state.flowing = null;
 }
 
 export function hasTurnUiSink(sink?: TurnUiSink): sink is TurnUiSink {

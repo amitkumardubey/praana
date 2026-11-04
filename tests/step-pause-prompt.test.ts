@@ -93,6 +93,33 @@ describe("plain-terminal step pause prompt", () => {
     }
   });
 
+  it("resumes a flowing stdin, keeps a paused stdin paused, and leaves an untouched stdin readable", async () => {
+    const cases: Array<{ name: string; setup: (input: FakeStdin) => void; flowing: boolean | null; receives: boolean }> = [
+      { name: "flowing", setup: (input) => input.resume(), flowing: true, receives: true },
+      { name: "paused", setup: (input) => input.pause(), flowing: false, receives: false },
+      { name: "untouched", setup: () => {}, flowing: null, receives: true },
+    ];
+    for (const c of cases) {
+      const input = new FakeStdin();
+      c.setup(input);
+      expect(input.readableFlowing).toBe(c.flowing);
+      const abort = new AbortController();
+      const result = await withStdin(input as unknown as NodeJS.ReadStream, async () => {
+        const pending = createDefaultTurnSink().onStepPause!(2, abort.signal);
+        abort.abort();
+        return pending;
+      });
+      expect(result).toBe(false);
+      let later = "";
+      input.on("data", (chunk) => {
+        later += String(chunk);
+      });
+      input.write("next\n");
+      await new Promise((resolve) => setImmediate(resolve));
+      expect({ name: c.name, received: later.includes("next") }).toEqual({ name: c.name, received: c.receives });
+    }
+  });
+
   it("stops on cancellation and restores a paused stdin", async () => {
     const input = new FakeStdin();
     input.pause();
