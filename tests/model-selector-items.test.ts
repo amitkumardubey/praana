@@ -49,6 +49,33 @@ describe("filterModelItems", () => {
     const r = filterModelItems(L, "haiku");
     expect(r[0]?.modelId).toBe("claude-haiku");
   });
+  it("puts provider hits first in original order, ahead of model-id hits", () => {
+    const entries = [
+      m("amazon-bedrock", "anthropic.claude-opus"),
+      m("anthropic", "claude-sonnet-new"),
+      m("anthropic", "anthropic.claude-opus-current"),
+      m("anthropic", "claude-haiku-old"),
+    ];
+    expect(filterModelItems(entries, "anthropic")).toEqual([entries[1], entries[2], entries[3], entries[0]]);
+    expect(filterModelItems(entries, "AnThRoPiC")).toEqual([entries[1], entries[2], entries[3], entries[0]]);
+    expect(filterModelItems(entries, "throp")).toEqual([entries[1], entries[2], entries[3], entries[0]]);
+  });
+  it("matches provider and model tokens separated by whitespace or slash", () => {
+    const entries = [
+      m("openai", "gpt-4o"), m("openai", "other"),
+      m("other", "openai-gpt"), m("openrouter", "anthropic/claude-opus"),
+      m("anthropic", "claude-opus"),
+    ];
+    expect(filterModelItems(entries, "openai gpt")).toEqual([entries[0], entries[2]]);
+    expect(filterModelItems(entries, "openrouter/claude")).toEqual([entries[3]]);
+    expect(filterModelItems(entries, "gpt openai")).toEqual([entries[0], entries[2]]);
+  });
+  it("ranks model-only matches by fuzzy score and supports display labels", () => {
+    const entries = [m("a", "o-p-u-s"), m("b", "claude-opus"), m("c", "other", { label: "Opus special" })];
+    expect(filterModelItems(entries, "opus")).toEqual([entries[2], entries[1], entries[0]]);
+    expect(filterModelItems(entries, "nothing-matches")).toEqual([]);
+    expect(filterModelItems(entries, "  ")).toBe(entries);
+  });
 });
 
 describe("scrollStartOf", () => {

@@ -309,7 +309,7 @@ A normal quit — `/exit`, or Ctrl+C with an empty prompt — exits `0` when a s
 | `/stats` | Session + memory stats |
 | `/scorecard` | Per-session telemetry signals |
 | `/events` | Last 20 session log events |
-| `/model [provider] <id>` | Switch model (bare `/model` opens a searchable selector) |
+| `/model [provider] <id>` | Switch model (bare `/model` opens a selector searchable by provider or model) |
 | `/reasoning <level>` | Set reasoning effort (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`) |
 | `/sessions` | List sessions to resume |
 | `/login [provider]` | Add or update a provider credential |
