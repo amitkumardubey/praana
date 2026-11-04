@@ -138,7 +138,7 @@ export class BedrockDriver implements LlmDriver {
       role: "assistant",
       content: accumulatedContent,
       thinking: accumulatedThinking || undefined,
-      toolCalls: accumulator.flush(),
+      toolCalls: [],
     });
 
     yield* runGuardedProviderStream({
@@ -231,7 +231,8 @@ export class BedrockDriver implements LlmDriver {
           const stop = frame.messageStop as any;
           if (stop.stopReason === "tool_use") finishReason = "tool_use";
           else if (stop.stopReason === "max_tokens") finishReason = "length";
-          else finishReason = "stop";
+          else if (stop.stopReason === "end_turn" || stop.stopReason === "stop_sequence") finishReason = "stop";
+          else finishReason = "error";
           // usage arrives in a later metadata event. Read until that frame,
           // the body end, or the trailer grace.
           return { events, awaitTrailer: true };
@@ -251,7 +252,7 @@ export class BedrockDriver implements LlmDriver {
           logLenientStreamEnd(req.provider);
         }
 
-        const completedToolCalls = accumulator.flush();
+        const completedToolCalls = finishReason === "tool_use" ? accumulator.flush() : [];
         if (completedToolCalls.length > 0) {
           finishReason = "tool_use";
           for (const tc of completedToolCalls) {

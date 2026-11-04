@@ -66,20 +66,36 @@ function expectPrematureEnd(
   ]);
 }
 
-function encodeFrame(payload: unknown): Buffer {
+function encodeFrame(payload: unknown, eventType?: string): Buffer {
   const payloadBytes = Buffer.from(JSON.stringify(payload), "utf8");
-  const totalLength = payloadBytes.length + 16;
+  const header = (name: string, value: string): Buffer => {
+    const n = Buffer.from(name), v = Buffer.from(value);
+    const bytes = Buffer.alloc(n.length + v.length + 4);
+    bytes[0] = n.length;
+    n.copy(bytes, 1);
+    bytes[n.length + 1] = 7;
+    bytes.writeUInt16BE(v.length, n.length + 2);
+    v.copy(bytes, n.length + 4);
+    return bytes;
+  };
+  const headers = eventType ? Buffer.concat([header(":message-type", "event"), header(":event-type", eventType)]) : Buffer.alloc(0);
+  const totalLength = payloadBytes.length + headers.length + 16;
   const buf = Buffer.alloc(totalLength);
   buf.writeUInt32BE(totalLength, 0);
-  buf.writeUInt32BE(0, 4);
+  buf.writeUInt32BE(headers.length, 4);
   buf.writeUInt32BE(0, 8);
-  payloadBytes.copy(buf, 12);
+  headers.copy(buf, 12);
+  payloadBytes.copy(buf, 12 + headers.length);
   buf.writeUInt32BE(0, totalLength - 4);
   return buf;
 }
 
-function bedrockBody(payloads: unknown[]): Uint8Array {
-  return Buffer.concat(payloads.map(encodeFrame));
+function bedrockBody(payloads: unknown[], bare = false): Uint8Array {
+  return Buffer.concat(payloads.map((frame) => {
+    if (!bare) return encodeFrame(frame);
+    const [type, payload] = Object.entries(frame as Record<string, unknown>)[0]!;
+    return encodeFrame(payload, type);
+  }));
 }
 
 const user = (provider: string): StreamRequest => ({
@@ -444,6 +460,46 @@ describe("terminal stream events", () => {
     ]);
   });
 
+  for (const [terminal, reason] of [["max_tokens", "length"], ["guardrail_intervened", "error"], ["content_filtered", "error"], ["unexpected", "error"], ["end_turn", "stop"], ["stop_sequence", "stop"]] as const) {
+    it(`does not publish Bedrock tool calls on ${terminal}`, async () => {
+      const body = bedrockBody([
+        { messageStart: { role: "assistant" } },
+        { contentBlockDelta: { contentBlockIndex: 0, delta: { text: "Partial" } } },
+        { contentBlockStop: { contentBlockIndex: 0 } },
+        { contentBlockStart: { contentBlockIndex: 1, start: { toolUse: { toolUseId: "toolu_1", name: "read_file" } } } },
+        { contentBlockDelta: { contentBlockIndex: 1, delta: { toolUse: { input: '{"path":"a' } } } },
+        { contentBlockStop: { contentBlockIndex: 1 } },
+        { messageStop: { stopReason: terminal } },
+        { metadata: { usage: { inputTokens: 3, outputTokens: 4, totalTokens: 7 } } },
+      ], true);
+      const events = await collect(new BedrockDriver(), body, user("amazon-bedrock"), bearerAuth);
+      expect(events).toContainEqual({ type: "text_delta", delta: "Partial" });
+      expect(events.some((ev) => (ev as { type: string }).type === "tool_call_end")).toBe(false);
+      expect(events.at(-1)).toEqual({ type: "done", reason, message: { role: "assistant", content: "Partial" } });
+    });
+  }
+  it("drops Bedrock partial tool calls on user abort", async () => {
+    const body = bedrockBody([
+      { contentBlockDelta: { contentBlockIndex: 0, delta: { text: "Partial" } } },
+      { contentBlockStart: { contentBlockIndex: 1, start: { toolUse: { toolUseId: "toolu_1", name: "read_file" } } } },
+      { contentBlockDelta: { contentBlockIndex: 1, delta: { toolUse: { input: '{"path":"a' } } } },
+      { messageStop: { stopReason: "tool_use" } },
+    ], true);
+    const events = await collect(new BedrockDriver(), body, user("amazon-bedrock"), bearerAuth, { abortOnToolDelta: true });
+    expect(events.some((ev) => (ev as { type: string }).type === "tool_call_end")).toBe(false);
+    expect(events.at(-1)).toEqual({ type: "done", reason: "abort", message: { role: "assistant", content: "Partial", toolCalls: [] } });
+  });
+  it("does not promote even a complete Bedrock block on end_turn", async () => {
+    const body = bedrockBody([
+      { contentBlockStart: { contentBlockIndex: 0, start: { toolUse: { toolUseId: "toolu_1", name: "read_file" } } } },
+      { contentBlockDelta: { contentBlockIndex: 0, delta: { toolUse: { input: '{"path":"a.ts"}' } } } },
+      { contentBlockStop: { contentBlockIndex: 0 } },
+      { messageStop: { stopReason: "end_turn" } },
+    ], true);
+    const events = await collect(new BedrockDriver(), body, user("amazon-bedrock"), bearerAuth);
+    expect(events.some((ev) => (ev as { type: string }).type === "tool_call_end")).toBe(false);
+    expect(events.at(-1)).toMatchObject({ type: "done", reason: "stop" });
+  });
   it("snapshots a normal Bedrock text stream", async () => {
     const body = bedrockBody([
       { contentBlockDelta: { contentBlockIndex: 0, delta: { text: "Hello" } } },
@@ -477,8 +533,9 @@ describe("terminal stream events", () => {
           delta: { toolUse: { input: '{"path":"a.ts"}' } },
         },
       },
+      { contentBlockStop: { contentBlockIndex: 0 } },
       { messageStop: { stopReason: "tool_use" } },
-    ]);
+    ], true);
     const events = await collect(
       new BedrockDriver(),
       body,
