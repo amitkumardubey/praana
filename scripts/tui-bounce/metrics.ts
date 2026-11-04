@@ -1,3 +1,33 @@
+import { TextAttributes, type CapturedLine } from "@opentui/core";
+
+/**
+ * Fixture-scoped detector: these fixtures never use literal markdown syntax in
+ * prose/code. Inspect painted spans, not source (or offscreen renderables).
+ * OpenTUI 0.8 keeps '-' as its styled bullet, so distinguish that DIM span
+ * from a plain source marker. Ordered list numbers are intentionally retained.
+ */
+export function rawSyntaxLines(lines: CapturedLine[]): string[] {
+  return lines.flatMap(({ spans }) => {
+    const text = spans.map((span) => span.text).join("");
+    const marker = text.match(/^\s*[-*]\s+/);
+    let rawList = false;
+    if (marker) {
+      const column = text.search(/\S/);
+      let offset = 0;
+      for (const span of spans) {
+        if (offset <= column && column < offset + span.text.length) {
+          rawList = (span.attributes & TextAttributes.DIM) === 0;
+          break;
+        }
+        offset += span.text.length;
+      }
+    }
+    return rawList || /^\s*#{1,6}(?:\s|$)/.test(text) || /\*\*|`|\|\s*:?-{3,}/.test(text)
+      ? [text.trimEnd()]
+      : [];
+  });
+}
+
 /** One presented frame of the transcript viewport. */
 export interface BounceFrame {
   scrollTop: number;
@@ -11,6 +41,7 @@ export interface BounceFrame {
   /** Full viewport text, row trailing spaces removed, blank rows kept. */
   text: string;
   sourceTail: string;
+  rawSyntax: string[];
 }
 
 export interface BounceMetrics {
@@ -34,6 +65,9 @@ export interface BounceMetrics {
   heightShrinks: number;
   /** Frames where the markdown renderable got shorter. */
   markdownShrinks: number;
+  /** Captured frames containing at least one visible, unconcealed marker. */
+  rawSyntaxFrames: number;
+  rawSyntaxExamples: string[];
   examples: string[];
 }
 
@@ -203,6 +237,10 @@ export function measureBounce(frames: BounceFrame[]): BounceMetrics {
     minScrollDelta,
     heightShrinks,
     markdownShrinks,
+    rawSyntaxFrames: frames.filter((frame) => frame.rawSyntax.length > 0).length,
+    rawSyntaxExamples: frames.flatMap((frame, index) => frame.rawSyntax.length > 0
+      ? [`frame ${index} ${JSON.stringify(frame.rawSyntax)} tail ${JSON.stringify(frame.sourceTail)}`]
+      : []).slice(0, 5),
     examples,
   };
 }

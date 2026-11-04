@@ -14,7 +14,7 @@
  * with no code renderable highlighting, or at 6 passes.
  */
 import { createTestRenderer } from "@opentui/core/testing";
-import type { ScrollBoxRenderable } from "@opentui/core";
+import { CodeRenderable, type ScrollBoxRenderable } from "@opentui/core";
 import { render } from "@opentui/solid";
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui";
 import { KeymapProvider } from "@opentui/keymap/solid";
@@ -26,7 +26,7 @@ import { releaseMarkdownSyntaxStyles } from "../../src/ui/tui/transcript/markdow
 import { TranscriptView } from "../../src/ui/tui/transcript/view.js";
 import type { TranscriptRenderOpts } from "../../src/ui/tui/transcript/opts.js";
 import { STREAM_MARKDOWN, chunkDeltas, wordDeltas } from "./fixture.js";
-import { measureBounce, visibleOf, type BounceFrame } from "./metrics.js";
+import { measureBounce, rawSyntaxLines, visibleOf, type BounceFrame } from "./metrics.js";
 import { ManualBatchScheduler } from "./scheduler.js";
 
 const OPTS: TranscriptRenderOpts = {
@@ -56,12 +56,20 @@ export interface BounceScenario {
   arrivalMs: number;
   /** Stop after this many source deltas. Unset streams the whole fixture. */
   maxDeltas?: number;
+  /** Real sink timers + renderer scheduling, with no per-delta highlight drain. */
+  realtime?: boolean;
+  /** Defaults to the original scroll-bounce fixture. */
+  text?: string;
 }
 
 export interface BounceReport {
   scenario: BounceScenario;
   applied: number;
   frames: number;
+  rawSyntaxFrames: number;
+  rawSyntaxExamples: string[];
+  /** Public CodeRenderable state captured at the first raw frame. */
+  rawState: string[];
   bounce: number;
   scrollReversals: number;
   lastRowReversals: number;
@@ -126,9 +134,10 @@ function assistantTail(store: TranscriptStoreApi): string {
 }
 
 function scenarioDeltas(scenario: BounceScenario): string[] {
+  const text = scenario.text ?? STREAM_MARKDOWN;
   const deltas = scenario.deltas === "words"
-    ? wordDeltas(STREAM_MARKDOWN)
-    : chunkDeltas(STREAM_MARKDOWN, scenario.chunkSize ?? 8);
+    ? wordDeltas(text)
+    : chunkDeltas(text, scenario.chunkSize ?? 8);
   return scenario.maxDeltas === undefined ? deltas : deltas.slice(0, scenario.maxDeltas);
 }
 
@@ -138,6 +147,9 @@ export function formatBounceReport(report: BounceReport): string {
   const body = [
     head,
     `applied ${report.applied} frames ${report.frames} bounce ${report.bounce} scroll ${report.scrollReversals} shrinks ${report.heightShrinks} mdShrinks ${report.markdownShrinks} lastRow ${report.lastRowReversals} top ${report.topLineReversals} undone ${report.undone} intermediate ${report.intermediateShifts}`,
+    `raw-syntax frames ${report.rawSyntaxFrames}`,
+    ...report.rawSyntaxExamples.map((example) => `  ${example}`),
+    ...report.rawState.map((state) => `  code ${state}`),
     `passes max ${report.maxPasses} hist ${JSON.stringify(report.passHistogram)} viewport ${report.viewportHeight} scroll ${report.finalScrollTop}/${report.finalScrollHeight}`,
     ...report.examples.map((example) => `  ${example}`),
   ];
@@ -160,10 +172,11 @@ export async function runBounceScenario(scenario: BounceScenario): Promise<Bounc
     engineMode: false,
     projection: new TranscriptProjection({ useUnicode: true }),
     streamBatchMs: scenario.batchMs,
-    batchScheduler: scheduler as StreamBatchScheduler,
+    batchScheduler: scenario.realtime ? undefined : scheduler as StreamBatchScheduler,
   });
   const keymap = createDefaultOpenTuiKeymap(setup.renderer);
   const frames: BounceFrame[] = [];
+  const rawState: string[] = [];
   let record = false;
   let sawFrame = false;
   let box: ScrollBoxRenderable | null = null;
@@ -189,7 +202,22 @@ export async function runBounceScenario(scenario: BounceScenario): Promise<Bounc
   const take = (): BounceFrame => {
     const scroll = scrollBox();
     const visible = visibleOf(setup.captureCharFrame());
+    const rawSyntax = rawSyntaxLines(setup.captureSpans().lines);
+    if (rawSyntax.length > 0 && rawState.length === 0) {
+      walk(setup.renderer.root, (node) => {
+        if (!(node instanceof CodeRenderable)) return;
+        rawState.push(JSON.stringify({
+          id: node.id,
+          content: node.content,
+          painted: node.plainText,
+          streaming: node.streaming,
+          drawUnstyledText: node.drawUnstyledText,
+          isHighlighting: node.isHighlighting,
+        }));
+      });
+    }
     return {
+      rawSyntax,
       scrollTop: scroll.scrollTop,
       scrollHeight: scroll.scrollHeight,
       markdownHeight: markdownHeight(),
@@ -261,13 +289,24 @@ export async function runBounceScenario(scenario: BounceScenario): Promise<Bounc
 
     for (const delta of scenarioDeltas(scenario)) {
       sink.onTextDelta(delta);
+      if (scenario.realtime) {
+        applied++;
+        // Let the real renderer and worker race the next provider delta. The
+        // frame listener stays attached throughout, including between deltas.
+        await Bun.sleep(scenario.arrivalMs);
+        continue;
+      }
       if (scenario.batchMs <= 0) {
         await applyAndPaint();
         continue;
       }
       if (scheduler.advance(scenario.arrivalMs) > 0) await applyAndPaint();
     }
-    if (scenario.batchMs > 0 && scheduler.advance(scenario.batchMs) > 0) {
+    if (scenario.realtime) {
+      sink.flushText();
+      await settle();
+      await setup.renderer.idle();
+    } else if (scenario.batchMs > 0 && scheduler.advance(scenario.batchMs) > 0) {
       await applyAndPaint();
     }
 
@@ -278,6 +317,9 @@ export async function runBounceScenario(scenario: BounceScenario): Promise<Bounc
       scenario,
       applied,
       frames: frames.length,
+      rawSyntaxFrames: metrics.rawSyntaxFrames,
+      rawSyntaxExamples: metrics.rawSyntaxExamples,
+      rawState,
       bounce: metrics.bounce,
       scrollReversals: metrics.scrollReversals,
       lastRowReversals: metrics.lastRowReversals,
