@@ -19,18 +19,33 @@
  * `HOME`/`PRAANA_HOME` keep working: they override these values and restore
  * whatever they found (now the temp paths) when they finish.
  *
- * The isolation is also re-applied before every test. Some suites unset
- * `PRAANA_HOME` in cleanup instead of restoring it, and Bun caches
+ * The isolation is also re-applied before and after every test. Some suites
+ * unset `PRAANA_HOME` in cleanup instead of restoring it, and Bun caches
  * `os.homedir()` from the `HOME` it started with — so without the per-test
- * reset the next file would read `~/.praana` of the real home again.
+ * reset the next file (or a timer that outlives its test) would read
+ * `~/.praana` of the real home again.
+ *
+ * The ONNX weight cache is shared between runs (`<tmpdir>/praana-test-model-
+ * cache`) and warmed before the tests start: a cold home made the embedder
+ * download ~23 MB from HuggingFace inside whichever test needed it first, and
+ * `native-status` only allows 5s.
  *
  * `PRAANA_TEST_REAL_HOME=1` opts out (for a rare test that needs the real
  * home); everything below is then a no-op.
  */
-import { afterAll, beforeEach } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { afterAll, afterEach, beforeEach } from "bun:test";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { appHomePath } from "../../src/app-identity.js";
 import { providerEnvKeyNames } from "./provider-env-keys.js";
 
 /**
@@ -76,6 +91,37 @@ let tempDir: string | null = null;
 let home = envValue("HOME");
 let praanaHome = envValue("PRAANA_HOME");
 
+/** Preset the app downloads for `embedder = "auto"` (see src/memory/transformers-models.ts). */
+const MODEL_ID = "Xenova/all-MiniLM-L6-v2";
+const MODEL_FILES = ["tokenizer.json", "onnx/model_quantized.onnx"];
+
+/** Best effort: fetch the default ONNX weights into the shared cache. */
+async function prewarmModelCache(cacheDir: string): Promise<void> {
+  const modelDir = join(cacheDir, MODEL_ID);
+  if (MODEL_FILES.every((rel) => existsSync(join(modelDir, rel)))) return;
+
+  // Capture the real fetch: tests replace globalThis.fetch with spies.
+  const realFetch = globalThis.fetch;
+  const signal = AbortSignal.timeout(30_000);
+  try {
+    for (const rel of MODEL_FILES) {
+      const dest = join(modelDir, rel);
+      if (existsSync(dest)) continue;
+      const res = await realFetch(
+        `https://huggingface.co/${MODEL_ID}/resolve/main/${rel}`,
+        { signal },
+      );
+      if (!res.ok) return;
+      const body = Buffer.from(await res.arrayBuffer());
+      mkdirSync(dirname(dest), { recursive: true });
+      writeFileSync(`${dest}.tmp`, body);
+      renameSync(`${dest}.tmp`, dest);
+    }
+  } catch {
+    // Offline or slow network: leave the cache cold, tests behave as before.
+  }
+}
+
 if (isolated) {
   tempDir = mkdtempSync(join(tmpdir(), "praana-test-home-"));
   home = tempDir;
@@ -92,6 +138,24 @@ if (isolated) {
 
   applyIsolation();
   beforeEach(applyIsolation);
+  // Restore the isolated env after every test too: async work started by a test
+  // (session-end consolidation, log flushes) can land in the gap after its own
+  // afterEach deleted PRAANA_HOME, and would then write to the real home.
+  afterEach(applyIsolation);
+
+  // Share one ONNX weight cache between runs and warm it before the tests:
+  // a cold home makes the embedder download inside whichever test needs it
+  // first, and `native-status` only allows 5s for that probe.
+  const modelCacheDir = join(tmpdir(), "praana-test-model-cache");
+  const modelsPath = appHomePath("models");
+  mkdirSync(modelCacheDir, { recursive: true });
+  mkdirSync(appHomePath(), { recursive: true });
+  try {
+    symlinkSync(modelCacheDir, modelsPath, process.platform === "win32" ? "junction" : "dir");
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+  }
+  await prewarmModelCache(modelCacheDir);
 
   const dir = tempDir;
   let removed = false;
