@@ -123,6 +123,8 @@ async function promptContinueSteps(stepsUsed: number, signal: AbortSignal): Prom
   if (!process.stdin.isTTY) return true;
   if (signal.aborted) return false;
   const wasFlowing = process.stdin.readableFlowing;
+  // Drop a leftover auto-resume hook before readline attaches its own listeners.
+  clearResumeOnConsumer();
   const answer = await new Promise<string>((resolve) => {
     const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: false });
     let settled = false;
@@ -150,20 +152,52 @@ async function promptContinueSteps(stepsUsed: number, signal: AbortSignal): Prom
 /**
  * Readline pauses its input when the prompt closes. Resume only a stream
  * that was already flowing, and pause only one that was already paused.
- * An untouched stream (no consumer yet) must not stay explicitly paused,
- * or a later "data" listener receives nothing.
+ * An untouched stream (`readableFlowing === null`) must start again when a
+ * consumer attaches. Adding and removing a `data` listener does not put
+ * `readableFlowing` back to null (Node v24.22.1 and Bun 1.4.4), so a
+ * one-time `newListener` hook resumes on `data` and leaves `readable` in
+ * paused mode. The hook is removed before the next prompt so readline's
+ * own listeners do not trip it.
  */
+let syntheticUntouched: NodeJS.ReadStream | null = null;
+let resumeOnConsumer: ((event: string | symbol) => void) | null = null;
+let resumeOnConsumerStdin: NodeJS.ReadStream | null = null;
+
+function clearResumeOnConsumer(): void {
+  if (resumeOnConsumer && resumeOnConsumerStdin) {
+    resumeOnConsumerStdin.removeListener("newListener", resumeOnConsumer);
+  }
+  resumeOnConsumer = null;
+  resumeOnConsumerStdin = null;
+}
+
 function restoreStdinFlow(wasFlowing: boolean | null): void {
+  const stdin = process.stdin;
+  clearResumeOnConsumer();
+  const untouched = wasFlowing === null || (wasFlowing === false && syntheticUntouched === stdin);
+  syntheticUntouched = null;
   if (wasFlowing === true) {
-    process.stdin.resume();
+    stdin.resume();
     return;
   }
-  if (wasFlowing === false) {
-    process.stdin.pause();
+  if (!untouched) {
+    stdin.pause();
     return;
   }
-  const state = (process.stdin as { _readableState?: { flowing: boolean | null } })._readableState;
-  if (state) state.flowing = null;
+  stdin.pause();
+  syntheticUntouched = stdin;
+  const arm = (event: string | symbol) => {
+    if (event !== "data" && event !== "readable") return;
+    clearResumeOnConsumer();
+    syntheticUntouched = null;
+    // `newListener` runs before the consumer is added. `resume()` flows on
+    // the next turn, so a `data` listener is attached before the chunk.
+    // A `readable` consumer pulls from the paused stream and must not be resumed.
+    if (event === "data") stdin.resume();
+  };
+  resumeOnConsumer = arm;
+  resumeOnConsumerStdin = stdin;
+  stdin.on("newListener", arm);
 }
 
 export function hasTurnUiSink(sink?: TurnUiSink): sink is TurnUiSink {

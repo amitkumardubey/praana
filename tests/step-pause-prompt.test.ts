@@ -11,6 +11,28 @@ class FakeStdin extends PassThrough {
   }
 }
 
+/** Real PassThrough whose private `flowing = null` writes are ignored. */
+class NullFlowIgnored extends PassThrough {
+  isTTY = true;
+  setRawMode(_mode: boolean): this {
+    return this;
+  }
+  constructor() {
+    super();
+    const state = (this as unknown as { _readableState: { flowing: boolean | null } })._readableState;
+    let flowing = state.flowing;
+    Object.defineProperty(state, "flowing", {
+      configurable: true,
+      enumerable: true,
+      get: () => flowing,
+      set: (value: boolean | null) => {
+        if (value === null) return;
+        flowing = value;
+      },
+    });
+  }
+}
+
 async function withStdin<T>(stdin: NodeJS.ReadStream, fn: () => Promise<T>): Promise<T> {
   const original = process.stdin;
   const stdoutTty = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
@@ -118,6 +140,66 @@ describe("plain-terminal step pause prompt", () => {
       await new Promise((resolve) => setImmediate(resolve));
       expect({ name: c.name, received: later.includes("next") }).toEqual({ name: c.name, received: c.receives });
     }
+  });
+
+  it("delivers a later read on an untouched stdin even if flowing=null writes are ignored", async () => {
+    const input = new NullFlowIgnored();
+    expect(input.readableFlowing).toBe(null);
+    const abort = new AbortController();
+    const result = await withStdin(input as unknown as NodeJS.ReadStream, async () => {
+      const pending = createDefaultTurnSink().onStepPause!(2, abort.signal);
+      abort.abort();
+      return pending;
+    });
+    expect(result).toBe(false);
+    let later = "";
+    input.on("data", (chunk) => {
+      later += String(chunk);
+    });
+    input.write("next\n");
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(later).toContain("next");
+  });
+
+  it("still delivers after a second pause when nobody read between them", async () => {
+    const input = new NullFlowIgnored();
+    await withStdin(input as unknown as NodeJS.ReadStream, async () => {
+      const first = new AbortController();
+      const pending = createDefaultTurnSink().onStepPause!(1, first.signal);
+      first.abort();
+      expect(await pending).toBe(false);
+      const second = new AbortController();
+      const again = createDefaultTurnSink().onStepPause!(1, second.signal);
+      second.abort();
+      expect(await again).toBe(false);
+    });
+    let later = "";
+    input.on("data", (chunk) => {
+      later += String(chunk);
+    });
+    input.write("second\n");
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(later).toContain("second");
+    expect(input.listenerCount("newListener")).toBe(0);
+  });
+
+  it("lets a readable consumer pull from an untouched stdin", async () => {
+    const input = new NullFlowIgnored();
+    const abort = new AbortController();
+    const result = await withStdin(input as unknown as NodeJS.ReadStream, async () => {
+      const pending = createDefaultTurnSink().onStepPause!(2, abort.signal);
+      abort.abort();
+      return pending;
+    });
+    expect(result).toBe(false);
+    let later = "";
+    input.on("readable", () => {
+      let chunk: unknown;
+      while ((chunk = input.read()) !== null) later += String(chunk);
+    });
+    input.write("pull\n");
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(later).toContain("pull");
   });
 
   it("stops on cancellation and restores a paused stdin", async () => {
