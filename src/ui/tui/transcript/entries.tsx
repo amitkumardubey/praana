@@ -2,6 +2,7 @@
  * Solid transcript entry rows — visual parity with imperative components/*.ts.
  */
 import { For, Show } from "solid-js";
+import { useRenderer } from "@opentui/solid";
 import { TUI_STYLE, truncateSegments, type SpanStyle, type TextSegment } from "../theme.js";
 import { wrapContent } from "./render-utils.js";
 import { buildMarkdownSyntaxStyle } from "./markdown-theme.js";
@@ -111,6 +112,7 @@ export function TranscriptEntryView(props: {
   width: number;
 }) {
   const e = props.entry;
+  const renderer = useRenderer();
 
   if (e.role === "user") {
     return (
@@ -130,7 +132,10 @@ export function TranscriptEntryView(props: {
           <markdown
             content={e.text}
             streaming={props.streaming}
-            syntaxStyle={buildMarkdownSyntaxStyle(props.opts.syntaxTheme)}
+            syntaxStyle={buildMarkdownSyntaxStyle(
+              renderer.nativeScene,
+              props.opts.syntaxTheme,
+            )}
           />
         </Show>
       </box>

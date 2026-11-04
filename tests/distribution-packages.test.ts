@@ -27,6 +27,14 @@ describe("distribution package manifests", () => {
     expect(natives.private).toBeUndefined();
     expect(natives.version).toBe(root.version);
     expect(root.optionalDependencies).toEqual({
+      "@opentui/core-darwin-arm64": "0.8.0",
+      "@opentui/core-darwin-x64": "0.8.0",
+      "@opentui/core-linux-arm64": "0.8.0",
+      "@opentui/core-linux-arm64-musl": "0.8.0",
+      "@opentui/core-linux-x64": "0.8.0",
+      "@opentui/core-linux-x64-musl": "0.8.0",
+      "@opentui/core-win32-arm64": "0.8.0",
+      "@opentui/core-win32-x64": "0.8.0",
       "@praana/natives": root.version,
     });
     expect(

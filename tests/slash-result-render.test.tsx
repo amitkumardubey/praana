@@ -28,7 +28,7 @@ const SHORT = ["/help", "usage: praana [command]", "just three lines"];
 
 interface BoxLike {
   id?: string;
-  _heightValue?: number;
+  height?: number;
   getChildren?: () => unknown[];
 }
 
@@ -68,9 +68,9 @@ describe("SlashResultOverlay renderer", () => {
     // = 8. The frame must not grow to 12 rows (8 lines + chrome) just because
     // the max height prop is the constant 18: the overlay passes the derived
     // clamp to OverlayFrame, so 8 lines collapse into the capped frame.
-    expect(frame?._heightValue).toBe(computeSlashFrameMaxHeight(14));
-    expect(frame?._heightValue).toBe(8);
-    expect(frame?._heightValue).toBeLessThan(EIGHT_LINES.length + 4);
+    expect(frame?.height).toBe(computeSlashFrameMaxHeight(14));
+    expect(frame?.height).toBe(8);
+    expect(frame?.height).toBeLessThan(EIGHT_LINES.length + 4);
 
     setup.renderer.destroy();
   });
