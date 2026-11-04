@@ -7,6 +7,7 @@ import { mapProviderToPiAi } from "./model-context.js";
 import {
   listProviderCatalogModels,
   providerSupportsLiveCatalog,
+  isChatToolModel,
 } from "./provider-catalog.js";
 import { getCuratedModels } from "./llm/catalog.js";
 
@@ -65,6 +66,7 @@ export interface ListModelsForProviderOptions {
   /** When set, skip env-key re-check (caller already gated availability). */
   available?: boolean;
   disabledReason?: string;
+  currentModelId?: string;
   /**
    * Called when the live catalog fails but curated models remain, so the
    * caller can report the failure without dropping the merged list.
@@ -97,6 +99,7 @@ export async function listModelsForProvider(
     try {
       const catalog = await listProviderCatalogModels(provider);
       for (const { id, contextWindow } of catalog) {
+        if (!byId.has(id) && id !== opts?.currentModelId && !isChatToolModel(id)) continue;
         const existing = byId.get(id);
         if (existing) {
           // The live listing is authoritative for the window: curated entries
@@ -154,6 +157,8 @@ export interface ModelListUpdateMeta {
 }
 
 export interface ListAllAvailableModelsOptions {
+  currentProvider?: string;
+  currentModelId?: string;
   /**
    * Called with the current merged snapshot whenever it changes: once
    * synchronously with static models before any network I/O, then again as
@@ -215,6 +220,7 @@ export async function listAllAvailableModels(
       try {
         const live = await listModelsForProvider(provider, {
           available: true,
+          currentModelId: opts?.currentProvider === provider ? opts.currentModelId : undefined,
           onLiveError: (message) => {
             errors.push(`${provider}: ${message}`);
           },

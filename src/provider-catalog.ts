@@ -12,6 +12,12 @@ import {
 import { OPENAI_COMPATIBLE_API_IDS } from "./provider-registry.js";
 import { getApiKey } from "./credentials.js";
 
+/** Exclude known non-conversational model families from live pickers. */
+export function isChatToolModel(id: string): boolean {
+  const name = id.toLowerCase().split("/").pop() ?? "";
+  return !/(?:embedding|whisper|transcrib|(?:^|[-_])tts(?:[-_]|$)|audio|realtime|dall-e|gpt-image|imagen|(?:^|[-_])veo(?:[-_]|$)|(?:^|[-_])sora(?:[-_]|$)|moderation|davinci|babbage|instruct|^aqa$)/.test(name);
+}
+
 export const PROVIDER_CATALOG_TTL_MS = 6 * 60 * 60 * 1000;
 export const PROVIDER_CATALOG_FETCH_TIMEOUT_MS = 15_000;
 
@@ -297,7 +303,7 @@ export async function fetchModelsFromEndpoint(
 
     const models: ProviderCatalogModelEntry[] = [];
     for (const item of body.data ?? []) {
-      if (!item.id) continue;
+      if (!item.id || !isChatToolModel(item.id)) continue;
       const contextWindow = item.context_length ?? item.context_window;
       models.push({
         id: item.id,
