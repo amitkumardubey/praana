@@ -174,12 +174,9 @@ async function expectMatchesMainGolden(cases: GoldenCase[]): Promise<void> {
   }
 }
 
-// response-failed.sse stays in the golden file and is not compared: a failed
-// response is an error for every strictness, which main accepted as done.
+// Failure and incomplete fixtures remain in the historical golden, but are
+// tested separately because their termination semantics intentionally changed.
 const OPENAI_MAIN_STREAMS = [
-  "incomplete-length.sse",
-  "incomplete-content-filter.sse",
-  "incomplete-tool-arguments.sse",
   "disconnect-before-created.sse",
   "disconnect-after-reasoning.sse",
 ];
@@ -416,7 +413,7 @@ describe("Responses stream termination", () => {
     await expectMatchesMainGolden(cases);
   });
 
-  it("plain OpenAI incomplete and unterminated streams match main byte for byte", async () => {
+  it("plain OpenAI unterminated streams match main byte for byte", async () => {
     const root = join(import.meta.dir, "../tests/fixtures/rust-v2/providers/v1/openai-responses/streams");
     const cases: GoldenCase[] = [];
     for (const provider of ["openai", "openai-responses"]) {

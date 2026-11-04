@@ -308,6 +308,28 @@ async function collectBedrockBody(body: Buffer): Promise<StreamEvent[]> {
   return events;
 }
 
+describe("Responses incomplete terminals", () => {
+  it("reports length for a non-Codex incomplete response", async () => {
+    const events = await collectResponses("openai", [
+      { type: "response.output_text.delta", delta: "partial" },
+      { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } },
+    ]);
+    const done = events.at(-1);
+    expect(done?.type === "done" && done.reason).toBe("length");
+  });
+
+  it("reads Codex usage from response.done after response.incomplete", async () => {
+    const events = await collectResponses("openai-codex", [
+      { type: "response.output_text.delta", delta: "partial" },
+      { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } },
+      { type: "response.done", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, usage: { input_tokens: 11, output_tokens: 7, total_tokens: 18 } } },
+    ]);
+    expect(events.some((event) => event.type === "usage" && event.usage.totalTokens === 18)).toBe(true);
+    const done = events.at(-1);
+    expect(done?.type === "done" && done.reason).toBe("length");
+  });
+});
+
 describe("AWS event stream error frames", () => {
   it("reports a :message-type error frame instead of a premature end", async () => {
     const headers = Buffer.concat([

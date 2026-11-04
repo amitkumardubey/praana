@@ -458,6 +458,12 @@ export class OpenAIResponsesDriver implements LlmDriver {
           }
         }
 
+        if (type === "response.incomplete") {
+          terminalReceived = true;
+          if (codex) return { events, awaitTrailer: true };
+          finishReason = "length";
+        }
+
         if (
           type === "response.completed" ||
           type === "response.incomplete" ||
