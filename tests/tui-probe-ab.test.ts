@@ -18,10 +18,12 @@ test("checks defaults and optional style rate", () => {
   expect(checkThresholds([report(0, 5)], {})).toEqual([]);
   expect(checkThresholds([report(1, 5)], { styleFlips: 4 })).toEqual(["regressions", "styleFlips"]);
 });
-test("resolveAbEnv splits common, side-A, and side-B env args", () => {
+test("resolveAbEnv splits common, side-A, and side-B env args preserving common-first order", () => {
   expect(resolveAbEnv([])).toEqual({ envA: [], envB: [] });
 
   const args = [
+    "--env-a",
+    "A_BEFORE=1",
     "--env",
     "COMMON=1",
     "--env-a",
@@ -32,7 +34,15 @@ test("resolveAbEnv splits common, side-A, and side-B env args", () => {
     "COMMON2=2",
   ];
   expect(resolveAbEnv(args)).toEqual({
-    envA: ["COMMON=1", "COMMON2=2", "BATCH=0"],
+    envA: ["COMMON=1", "COMMON2=2", "A_BEFORE=1", "BATCH=0"],
     envB: ["COMMON=1", "COMMON2=2", "BATCH=33"],
   });
+});
+
+test("resolveAbEnv throws on missing value for env flags", () => {
+  expect(() => resolveAbEnv(["--env"])).toThrow("Missing value for --env");
+  expect(() => resolveAbEnv(["--env-a"])).toThrow("Missing value for --env-a");
+  expect(() => resolveAbEnv(["--env-b"])).toThrow("Missing value for --env-b");
+  expect(() => resolveAbEnv(["--env", "--env-a", "X=1"])).toThrow("Missing value for --env");
+  expect(() => resolveAbEnv(["--env-a", "--env-b", "X=1"])).toThrow("Missing value for --env-a");
 });

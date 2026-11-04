@@ -26,12 +26,34 @@ export function shellQuote(s: string): string {
   return `'${s.replaceAll("'", "'\\''")}'`;
 }
 
+export const RESERVED_ENV_KEYS = new Set([
+  "HOME",
+  "PRAANA_HOME",
+  "PATH",
+  "TERM",
+  "OPENAI_API_KEY",
+  "PRAANA_NO_UPDATE_CHECK",
+]);
+
+export const ENV_KEY_REGEX = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+export function cliArg(args: string[], name: string, fallback?: string): string | undefined {
+  const i = args.indexOf(name);
+  if (i < 0) return fallback;
+  const val = args[i + 1];
+  if (!val || val.startsWith("--")) {
+    throw new Error(`Missing value for flag ${name}`);
+  }
+  return val;
+}
+
 export function collectEnvArgs(args: string[], flag = "--env"): string[] {
   const result: string[] = [];
   for (let i = 0; i < args.length; i++) {
     if (args[i] === flag) {
-      if (!args[i + 1] || args[i + 1]!.startsWith("--")) throw new Error(`Missing value for ${flag}`);
-      result.push(args[i + 1]!);
+      const val = args[i + 1];
+      if (!val || val.startsWith("--")) throw new Error(`Missing value for ${flag}`);
+      result.push(val);
     }
   }
   return result;
@@ -50,6 +72,12 @@ export function buildCaptureCommand(worktree: string, isolatedHome: string, home
       if (eq <= 0) throw new Error(`Invalid env format, expected KEY=VAL: ${entry}`);
       const k = entry.slice(0, eq);
       const v = entry.slice(eq + 1);
+      if (!ENV_KEY_REGEX.test(k)) {
+        throw new Error(`Invalid env variable name: ${k}`);
+      }
+      if (RESERVED_ENV_KEYS.has(k)) {
+        throw new Error(`Reserved env variable cannot be overridden: ${k}`);
+      }
       return shellQuote(`${k}=${v}`);
     }),
   ];
@@ -57,17 +85,14 @@ export function buildCaptureCommand(worktree: string, isolatedHome: string, home
 }
 
 export function buildCaptureHeader(label: string, size: string, commit: string, achievedHz: number, env: string[] = []): Record<string, unknown> {
-  const header: Record<string, unknown> = {
+  return {
     type: "header",
     label,
     size,
     commit,
     achievedHz,
+    env: [...env],
   };
-  if (env.length > 0) {
-    header.env = [...env];
-  }
-  return header;
 }
 
 export async function capture(worktree: string, label: string, size = "110x40", timeout = 120, outputPath?: string, env: string[] = []) {
@@ -139,12 +164,9 @@ export async function capture(worktree: string, label: string, size = "110x40", 
 
 if (import.meta.main) {
   const args = process.argv.slice(2);
-  const arg = (name: string, fallback?: string) => {
-    const i = args.indexOf(name);
-    return i < 0 ? fallback : args[i + 1];
-  };
+  const arg = (name: string, fallback?: string) => cliArg(args, name, fallback);
   const worktree = arg("--worktree");
   if (!worktree) throw new Error("--worktree is required");
   const env = collectEnvArgs(args, "--env");
-  console.log(await capture(worktree, arg("--label", "capture"), arg("--size", "110x40"), Number(arg("--timeout", "120")), undefined, env));
+  console.log(await capture(worktree, arg("--label", "capture")!, arg("--size", "110x40")!, Number(arg("--timeout", "120")), undefined, env));
 }

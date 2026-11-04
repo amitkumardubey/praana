@@ -3,6 +3,7 @@ import {
   buildCaptureCommand,
   buildCaptureHeader,
   capture,
+  cliArg,
   collectEnvArgs,
   parseSize,
   turnFinished,
@@ -47,7 +48,27 @@ test("buildCaptureCommand rejects invalid env entries without equals sign", () =
   ).toThrow("Invalid env format");
 });
 
-test("buildCaptureHeader omits env when none is given", () => {
+test("buildCaptureCommand rejects reserved isolation keys", () => {
+  for (const key of ["HOME", "PRAANA_HOME", "PATH", "TERM", "OPENAI_API_KEY", "PRAANA_NO_UPDATE_CHECK"]) {
+    expect(() =>
+      buildCaptureCommand("/tmp/worktree", "/tmp/isolated", "/home/user", [`${key}=val`]),
+    ).toThrow(`Reserved env variable cannot be overridden: ${key}`);
+  }
+});
+
+test("buildCaptureCommand rejects invalid env variable names", () => {
+  expect(() =>
+    buildCaptureCommand("/tmp/worktree", "/tmp/isolated", "/home/user", ["123INVALID=val"]),
+  ).toThrow("Invalid env variable name: 123INVALID");
+  expect(() =>
+    buildCaptureCommand("/tmp/worktree", "/tmp/isolated", "/home/user", ["FOO-BAR=val"]),
+  ).toThrow("Invalid env variable name: FOO-BAR");
+  expect(() =>
+    buildCaptureCommand("/tmp/worktree", "/tmp/isolated", "/home/user", ["FOO.BAR=val"]),
+  ).toThrow("Invalid env variable name: FOO.BAR");
+});
+
+test("buildCaptureHeader always emits env array (default empty)", () => {
   const header = buildCaptureHeader("test-label", "110x40", "deadbeef", 95.5);
   expect(header).toEqual({
     type: "header",
@@ -55,8 +76,8 @@ test("buildCaptureHeader omits env when none is given", () => {
     size: "110x40",
     commit: "deadbeef",
     achievedHz: 95.5,
+    env: [],
   });
-  expect("env" in header).toBe(false);
 });
 
 test("buildCaptureHeader includes env array when provided", () => {
@@ -71,4 +92,12 @@ test("collectEnvArgs gathers repeatable flags and rejects missing values", () =>
   expect(collectEnvArgs(args, "--env")).toEqual(["A=1", "B=2"]);
   expect(() => collectEnvArgs(["--env"], "--env")).toThrow("Missing value");
   expect(() => collectEnvArgs(["--env", "--other"], "--env")).toThrow("Missing value");
+});
+
+test("cliArg helper throws when value is missing or another flag", () => {
+  expect(() => cliArg(["--label"], "--label")).toThrow("Missing value for flag --label");
+  expect(() => cliArg(["--label", "--env", "X=1"], "--label")).toThrow("Missing value for flag --label");
+  expect(cliArg(["--label", "my-label"], "--label")).toBe("my-label");
+  expect(cliArg([], "--label", "default")).toBe("default");
+  expect(cliArg([], "--label")).toBeUndefined();
 });

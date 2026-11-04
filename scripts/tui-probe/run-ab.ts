@@ -1,7 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir, loadavg } from "node:os";
 import { join, resolve } from "node:path";
-import { capture, collectEnvArgs, parseSize } from "./capture";
+import { capture, cliArg, collectEnvArgs, parseSize } from "./capture";
 import { analyzeSamples, readSamples, type Report } from "./analyze";
 import { startMock } from "./mock-llm";
 
@@ -42,10 +42,13 @@ export function formatTable(a: string, x: Summary, b: string, y: Summary): strin
 
 async function main() {
   const args = process.argv.slice(2);
-  const value = (key: string, fallback?: string) => { const i = args.indexOf(key); if (i < 0) return fallback; if (!args[i + 1] || args[i + 1]!.startsWith("--")) throw new Error(`Missing value for ${key}`); return args[i + 1]; };
+  const value = (key: string, fallback?: string) => cliArg(args, key, fallback);
   const noise = value("--noise");
   const a = noise ?? value("--a"), b = value("--b");
   if (!a || (!noise && !b)) throw new Error("Provide --a and --b, or --noise");
+  if (noise && collectEnvArgs(args, "--env-b").length > 0) {
+    throw new Error("Cannot pass --env-b for a noise run");
+  }
   const labelA = value("--label-a", "A")!, labelB = value("--label-b", "B")!;
   const runs = Number(value("--runs", "5")), delay = Number(value("--delay-ms", "12"));
   if (!Number.isInteger(runs) || runs < 1 || !Number.isInteger(delay) || delay < 0) throw new Error("Invalid runs or delay");
@@ -77,7 +80,22 @@ async function main() {
       const summaryA = summarize(reportsA), summaryB = summarize(noise ? reportsA : reportsB);
       const table = formatTable(labelA, summaryA, noise ? `${labelA} noise` : labelB, summaryB);
       console.log(table); console.log(`Batch ${size} end load ${endLoad.join(" ")}`);
-      writeFileSync(join(out, `${size}-summary.json`), JSON.stringify({ startLoad, endLoad, labelA, labelB: noise ? labelA : labelB, summaryA, summaryB, filesA: reportsA.map(r => ({ hz: r.achievedHz, sampleCount: r.sampleCount })), filesB: reportsB.map(r => ({ hz: r.achievedHz, sampleCount: r.sampleCount })), table, envA, envB }, null, 2));
+      const summaryPayload: Record<string, unknown> = {
+        startLoad,
+        endLoad,
+        labelA,
+        labelB: noise ? labelA : labelB,
+        summaryA,
+        summaryB,
+        filesA: reportsA.map((r) => ({ hz: r.achievedHz, sampleCount: r.sampleCount })),
+        filesB: reportsB.map((r) => ({ hz: r.achievedHz, sampleCount: r.sampleCount })),
+        table,
+        envA,
+      };
+      if (!noise) {
+        summaryPayload.envB = envB;
+      }
+      writeFileSync(join(out, `${size}-summary.json`), JSON.stringify(summaryPayload, null, 2));
       if (args.includes("--check")) { const violations = checkThresholds(noise ? reportsA : reportsB, thresholds); if (violations.length) { console.error(`Thresholds exceeded: ${violations.join(", ")}`); failed = true; } }
     }
   } finally { server.close(); }

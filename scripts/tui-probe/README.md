@@ -13,6 +13,8 @@ bun scripts/tui-probe/capture.ts --worktree /path/to/praana --label build-a --si
 
 The driver writes JSONL in `~/.cache/probe-scratch/`, with a header containing the label, size, commit, achieved Hz, and any supplied `--env` settings. Pass repeatable `--env KEY=VAL` to test environment overrides:
 
+> **Warning:** Environment variable names and values passed via `--env`, `--env-a`, or `--env-b` are recorded in plaintext probe headers and summary artifacts; do not pass secrets or sensitive keys.
+
 ```sh
 bun scripts/tui-probe/capture.ts --worktree /path/to/praana --label batch-33 --env PRAANA_TUI_STREAM_BATCH_MS=33
 ```
