@@ -4,7 +4,7 @@
  * The viewport must not reverse direction while an assistant markdown answer
  * only grows. Metrics come from every frame the test renderer presents
  * (see scripts/tui-bounce/harness.tsx), at 110x40 and 80x24, for word and
- * 8-character chunk deltas, with stream batching off and at 33ms.
+ * 8-character chunk deltas.
  *
  * The assertion requires zero bounce and zero scroll reversals.
  */
@@ -24,20 +24,20 @@ describe("transcript streaming scroll", () => {
       console.log(formatBounceReport(report));
       expect(report.finalText).toContain("The last line of the answer is this one.");
       expect(report.rawSyntaxFrames).toBe(0);
-      const { width, height, batchMs, deltas } = report.scenario;
+      const { width, height, deltas } = report.scenario;
       if (report.bounce !== 0 || report.scrollReversals !== 0) {
         bad.push(
-          `${width}x${height} batch ${batchMs} ${deltas} bounce ${report.bounce} scroll ${report.scrollReversals}`,
+          `${width}x${height} ${deltas} bounce ${report.bounce} scroll ${report.scrollReversals}`,
         );
       }
     }
     expect(bad).toEqual([]);
   }, { timeout: 180_000 });
 
-  it("never paints raw syntax while real sink timers race async highlighting", async () => {
+  it("never paints raw syntax while provider arrivals race async highlighting", async () => {
     const reports = await runBounceMatrix([
-      { width: 110, height: 40, batchMs: 0, deltas: "chunks", arrivalMs: 8 },
-      { width: 80, height: 24, batchMs: 33, deltas: "chunks", arrivalMs: 8 },
+      { width: 110, height: 40, deltas: "chunks", arrivalMs: 8 },
+      { width: 80, height: 24, deltas: "chunks", arrivalMs: 8 },
     ].map((scenario) => ({
       ...scenario,
       deltas: "chunks" as const,

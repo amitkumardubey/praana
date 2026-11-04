@@ -18,7 +18,7 @@ import { CodeRenderable, type ScrollBoxRenderable } from "@opentui/core";
 import { render } from "@opentui/solid";
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui";
 import { KeymapProvider } from "@opentui/keymap/solid";
-import { OpenTuiSink, type StreamBatchScheduler } from "../../src/ui/tui/sink.js";
+import { OpenTuiSink } from "../../src/ui/tui/sink.js";
 import type { ToastApi } from "../../src/ui/tui/shell-ui.js";
 import { TranscriptProjection } from "../../src/ui/tui/transcript/projection.js";
 import { createTranscriptStore, type TranscriptStoreApi } from "../../src/ui/tui/transcript/store.js";
@@ -27,7 +27,6 @@ import { TranscriptView } from "../../src/ui/tui/transcript/view.js";
 import type { TranscriptRenderOpts } from "../../src/ui/tui/transcript/opts.js";
 import { STREAM_MARKDOWN, chunkDeltas, wordDeltas } from "./fixture.js";
 import { measureBounce, rawSyntaxLines, visibleOf, type BounceFrame } from "./metrics.js";
-import { ManualBatchScheduler } from "./scheduler.js";
 
 const OPTS: TranscriptRenderOpts = {
   markdownRendering: true,
@@ -48,15 +47,14 @@ const HIGHLIGHT_TIMEOUT_MS = 8_000;
 export interface BounceScenario {
   width: number;
   height: number;
-  batchMs: number;
   deltas: "words" | "chunks";
   /** Slice size for `chunks`. Default 24. */
   chunkSize?: number;
-  /** Simulated gap between deltas. Ignored when batchMs is 0. */
+  /** Wall-clock gap between provider deltas in realtime mode. */
   arrivalMs: number;
   /** Stop after this many source deltas. Unset streams the whole fixture. */
   maxDeltas?: number;
-  /** Real sink timers + renderer scheduling, with no per-delta highlight drain. */
+  /** Real renderer scheduling, with no per-delta highlight drain. */
   realtime?: boolean;
   /** Defaults to the original scroll-bounce fixture. */
   text?: string;
@@ -89,14 +87,10 @@ export interface BounceReport {
 }
 
 export const BOUNCE_MATRIX: BounceScenario[] = [
-  { width: 110, height: 40, batchMs: 0, deltas: "words", arrivalMs: 0 },
-  { width: 110, height: 40, batchMs: 33, deltas: "words", arrivalMs: 10 },
-  { width: 80, height: 24, batchMs: 0, deltas: "words", arrivalMs: 0 },
-  { width: 80, height: 24, batchMs: 33, deltas: "words", arrivalMs: 10 },
-  { width: 110, height: 40, batchMs: 0, deltas: "chunks", chunkSize: 8, arrivalMs: 0 },
-  { width: 110, height: 40, batchMs: 33, deltas: "chunks", chunkSize: 8, arrivalMs: 16 },
-  { width: 80, height: 24, batchMs: 0, deltas: "chunks", chunkSize: 8, arrivalMs: 0 },
-  { width: 80, height: 24, batchMs: 33, deltas: "chunks", chunkSize: 8, arrivalMs: 16 },
+  { width: 110, height: 40, deltas: "words", arrivalMs: 0 },
+  { width: 80, height: 24, deltas: "words", arrivalMs: 0 },
+  { width: 110, height: 40, deltas: "chunks", chunkSize: 8, arrivalMs: 0 },
+  { width: 80, height: 24, deltas: "chunks", chunkSize: 8, arrivalMs: 0 },
 ];
 
 interface Highlightable {
@@ -143,7 +137,7 @@ function scenarioDeltas(scenario: BounceScenario): string[] {
 
 export function formatBounceReport(report: BounceReport): string {
   const { scenario } = report;
-  const head = `${scenario.width}x${scenario.height} batch ${scenario.batchMs} ${scenario.deltas}`;
+  const head = `${scenario.width}x${scenario.height} ${scenario.deltas}`;
   const body = [
     head,
     `applied ${report.applied} frames ${report.frames} bounce ${report.bounce} scroll ${report.scrollReversals} shrinks ${report.heightShrinks} mdShrinks ${report.markdownShrinks} lastRow ${report.lastRowReversals} top ${report.topLineReversals} undone ${report.undone} intermediate ${report.intermediateShifts}`,
@@ -163,7 +157,6 @@ export async function runBounceScenario(scenario: BounceScenario): Promise<Bounc
     footerHeight: 0,
   });
   const store = createTranscriptStore();
-  const scheduler = new ManualBatchScheduler();
   let applied = 0;
   const sink = new OpenTuiSink({
     ...store.mount,
@@ -178,8 +171,6 @@ export async function runBounceScenario(scenario: BounceScenario): Promise<Bounc
     ctxWindowTokens: 128_000,
     engineMode: false,
     projection: new TranscriptProjection({ useUnicode: true }),
-    streamBatchMs: scenario.batchMs,
-    batchScheduler: scenario.realtime ? undefined : scheduler as StreamBatchScheduler,
   });
   const keymap = createDefaultOpenTuiKeymap(setup.renderer);
   const frames: BounceFrame[] = [];
@@ -300,18 +291,11 @@ export async function runBounceScenario(scenario: BounceScenario): Promise<Bounc
         await Bun.sleep(scenario.arrivalMs);
         continue;
       }
-      if (scenario.batchMs <= 0) {
-        await applyAndPaint();
-        continue;
-      }
-      if (scheduler.advance(scenario.arrivalMs) > 0) await applyAndPaint();
+      await applyAndPaint();
     }
     if (scenario.realtime) {
-      sink.flushText();
       await settle();
       await setup.renderer.idle();
-    } else if (scenario.batchMs > 0 && scheduler.advance(scenario.batchMs) > 0) {
-      await applyAndPaint();
     }
 
     const metrics = measureBounce(frames);
@@ -342,7 +326,6 @@ export async function runBounceScenario(scenario: BounceScenario): Promise<Bounc
     };
   } finally {
     setup.renderer.off("frame", onFrame);
-    sink.dispose();
     releaseMarkdownSyntaxStyles(setup.renderer.nativeScene);
     store.dispose();
     await setup.dispose();

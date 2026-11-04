@@ -10,14 +10,14 @@ Race actual provider-sized deltas against the renderer and tree-sitter worker:
 
 ```sh
 bun --preload ./tests/helpers/solid-client.ts scripts/tui-bounce/run.ts \
-  --width 110 --height 40 --batch 0 --deltas chunks --arrival 8 \
+  --width 110 --height 40 --deltas chunks --arrival 8 \
   --realtime --fixture atomic-habits
 ```
 
-Repeat at 80x24 with `--batch 33` for the real sink's leading-edge timer.
-`--realtime` does **not** drain highlights after each delta. It uses the sink's
-normal scheduler and wall-clock arrivals; its frame listener captures every
-presented native frame, including those between arrivals. The original matrix
+Repeat with `--width 80 --height 24` for the smaller viewport.
+`--realtime` does **not** drain highlights after each delta. It uses wall-clock
+arrivals; its frame listener captures every presented native frame, including
+those between arrivals. The original matrix
 also captures each forced render pass, including intermediate preview frames.
 
 `raw-syntax frames` counts captured frames with visible heading markers, `**`
@@ -60,8 +60,8 @@ Exact locations in the installed Bun distribution (pinned in package.json):
 
 Baseline production code: `f5bf418`. Adding measurement without changing that
 code reproduced **64 raw-syntax frames / 82 captured frames** at 110x40,
-unbatched, and **32 / 55** at 80x24, 33ms batching (8ms arrivals, 8-char slices).
-Both runs had zero scroll reversals. Timing changes exact counts, not the cause.
+with 8ms arrivals and 8-char slices. That run had zero scroll reversals. Timing
+changes exact counts, not the cause.
 The first raw frame logged `streaming: true`, `drawUnstyledText: true`, and
 `isHighlighting: true`, with `painted: "# Atomic"`. The original synchronous
 scroll matrix also exposes raw frames; its old assertions only measured height
@@ -92,7 +92,7 @@ a new entry on that delta. Scroll-only stabilizer callers keep their old behavio
 
 Tests:
 
-- `tests/tui-scroll-bounce.test.ts`: all eight original forced-pass scenarios
+- `tests/tui-scroll-bounce.test.ts`: all four forced-pass viewport/delta scenarios
   and both real-timer Atomic Habits scenarios require zero raw-syntax frames;
   bounce and scroll-reversal assertions remain zero.
 - `tests/tui-retained-markdown.test.ts`: a controlled slow **real** highlight
@@ -124,12 +124,12 @@ syntax that could otherwise legitimately remain literal until completion.
 
 ## Verification snapshot
 
-With the fix, the final gate recorded **0/60** raw frames at 110x40 unbatched
-and **0/54** at 80x24 with real 33ms batching. All eight original scroll-matrix
-scenarios also had zero raw frames, zero bounce and zero scroll reversals.
+An earlier verification recorded **0/60** raw frames at 110x40 with 8ms
+arrivals. Timing changes exact frame counts; the required raw-frame count,
+bounce and scroll reversals are all zero.
 
-The isolated-home, provider-key-free `bun typecheck && bun test tests/` gate
-passed typechecking and ran **2,843 tests across 236 files**: 2,842 passed, and
+An earlier isolated-home, provider-key-free `bun typecheck && bun test tests/`
+gate passed typechecking and ran **2,843 tests across 236 files**: 2,842 passed, and
 the known real native-status probe exceeded its 5s timeout. Rerunning that exact
 probe alone under another isolated home passed at the default timeout (4.59s,
 1 pass / 0 fail). Earlier full gates passed 2,829 and 2,836 tests without failures.

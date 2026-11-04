@@ -27,9 +27,8 @@ function arg(index: number, fallback: string): string {
 const width = Number(arg(2, "80"));
 const height = Number(arg(3, "24"));
 const requested = arg(4, "all");
-const batchMs = Number(arg(5, "0"));
-const kind = arg(6, "chunks");
-const chunkSize = Number(arg(7, "8"));
+const kind = arg(5, "chunks");
+const chunkSize = Number(arg(6, "8"));
 
 if (!Number.isFinite(width) || !Number.isFinite(height)) throw new Error("width and height must be numbers");
 
@@ -133,7 +132,6 @@ async function runMode(mode: Mode): Promise<void> {
 
     await settle(setup);
     let pending = "";
-    let elapsed = 0;
     const flush = async () => {
       text += pending;
       pending = "";
@@ -160,25 +158,15 @@ async function runMode(mode: Mode): Promise<void> {
       }
     };
 
-    const arrivalMs = kind === "words" ? 10 : 16;
     for (const delta of deltasFor(mode)) {
       pending += delta;
-      if (batchMs <= 0 || mode === "complete") {
-        await flush();
-        continue;
-      }
-      elapsed += arrivalMs;
-      if (elapsed >= batchMs) {
-        elapsed = 0;
-        await flush();
-      }
+      await flush();
     }
-    if (pending) await flush();
 
     const heightStats = reversals(heights);
     const scrollStats = reversals(scrolls, 0.5);
     console.log(
-      `${mode} ${width}x${height} batch ${batchMs} ${mode === "complete" ? "blocks" : kind} heightRev ${heightStats.reversals} shrinks ${heightStats.shrinks} scrollRev ${scrollStats.reversals} finalH ${heights.at(-1) ?? 0} scroll ${scroll?.scrollTop ?? 0}/${scroll?.scrollHeight ?? 0}`,
+      `${mode} ${width}x${height} ${mode === "complete" ? "blocks" : kind} heightRev ${heightStats.reversals} shrinks ${heightStats.shrinks} scrollRev ${scrollStats.reversals} finalH ${heights.at(-1) ?? 0} scroll ${scroll?.scrollTop ?? 0}/${scroll?.scrollHeight ?? 0}`,
     );
     for (const note of notes) console.log(`  ${note}`);
   } finally {
