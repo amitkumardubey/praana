@@ -23,6 +23,9 @@
  * `PRAANA_HOME` in cleanup instead of restoring it, and Bun caches
  * `os.homedir()` from the `HOME` it started with — so without the per-test
  * reset the next file would read `~/.praana` of the real home again.
+ *
+ * `PRAANA_TEST_REAL_HOME=1` opts out (for a rare test that needs the real
+ * home); everything below is then a no-op.
  */
 import { beforeEach } from "bun:test";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -56,8 +59,10 @@ export interface IsolatedHomeInfo {
   home: string;
   /** PRAANA_HOME in effect for the run. */
   praanaHome: string;
-  /** Temp dir backing the isolation. */
-  tempDir: string;
+  /** False when PRAANA_TEST_REAL_HOME=1 opted out. */
+  isolated: boolean;
+  /** Temp dir backing the isolation, or null when opted out. */
+  tempDir: string | null;
 }
 
 function envValue(name: string): string {
@@ -65,30 +70,38 @@ function envValue(name: string): string {
 }
 
 const realHome = envValue("HOME") || envValue("USERPROFILE");
-const tempDir = mkdtempSync(join(tmpdir(), "praana-test-home-"));
-const home = tempDir;
-const praanaHome = join(tempDir, ".praana");
-mkdirSync(praanaHome, { recursive: true });
+const isolated = envValue("PRAANA_TEST_REAL_HOME") !== "1";
 
-const CREDENTIAL_ENV_KEYS = [...providerEnvKeyNames(), ...EXTRA_CREDENTIAL_ENV_KEYS];
+let tempDir: string | null = null;
+let home = envValue("HOME");
+let praanaHome = envValue("PRAANA_HOME");
 
-function applyIsolation(): void {
-  process.env.HOME = home;
-  process.env.USERPROFILE = home;
-  process.env.PRAANA_HOME = praanaHome;
-  for (const key of CREDENTIAL_ENV_KEYS) delete process.env[key];
+if (isolated) {
+  tempDir = mkdtempSync(join(tmpdir(), "praana-test-home-"));
+  home = tempDir;
+  praanaHome = join(tempDir, ".praana");
+  mkdirSync(praanaHome, { recursive: true });
+
+  const credentialEnvKeys = [...providerEnvKeyNames(), ...EXTRA_CREDENTIAL_ENV_KEYS];
+  const applyIsolation = (): void => {
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    process.env.PRAANA_HOME = praanaHome;
+    for (const key of credentialEnvKeys) delete process.env[key];
+  };
+
+  applyIsolation();
+  beforeEach(applyIsolation);
+
+  const dir = tempDir;
+  process.once("exit", () => {
+    try {
+      rmSync(dir, { recursive: true, force: true });
+    } catch {
+      // Best effort: a stray file lock must not fail the test run.
+    }
+  });
 }
 
-applyIsolation();
-beforeEach(applyIsolation);
-
-process.once("exit", () => {
-  try {
-    rmSync(tempDir, { recursive: true, force: true });
-  } catch {
-    // Best effort: a stray file lock must not fail the test run.
-  }
-});
-
-const info: IsolatedHomeInfo = { realHome, home, praanaHome, tempDir };
+const info: IsolatedHomeInfo = { realHome, home, praanaHome, tempDir, isolated };
 (globalThis as unknown as Record<string, IsolatedHomeInfo>)[ISOLATED_HOME_GLOBAL_KEY] = info;
