@@ -192,6 +192,7 @@ export async function runUpgrade(opts: RunUpgradeOptions = {}): Promise<UpgradeR
   if (installed.output.trim()) lines.push(installed.output.trim());
   if (versionLine) lines.push(versionLine);
   lines.push("Restart praana to use the new binary.");
+  lines.push("If your shell still shows the old version, run `hash -r` (bash) or `rehash` (zsh).");
 
   if (kind === "bun_global" || kind === "npm_global" || kind === "brew") {
     const resolved = (opts.whichPraana ?? defaultWhichPraana)();
