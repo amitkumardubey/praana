@@ -288,6 +288,7 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
 
   const runtime = (input.model ?? {}) as {
     baseUrl?: string;
+    baseUrlOverride?: boolean;
     api?: string;
     compat?: StreamRequest["compat"];
     maxTokens?: number;
@@ -310,6 +311,7 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
     signal: input.signal,
     reasoningEffort: input.reasoningEffort as StreamRequest["reasoningEffort"],
     baseUrl: runtime.baseUrl ?? piOpts.baseUrl,
+    baseUrlOverride: runtime.baseUrlOverride,
     headers: piOpts.headers,
     compat: runtime.compat,
     region: typeof piOpts.region === "string" ? piOpts.region : undefined,

@@ -110,6 +110,8 @@ export interface StreamRequest {
   temperature?: number;
   maxTokens?: number;
   baseUrl?: string;
+  /** True when llm.base_url was explicitly configured, even to the built-in URL. */
+  baseUrlOverride?: boolean;
   headers?: Record<string, string>;
   compat?: ProviderWireCompat;
   region?: string;

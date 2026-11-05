@@ -14,6 +14,7 @@ import type {
 import { getDriverForProvider } from "./resolver.js";
 import { resolveProviderAuth } from "./auth.js";
 import { getUserProviderConfig } from "../provider-registry.js";
+import { shouldUseOpenAIResponses } from "./openai-routing.js";
 import { resolveProviderWireDefaults } from "./wire-config.js";
 import { OAuthRefreshBusyError, OAuthRefreshError, resolveOAuthModelAuth, resolveCopilotModelAuth } from "../oauth.js";
 import { CredentialLockTimeoutError } from "../credential-lock.js";
@@ -168,6 +169,12 @@ export async function* streamLlmResponse(
       resolveStreamEndMode(req.provider, streamEndCheck, effectiveBaseUrl) === "strict",
   };
 
+  // Resolve the first-party floor per model, not for the whole provider. A
+  // user-declared protocol always wins, including [providers.openai].
+  if (req.provider === "openai" && !customConfig &&
+      (mergedReq.api === "openai-completions" || mergedReq.api === "openai-responses")) {
+    mergedReq.api = shouldUseOpenAIResponses(mergedReq) ? "openai-responses" : "openai-completions";
+  }
   const driver = getDriverForProvider(req.provider, mergedReq.api);
   yield* driver.stream(mergedReq, mergedAuth);
 }

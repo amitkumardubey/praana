@@ -23,6 +23,7 @@ import { resolveBedrockRegion } from "./bedrock/region.js";
 import { isOAuthOnlyProvider, supportsOAuthLogin } from "./oauth.js";
 import { getCuratedModels, getModelCatalogEntry } from "./llm/catalog.js";
 import { DEFAULT_MODELS as NATIVE_DEFAULT_MODELS } from "./llm/resolver.js";
+import { openaiUsesResponses, shouldUseOpenAIResponses } from "./llm/openai-routing.js";
 
 export {
   resolveContextWindowSync,
@@ -192,6 +193,7 @@ export function getMissingKeyMessage(provider: string): string | null {
 
 /** Whether a model likely requires chain-of-thought enabled on the wire. */
 export function inferReasoningModel(provider: string, modelId: string): boolean {
+  if (provider === "openai" && openaiUsesResponses(modelId)) return true;
   const providerHints = REASONING_MODEL_HINTS[provider];
   const globalHints = REASONING_MODEL_HINTS["*"];
   for (const hints of [providerHints, globalHints]) {
@@ -242,8 +244,12 @@ function buildModel(
     id: normalizedId,
     name: normalizedId,
     provider: pc.provider,
-    api: userModel?.api ?? pc.api,
+    api: shouldUseOpenAIResponses({
+      provider: config.provider, model: normalizedId, baseUrl,
+      baseUrlOverride: config.base_url !== undefined,
+    }) ? "openai-responses" : userModel?.api ?? pc.api,
     baseUrl,
+    ...(config.base_url !== undefined ? { baseUrlOverride: true } : {}),
     input: ["text"],
     reasoning: userModel?.reasoning ?? inferReasoningModel(config.provider, normalizedId),
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
