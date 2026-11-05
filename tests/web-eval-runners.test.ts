@@ -16,6 +16,7 @@ describe("web eval base taxonomy", () => {
     expect(classifyError(400, "API key is invalid")).toBe("invalid_key");
     expect(classifyError(400, "credits exhausted")).toBe("credit_depleted");
     expect(classifyError(400, "bad input")).toBe("other");
+    expect(classifyError(undefined, "Internal server error")).toBe("server_error");
     expect(estimateTokens("123456")).toBe(1.5);
   });
 });

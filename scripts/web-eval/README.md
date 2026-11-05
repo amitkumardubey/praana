@@ -86,8 +86,9 @@ or feedback/refund calls are made.
   4xx responses are not retried. HTTP attempt metadata preserves rate limits
   even if a retry later succeeds.
 - **Keyless endpoints are rate limited per IP.** No keyless retries. A keyless
-  429/5xx stops subsequent keyless traffic to that backend for the entire run;
-  it never rotates identities, sessions, proxies, addresses or credentials.
+  429/5xx stops subsequent keyless traffic to that backend for the entire run.
+  In-band MCP rate/server errors also stop it, even when HTTP status is 200.
+  It never rotates identities, sessions, proxies, addresses or credentials.
 - The global budget is enforced at each actual HTTP dispatch. No traffic when
   skipped or dry-running. MCP has no hidden reconnect/session-recovery retries.
 - A request has a 30-second timeout. Redirects are manual and bounded at five;

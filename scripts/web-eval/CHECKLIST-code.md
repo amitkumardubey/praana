@@ -28,7 +28,20 @@ are owned separately. No live backend evaluations, terms verdicts or rankings.
   README documents metrics/denominators, confidence limitations, offline usage,
   official adapter-format sources and the Parallel blocker. No terms table,
   permissions verdict, live-result artifacts or final ranking was added.
-- [ ] F `bun typecheck && bun test tests/`, plus harness TypeScript check.
+- [x] F `bun typecheck && bun test tests/`, plus harness TypeScript check.
+  Final gate: **3373 pass, 0 fail**, 265 files, 21670 assertions.
+  New offline harness suite: **47 pass, 0 fail** across four files.
+  Supplemental harness TypeScript check and `git diff --check` are clean.
+  Final self-review added a red/green regression for HTTP-200 in-band MCP
+  rate limits: classified keyless rate/server errors stop later backend calls,
+  not just HTTP 429/5xx. All-runner CLI dry-run with keys unset used 0 requests.
+  Evidence: `$HOME/.cache/logs/web-eval-final-verified.log` and
+  `$HOME/.cache/logs/web-eval-all-plan.log`.
+  Scope check: no changes to `src/`, `CHANGELOG.md`, `tasks/*` or `verify.ts`.
+  No new dependencies, terms verdicts, real-backend runs, pushes or history rewrites.
+
+Remaining external blocker: B2 Parallel's official hosted MCP output format.
+The safe skip stub and the reason are committed; everything else in scope is done.
 
 Each item gets a separate additive `chore(web-eval): ...` commit. Long commands
 run in the background with logs under `$HOME/.cache/logs/`.

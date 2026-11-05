@@ -43,7 +43,7 @@ export function classifyError(status?: number, hint = ""): ErrorKind {
   if (status === 402 || /credits?.{0,20}(exhausted|depleted|insufficient)|insufficient.{0,20}(credits?|balance)/i.test(hint)) return "credit_depleted";
   if (status === 429 || /rate.?limit/i.test(hint)) return "rate_limited";
   if (status === 408 || status === 504) return "timeout";
-  if (status !== undefined && status >= 500) return "server_error";
+  if ((status !== undefined && status >= 500) || /internal (server )?error|server error|service unavailable/i.test(hint)) return "server_error";
   if (status === 403 || isBotWall(hint)) return "blocked";
   return "other";
 }

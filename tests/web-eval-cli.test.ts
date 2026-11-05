@@ -138,6 +138,19 @@ describe("offline evaluation CLI", () => {
     expect(report.search[0].outcome.ok).toBe(true);
     expect(report.search[1].outcome.skipped).toBe("request budget exhausted");
   });
+  test("in-band MCP rate limits stop later keyless tool calls even with HTTP 200", async () => {
+    const tasks = await loadTasks(fixtureDir);
+    tasks.search.push({ ...tasks.search[0], query: "second fixture query" });
+    const report = await runEvaluation(tasks, { dryRun: false, maxRequests: 10 }, { ...clock(), env: {}, factories: [createExaMcpRunner], request: async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      if (body.method === "initialize") return Response.json({ jsonrpc: "2.0", id: body.id, result: { protocolVersion: "2025-03-26" } });
+      if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      return Response.json({ jsonrpc: "2.0", id: body.id, result: { isError: true, content: [{ type: "text", text: "Rate limit exceeded" }] } });
+    } });
+    expect(report.requests?.used).toBe(3);
+    expect(report.search[0].outcome.error_kind).toBe("rate_limited");
+    expect(report.search[1].outcome.skipped).toBe("backend stopped after rate_limited");
+  });
   test("real orchestration uses fake runner and redacts env secrets echoed by a backend", async () => {
     const report = await runEvaluation(await loadTasks(fixtureDir), { dryRun: false, maxRequests: 10 }, { ...clock(), factories: [fake], env: { TAVILY_API_KEY: "test-only-secret" }, request: async () => new Response("fixture option test-only-secret") });
     expect(report.scores[0].search.recallAt5.value).toBe(1);

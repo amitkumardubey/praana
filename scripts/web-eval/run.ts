@@ -4,7 +4,7 @@ import { resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { z } from "zod";
 import { fetchTaskSchema, searchTaskSchema, type FetchTask, type SearchTask } from "./tasks.js";
-import { failure, skippedFetch, skippedSearch, type Runner, type RunnerDeps } from "./runners/base.js";
+import { failure, skippedFetch, skippedSearch, type Outcome, type Runner, type RunnerDeps } from "./runners/base.js";
 import { KEY_ENV_NAMES, runnerFactories, type RunnerFactory } from "./runners/index.js";
 import { createPoliteTransport, type PoliteOptions } from "./polite.js";
 import { buildReport, renderMarkdown, reportJson } from "./report.js";
@@ -19,7 +19,7 @@ export interface EvalDeps extends Omit<PoliteOptions, "maxRequests"> {
   factories?: RunnerFactory[];
   log?: (message: string) => void;
 }
-export const KEYLESS_NOTICE = "Keyless endpoints are rate limited per IP. No keyless 429/5xx retries; the backend stops for this run. Review Terms check before live use.";
+export const KEYLESS_NOTICE = "Keyless endpoints are rate limited per IP. No keyless retries; HTTP or in-band rate/server errors stop the backend for this run. Review Terms check before live use.";
 const USAGE = "bun scripts/web-eval/run.ts [--only <runner>] [--dry-run] [--max-requests N] [--tasks <dir>] [--out <dir>]";
 
 export function parseArgs(args: string[]): CliOptions {
@@ -82,21 +82,33 @@ export async function runEvaluation(tasks: TaskSets, options: RunOptions, deps: 
   const runners = options.only ? all.filter(r => r.id === options.only) : all;
   const plan = runners.map(r => ({ runner: r.id, searchTasks: r.search ? tasks.search.length : 0, fetchTasks: r.fetch ? tasks.fetch.length : 0, skipped: r.skipped ?? null }));
   const search: SearchSample[] = [], fetch: FetchSample[] = [];
+  const keylessStopped = new Map<string, string>();
+  const skipReason = (runner: Runner) => runner.skipped
+    ?? (runner.keyless ? keylessStopped.get(runner.backend) : undefined)
+    ?? (transport.used >= options.maxRequests ? "request budget exhausted" : undefined);
+  function observe(runner: Runner, outcome: Outcome) {
+    // MCP often transports tool errors inside a successful HTTP 200 response.
+    if (runner.keyless && (outcome.error_kind === "rate_limited" || outcome.error_kind === "server_error")) {
+      keylessStopped.set(runner.backend, `backend stopped after ${outcome.error_kind}`);
+    }
+  }
   // Global sequential execution is stronger than per-backend concurrency=1. In
   // particular, no second tool call starts while a response body is still read.
   if (!options.dryRun) for (const runner of runners) {
     if (runner.search) for (const task of tasks.search) {
       let outcome;
-      const reason = runner.skipped ?? (transport.used >= options.maxRequests ? "request budget exhausted" : undefined);
+      const reason = skipReason(runner);
       try { outcome = reason ? skippedSearch(reason) : await runner.search(task.query, 5); }
       catch (error) { outcome = { ...failure(error, 0), results: [] }; }
+      observe(runner, outcome);
       search.push({ runner: runner.id, task, outcome });
     }
     if (runner.fetch) for (const task of tasks.fetch) {
       let outcome;
-      const reason = runner.skipped ?? (transport.used >= options.maxRequests ? "request budget exhausted" : undefined);
+      const reason = skipReason(runner);
       try { outcome = reason ? skippedFetch(reason) : await runner.fetch(task.url, 20_000); }
       catch (error) { outcome = { ...failure(error, 0), content: "" }; }
+      observe(runner, outcome);
       fetch.push({ runner: runner.id, task, outcome });
     }
   }
