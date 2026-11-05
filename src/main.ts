@@ -9,6 +9,7 @@ import { AppController } from "./app-controller.js";
 import { SessionNotFoundError } from "./session.js";
 import { AmbiguousSessionPrefixError } from "./session-errors.js";
 import { runTui } from "./ui/tui/run.js";
+import { routeTuiWarnings } from "./ui/tui/process-warnings.js";
 import { runInteractiveSetup } from "./interactive-setup.js";
 import { tryAutoSelectProvider } from "./setup/logic.js";
 import { writeProviderConfig } from "./setup/config-writer.js";
@@ -252,6 +253,7 @@ export async function main() {
   // The TUI owns the terminal from here on. Keep app-level log lines in the
   // log files instead of painting raw JSON/stack traces over the interface.
   setAppLogger(getAppLogger().withStderrSuppressed());
+  const restoreWarnings = routeTuiWarnings(getAppLogger());
 
   const controller = new AppController({ cwd, config, parsed });
 
@@ -356,6 +358,8 @@ export async function main() {
       console.error(`Failed to start session: ${msg}`);
     }
     process.exit(1);
+  } finally {
+    restoreWarnings();
   }
 }
 
