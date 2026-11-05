@@ -480,7 +480,7 @@ The footer abbreviations, also listed by `/help`:
 
 `web_fetch(url, max_chars?, focus?)` GETs a public http(s) URL and returns readable text. HTML becomes markdown (scripts, styles, nav, footers, and cookie banners are dropped). Plain text and markdown are kept. JSON is pretty-printed. PDF and other binary types are refused. The page text is untrusted data: the tool result starts with a banner naming the host, and instructions inside the page must not be followed.
 
-`[tools.web]` keys (defaults in parentheses): `enabled` (true), `allow_domains` ([]), `deny_domains` ([]), `timeout_ms` (15000), `max_chars` (20000, hard cap 100000). A domain rule matches the exact hostname or a subdomain (`example.com` matches `a.example.com` and does not match `notexample.com`). A leading `*.` is accepted and means the same suffix. Deny wins. An empty `allow_domains` is not an allowlist. A non-empty list rejects every other host. The download itself stops at 2 MB. Bot-wall and empty script shells come back as blocked, not as page text.
+`[tools.web]` keys (defaults in parentheses): `enabled` (true), `allow_domains` ([]), `deny_domains` ([]), `timeout_ms` (15000), `max_chars` (20000, hard cap 100000). A domain rule matches the exact hostname or a subdomain (`example.com` matches `a.example.com` and does not match `notexample.com`). A leading `*.` is accepted and means the same suffix. Deny wins. An empty `allow_domains` is not an allowlist. A non-empty list rejects every other host. The download itself stops at 2 MiB. Bot-wall and empty script shells come back as blocked, not as page text.
 
 ## Known limitations
 
