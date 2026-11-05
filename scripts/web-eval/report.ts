@@ -11,11 +11,14 @@ export interface ReportInput {
   search: SearchSample[];
   fetch: FetchSample[];
 }
+const fetchInterpretation = "T1/T2 retrieval requires the task probe and no detected wall. T3 probes are challenge markers: marker content or a detected wall is blocked; non-empty content without either counts as retrieval. Retrieval is independent of ok; an ok claim without retrieval is a false positive.";
+
 export function buildReport(input: ReportInput) {
   const ids = [...new Set([...(input.runners ?? []).map(r => r.id), ...input.search.map(s => s.runner), ...input.fetch.map(s => s.runner)])].sort();
   return {
     schemaVersion: 1,
     ...input,
+    fetchInterpretation,
     http: input.requests?.attempts ? {
       failureRate: rate(input.requests.attempts.filter(a => a.error_kind !== undefined).length, input.requests.attempts.length),
       rateLimitRate: rate(input.requests.attempts.filter(a => a.status === 429 || a.error_kind === "rate_limited").length, input.requests.attempts.length),
@@ -65,7 +68,7 @@ export function renderMarkdown(report: EvalReport): string {
       return [escape(r.runner), cell(r.fetch.retrieval), cell(r.fetch.tiers[1]), cell(r.fetch.tiers[2]), cell(r.fetch.tiers[3]), w.value === null ? "— (n=0)" : `${percent(w.value)} [${percent(w.interval![0])}, ${percent(w.interval![1])}] (n=${w.n}; weight=${w.weightedN})`];
     })),
     table(["Runner", "TP / FP / TN / FN", "Probe-negative false-positive rate ↓", "Bot-wall/protected false-positive rate ↓"], rows.filter(r => r.fetch.n + r.fetch.skipped).map(r => [escape(r.runner), `${r.fetch.honesty.tp} / ${r.fetch.honesty.fp} / ${r.fetch.honesty.tn} / ${r.fetch.honesty.fn}`, cell(r.fetch.honesty.falsePositiveRate), cell(r.fetch.honesty.botWallFalsePositiveRate)])),
-    "Retrieval requires the case-insensitive task probe and no detected bot-wall marker, independently of ok. FP means ok=true without retrieval; missing probes can also mean truncation, changed pages or extraction failures, not necessarily a bot wall. The bot-wall/protected subset contains detected walls and probe-negative known-protection (T3) tasks. No protection bypass is attempted.",
+    `${fetchInterpretation} Probe matching is case-insensitive. Missing T1/T2 probes can also mean truncation, changed pages or extraction failures. The bot-wall/protected subset contains detected walls and non-retrieved T3 tasks. No protection bypass is attempted.`,
     "## Latency, token efficiency and failures",
     table(["Runner / operation", "Median / p90 ms", "Estimated tokens per query/success", "Failure rate", "Rate-limit rate", "Reported credits"], rows.flatMap(r => (["search", "fetch"] as const).filter(kind => r[kind].n + r[kind].skipped).map(kind => {
       const s = r[kind];

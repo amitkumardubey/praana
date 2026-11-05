@@ -187,15 +187,17 @@ Weak means missing a domain hit or an answer snippet. Weak/empty honesty credits
 explicit failure/weak flags or an empty result list on such queries; it is a
 transparent oracle-based diagnostic, not provider confidence calibration.
 
-**Fetch:** case-insensitive probe retrieval, per-tier rates, tier-weighted score
-(T3×3, T2×2, T1×1), TP/FP/TN/FN, false-positive rates, median/p90 latency,
-total returned tokens per successful retrieval (including waste on failures),
-and failure/rate-limit rates. An `ok` claim is scored independently of the probe.
-Probe-negative `ok=true` is a false positive, but may reflect changed pages,
-truncation or extraction failure, not necessarily a wall. A separate
-bot-wall/protected false-positive rate uses detected walls and probe-negative
-known-protection T3 tasks. A page with a probe **and** wall markers is not counted
-as successful retrieval.
+**Fetch:** per-tier retrieval rates, tier-weighted score (T3×3, T2×2, T1×1),
+TP/FP/TN/FN, false-positive rates, median/p90 latency, total returned tokens per
+successful retrieval (including waste on failures), and failure/rate-limit rates.
+T1/T2 retrieval requires the case-insensitive content probe and no detected wall.
+For T3 the probe is a challenge marker: marker content or a detected wall is not
+retrieval; non-empty content without either counts as retrieval. Retrieval is
+scored independently of `ok`: an `ok` claim without retrieval is a false positive.
+Missing T1/T2 probes can reflect changed pages, truncation or extraction failure,
+not necessarily a wall. The separate bot-wall/protected false-positive rate uses
+detected walls and non-retrieved T3 tasks. T3 non-marker content is only a
+heuristic for success, since the real page content was not verified.
 
 Every rate includes n and a two-sided 95% Wilson interval. Snippets in one query
 are correlated, so their intervals are descriptive. Weighted score bounds are

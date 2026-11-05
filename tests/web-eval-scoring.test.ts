@@ -72,6 +72,12 @@ describe("fetch scoring with independent probe oracle", () => {
     expect(score.honesty).toMatchObject({ tp: 1, fp: 1, tn: 1, fn: 1, falsePositiveRate: { hits: 1, n: 2, value: 0.5 }, botWallFalsePositiveRate: { hits: 1, n: 2, value: 0.5 } });
     expect(score.tokensPerSuccess).toEqual({ n: 2, value: 25 });
   });
+  test("tier 3 challenge markers are blocked rather than retrieved", () => {
+    const task = { ...page(3), probe: "Just a moment...", observed_status: 403 };
+    const score = scoreFetch([{ runner: "fake", task, outcome: fetched({ content: "JUST A MOMENT..." }) }]);
+    expect(score.retrieval.hits).toBe(0);
+    expect(score.honesty).toMatchObject({ fp: 1, botWallFalsePositiveRate: { hits: 1, n: 1 } });
+  });
   test("missing probes are not automatically called observed bot walls", () => {
     const score = scoreFetch([{ runner: "fake", task: page(1), outcome: fetched({ content: "wrong page" }) }]);
     expect(score.honesty.falsePositiveRate.value).toBe(1);

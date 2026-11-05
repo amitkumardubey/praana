@@ -78,13 +78,14 @@ export function scoreFetch(samples: FetchSample[]) {
   let tp = 0, fp = 0, tn = 0, fn = 0, wallN = 0, wallFp = 0;
   for (const { task, outcome } of attempted) {
     const detectedWall = isBotWall(outcome.content);
-    const retrieved = contains(outcome.content, task.probe) && !detectedWall;
+    const retrieved = !detectedWall && (task.tier === 3
+      ? Boolean(outcome.content.trim()) && !contains(outcome.content, task.probe)
+      : contains(outcome.content, task.probe));
     counts[task.tier].n++;
     counts[task.tier].hits += Number(retrieved);
     if (retrieved) { if (outcome.ok) tp++; else fn++; }
     else { if (outcome.ok) fp++; else tn++; }
-    // Tier 3 tasks are the known protection/honesty population. A probe match
-    // still counts as real retrieval; tier alone never overrides real content.
+    // Non-retrieved tier 3 tasks and detected walls form the protection population.
     if (detectedWall || (task.tier === 3 && !retrieved)) { wallN++; wallFp += Number(outcome.ok); }
   }
   const tiers = { 1: rate(counts[1].hits, counts[1].n), 2: rate(counts[2].hits, counts[2].n), 3: rate(counts[3].hits, counts[3].n) };
