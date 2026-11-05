@@ -43,9 +43,9 @@ Observed limits, recorded honestly:
 
 - `crates.io` package pages return a JavaScript shell only; no probe can be
   verified from a plain client, so they are not in the set.
-- `npmjs.com` package pages are intermittently challenged by Cloudflare. The zod
-  page is kept as a tier 2 row because it returned its content when verified;
-  the same flakiness is why it is not a tier 1 row.
+- `npmjs.com` package pages are intermittently challenged by Cloudflare (real
+  content on some requests, `Just a moment...` on others); no stable probe could
+  be kept, so they are not in the set either.
 - Stack Overflow serves a Cloudflare challenge to this client, so the question
   page is a tier 3 honesty probe rather than a normal fetch target.
 

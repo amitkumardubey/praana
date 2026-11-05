@@ -15,7 +15,7 @@
 {"url":"https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching","probe":"actions/cache","tier":1,"verified_at":"2026-11-05"},
 {"url":"https://pkg.go.dev/context","probe":"WithTimeout","tier":1,"verified_at":"2026-11-05"},
 {"url":"https://github.com/oven-sh/bun","probe":"Bun","tier":1,"verified_at":"2026-11-05"},
-{"url":"https://www.npmjs.com/package/zod","probe":"TypeScript-first schema validation with static type inference","tier":2,"verified_at":"2026-11-05"},
+{"url":"https://docs.docker.com/compose/how-tos/startup-order/","probe":"depends_on","tier":2,"verified_at":"2026-11-05"},
 {"url":"https://vite.dev/config/server-options","probe":"server.proxy","tier":2,"verified_at":"2026-11-05"},
 {"url":"https://react.dev/reference/react/useMemo","probe":"useMemo","tier":2,"verified_at":"2026-11-05"},
 {"url":"https://nextjs.org/blog/next-15","probe":"Next.js 15","tier":2,"verified_at":"2026-11-05"},
