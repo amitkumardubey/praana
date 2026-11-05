@@ -8,6 +8,11 @@ import {
   type SyntaxStyle,
 } from "@opentui/core";
 
+const capabilitySubscribers = new WeakMap<RenderContext, {
+  instances: Set<RetainedMarkdownRenderable>;
+  listener: () => void;
+}>();
+
 interface StyledSnapshot {
   content: string;
   styled: StyledText;
@@ -35,7 +40,17 @@ export class RetainedMarkdownRenderable extends MarkdownRenderable {
     super(ctx, options);
     this.retainStyledBuffers();
     this.hyperlinks = ctx.capabilities?.hyperlinks;
-    ctx.on("capabilities", this.refreshForCapabilities);
+    let subscription = capabilitySubscribers.get(ctx);
+    if (!subscription) {
+      const instances = new Set<RetainedMarkdownRenderable>();
+      const listener = () => {
+        for (const instance of instances) instance.refreshForCapabilities();
+      };
+      subscription = { instances, listener };
+      capabilitySubscribers.set(ctx, subscription);
+      ctx.on("capabilities", listener);
+    }
+    subscription.instances.add(this);
   }
 
   override get content(): string {
@@ -76,7 +91,14 @@ export class RetainedMarkdownRenderable extends MarkdownRenderable {
   }
 
   protected override destroySelf(): void {
-    this.ctx.off("capabilities", this.refreshForCapabilities);
+    const subscription = capabilitySubscribers.get(this.ctx);
+    if (subscription) {
+      subscription.instances.delete(this);
+      if (subscription.instances.size === 0) {
+        this.ctx.off("capabilities", subscription.listener);
+        capabilitySubscribers.delete(this.ctx);
+      }
+    }
     super.destroySelf();
   }
 
