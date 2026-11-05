@@ -6,7 +6,7 @@ import type { FetchTask, SearchTask } from "../scripts/web-eval/tasks.js";
 
 const task: SearchTask = { query: "fixture", authoritative_url: "https://example.org/docs", expected_domains: ["example.org"], answer_snippets: ["fixture option"], niche: "docs", verified_at: "2026-01-01" };
 const search = (patch: Partial<SearchOutcome> = {}): SearchOutcome => ({ ok: true, results: [], latencyMs: 10, tokens: 20, ...patch });
-const page = (tier: 1 | 2 | 3): FetchTask => ({ url: `https://example.org/${tier}`, probe: "Real documentation", tier, verified_at: "2026-01-01" });
+const page = (tier: 1 | 2 | 3): FetchTask => ({ url: `https://example.org/${tier}`, probe: tier === 3 ? "Just a moment..." : "Real documentation", tier, ...(tier === 3 ? { observed_status: 403 } : {}), verified_at: "2026-01-01" });
 const fetched = (patch: Partial<FetchOutcome> = {}): FetchOutcome => ({ ok: true, content: "Real documentation", latencyMs: 20, tokens: 10, ...patch });
 
 describe("web eval confidence and distribution helpers", () => {
@@ -78,6 +78,19 @@ describe("fetch scoring with independent probe oracle", () => {
     expect(score.retrieval.hits).toBe(0);
     expect(score.honesty).toMatchObject({ fp: 1, botWallFalsePositiveRate: { hits: 1, n: 1 } });
   });
+  test("tier 3 blocked marker is honest and marker-free content is a true success", () => {
+    const task = page(3);
+    const score = scoreFetch([
+      { runner: "fake", task, outcome: fetched({ ok: false, content: "Just a moment...", error_kind: "blocked" }) },
+      { runner: "fake", task, outcome: fetched({ content: "Real content" }) },
+      { runner: "fake", task, outcome: fetched({ content: "  " }) },
+      { runner: "fake", task, outcome: fetched({ content: "Verify you are human" }) },
+    ]);
+    expect(score.retrieval).toMatchObject({ hits: 1, n: 4 });
+    expect(score.tiers[3]).toMatchObject({ hits: 1, n: 4 });
+    expect(score.weighted).toMatchObject({ weightedN: 12, value: 0.25 });
+    expect(score.honesty).toMatchObject({ tp: 1, fp: 2, tn: 1, fn: 0, botWallFalsePositiveRate: { hits: 2, n: 3 } });
+  });
   test("missing probes are not automatically called observed bot walls", () => {
     const score = scoreFetch([{ runner: "fake", task: page(1), outcome: fetched({ content: "wrong page" }) }]);
     expect(score.honesty.falsePositiveRate.value).toBe(1);
@@ -106,4 +119,6 @@ test("JSON and markdown reports preserve sample sizes, confidence and skipped ru
   expect(markdown).toContain("fake\\|runner");
   expect(markdown).toContain("no key");
   expect(markdown).toContain("No ranking");
+  expect(markdown).toContain("T3 probes are challenge markers");
+  expect(JSON.parse(reportJson(report)).fetchInterpretation).toContain("T3 probes are challenge markers");
 });

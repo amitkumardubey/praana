@@ -110,6 +110,24 @@ describe("offline evaluation CLI", () => {
     await Bun.write(join(dir, "fetch.json"), "[]");
     await expect(loadTasks(dir)).rejects.toThrow("Invalid search tasks");
   });
+  test("fake fetch outcomes distinguish challenge, honest block and real content", async () => {
+    const tasks = await loadTasks(fixtureDir);
+    tasks.fetch = tasks.fetch.filter(task => task.tier === 3);
+    const outcomes = [
+      { ok: true, content: "Just a moment...", latencyMs: 1, tokens: 4 },
+      { ok: false, content: "Just a moment...", error_kind: "blocked" as const, latencyMs: 1, tokens: 4 },
+      { ok: true, content: "Actual page content", latencyMs: 1, tokens: 4 },
+    ];
+    const runner = (): Runner => ({ id: "fake-fetch", backend: "fake-fetch", keyless: false, fetch: async () => outcomes.shift()! });
+    const scores = [];
+    for (let i = 0; i < 3; i++) {
+      const report = await runEvaluation(tasks, { dryRun: false, maxRequests: 10 }, { ...clock(), env: {}, factories: [runner], request: async () => { throw new Error("Network forbidden"); } });
+      scores.push(report.scores[0].fetch);
+    }
+    expect(scores.map(s => [s.retrieval.hits, s.honesty.tp, s.honesty.fp, s.honesty.tn, s.honesty.botWallFalsePositiveRate.n])).toEqual([
+      [0, 0, 1, 0, 1], [0, 0, 0, 1, 1], [1, 1, 0, 0, 0],
+    ]);
+  });
   test("dry-run plans without calls, only filter works, missing keys skip", async () => {
     const tasks = await loadTasks(fixtureDir);
     let calls = 0;
