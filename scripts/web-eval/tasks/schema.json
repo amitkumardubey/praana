@@ -2,7 +2,6 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "anyOf": [
     {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "array",
       "items": {
         "type": "object",
@@ -58,7 +57,6 @@
       }
     },
     {
-      "$schema": "https://json-schema.org/draft/2020-12/schema",
       "type": "array",
       "items": {
         "type": "object",
@@ -72,20 +70,13 @@
             "minLength": 1
           },
           "tier": {
-            "anyOf": [
-              {
-                "type": "number",
-                "const": 1
-              },
-              {
-                "type": "number",
-                "const": 2
-              },
-              {
-                "type": "number",
-                "const": 3
-              }
-            ]
+            "type": "integer",
+            "enum": [1, 2, 3]
+          },
+          "observed_status": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 599
           },
           "verified_at": {
             "type": "string",
@@ -97,6 +88,26 @@
           "probe",
           "tier",
           "verified_at"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "required": ["tier"],
+              "properties": {
+                "tier": {
+                  "const": 3
+                }
+              }
+            },
+            "then": {
+              "required": ["observed_status"]
+            },
+            "else": {
+              "not": {
+                "required": ["observed_status"]
+              }
+            }
+          }
         ],
         "additionalProperties": false
       }

@@ -19,12 +19,30 @@ export const searchTaskSchema = z.strictObject({
   niche: z.enum(["docs", "error", "release", "version-change"]),
   verified_at: date,
 });
-export const fetchTaskSchema = z.strictObject({
-  url,
-  probe: nonempty,
-  tier: z.union([z.literal(1), z.literal(2), z.literal(3)]),
-  verified_at: date,
-});
+export const fetchTaskSchema = z
+  .strictObject({
+    url,
+    probe: nonempty,
+    tier: z.union([z.literal(1), z.literal(2), z.literal(3)]),
+    observed_status: z.number().int().min(100).max(599).optional(),
+    verified_at: date,
+  })
+  .superRefine((task, ctx) => {
+    if (task.tier === 3 && task.observed_status === undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["observed_status"],
+        message: "tier 3 is a bot-wall probe and must record the HTTP status a plain fetch received",
+      });
+    }
+    if (task.tier !== 3 && task.observed_status !== undefined) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["observed_status"],
+        message: "observed_status is only meaningful for tier 3 bot-wall probes",
+      });
+    }
+  });
 export type SearchTask = z.infer<typeof searchTaskSchema>;
 export type FetchTask = z.infer<typeof fetchTaskSchema>;
 
@@ -38,4 +56,9 @@ export function verifyTask(task: SearchTask | FetchTask, text: string): string[]
   const expected = "answer_snippets" in task ? task.answer_snippets : [task.probe];
   const normalized = text.toLocaleLowerCase("en-US");
   return expected.filter(snippet => !normalized.includes(snippet.toLocaleLowerCase("en-US")));
+}
+
+/** Tier 3 rows are honesty probes: the probe is the challenge marker a plain client saw. */
+export function isBotWallTask(task: FetchTask): boolean {
+  return task.tier === 3;
 }

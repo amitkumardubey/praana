@@ -1,0 +1,188 @@
+[
+ {
+  "url": "https://docs.python.org/3/library/asyncio-task.html",
+  "probe": "asyncio.gather",
+  "tier": 1,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://doc.rust-lang.org/book/ch04-01-what-is-ownership.html",
+  "probe": "ownership",
+  "tier": 1,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://go.dev/doc/go1.23",
+  "probe": "Go 1.23",
+  "tier": 1,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://nodejs.org/api/fs.html",
+  "probe": "fsPromises.readFile",
+  "tier": 1,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Array/flat",
+  "probe": "flat()",
+  "tier": 1,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://git-scm.com/docs/git-rebase",
+  "probe": "--interactive",
+  "tier": 1,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://nginx.org/en/docs/http/ngx_http_proxy_module.html",
+  "probe": "proxy_pass",
+  "tier": 1,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://www.postgresql.org/docs/current/auth-password.html",
+  "probe": "password authentication",
+  "tier": 1,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://pypi.org/project/requests/",
+  "probe": "Requests is a simple, yet elegant, HTTP library",
+  "tier": 1,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html",
+  "probe": "ExecStart",
+  "tier": 1,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://www.sqlite.org/lang_select.html",
+  "probe": "The SELECT statement is used to query the database",
+  "tier": 1,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://docs.aws.amazon.com/cli/latest/reference/s3/cp.html",
+  "probe": "aws s3 cp test.txt",
+  "tier": 1,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://docs.pytest.org/en/stable/how-to/fixtures.html",
+  "probe": "fixture",
+  "tier": 1,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching",
+  "probe": "actions/cache",
+  "tier": 1,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://pkg.go.dev/context",
+  "probe": "WithTimeout",
+  "tier": 1,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://github.com/oven-sh/bun",
+  "probe": "Bun",
+  "tier": 1,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://www.npmjs.com/package/zod",
+  "probe": "TypeScript-first schema validation with static type inference",
+  "tier": 2,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://vite.dev/config/server-options",
+  "probe": "server.proxy",
+  "tier": 2,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://react.dev/reference/react/useMemo",
+  "probe": "useMemo",
+  "tier": 2,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://nextjs.org/blog/next-15",
+  "probe": "Next.js 15",
+  "tier": 2,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://tailwindcss.com/blog/tailwindcss-v4",
+  "probe": "Tailwind CSS v4.0",
+  "tier": 2,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://developer.hashicorp.com/terraform/language/meta-arguments/for_each",
+  "probe": "for_each",
+  "tier": 2,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://github.com/oven-sh/bun/issues/1",
+  "probe": "Fix ?? operator",
+  "tier": 2,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://junit.org/junit5/docs/current/user-guide/",
+  "probe": "Parameterized Classes and Tests",
+  "tier": 2,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://stackoverflow.com/questions/11227809/why-is-processing-a-sorted-array-faster-than-processing-an-unsorted-array",
+  "probe": "Just a moment...",
+  "tier": 3,
+  "observed_status": 403,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://medium.com/@medium",
+  "probe": "Just a moment...",
+  "tier": 3,
+  "observed_status": 403,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://www.g2.com/",
+  "probe": "Please enable JS and disable any ad blocker",
+  "tier": 3,
+  "observed_status": 403,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://www.nytimes.com/",
+  "probe": "Please enable JS and disable any ad blocker",
+  "tier": 3,
+  "observed_status": 403,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://www.yelp.com/",
+  "probe": "Please enable JS and disable any ad blocker",
+  "tier": 3,
+  "observed_status": 403,
+  "verified_at": "2026-11-05"
+ },
+ {
+  "url": "https://www.ebay.com/",
+  "probe": "Something went wrong on our end",
+  "tier": 3,
+  "observed_status": 403,
+  "verified_at": "2026-11-05"
+ }
+]

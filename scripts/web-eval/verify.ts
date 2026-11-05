@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { validateTasks, verifyTask, type FetchTask, type SearchTask } from "./tasks.js";
+import { isBotWallTask, validateTasks, verifyTask, type FetchTask, type SearchTask } from "./tasks.js";
 
 const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
@@ -53,21 +53,37 @@ async function main(): Promise<void> {
   if (errors.length) throw new Error(`Invalid task set:\n${errors.join("\n")}`);
   const tasks = input as (SearchTask | FetchTask)[];
   let failures = 0;
+  let walls = 0;
   for (const [index, task] of tasks.entries()) {
     if (index) await sleep(1000);
-    const url = "authoritative_url" in task ? task.authoritative_url : task.url;
+    const isFetch = !("answer_snippets" in task);
+    const url = isFetch ? (task as FetchTask).url : (task as SearchTask).authoritative_url;
+    const botWall = isFetch && isBotWallTask(task as FetchTask);
     try {
       const response = await fetchPage(url);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const missing = verifyTask(task, await visibleText(response));
+      const text = await visibleText(response);
+      if (!response.ok && !botWall) throw new Error(`HTTP ${response.status}`);
+      const missing = verifyTask(task, text);
       if (missing.length) throw new Error(`missing: ${JSON.stringify(missing)}`);
+      if (botWall) {
+        walls++;
+        const recorded = (task as FetchTask).observed_status;
+        if (response.status !== recorded) {
+          console.warn(`WARN ${index + 1} ${url}: status ${response.status} differs from recorded ${recorded}`);
+        }
+        console.log(`PASS tier3 ${index + 1} ${url} status=${response.status} marker=${JSON.stringify((task as FetchTask).probe)}`);
+        continue;
+      }
       console.log(`PASS ${index + 1} ${url}`);
     } catch (error) {
       failures++;
       console.error(`FAIL ${index + 1} ${url}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  console.log(`${tasks.length - failures}/${tasks.length} verified on ${new Date().toISOString().slice(0, 10)}; dates are not updated automatically.`);
+  console.log(
+    `${tasks.length - failures}/${tasks.length} verified on ${new Date().toISOString().slice(0, 10)}` +
+      `${walls ? ` (${walls} tier 3 challenge pages confirmed)` : ""}; dates are not updated automatically.`,
+  );
   if (failures) process.exitCode = 1;
 }
 
