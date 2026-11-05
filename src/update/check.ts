@@ -13,6 +13,7 @@ import { isNewer, normalizeVersionLabel } from "./semver.js";
 export const UPDATE_CHECK_TTL_MS = 24 * 60 * 60 * 1000;
 export const UPDATE_CHECK_TIMEOUT_MS = 1500;
 export const NPM_LATEST_URL = "https://registry.npmjs.org/praana/latest";
+export const GITHUB_LATEST_URL = "https://api.github.com/repos/amitkumardubey/praana/releases/latest";
 
 const CACHE_VERSION = 1;
 
@@ -132,6 +133,29 @@ async function fetchNpmLatest(
   }
 }
 
+function stableVersion(value: unknown): string | null {
+  if (typeof value !== "string" || !/^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(value)) return null;
+  return value.replace(/^v/, "");
+}
+
+async function fetchGithubLatest(fetchImpl: typeof fetch, userAgent: string): Promise<string | null> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), UPDATE_CHECK_TIMEOUT_MS);
+  try {
+    const response = await fetchImpl(GITHUB_LATEST_URL, {
+      headers: { Accept: "application/json", "User-Agent": userAgent },
+      signal: controller.signal,
+    });
+    if (!response.ok) return null;
+    const body = (await response.json()) as { tag_name?: unknown; prerelease?: unknown; draft?: unknown };
+    return body.prerelease || body.draft ? null : stableVersion(body.tag_name);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}
+
 function toResult(
   current: string,
   latest: string,
@@ -143,6 +167,20 @@ function toResult(
     available: isNewer(latest, current),
     fromCache,
   };
+}
+
+export async function refreshUpgradeCheck(opts: RefreshUpdateCheckOptions = {}): Promise<UpdateCheckResult | null> {
+  const current = opts.currentVersion ?? "0.0.0";
+  const [npm, github] = await Promise.all([
+    refreshUpdateCheck({ ...opts, ignoreSkip: true, forceRefresh: true }),
+    fetchGithubLatest(opts.fetchImpl ?? fetch, `praana/${current}`),
+  ]);
+  const npmVersion = npm && !npm.fromCache ? stableVersion(npm.latest) : null;
+  if (github || npmVersion) {
+    const latest = github && npmVersion ? (isNewer(npmVersion, github) ? npmVersion : github) : (github ?? npmVersion)!;
+    return toResult(current, latest, false);
+  }
+  return npm?.fromCache ? npm : null;
 }
 
 export async function refreshUpdateCheck(

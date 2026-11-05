@@ -140,6 +140,9 @@ export async function runUpgrade(opts: RunUpgradeOptions = {}): Promise<UpgradeR
   }
 
   const current = opts.currentVersion ?? APP_VERSION;
+  if (opts.checkOffline && !opts.latestVersion && !opts.force) {
+    return { lines: ["Could not check for a newer version; npm and GitHub are unavailable."], exitCode: 1, ranInstaller: false };
+  }
   const checkLines = opts.checkOffline && opts.latestVersion
     ? [`Could not check for a newer version (offline); using the last known: ${normalizeVersionLabel(opts.latestVersion)}`]
     : [];

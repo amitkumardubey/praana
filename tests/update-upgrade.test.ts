@@ -3,6 +3,13 @@ import { join } from "node:path";
 import { runUpgrade } from "../src/update/upgrade.js";
 
 describe("runUpgrade", () => {
+  it("reports when neither source nor cache is available", async () => {
+    const result = await runUpgrade({ kind: "standalone", checkOffline: true, runInstaller: async () => { throw new Error("must not run"); } });
+    expect(result.lines.join("\n")).toContain("Could not check for a newer version");
+    expect(result.ranInstaller).toBe(false);
+    expect(result.exitCode).toBe(1);
+  });
+
   it("reports the last known version when a forced check fails", async () => {
     const result = await runUpgrade({ kind: "standalone", currentVersion: "v0.18.0", latestVersion: "0.18.0", checkOffline: true });
     expect(result.lines.join("\n")).toContain("Could not check for a newer version (offline); using the last known: v0.18.0");

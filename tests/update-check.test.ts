@@ -3,12 +3,14 @@ import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { APP_HOME_DIR } from "../src/app-identity.js";
+import { runUpgrade } from "../src/update/upgrade.js";
 import {
   UPDATE_CHECK_TTL_MS,
   formatUpdateNotice,
   getUpdateCheckPath,
   readUpdateCheckCache,
   refreshUpdateCheck,
+  refreshUpgradeCheck,
   shouldSkipUpdateCheck,
   writeUpdateCheckCache,
 } from "../src/update/check.js";
@@ -100,6 +102,51 @@ describe("refreshUpdateCheck", () => {
     expect(fetched).toBe(true);
     expect(result?.fromCache).toBe(true);
     expect(result?.latest).toBe("0.18.0");
+  });
+
+  it("uses the newer GitHub release when npm lags", async () => {
+    const calls: string[] = [];
+    const result = await refreshUpgradeCheck({ currentVersion: "0.18.0", env: {}, fetchImpl: async (url, init) => {
+      calls.push(String(url));
+      expect((init?.headers as Record<string, string>)["User-Agent"]).toBe("praana/0.18.0");
+      return new Response(JSON.stringify(String(url).includes("github.com") ? { tag_name: "v0.18.1" } : { version: "0.18.0" }));
+    } });
+    expect(calls).toHaveLength(2);
+    expect(result?.latest).toBe("0.18.1");
+    expect(result?.available).toBe(true);
+    const upgrade = await runUpgrade({ kind: "standalone", currentVersion: "v0.18.0", latestVersion: result?.latest,
+      runInstaller: async () => ({ ok: true, output: "" }), versionOf: () => "PRAANA v0.18.1" });
+    expect(upgrade.ranInstaller).toBe(true);
+    expect(upgrade.lines.join("\n")).toContain("PRAANA v0.18.1");
+  });
+
+  it("uses the higher npm version for the check without claiming it was installed", async () => {
+    const result = await refreshUpgradeCheck({ currentVersion: "0.18.0", env: {}, fetchImpl: async (url) =>
+      new Response(JSON.stringify(String(url).includes("github.com") ? { tag_name: "v0.18.1" } : { version: "0.18.2" })) });
+    expect(result?.latest).toBe("0.18.2");
+    const upgrade = await runUpgrade({ kind: "standalone", currentVersion: "0.18.0", latestVersion: result?.latest,
+      runInstaller: async () => ({ ok: true, output: "" }), versionOf: () => "PRAANA v0.18.1" });
+    expect(upgrade.lines.join("\n")).toContain("PRAANA v0.18.1");
+    expect(upgrade.lines.join("\n")).not.toContain("0.18.2");
+  });
+
+  it("uses npm when GitHub is rate limited", async () => {
+    const result = await refreshUpgradeCheck({ currentVersion: "0.18.0", env: {}, fetchImpl: async (url) =>
+      String(url).includes("github.com") ? new Response("", { status: 403 }) : new Response(JSON.stringify({ version: "0.18.1" })) });
+    expect(result?.latest).toBe("0.18.1");
+  });
+
+  it("ignores prerelease and invalid release tags", async () => {
+    for (const tag of ["v0.19.0-rc.1", "v0.19.0oops", "garbage"]) {
+      const result = await refreshUpgradeCheck({ currentVersion: "0.18.0", env: {}, fetchImpl: async (url) =>
+        new Response(JSON.stringify(String(url).includes("github.com") ? { tag_name: tag } : { version: "0.18.1" })) });
+      expect(result?.latest).toBe("0.18.1");
+    }
+  });
+
+  it("reports both sources unavailable without a cache", async () => {
+    const result = await refreshUpgradeCheck({ currentVersion: "0.18.0", env: {}, fetchImpl: async () => { throw new Error("offline"); } });
+    expect(result).toBeNull();
   });
 
   it("fetches npm latest when the cache is stale", async () => {
