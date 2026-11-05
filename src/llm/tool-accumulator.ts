@@ -4,6 +4,42 @@
 
 import type { ToolCall } from "./types.js";
 
+/**
+ * Parse tool-call arguments as sent.
+ * `clean` is false when the text was not valid JSON and a repair (or the
+ * raw-text fallback) was used. Empty text is clean: it is `{}` with no repair.
+ */
+export function parseToolArguments(raw: string): { args: Record<string, unknown>; clean: boolean } {
+  const trimmed = raw.trim();
+  if (!trimmed) return { args: {}, clean: true };
+
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
+      return { args: parsed as Record<string, unknown>, clean: true };
+    }
+    return { args: { value: parsed }, clean: true };
+  } catch {
+    try {
+      let repaired = trimmed;
+      const openBraces = (repaired.match(/\{/g) || []).length;
+      const closeBraces = (repaired.match(/\}/g) || []).length;
+      if (openBraces > closeBraces) {
+        const quotes = (repaired.match(/"/g) || []).length;
+        if (quotes % 2 !== 0) repaired += '"';
+        repaired += "}".repeat(openBraces - closeBraces);
+        const parsed = JSON.parse(repaired);
+        if (typeof parsed === "object" && parsed !== null) {
+          return { args: parsed as Record<string, unknown>, clean: false };
+        }
+      }
+    } catch {
+      // Fall through to the raw-text result.
+    }
+    return { args: { _raw: raw, _parseError: true }, clean: false };
+  }
+}
+
 interface InFlightToolCall {
   id: string;
   name: string;
@@ -61,7 +97,7 @@ export class ToolCallAccumulator {
     let ended: ToolCall | undefined;
 
     if (opts.isComplete) {
-      const parsedArgs = this.safeParseJson(call.argsBuffer);
+      const parsedArgs = parseToolArguments(call.argsBuffer).args;
       ended = {
         id: call.id,
         name: call.name,
@@ -74,57 +110,33 @@ export class ToolCallAccumulator {
     return { started, delta, ended };
   }
 
-  /** Finalize any remaining unclosed in-flight tool calls. */
-  flush(): ToolCall[] {
-    const completed: ToolCall[] = [];
+  /**
+   * Finalize any remaining unclosed in-flight tool calls.
+   * `allowRepair: false` is the unterminated lenient path. It drops a call
+   * whose arguments did not parse as sent, whose buffer is empty, or whose
+   * trimmed text does not start with `{`, and reports those ids. A finished
+   * stream keeps the default, including a zero-argument `{}`.
+   */
+  flush(opts?: { allowRepair?: boolean }): { calls: ToolCall[]; droppedIds: string[] } {
+    const allowRepair = opts?.allowRepair !== false;
+    const calls: ToolCall[] = [];
+    const droppedIds: string[] = [];
     for (const [, call] of this.inFlight.entries()) {
-      const parsedArgs = this.safeParseJson(call.argsBuffer);
-      completed.push({
+      const trimmed = call.argsBuffer.trim();
+      const parsed = parseToolArguments(call.argsBuffer);
+      const completeObject = trimmed.startsWith("{") && parsed.clean;
+      if (!allowRepair && !completeObject) {
+        droppedIds.push(call.id);
+        continue;
+      }
+      calls.push({
         id: call.id,
         name: call.name,
-        args: parsedArgs,
+        args: parsed.args,
         rawArgs: call.argsBuffer,
       });
     }
     this.inFlight.clear();
-    return completed;
-  }
-
-  /**
-   * Robust JSON parser with fallback repair for common LLM truncation artifacts.
-   */
-  private safeParseJson(raw: string): Record<string, unknown> {
-    const trimmed = raw.trim();
-    if (!trimmed) return {};
-
-    // 1. Try standard JSON parse
-    try {
-      const parsed = JSON.parse(trimmed);
-      if (typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)) {
-        return parsed as Record<string, unknown>;
-      }
-      return { value: parsed };
-    } catch {
-      // 2. Attempt lightweight structural repair (unclosed quotes, brackets)
-      try {
-        let repaired = trimmed;
-        // Count open vs close braces
-        const openBraces = (repaired.match(/\{/g) || []).length;
-        const closeBraces = (repaired.match(/\}/g) || []).length;
-        if (openBraces > closeBraces) {
-          // If trailing quote is open
-          const quotes = (repaired.match(/"/g) || []).length;
-          if (quotes % 2 !== 0) repaired += '"';
-          repaired += "}".repeat(openBraces - closeBraces);
-          const parsed = JSON.parse(repaired);
-          if (typeof parsed === "object" && parsed !== null) {
-            return parsed as Record<string, unknown>;
-          }
-        }
-      } catch {
-        // Return raw text wrapped in error object
-      }
-      return { _raw: raw, _parseError: true };
-    }
+    return { calls, droppedIds };
   }
 }

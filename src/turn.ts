@@ -5,6 +5,7 @@ import {
   type AssistantMessage,
   type StreamRequest,
 } from "./llm/index.js";
+import { DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./llm/stream-guard.js";
 import { appendFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, resolve, isAbsolute } from "node:path";
 import { resolveDefaultSessionLogDir } from "./app-identity.js";
@@ -45,7 +46,7 @@ import {
 } from "./context-display.js";
 import { estimateTokens as estimateDisplayTokens } from "./token-estimate.js";
 import { redactSecrets } from "./redact/secrets.js";
-import { checkCircuitBudget, circuitWrapUpInstruction } from "./circuit/budget.js";
+import { checkCircuitBudget } from "./circuit/budget.js";
 import {
   createSessionLogger,
   extractLlmErrorMessage,
@@ -73,6 +74,9 @@ export interface LlmStreamInput {
   piTools: Array<{ name: string; description: string; parameters: Record<string, unknown> }>;
   signal?: AbortSignal;
   reasoningEffort?: string;
+  connectTimeoutMs?: number;
+  idleTimeoutMs?: number;
+  streamEndCheck?: StreamRequest["streamEndCheck"];
   onTextDelta?: (delta: string) => void;
   onThinkingDelta?: (delta: string) => void;
   onProviderUsage?: (update: ProviderUsageUpdate) => void;
@@ -88,20 +92,33 @@ export interface LlmStreamResult {
   finalMessage: any | null;
   finalReason: "stop" | "length" | "toolUse" | "error" | "aborted" | "timeout" | "rate_limit";
   errorMessage?: string;
+  /** HTTP status from a provider error event, when the driver reported one. */
+  status?: number;
   providerUsage: ProviderUsage | null;
   recordedProviderUsage: boolean;
   assistantTokens: number;
   interrupted: boolean;
+  /** Answer text was already sent to the UI. A retry would duplicate it. */
+  emittedToUi: boolean;
+  /** A tool-call event was emitted. A premature-end retry would repeat it. */
+  emittedToolCall: boolean;
+  /** Driver said this failure can be retried. Read for a premature stream end. */
+  retryable: boolean;
+  /** `premature_end` or `connect_timeout` when the driver reported that kind. */
+  errorKind?: "premature_end" | "connect_timeout";
+  /** True only after a `done` event. A clean close without one stays false. */
+  doneReceived: boolean;
 }
 
 export function isRecoverableStreamError(result: LlmStreamResult): boolean {
   if (result.interrupted) return false;
+  if (result.status === 429 || result.status === 529) return true;
   const reason = result.finalReason;
   const msg = (result.errorMessage ?? "").toLowerCase();
   return (
     reason === "timeout" ||
     reason === "rate_limit" ||
-    /\b(timeout|rate[ _-]?(?:limit|limited)|429|too\s+many\s+requests)\b/i.test(msg)
+    /\b(timeout|rate[ _-]?(?:limit|limited)|too\s+many\s+requests|overload(?:ed)?)\b|\b(?:status|http)\s*[:=]?\s*(?:429|529)\b/i.test(msg)
   );
 }
 
@@ -116,6 +133,97 @@ export function isEmptyStreamResponse(result: LlmStreamResult): boolean {
 
 export function shouldFallback(result: LlmStreamResult): boolean {
   return isRecoverableStreamError(result) || isEmptyStreamResponse(result);
+}
+
+/** Step-0 retry for a clean close that never delivered text or a tool call. */
+export function isPrematureEndRetry(result: LlmStreamResult): boolean {
+  if (result.interrupted || result.emittedToUi || result.emittedToolCall) return false;
+  if (result.retryable !== true) return false;
+  return result.errorKind === "premature_end";
+}
+
+/**
+ * A fallback produced a usable answer and a real `done` event.
+ * Empty stops, aborts, a close with no `done`, and a length stop with no text do not.
+ * A length stop that includes text does, and that answer is committed.
+ */
+export function fallbackFinishedCleanly(result: LlmStreamResult): boolean {
+  if (result.interrupted || !result.doneReceived || result.errorKind !== undefined) return false;
+  if (result.finalReason === "length") return result.fullResponse.trim().length > 0;
+  if (result.finalReason !== "stop" && result.finalReason !== "toolUse") return false;
+  return !isEmptyStreamResponse(result);
+}
+
+/** Reason recorded when a fallback is committed. Idle timeout is not "empty response". */
+export function recordedFallbackReason(result: LlmStreamResult, idleTimeoutMs: number): string {
+  if (result.finalReason === "timeout") return `idle timeout after ${idleTimeoutDuration(idleTimeoutMs)}`;
+  if (result.errorMessage) return result.errorMessage;
+  if (result.errorKind === "premature_end") return "stream ended before the provider sent a final event";
+  if (result.errorKind === "connect_timeout") return "connection timed out";
+  return "empty response";
+}
+
+/**
+ * User-facing line when the idle timer ends a stream.
+ * The partial-answer sentence is included only when text was actually streamed.
+ */
+function idleTimeoutDuration(idleTimeoutMs: number): string {
+  return idleTimeoutMs < 1000
+    ? `${Math.max(0, idleTimeoutMs)}ms`
+    : `${Math.round(idleTimeoutMs / 1000)}s`;
+}
+
+export function idleTimeoutUserMessage(idleTimeoutMs: number, streamedText = false): string {
+  const base = `The model stopped responding (idle timeout after ${idleTimeoutDuration(idleTimeoutMs)}).`;
+  return streamedText ? `${base} The partial answer above was not completed.` : base;
+}
+
+/**
+ * Text kept from a timed-out assistant message.
+ * Tool calls are dropped: a timeout does not run tools, so keeping them would
+ * send a tool call with no tool result on the next request.
+ * Returns null when no text remains.
+ */
+export function assistantTextAfterTimeout(message: unknown): AssistantMessage | null {
+  if (!message || typeof message !== "object") return null;
+  const record = message as {
+    content?: unknown;
+    thinking?: unknown;
+    thinkingSignature?: unknown;
+  };
+  let text = "";
+  if (typeof record.content === "string") {
+    text = record.content;
+  } else if (Array.isArray(record.content)) {
+    text = record.content
+      .filter(
+        (part): part is { type?: string; text?: string } =>
+          !!part && typeof part === "object" && (part as { type?: string }).type === "text",
+      )
+      .map((part) => (typeof part.text === "string" ? part.text : ""))
+      .join("");
+  }
+  if (!text.trim()) return null;
+  const kept: AssistantMessage = { role: "assistant", content: text };
+  if (typeof record.thinking === "string" && record.thinking) kept.thinking = record.thinking;
+  if (typeof record.thinkingSignature === "string" && record.thinkingSignature) {
+    kept.thinkingSignature = record.thinkingSignature;
+  }
+  return kept;
+}
+
+function isConnectExhausted(result: LlmStreamResult): boolean {
+  return result.errorKind === "connect_timeout";
+}
+
+/** Idle silence (`finalReason === "timeout"`). Not retried on the same model. */
+function isIdleTimeout(result: LlmStreamResult): boolean {
+  return result.finalReason === "timeout";
+}
+
+function configuredIdleTimeoutMs(value: number | undefined): number {
+  if (typeof value === "number" && Number.isInteger(value) && value >= 0) return value;
+  return DEFAULT_STREAM_IDLE_TIMEOUT_MS;
 }
 
 export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResult> {
@@ -209,6 +317,9 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
     apiKey: piOpts.apiKey,
     bearerToken: piOpts.bearerToken,
     maxTokens: typeof runtime.maxTokens === "number" ? runtime.maxTokens : undefined,
+    connectTimeoutMs: input.connectTimeoutMs,
+    idleTimeoutMs: input.idleTimeoutMs,
+    streamEndCheck: input.streamEndCheck,
   });
 
   let fullResponse = "";
@@ -220,6 +331,12 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
   let finalReason: LlmStreamResult["finalReason"] = "stop";
   let finalMessage: any = null;
   let errorMessage: string | undefined;
+  let errorStatus: number | undefined;
+  let emittedToUi = false;
+  let emittedToolCall = false;
+  let retryable = false;
+  let errorKind: LlmStreamResult["errorKind"];
+  let doneReceived = false;
 
   for await (const event of stream) {
     if (input.signal?.aborted) {
@@ -227,11 +344,20 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
       break;
     }
     if (event.type === "text_delta") {
+      emittedToUi = true;
       input.onTextDelta?.(event.delta);
       fullResponse += event.delta;
     }
     if (event.type === "thinking_delta") {
       input.onThinkingDelta?.(event.delta);
+    }
+    if (
+      event.type === "tool_call_start" ||
+      event.type === "tool_call_delta" ||
+      event.type === "tool_call_end" ||
+      (event as { type?: string }).type === "toolcall_end"
+    ) {
+      emittedToolCall = true;
     }
     if (event.type === "tool_call_end" || (event as any).type === "toolcall_end") {
       const tc = (event as any).toolCall;
@@ -251,6 +377,7 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
       });
     }
     if (event.type === "done") {
+      doneReceived = true;
       finalReason = event.reason === "tool_use" ? "toolUse" : (event.reason as any);
       finalMessage = event.message;
       const stepUsage = (event.message as any)?.usage ?? (event as any).usage;
@@ -271,6 +398,9 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
     }
     if (event.type === "error") {
       finalReason = (event as any).reason ?? "error";
+      if (typeof event.status === "number") errorStatus = event.status;
+      retryable = event.retryable;
+      if (event.kind === "premature_end" || event.kind === "connect_timeout") errorKind = event.kind;
       const err = (event as any).error;
       if (err) {
         if (typeof err === "string") {
@@ -296,10 +426,16 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
     finalMessage,
     finalReason,
     errorMessage,
+    status: errorStatus,
     providerUsage,
     recordedProviderUsage,
     assistantTokens,
     interrupted,
+    emittedToUi,
+    emittedToolCall,
+    retryable,
+    errorKind,
+    doneReceived,
   };
 }
 
@@ -426,6 +562,126 @@ export function buildScorecardNudge(
   }
   return undefined;
 }
+/**
+ * Characters of each tool result kept on a no-tools wrap-up request.
+ * Longer text is cut and ends with `[truncated]` so the excerpt stays within
+ * this cap (the marker counts toward the cap).
+ */
+export const WRAP_UP_TOOL_RESULT_CAP = 2000;
+
+function textPartsOnly(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  let out = "";
+  for (const part of content) {
+    if (!part || typeof part !== "object") continue;
+    const block = part as { type?: unknown; text?: unknown };
+    if (block.type === "text" && typeof block.text === "string") out += block.text;
+  }
+  return out;
+}
+
+function capWrapUpToolResult(text: string): string {
+  if (text.length <= WRAP_UP_TOOL_RESULT_CAP) return text;
+  const mark = "[truncated]";
+  return text.slice(0, Math.max(0, WRAP_UP_TOOL_RESULT_CAP - mark.length)) + mark;
+}
+
+function isToolUsePart(part: unknown): boolean {
+  if (!part || typeof part !== "object") return false;
+  const type = (part as { type?: unknown }).type;
+  return type === "tool_use" || type === "toolUse" || type === "toolCall";
+}
+
+/** Keep the call's name and id, and cap its arguments the same way as results. */
+function summarizeWrapUpToolCall(call: any): { id?: string; name?: string; args: string } {
+  let id: string | undefined;
+  if (typeof call?.id === "string") id = call.id;
+  else if (typeof call?.toolCallId === "string") id = call.toolCallId;
+  let name: string | undefined;
+  if (typeof call?.name === "string") name = call.name;
+  else if (typeof call?.toolName === "string") name = call.toolName;
+  const args = call?.args ?? call?.arguments ?? call?.input;
+  const raw = typeof args === "string" ? args : JSON.stringify(args ?? {});
+  return { id, name, args: capWrapUpToolResult(raw) };
+}
+
+function wrapUpToolResultText(message: { content?: unknown; result?: unknown }): string {
+  if (Array.isArray(message.content)) return textPartsOnly(message.content);
+  if (typeof message.result === "string") return message.result;
+  if (typeof message.content === "string") return message.content;
+  return textPartsOnly(message.result ?? message.content);
+}
+
+function appendMergedUser(out: Array<{ role: string; content: string }>, text: string): void {
+  const prev = out[out.length - 1];
+  if (prev?.role === "user") {
+    prev.content = prev.content && text ? `${prev.content}\n\n${text}` : `${prev.content}${text}`;
+    return;
+  }
+  out.push({ role: "user", content: text });
+}
+
+/**
+ * History for a no-tools wrap-up call. Tool results become user text (text
+ * parts only, capped), assistant tool calls become text, and adjacent user
+ * messages are merged so providers that require alternating roles accept it.
+ * Does not mutate `messages`.
+ */
+export function flattenWrapUpHistory(messages: readonly any[]): any[] {
+  const out: any[] = [];
+  for (const message of messages) {
+    if (!message || typeof message !== "object") continue;
+    if (message.role === "toolResult" || message.role === "tool_result") {
+      const text = wrapUpToolResultText(message);
+      appendMergedUser(
+        out,
+        `Tool result (${message.toolName ?? "unknown"}, ${message.toolCallId ?? ""}): ${capWrapUpToolResult(text)}`,
+      );
+      continue;
+    }
+    if (message.role === "user") {
+      const text = typeof message.content === "string" ? message.content : textPartsOnly(message.content);
+      appendMergedUser(out, text);
+      continue;
+    }
+    if (message.role === "assistant") {
+      const parts = Array.isArray(message.content) ? message.content : [];
+      const calls = message.toolCalls ?? parts.filter((part: unknown) => isToolUsePart(part));
+      if (!calls?.length) {
+        out.push(message);
+        continue;
+      }
+      const text = typeof message.content === "string" ? message.content : textPartsOnly(message.content);
+      const summarized = (Array.isArray(calls) ? calls : []).map((call: any) => summarizeWrapUpToolCall(call));
+      out.push({
+        role: "assistant",
+        content: `${text}${text ? "\n" : ""}Tool calls: ${JSON.stringify(summarized)}`,
+      });
+    }
+  }
+  return out;
+}
+
+/**
+ * Positive integer, or `fallback`. Config loading already warns and substitutes
+ * defaults; this clamp is silent so a NaN that bypasses validation cannot
+ * make the step loop compare against NaN.
+ */
+function clampTurnInt(value: unknown, fallback: number): number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+/** Visible wrap-up text, or null when the reply is empty, whitespace, or thinking-only. */
+function visibleWrapUpText(message: any): string | null {
+  if (!message || typeof message !== "object") return null;
+  const content = message.content;
+  if (typeof content === "string") return content.trim() ? content : null;
+  if (!Array.isArray(content)) return null;
+  const text = textPartsOnly(content);
+  return text.trim() ? text : null;
+}
+
 export async function runTurn(
   session: Session,
   userInput: string,
@@ -433,6 +689,8 @@ export async function runTurn(
   options?: {
     signal?: AbortSignal;
     sink?: TurnUiSink;
+    /** Override the retry delay for deterministic callers and tests. */
+    credentialRetryWait?: (ms: number, signal?: AbortSignal) => Promise<void>;
   }
 ): Promise<string> {
   /* Always have a sink — default routes to legacy stdout/stderr helpers. */
@@ -755,10 +1013,27 @@ export async function runTurn(
   // Refresh OAuth access tokens / baseUrl before building the model (no-op when unused).
   let oauthModelAuth: Awaited<ReturnType<typeof resolveOAuthModelAuth>> = null;
   let credentialError: string | undefined;
+  async function resolveAuthWithRetry(provider: string): Promise<Awaited<ReturnType<typeof resolveOAuthModelAuth>>> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await resolveOAuthModelAuth(provider, options?.signal);
+      } catch (err) {
+        if (!(err instanceof OAuthRefreshBusyError) || attempt >= 2 || options?.signal?.aborted) throw err;
+        const wait = options?.credentialRetryWait ?? (async (ms: number, signal?: AbortSignal) => {
+          const { setTimeout: delay } = await import("node:timers/promises");
+          await delay(ms, undefined, { signal });
+        });
+        await wait((attempt + 1) * 1_000, options?.signal);
+        if (options?.signal?.aborted) throw options.signal.reason;
+      }
+    }
+  }
   try {
-    oauthModelAuth = await resolveOAuthModelAuth(effectiveLlm.provider, options?.signal);
+    oauthModelAuth = await resolveAuthWithRetry(effectiveLlm.provider);
   } catch (err) {
-    if (err instanceof OAuthRefreshError || err instanceof OAuthRefreshBusyError) {
+    if (options?.signal?.aborted) {
+      // Cancellation is handled by the normal interrupted-turn path.
+    } else if (err instanceof OAuthRefreshError || err instanceof OAuthRefreshBusyError) {
       credentialError = err.message;
     } else if (err instanceof CredentialLockTimeoutError || (err instanceof Error && err.name === "CredentialStoreReadError")) {
       credentialError = err.message;
@@ -775,21 +1050,18 @@ export async function runTurn(
     baseUrl?: string;
     __piOptions?: Record<string, unknown>;
   };
-  if (oauthModelAuth) {
-    if (oauthModelAuth.baseUrl) model.baseUrl = oauthModelAuth.baseUrl;
-    model.__piOptions = {
-      ...(model.__piOptions ?? {}),
-      ...(oauthModelAuth.apiKey ? { apiKey: oauthModelAuth.apiKey } : {}),
-      ...(oauthModelAuth.headers
-        ? {
-            headers: {
-              ...((model.__piOptions?.headers as Record<string, string> | undefined) ?? {}),
-              ...oauthModelAuth.headers,
-            },
-          }
+  function applyOAuthAuth(target: typeof model, auth: typeof oauthModelAuth): void {
+    if (!auth) return;
+    if (auth.baseUrl) target.baseUrl = auth.baseUrl;
+    target.__piOptions = {
+      ...(target.__piOptions ?? {}),
+      ...(auth.apiKey ? { apiKey: auth.apiKey } : {}),
+      ...(auth.headers
+        ? { headers: { ...((target.__piOptions?.headers as Record<string, string> | undefined) ?? {}), ...auth.headers } }
         : {}),
     };
   }
+  applyOAuthAuth(model, oauthModelAuth);
 
   const logger = await createSessionLogger({
     sessionId: session.id,
@@ -804,6 +1076,16 @@ export async function runTurn(
   let fullResponse = "";
   let stepIndex = 0;
   let lastStreamReason: LlmStreamResult["finalReason"] = "stop";
+  // Set around a wrap-up stream so the first visible delta is preceded by a
+  // blank line when this turn already streamed step text.
+  let armWrapSeparator = false;
+  let wrapSeparatorSent = false;
+  let wrapSpinnerOn = false;
+  const stopWrapSpinner = () => {
+    if (!wrapSpinnerOn) return;
+    wrapSpinnerOn = false;
+    s.onSpinnerStop?.();
+  };
   let lastLlmErrorMessage: string | undefined;
   let providerUsage: ProviderUsage | null = null;
   let recordedProviderUsage = false;
@@ -814,8 +1096,22 @@ export async function runTurn(
       timestamp: Date.now(),
     },
   ];
-  const maxSteps = session.config.turn?.max_steps ?? 25;
+  const maxSteps = clampTurnInt(session.config.turn?.max_steps, 25);
+  // Pause/ceiling only when the sink can ask. Headless runs, and any sink
+  // without `onStepPause` (subagents, tests, non-interactive UIs), use
+  // `max_steps` as a hard cap: the last batch executes, then one wrap-up.
+  // User-facing warnings for bad values live in validateConfig. Here a bad
+  // value is only clamped so the loop bound stays a positive integer.
+  const isHeadless = !!session.headless;
+  const pauseAfterSteps = clampTurnInt(session.config.turn?.pause_after_steps, 50);
+  const configuredHardMaxSteps = clampTurnInt(session.config.turn?.hard_max_steps, 300);
+  // Keep the configured ceiling. When it is not above the pause interval the
+  // ceiling is reached first, so the turn stops there and never asks.
+  const hardMaxSteps = configuredHardMaxSteps;
+  const pauseEnabled = !isHeadless && !!s.onStepPause;
+  const loopCap = pauseEnabled ? hardMaxSteps : maxSteps;
   let interrupted = false;
+  let surfacedTimeout = false;
   // Tracks whether any step in the turn ran a non-load_skill tool, for markResidentSkillsUsed.
   let hadNonLoadSkillTool = false;
   const nudgeStart = snapshotScorecardNudge(session);
@@ -837,7 +1133,10 @@ export async function runTurn(
     parameters: normalizeToolParameters((def as any).parameters),
   }));
 
-  async function attemptStream(): Promise<LlmStreamResult> {
+  async function attemptStream(
+    toolsForCall: typeof piTools = piTools,
+    historyForCall = history,
+  ): Promise<LlmStreamResult> {
     const reasoningEffort = getReasoningEffort(
       activeModel as Record<string, unknown>,
       activeModelName,
@@ -850,11 +1149,19 @@ export async function runTurn(
       modelName: activeModelName,
       providerName: activeProviderName,
       compiledPrompt,
-      history,
-      piTools,
+      history: historyForCall,
+      piTools: toolsForCall,
       signal: options?.signal,
       reasoningEffort,
       onTextDelta: (delta) => {
+        if (wrapSpinnerOn && delta.trim()) stopWrapSpinner();
+        if (armWrapSeparator && delta.trim()) {
+          armWrapSeparator = false;
+          if (fullResponse.length > 0) {
+            wrapSeparatorSent = true;
+            s.onTextDelta?.("\n\n");
+          }
+        }
         s.onTextDelta?.(delta);
       },
       onThinkingDelta: (delta) => {
@@ -865,6 +1172,9 @@ export async function runTurn(
         session.recordOutputTokens(update.step.output);
         s.onProviderUsage?.(update);
       },
+      connectTimeoutMs: session.config.llm.connect_timeout_ms,
+      idleTimeoutMs: session.config.llm.stream_idle_timeout_ms,
+      streamEndCheck: session.config.llm.stream_end_check,
     });
   }
 
@@ -933,41 +1243,294 @@ export async function runTurn(
     ]);
   }
 
-  for (let step = 0; step < maxSteps && !credentialError; step++) {
+  let credentialFallbackResult: LlmStreamResult | undefined;
+  if (credentialError && canFallback() && !options?.signal?.aborted) {
+    const fallbackProvider = session.config.llm.fallback_provider!;
+    const fallbackModel = session.config.llm.fallback_model!;
+    const heldText: string[] = [];
+    const heldThinking: string[] = [];
+    const restoreText = s.onTextDelta;
+    const restoreThinking = s.onThinkingDelta;
+    let fallbackAuth: typeof oauthModelAuth;
+    try {
+      fallbackAuth = await resolveAuthWithRetry(fallbackProvider);
+      await prepareFallback(fallbackProvider, fallbackModel);
+      applyOAuthAuth(activeModel, fallbackAuth);
+      s.onTextDelta = (delta) => { heldText.push(delta); };
+      s.onThinkingDelta = (delta) => { heldThinking.push(delta); };
+      const result = await attemptStream();
+      if (fallbackFinishedCleanly(result)) {
+        credentialError = undefined;
+        credentialFallbackResult = result;
+        for (const delta of heldText) restoreText?.(delta);
+        for (const delta of heldThinking) restoreThinking?.(delta);
+        commitFallback(fallbackProvider, fallbackModel, `${providerName} sign-in unavailable`);
+      } else if (options?.signal?.aborted) {
+        credentialError = undefined;
+      } else {
+        credentialError += " (fallback unavailable)";
+      }
+    } catch (err) {
+      if (options?.signal?.aborted || (err instanceof Error && err.name === "AbortError")) {
+        credentialError = undefined;
+      } else if (err instanceof OAuthRefreshError || err instanceof OAuthRefreshBusyError ||
+        err instanceof CredentialLockTimeoutError || (err instanceof Error && err.name === "CredentialStoreReadError")) {
+        credentialError += " (fallback unavailable)";
+      } else {
+        throw err;
+      }
+    } finally {
+      s.onTextDelta = restoreText;
+      s.onThinkingDelta = restoreThinking;
+    }
+  }
+
+  const NOT_EXECUTED_TEXT =
+    "Not executed: the step budget was reached and the turn was stopped.";
+
+  /** Record pending tool calls as errors without running them. */
+  function appendNotExecutedResults(
+    calls: Array<{ toolCallId?: string; toolName: string }>,
+  ): void {
+    for (const tc of calls) {
+      history.push({
+        role: "toolResult",
+        toolCallId: tc.toolCallId,
+        toolName: tc.toolName,
+        content: [{ type: "text", text: NOT_EXECUTED_TEXT }],
+        isError: true,
+        timestamp: Date.now(),
+      });
+    }
+  }
+
+  /** Drop tool calls the wrap-up was told not to make, so they are not stored or run. */
+  function withoutWrapUpToolCalls(message: any): any {
+    if (!message || typeof message !== "object") return message;
+    const hadCalls = Array.isArray(message.toolCalls) && message.toolCalls.length > 0;
+    let content = message.content;
+    let strippedContent = false;
+    if (Array.isArray(content)) {
+      const next = content.filter((part: unknown) => !isToolUsePart(part));
+      strippedContent = next.length !== content.length;
+      content = next;
+    }
+    if (!hadCalls && !strippedContent) return message;
+    const nextMessage = { ...message, content };
+    delete nextMessage.toolCalls;
+    return nextMessage;
+  }
+
+  function logWrapUpFailure(reason: string, error: string | undefined): void {
+    const message = error ?? "LLM stream error";
+    llmLogger.warn("Wrap-up summary stream failed; ending turn", {
+      code: "LLM_STREAM_ERROR",
+      details: {
+        reason,
+        error: message,
+        model: activeModelName,
+        provider: activeProviderName,
+      },
+    });
+    lastStreamReason = "error";
+    lastLlmErrorMessage = message;
+    // When this turn already has text, this is the only report. A tool-only
+    // turn has an empty fullResponse, and the end-of-turn empty-response path
+    // reports the same error once (plus the banner). Calling both doubles it.
+    if (fullResponse.trim()) {
+      s.onError?.({
+        level: "error",
+        domain: "llm",
+        message,
+        code: "LLM_STREAM_ERROR",
+        details: {
+          model: activeModelName,
+          provider: activeProviderName,
+          reason: "error",
+        },
+      });
+    }
+  }
+
+  /**
+   * Stop the turn gracefully at a step budget limit: one no-tool model call
+   * asking for a short summary. The instruction exists only for that call and
+   * is removed afterwards (the reply, when it has visible text, is the record).
+   * Tool calls in the reply are dropped and not executed. A stream error is
+   * logged and reported through `onError`. Ctrl+C sets `interrupted` and
+   * `lastStreamReason` to aborted, keeping any partial text that was stored.
+   */
+  async function wrapUpStep(reason: string): Promise<void> {
+    const instruction = {
+      role: "user",
+      content: `${reason} Reply with a short summary of what was done and what remains. Do not call tools.`,
+      timestamp: Date.now(),
+    };
+    history.push(instruction);
+    const dropInstruction = () => {
+      const idx = history.lastIndexOf(instruction);
+      if (idx >= 0) history.splice(idx, 1);
+    };
+    wrapSeparatorSent = false;
+    armWrapSeparator = true;
+    wrapSpinnerOn = true;
+    s.onSpinnerStart?.("wrapping up…");
+    try {
+      const wrap = await attemptStream([], flattenWrapUpHistory(history));
+      stopWrapSpinner();
+      const streamed = wrap.fullResponse;
+      const fromMessage = visibleWrapUpText(withoutWrapUpToolCalls(wrap.finalMessage));
+      const text = streamed.trim() ? streamed : fromMessage;
+      // Show and count a summary only when it is stored. An errored wrap-up
+      // keeps neither, and an aborted reply with no visible text is not stored.
+      const publishSummary = () => {
+        if (!text) return;
+        if (!streamed.trim()) {
+          if (fullResponse.length > 0) {
+            wrapSeparatorSent = true;
+            s.onTextDelta?.("\n\n");
+          }
+          s.onTextDelta?.(text);
+        }
+        if (wrapSeparatorSent) fullResponse += "\n\n";
+        fullResponse += text;
+        history.push({ role: "assistant", content: text, timestamp: Date.now() });
+        if (wrap.finalMessage && wrap.assistantTokens > 0) {
+          turnHistoryTokens += wrap.assistantTokens;
+          s.onContextHistoryDelta?.({
+            tokensAdded: wrap.assistantTokens,
+            source: "assistant",
+          });
+        }
+      };
+      const aborted =
+        wrap.interrupted ||
+        !!options?.signal?.aborted ||
+        wrap.finalReason === "aborted";
+      if (aborted) {
+        publishSummary();
+        providerUsage = wrap.providerUsage ?? providerUsage;
+        recordedProviderUsage = wrap.recordedProviderUsage || recordedProviderUsage;
+        lastStreamReason = "aborted";
+        interrupted = true;
+        return;
+      }
+      if (wrap.finalReason === "error") {
+        logWrapUpFailure(reason, wrap.errorMessage);
+        return;
+      }
+      lastStreamReason = wrap.finalReason === "toolUse" ? "stop" : wrap.finalReason;
+      lastLlmErrorMessage = undefined;
+      providerUsage = wrap.providerUsage ?? providerUsage;
+      recordedProviderUsage = wrap.recordedProviderUsage || recordedProviderUsage;
+      publishSummary();
+    } catch (err) {
+      stopWrapSpinner();
+      if (options?.signal?.aborted) {
+        lastStreamReason = "aborted";
+        interrupted = true;
+        return;
+      }
+      logWrapUpFailure(reason, err instanceof Error ? err.message : String(err));
+    } finally {
+      stopWrapSpinner();
+      armWrapSeparator = false;
+      dropInstruction();
+    }
+  }
+
+  for (let step = 0; step < loopCap && !credentialError; step++) {
     if (options?.signal?.aborted) {
       interrupted = true;
       break;
     }
 
-    let streamResult = await attemptStream();
+    let streamResult = credentialFallbackResult ?? await attemptStream();
+    credentialFallbackResult = undefined;
+    let fallbackRejected = false;
 
     // On the first step, retry once and then fall back on recoverable failures.
-    if (step === 0 && shouldFallback(streamResult)) {
-      streamResult = await attemptStream();
-      if (shouldFallback(streamResult) && canFallback()) {
+    // Once answer text has reached the UI, another attempt would repeat it.
+    // An idle timeout is not retried on the same model: another silent attempt
+    // would wait the full idle budget again. Go to the fallback when one is
+    // allowed, otherwise surface the error.
+    if (
+      step === 0 &&
+      !streamResult.emittedToUi &&
+      (shouldFallback(streamResult) || isPrematureEndRetry(streamResult))
+    ) {
+      // A connect timeout already had its one driver-level retry. An idle
+      // timeout is not retried here either. Go to the fallback model.
+      if (!isIdleTimeout(streamResult) && !isConnectExhausted(streamResult)) {
+        streamResult = await attemptStream();
+      }
+      // The retry may have streamed text. Do not ask the fallback model after that.
+      if (
+        !streamResult.emittedToUi &&
+        (shouldFallback(streamResult) || isPrematureEndRetry(streamResult)) &&
+        canFallback()
+      ) {
         const fallbackProvider = session.config.llm.fallback_provider!;
         const fallbackModel = session.config.llm.fallback_model!;
-        const fallbackReason = streamResult.errorMessage ?? "empty response";
+        const fallbackReason = recordedFallbackReason(
+          streamResult,
+          configuredIdleTimeoutMs(session.config.llm.stream_idle_timeout_ms),
+        );
 
-        await prepareFallback(fallbackProvider, fallbackModel);
-        const fallbackResult = await attemptStream();
-
-        if (!shouldFallback(fallbackResult)) {
-          commitFallback(fallbackProvider, fallbackModel, fallbackReason);
-          streamResult = fallbackResult;
-        } else {
-          // Fallback also failed; keep the failed result for error reporting
-          // but do not commit any session override or event-log entries.
-          streamResult = fallbackResult;
+        // Hold fallback text until the switch is committed. A rejected
+        // fallback must not reach the user, and the primary stays active.
+        const heldText: string[] = [];
+        const heldThinking: string[] = [];
+        const restoreText = s.onTextDelta;
+        const restoreThinking = s.onThinkingDelta;
+        const primaryModel = activeModel;
+        const primaryWindow = contextWindowTokens;
+        s.onTextDelta = (delta) => { heldText.push(delta); };
+        s.onThinkingDelta = (delta) => { heldThinking.push(delta); };
+        let committed = false;
+        try {
+          await prepareFallback(fallbackProvider, fallbackModel);
+          const fallbackResult = await attemptStream();
+          if (fallbackFinishedCleanly(fallbackResult)) {
+            for (const delta of heldText) restoreText?.(delta);
+            for (const delta of heldThinking) restoreThinking?.(delta);
+            commitFallback(fallbackProvider, fallbackModel, fallbackReason);
+            streamResult = fallbackResult;
+            committed = true;
+          }
+        } finally {
+          s.onTextDelta = restoreText;
+          s.onThinkingDelta = restoreThinking;
+          if (!committed) {
+            activeModel = primaryModel;
+            activeModelName = modelName;
+            activeProviderName = providerName;
+            contextWindowTokens = primaryWindow;
+            fallbackRejected = true;
+          }
         }
       }
     }
 
-    // If we switched to a fallback model and it also failed on a recoverable
-    // condition, surface it as an error rather than the empty-response fallback.
+    let streamedTimeoutText = false;
+    if (streamResult.finalReason === "timeout" || isConnectExhausted(streamResult)) {
+      const kept = assistantTextAfterTimeout(streamResult.finalMessage);
+      streamedTimeoutText = streamResult.finalReason === "timeout" && kept !== null;
+      streamResult = {
+        ...streamResult,
+        pendingToolCalls: [],
+        finalMessage: kept,
+        assistantTokens: kept ? estimateAssistantMessageTokens(kept) : 0,
+      };
+    }
+
+    // A rejected fallback keeps the primary result. A recoverable primary
+    // failure (rate limit, overload) is still reported as an error. An empty
+    // stop stays an empty response, and an idle timeout keeps its own message.
     if (
-      (activeModelName !== modelName || activeProviderName !== providerName) &&
-      shouldFallback(streamResult)
+      streamResult.finalReason !== "timeout" &&
+      fallbackRejected &&
+      isRecoverableStreamError(streamResult)
     ) {
       lastStreamReason = "error";
       lastLlmErrorMessage = streamResult.errorMessage ?? "LLM request failed";
@@ -975,8 +1538,18 @@ export async function runTurn(
     }
 
     // Log errors from the final stream attempt.
-    if (streamResult.finalReason === "error" || streamResult.finalReason === "aborted") {
-      const llmMessage = streamResult.errorMessage;
+    if (
+      streamResult.finalReason === "error" ||
+      streamResult.finalReason === "aborted" ||
+      streamResult.finalReason === "timeout"
+    ) {
+      const llmMessage =
+        streamResult.finalReason === "timeout"
+          ? idleTimeoutUserMessage(
+              configuredIdleTimeoutMs(session.config.llm.stream_idle_timeout_ms),
+              streamedTimeoutText,
+            )
+          : streamResult.errorMessage;
       lastStreamReason = streamResult.finalReason;
       lastLlmErrorMessage = llmMessage;
       if (streamResult.finalReason === "aborted") {
@@ -997,6 +1570,7 @@ export async function runTurn(
           details: { model: activeModelName, provider: activeProviderName, reason: streamResult.finalReason },
         };
         s.onError?.(errorEntry);
+        if (streamResult.finalReason === "timeout") surfacedTimeout = true;
       }
     }
 
@@ -1008,7 +1582,7 @@ export async function runTurn(
     fullResponse += streamResult.fullResponse;
     providerUsage = streamResult.providerUsage;
     recordedProviderUsage = streamResult.recordedProviderUsage;
-    if (streamResult.interrupted) {
+    if (streamResult.interrupted || options?.signal?.aborted) {
       interrupted = true;
       break;
     }
@@ -1040,26 +1614,57 @@ export async function runTurn(
       });
       if (reason) {
         session.scorecard.inc("circuitBudgetWrapups");
-        history.push({
-          role: "user",
-          content: circuitWrapUpInstruction(reason),
-          timestamp: Date.now(),
-        });
-        const wrap = await attemptStream();
-        fullResponse += wrap.fullResponse;
-        providerUsage = wrap.providerUsage ?? providerUsage;
-        if (wrap.finalMessage) {
-          history.push(wrap.finalMessage);
-        }
+        appendNotExecutedResults(pendingToolCalls);
+        await wrapUpStep(`Circuit budget exceeded (${reason}).`);
         break;
       }
     }
 
-    // Check if we've reached the step limit
-    if (step === maxSteps - 1) {
-      // We're on the last step and the model wants more tools — warn the user
-      const limitBanner = `Reached per-turn tool step limit (${maxSteps}/${maxSteps}). Send another message to continue, or raise turn.max_steps in praana.config.toml.`;
-      s.onSystemLines?.([limitBanner]);
+    // Interactive soft pause and hard ceiling. Only when the sink provides
+    // onStepPause. The pending batch is not executed: stopping must not edit
+    // files. Each call is recorded as an error so the wrap-up request is valid.
+    if (pauseEnabled && pendingToolCalls.length > 0) {
+      const stepsUsed = step + 1;
+      if (stepsUsed >= hardMaxSteps) {
+        s.onSystemLines?.([`Reached the step limit (${stepsUsed}).`]);
+        appendNotExecutedResults(pendingToolCalls);
+        await wrapUpStep("Hard per-turn step ceiling reached.");
+        break;
+      }
+      if (stepsUsed % pauseAfterSteps === 0) {
+        const signal = options?.signal;
+        const pauseController = new AbortController();
+        const onAbort = () => pauseController.abort();
+        if (signal?.aborted) onAbort();
+        else signal?.addEventListener("abort", onAbort, { once: true });
+        const aborted = new Promise<boolean>((resolve) => {
+          if (pauseController.signal.aborted) resolve(false);
+          else pauseController.signal.addEventListener("abort", () => resolve(false), { once: true });
+        });
+        let cont: boolean;
+        try {
+          cont = (await Promise.race([Promise.resolve(s.onStepPause!(stepsUsed, pauseController.signal)), aborted])) !== false;
+        } catch (err) {
+          llmLogger.warn("Step pause hook failed; stopping turn", {
+            details: { stepsUsed, error: err instanceof Error ? err.message : String(err) },
+          });
+          cont = false;
+        } finally {
+          signal?.removeEventListener("abort", onAbort);
+          pauseController.abort();
+        }
+        if (options?.signal?.aborted) {
+          appendNotExecutedResults(pendingToolCalls);
+          interrupted = true;
+          break;
+        }
+        if (!cont) {
+          s.onSystemLines?.(["Stopped at the step pause."]);
+          appendNotExecutedResults(pendingToolCalls);
+          await wrapUpStep("Stopped at per-turn step pause.");
+          break;
+        }
+      }
     }
 
     const toolResults: Array<{ toolCallId?: string; toolName: string; result: unknown }> = [];
@@ -1148,7 +1753,7 @@ export async function runTurn(
         }),
       );
 
-      s.onSpinnerStop?.();
+      s.onSpinnerStart?.("thinking…");
 
       // Collect recalled entries from all recall calls in the batch.
       for (const { tc, result, isError } of executedResults) {
@@ -1341,6 +1946,14 @@ export async function runTurn(
     if (session.debug) {
       s.onDebugBlock?.(stepIndex, pendingToolCalls, toolResults);
     }
+
+    // Hard cap for headless runs and sinks that cannot pause: the last batch
+    // has already executed. One no-tool wrap-up, then the turn ends.
+    if (!pauseEnabled && step === maxSteps - 1) {
+      s.onSystemLines?.([`Reached the step limit (${step + 1}).`]);
+      await wrapUpStep("Reached per-turn tool step limit.");
+      break;
+    }
   }
 
   // Mark resident skills as used if any non-load_skill tool call executed this turn.
@@ -1398,39 +2011,43 @@ export async function runTurn(
   }
 
   if (!fullResponse.trim()) {
-    const code =
-      lastStreamReason === "error"
-        ? "LLM_STREAM_ERROR"
-        : lastStreamReason === "aborted"
-          ? "LLM_ABORTED"
-          : "LLM_EMPTY_RESPONSE";
-    if (lastStreamReason !== "error" && lastStreamReason !== "aborted") {
-      llmLogger.warn("LLM returned no text content", {
-        code: "LLM_EMPTY_RESPONSE",
-        details: { model: activeModelName, provider: activeProviderName, reason: lastStreamReason },
-      });
-    }
-    const fallback = formatUserFacingLlmError({
-      reason: lastStreamReason,
-      llmMessage: lastLlmErrorMessage,
-      model: activeModelName,
-      provider: activeProviderName,
-    });
-    const errorEntry: LogEntry = {
-      level: lastStreamReason === "error" ? "error" : "warn",
-      domain: "llm",
-      message: lastLlmErrorMessage ?? "No text content in LLM response",
-      code,
-      details: { model: activeModelName, provider: activeProviderName, reason: lastStreamReason },
-    };
-    s.onError?.(errorEntry);
-    s.onFallback?.(fallback);
-    // For errors, append a graceful message to the transcript instead of the raw error.
-    // The fallback (with raw error details) is still shown to the user via onFallback.
-    if (lastStreamReason === "error") {
-      fullResponse = "I encountered an error while processing your request. Please try again.";
+    if (surfacedTimeout && lastLlmErrorMessage) {
+      fullResponse = lastLlmErrorMessage;
     } else {
-      fullResponse = fallback;
+      const code =
+        lastStreamReason === "error"
+          ? "LLM_STREAM_ERROR"
+          : lastStreamReason === "aborted"
+            ? "LLM_ABORTED"
+            : "LLM_EMPTY_RESPONSE";
+      if (lastStreamReason !== "error" && lastStreamReason !== "aborted") {
+        llmLogger.warn("LLM returned no text content", {
+          code: "LLM_EMPTY_RESPONSE",
+          details: { model: activeModelName, provider: activeProviderName, reason: lastStreamReason },
+        });
+      }
+      const fallback = formatUserFacingLlmError({
+        reason: lastStreamReason,
+        llmMessage: lastLlmErrorMessage,
+        model: activeModelName,
+        provider: activeProviderName,
+      });
+      const errorEntry: LogEntry = {
+        level: lastStreamReason === "error" ? "error" : "warn",
+        domain: "llm",
+        message: lastLlmErrorMessage ?? "No text content in LLM response",
+        code,
+        details: { model: activeModelName, provider: activeProviderName, reason: lastStreamReason },
+      };
+      s.onError?.(errorEntry);
+      s.onFallback?.(fallback);
+      // For errors, append a graceful message to the transcript instead of the raw error.
+      // The fallback (with raw error details) is still shown to the user via onFallback.
+      if (lastStreamReason === "error") {
+        fullResponse = "I encountered an error while processing your request. Please try again.";
+      } else {
+        fullResponse = fallback;
+      }
     }
   }
 

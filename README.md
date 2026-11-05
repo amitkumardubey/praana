@@ -4,7 +4,7 @@
 
 ## Why use it
 
-- **Bring your own model.** 18 providers, including Anthropic, OpenAI, Google, DeepSeek, Groq, OpenRouter and Amazon Bedrock, or run fully local with Ollama. Switch models mid-session with `/model`.
+- **Bring your own model.** 18 providers, including Anthropic, OpenAI, Google, DeepSeek, Groq, OpenRouter and Amazon Bedrock, or run fully local with Ollama. Switch models mid-session with `/model`, searching by provider or model.
 - **Asks before risky actions.** `rm`, force-push, package installs and writes outside your project need your OK. `/plan on` blocks every file change until you approve the plan.
 - **Redacts secrets from tool output.** Known key and token patterns are masked in tool results and in the logged tool calls.
 - **Works with what you already have.** Reads your `AGENTS.md` or `CLAUDE.md`, and loads `SKILL.md` skills from `.agents/skills`, `.cursor/skills` and `~/.claude/skills`.
@@ -49,6 +49,6 @@ See [ChatGPT subscription login](./docs/reference.md#chatgpt-subscription-login)
 
 ## Status
 
-v0.17.0 <!-- x-release-please-version --> and experimental. PRAANA manages what the model sees on each turn, but we have not measured whether that beats a plain transcript agent, so we don't claim it does. Most of the code was written by coding agents under human direction and review. See the [known limitations](./docs/reference.md#known-limitations).
+v0.18.0 <!-- x-release-please-version --> and experimental. PRAANA manages what the model sees on each turn, but we have not measured whether that beats a plain transcript agent, so we don't claim it does. Most of the code was written by coding agents under human direction and review. See the [known limitations](./docs/reference.md#known-limitations).
 
 [Docs](https://amitkumardubey.github.io/praana/) · [Reference](./docs/reference.md) · [Roadmap](./ROADMAP.md) · [Feedback](./CONTRIBUTING.md) · [MIT license](./LICENSE)

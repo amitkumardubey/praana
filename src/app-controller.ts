@@ -295,6 +295,7 @@ export class AppController {
       onNewline: () => uiSink.onNewline?.(),
       onFallback: (text) => uiSink.onFallback?.(text),
       onSystemLines: (lines) => uiSink.onSystemLines?.(lines),
+      ...(uiSink.onStepPause ? { onStepPause: (stepsUsed: number, signal: AbortSignal) => uiSink.onStepPause!(stepsUsed, signal) } : {}),
       onError: (entry) => uiSink.onError?.(entry),
       flushText: () => uiSink.flushText?.(),
       consumeTurnStats: () => uiSink.consumeTurnStats?.() ?? null,
@@ -356,6 +357,7 @@ export class AppController {
       this.config = newConfig;
       const agentTruncationNotices: string[] = [];
       this.session = await Session.create(this.cwd, newConfig, {
+        suppressLoggerStderr: true,
         incognito: this.parsed.incognito,
         captureNotice: (line) => {
           if (isAgentsTruncationNotice(line)) {
@@ -395,6 +397,7 @@ export class AppController {
   private async rollbackToFreshSession(config: PraanaConfig): Promise<void> {
     try {
       this.session = await Session.create(this.cwd, config, {
+        suppressLoggerStderr: true,
         incognito: this.parsed.incognito,
         captureNotice: () => {},
       });

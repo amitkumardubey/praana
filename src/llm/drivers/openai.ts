@@ -15,8 +15,13 @@ import type {
 } from "../types.js";
 import { parseSseStream } from "../sse.js";
 import { ToolCallAccumulator } from "../tool-accumulator.js";
-import { withPreEmissionRetry } from "../retry.js";
+import { runGuardedProviderStream } from "../stream-guard.js";
+import { logLenientStreamEnd, prematureEndError, toolCutoffError } from "../stream-end.js";
+import { statusForProviderErrorCode } from "../error-status.js";
 import { joinUrl } from "../url.js";
+
+const noReasoningWithTools = new Set<string>();
+const noReasoningWithToolsPatterns = [/^gpt-6\.1-/i];
 
 export class OpenAICompatibleDriver implements LlmDriver {
   readonly protocol: string = "openai-compatible";
@@ -37,6 +42,10 @@ export class OpenAICompatibleDriver implements LlmDriver {
     const messages = this.formatMessages(req.messages, req.systemPrompt);
     const tools = this.formatTools(req.tools);
     const compat = req.compat;
+    const firstParty = req.provider === "openai" && !req.endpointUrl &&
+      baseUrl.replace(/\/+$/, "") === "https://api.openai.com/v1";
+    const skipReasoning = firstParty && tools.length > 0 &&
+      (noReasoningWithTools.has(req.model) || noReasoningWithToolsPatterns.some((pattern) => pattern.test(req.model)));
     const maxTokensField = compat?.maxTokensField ?? "max_tokens";
 
     const body: Record<string, unknown> = {
@@ -52,7 +61,10 @@ export class OpenAICompatibleDriver implements LlmDriver {
       body.stream_options = { include_usage: true };
     }
 
-    if (
+    // OpenAI defaults to reasoning when omitted, so tools require an explicit "none".
+    if (skipReasoning) {
+      body.reasoning_effort = "none";
+    } else if (
       compat?.supportsReasoningEffort !== false &&
       req.reasoningEffort &&
       req.reasoningEffort !== "off"
@@ -67,76 +79,81 @@ export class OpenAICompatibleDriver implements LlmDriver {
       };
     }
 
-    // Execute HTTP request with pre-emission retry safety
-    let response: Response;
-    try {
-      response = await withPreEmissionRetry(
-        async () => {
-          const res = await fetch(endpoint, {
-            method: "POST",
-            headers,
-            body: JSON.stringify(body),
-            signal: req.signal,
-          });
-
-          if (!res.ok) {
-            const errText = await res.text().catch(() => "");
-            const err: any = new Error(`OpenAI API error (${res.status}): ${errText}`);
-            err.status = res.status;
-            throw err;
-          }
-
-          if (!res.body) {
-            throw new Error("Empty response body from OpenAI endpoint");
-          }
-
-          return res;
-        },
-        { signal: req.signal },
-      );
-    } catch (err: any) {
-      yield {
-        type: "error",
-        error: err instanceof Error ? err : new Error(String(err)),
-        status: err.status,
-        retryable: false,
-      };
-      return;
-    }
-
+    let switched = false;
     const accumulator = new ToolCallAccumulator();
     let accumulatedContent = "";
     let accumulatedThinking = "";
     let finishReason: (Extract<StreamEvent, { type: "done" }>)["reason"] = "stop";
     let latestUsage: (Extract<StreamEvent, { type: "usage" }>)["usage"] | null = null;
+    let sawTerminal = false;
+    let emittedDelta = false;
 
-    try {
-      for await (const event of parseSseStream(response.body!)) {
-        if (req.signal?.aborted) {
-          yield {
-            type: "done",
-            reason: "abort",
-            message: {
-              role: "assistant",
-              content: accumulatedContent,
-              thinking: accumulatedThinking || undefined,
-              toolCalls: accumulator.flush(),
-            },
-          };
-          return;
-        }
+    const haltedMessage = (): AssistantMessage => ({
+      role: "assistant",
+      content: accumulatedContent,
+      thinking: accumulatedThinking || undefined,
+      toolCalls: [],
+    });
 
+    yield* runGuardedProviderStream({
+      req,
+      haltedMessage,
+      retryForm: (status, text) => {
+        let detail: { error?: { param?: string; message?: string } } = {};
+        try { detail = JSON.parse(text); } catch { /* not a structured API error */ }
+        if (status !== 400 || !firstParty || tools.length === 0 || body.reasoning_effort === "none" || switched ||
+            detail.error?.param !== "reasoning_effort" || !detail.error.message?.includes("Function tools with reasoning_effort")) return false;
+        switched = true;
+        noReasoningWithTools.add(req.model);
+        body.reasoning_effort = "none";
+        return true;
+      },
+      httpErrorLabel: "OpenAI API error",
+      emptyBodyMessage: "Empty response body from OpenAI endpoint",
+      request: (guard) =>
+        guard.fetch(endpoint, {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body),
+        }),
+      frames: (byteStream) => parseSseStream(byteStream),
+      onFrame: (event) => {
+        const events: StreamEvent[] = [];
+        const trailer = sawTerminal;
+        let justFinished = false;
         const dataStr = event.data?.trim();
-        if (!dataStr || dataStr === "[DONE]") continue;
+        if (!dataStr) return trailer ? { events: finishOpenAI(), stop: true } : { events };
+        if (dataStr === "[DONE]") {
+          sawTerminal = true;
+          return { events: finishOpenAI(), stop: true };
+        }
 
         let parsed: any;
         try {
           parsed = JSON.parse(dataStr);
         } catch {
-          continue;
+          return { events };
         }
 
-        // Usage chunk
+        if (parsed.error && !Array.isArray(parsed.choices)) {
+          const errBody = parsed.error;
+          const message =
+            typeof errBody.message === "string" && errBody.message
+              ? errBody.message
+              : "OpenAI stream error";
+          let status: number | undefined;
+          if (typeof errBody.code === "number") status = errBody.code;
+          else if (typeof errBody.status === "number") status = errBody.status;
+          else status = statusForProviderErrorCode(errBody.code ?? errBody.type);
+          events.push({
+            type: "error",
+            error: new Error(message),
+            status,
+            retryable: false,
+          });
+          return { events, stop: true };
+        }
+
         if (parsed.usage) {
           latestUsage = {
             input: parsed.usage.prompt_tokens ?? 0,
@@ -148,34 +165,43 @@ export class OpenAICompatibleDriver implements LlmDriver {
               0,
             cacheWriteTokens: parsed.usage.prompt_cache_miss_tokens ?? 0,
           };
-          yield { type: "usage", usage: latestUsage };
+          events.push({ type: "usage", usage: latestUsage });
         }
 
         const choice = parsed.choices?.[0];
-        if (!choice) continue;
+        if (!choice) {
+          if (trailer) return { events: [...events, ...finishOpenAI()], stop: true };
+          return { events };
+        }
 
         if (choice.finish_reason) {
-          if (choice.finish_reason === "tool_calls") finishReason = "tool_use";
+          sawTerminal = true;
+          justFinished = true;
+          if (choice.finish_reason === "tool_calls" || choice.finish_reason === "function_call") finishReason = "tool_use";
           else if (choice.finish_reason === "length") finishReason = "length";
-          else finishReason = "stop";
+          else if (choice.finish_reason === "stop") finishReason = "stop";
+          else finishReason = "error";
         }
 
         const delta = choice.delta;
-        if (!delta) continue;
+        if (!delta) {
+          if (trailer) return { events: [...events, ...finishOpenAI()], stop: true };
+          if (justFinished) return { events, releaseIfIdle: true };
+          return { events };
+        }
 
-        // Reasoning / Thinking delta (DeepSeek, Groq, etc.)
         if (delta.reasoning_content) {
           accumulatedThinking += delta.reasoning_content;
-          yield { type: "thinking_delta", delta: delta.reasoning_content };
+          emittedDelta = true;
+          events.push({ type: "thinking_delta", delta: delta.reasoning_content });
         }
 
-        // Text delta
         if (delta.content) {
           accumulatedContent += delta.content;
-          yield { type: "text_delta", delta: delta.content };
+          emittedDelta = true;
+          events.push({ type: "text_delta", delta: delta.content });
         }
 
-        // Tool call chunks
         if (Array.isArray(delta.tool_calls)) {
           for (const tc of delta.tool_calls) {
             const index = tc.index ?? 0;
@@ -187,42 +213,65 @@ export class OpenAICompatibleDriver implements LlmDriver {
             });
 
             if (res.started) {
-              yield { type: "tool_call_start", id: res.started.id, name: res.started.name };
+              emittedDelta = true;
+              events.push({ type: "tool_call_start", id: res.started.id, name: res.started.name });
             }
             if (res.delta) {
-              yield { type: "tool_call_delta", id: res.delta.id, argsDelta: res.delta.argsDelta };
+              emittedDelta = true;
+              events.push({ type: "tool_call_delta", id: res.delta.id, argsDelta: res.delta.argsDelta });
             }
           }
         }
-      }
+        const hasPayload = Boolean(
+          delta.reasoning_content ||
+          delta.content ||
+          (Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0),
+        );
+        // A finish_reason on a non-final chunk must not stop the read while
+        // later frames still carry content or tool arguments. Content-free
+        // trailers (empty delta, usage-only, choices: []) end above.
+        if (trailer && !hasPayload) return { events: [...events, ...finishOpenAI()], stop: true };
+        if (trailer || justFinished) return { events, releaseIfIdle: true };
+        return { events };
+      },
+      onComplete: () => finishOpenAI(),
+    });
 
-      const completedToolCalls = accumulator.flush();
-      if (completedToolCalls.length > 0) {
-        finishReason = "tool_use";
-        for (const tc of completedToolCalls) {
-          yield { type: "tool_call_end", toolCall: tc };
+    function finishOpenAI(): StreamEvent[] {
+        const events: StreamEvent[] = [];
+        let completedToolCalls: ToolCall[] = [];
+        if (!sawTerminal) {
+          if (req.strictStreamEnd !== false) {
+            events.push(prematureEndError("finish_reason or [DONE]", !emittedDelta));
+            return events;
+          }
+          const flushed = accumulator.flush({ allowRepair: false });
+          if (flushed.droppedIds.length > 0) return [toolCutoffError()];
+          logLenientStreamEnd(req.provider);
+          completedToolCalls = flushed.calls;
+        } else if (finishReason === "stop" || finishReason === "tool_use") {
+          completedToolCalls = accumulator.flush().calls;
         }
-      }
+        if (completedToolCalls.length > 0) {
+          finishReason = "tool_use";
+          for (const tc of completedToolCalls) {
+            events.push({ type: "tool_call_end", toolCall: tc });
+          }
+        }
 
-      const finalAssistant: AssistantMessage = {
-        role: "assistant",
-        content: accumulatedContent,
-        thinking: accumulatedThinking || undefined,
-        toolCalls: completedToolCalls.length > 0 ? completedToolCalls : undefined,
-      };
+        const finalAssistant: AssistantMessage = {
+          role: "assistant",
+          content: accumulatedContent,
+          thinking: accumulatedThinking || undefined,
+          toolCalls: completedToolCalls.length > 0 ? completedToolCalls : undefined,
+        };
 
-      yield {
-        type: "done",
-        reason: finishReason,
-        message: finalAssistant,
-      };
-    } catch (err: any) {
-      yield {
-        type: "error",
-        error: err instanceof Error ? err : new Error(String(err)),
-        status: err.status,
-        retryable: false,
-      };
+        events.push({
+          type: "done",
+          reason: finishReason,
+          message: finalAssistant,
+        });
+        return events;
     }
   }
 

@@ -521,8 +521,8 @@ provider = "openrouter"               # openrouter | openai | deepseek | groq | 
 model = "deepseek/deepseek-v4-pro"    # any model supported by the chosen provider
 # region = "us-east-1"                # amazon-bedrock only; else AWS_REGION / AWS_DEFAULT_REGION / us-east-1
 # reasoning_effort = "medium"         # off | minimal | low | medium | high | xhigh
-# Optional fallback used when the primary returns timeout, 429, or empty response.
-# PRAANA retries once on the primary, then switches to the fallback for the rest of the session.
+# Optional fallback used when the primary returns a timeout, HTTP 429/529, or an empty response.
+# An idle timeout or a connect timeout goes straight to the fallback. Other failures retry once on the primary.
 # fallback_provider = "openrouter"
 # fallback_model = "moonshotai/kimi-k2.7-code"
 
@@ -578,7 +578,7 @@ log_dir = "~/.praana/sessions"
 
 ### Mid-session model switching
 
-`/model` is handled by `model-resolver.ts` and validated before the switch toast appears. Bare `/model` opens a searchable TUI selector.
+`/model` is handled by `model-resolver.ts` and validated before the switch toast appears. Bare `/model` opens a searchable TUI selector (search by provider or model id).
 
 **Syntax:** `/model [provider] <model-id>` — provider is optional and space-separated only (not `provider/model` as a single token unless it is the model id on the current provider).
 
@@ -593,7 +593,7 @@ log_dir = "~/.praana/sessions"
 
 ### Automatic fallback
 
-If `[llm] fallback_provider` and `fallback_model` are set, `runTurn()` retries once on the primary model after a timeout, `429` rate-limit, or empty response. If the retry also fails, it attempts the configured fallback provider/model. A successful fallback stream appends `provider_override`/`model_override` system notes to the event log, shows a TUI toast, and continues the turn; the override then persists for the rest of the session and survives resume. If the fallback stream also fails, no override is committed and the turn surfaces the error. An explicit `/model` choice from the user takes precedence and disables automatic fallback for that turn.
+If `[llm] fallback_provider` and `fallback_model` are set, `runTurn()` retries once on the primary model after an HTTP 429 or 529 (or a provider status of 429 or 529), an empty response, or a premature stream end. A bare 429 or 529 in other text, such as a token count, is not a rate limit. An idle timeout and a connect timeout are not retried on the same model at this step. When automatic fallback is allowed, that model is asked next; otherwise the error is shown immediately. If a same-model retry was made and it also fails, the turn attempts the configured fallback provider/model. The fallback is committed only when its stream delivered a `done` event and a usable answer: a normal stop, a tool call, or a length stop that includes text. An empty stop, an abort, a close with no `done` event, or a length stop with no text is not committed. The primary model stays active, fallback text is not shown, and the turn reports the primary failure. A committed switch appends `provider_override`/`model_override` system notes to the event log, shows `Switched to <provider>/<model> after <reason>`, and continues the turn; the override then persists for the rest of the session and survives resume. An idle timeout is recorded in that reason as `idle timeout after Ns` (or `ms`). An explicit `/model` choice from the user takes precedence and disables automatic fallback for that turn.
 
 ## UI and Slash Commands
 

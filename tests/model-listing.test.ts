@@ -338,7 +338,7 @@ describe("listAllAvailableModels (parallel, static-first)", () => {
         return okJson([{ id: "gpt-4o", context_length: 128_000 }, { id: "gpt-5", context_length: 262_144 }]);
       }
       if (url.includes("openrouter.ai")) {
-        return okJson([{ id: "openai/gpt-4o-mini", context_length: 128_000 }, { id: "openrouter/only-live", context_length: 327_68 }]);
+        return okJson([{ id: "openai/gpt-4o-mini", context_length: 128_000 }, { id: "openrouter/only-chat", context_length: 327_68 }]);
       }
       return okJson([]);
     });
@@ -385,7 +385,7 @@ describe("listAllAvailableModels (parallel, static-first)", () => {
       if (failProvider && url.includes(new URL(PROVIDER_REGISTRY[failProvider].baseUrl).host)) {
         throw new Error(`${failProvider} catalog unreachable`);
       }
-      return okJson([{ id: "shared/live-model", context_length: 64_000 }]);
+      return okJson([{ id: "shared/chat-model", context_length: 64_000 }]);
     });
 
     const failures: string[] = [];
@@ -396,7 +396,7 @@ describe("listAllAvailableModels (parallel, static-first)", () => {
     });
 
     // Other providers' live results are merged in…
-    expect(result.some((m) => m.modelId === "shared/live-model")).toBe(true);
+    expect(result.some((m) => m.modelId === "shared/chat-model")).toBe(true);
     if (failProvider) {
       // …the failing provider contributes nothing (no curated models to
       // keep), and the failure is reported to the UI.
@@ -405,9 +405,7 @@ describe("listAllAvailableModels (parallel, static-first)", () => {
     }
   });
 
-  it("static snapshot order is stable and sorted per provider even when every live fetch fails", async () => {
-    // Groq's curated catalog is deliberately unsorted (deepseek-r1… before
-    // llama-3.3…), so it proves static ordering is applied, not inherited.
+  it("static snapshot retains curated order when every live fetch fails", async () => {
     process.env.GROQ_API_KEY = "sk-test-groq";
     fetchSpy.mockRejectedValue(new Error("catalog unreachable"));
     const updates: ModelListEntry[][] = [];
@@ -421,12 +419,6 @@ describe("listAllAvailableModels (parallel, static-first)", () => {
     // failing it must equal the final result — order never depends on live
     // success.
     expect(updates[0]).toEqual(result);
-
-    // Each provider's slice is sorted by modelId.
-    for (const provider of new Set(result.map((e) => e.provider))) {
-      const ids = result.filter((e) => e.provider === provider).map((e) => e.modelId);
-      expect([...ids].sort((a, b) => a.localeCompare(b))).toEqual(ids);
-    }
 
     // The failing-live result matches listStaticAvailableModels per provider.
     const staticByProvider = new Map<string, ModelListEntry[]>();
@@ -498,7 +490,7 @@ describe("listAllAvailableModels (parallel, static-first)", () => {
     expect(ids).toEqual([...ids].sort());
   });
 
-  it("listStaticAvailableModels is sorted by modelId within each provider", () => {
+  it("listStaticAvailableModels retains curated order within each provider", () => {
     process.env.GROQ_API_KEY = "sk-test-groq";
     const byProvider = new Map<string, ModelListEntry[]>();
     for (const e of listStaticAvailableModels()) {
@@ -506,9 +498,8 @@ describe("listAllAvailableModels (parallel, static-first)", () => {
       list.push(e);
       byProvider.set(e.provider, list);
     }
-    for (const [, list] of byProvider) {
-      const ids = list.map((e) => e.modelId);
-      expect([...ids].sort((a, b) => a.localeCompare(b))).toEqual(ids);
+    for (const [provider, list] of byProvider) {
+      expect(list.map((e) => e.modelId)).toEqual(getCuratedModels(provider).map((m) => m.id));
     }
   });
 });

@@ -25,9 +25,9 @@ describe("orderModels", () => {
     const out = orderModels(L, "openai", "gpt-4o");
     expect(out[0]).toMatchObject({ provider: "openai", modelId: "gpt-4o" });
   });
-  it("keeps provider-then-id order otherwise", () => {
+  it("groups providers while preserving each provider's listing order", () => {
     const out = orderModels(L, "openai", "gpt-4o").slice(1).map((x) => x.modelId);
-    expect(out).toEqual(["claude-haiku", "claude-sonnet-4-5", "gpt-4o-mini"]);
+    expect(out).toEqual(["claude-sonnet-4-5", "claude-haiku", "gpt-4o-mini"]);
   });
   it("does not mutate the input", () => {
     const copy = [...L];
@@ -48,6 +48,33 @@ describe("filterModelItems", () => {
   it("fuzzy-matches model id", () => {
     const r = filterModelItems(L, "haiku");
     expect(r[0]?.modelId).toBe("claude-haiku");
+  });
+  it("puts provider hits first in original order, ahead of model-id hits", () => {
+    const entries = [
+      m("amazon-bedrock", "anthropic.claude-opus"),
+      m("anthropic", "claude-sonnet-new"),
+      m("anthropic", "anthropic.claude-opus-current"),
+      m("anthropic", "claude-haiku-old"),
+    ];
+    expect(filterModelItems(entries, "anthropic")).toEqual([entries[1], entries[2], entries[3], entries[0]]);
+    expect(filterModelItems(entries, "AnThRoPiC")).toEqual([entries[1], entries[2], entries[3], entries[0]]);
+    expect(filterModelItems(entries, "throp")).toEqual([entries[1], entries[2], entries[3], entries[0]]);
+  });
+  it("matches provider and model tokens separated by whitespace or slash", () => {
+    const entries = [
+      m("openai", "gpt-4o"), m("openai", "other"),
+      m("other", "openai-gpt"), m("openrouter", "anthropic/claude-opus"),
+      m("anthropic", "claude-opus"),
+    ];
+    expect(filterModelItems(entries, "openai gpt")).toEqual([entries[0], entries[2]]);
+    expect(filterModelItems(entries, "openrouter/claude")).toEqual([entries[3]]);
+    expect(filterModelItems(entries, "gpt openai")).toEqual([entries[0], entries[2]]);
+  });
+  it("ranks model-only matches by fuzzy score and supports display labels", () => {
+    const entries = [m("a", "o-p-u-s"), m("b", "claude-opus"), m("c", "other", { label: "Opus special" })];
+    expect(filterModelItems(entries, "opus")).toEqual([entries[2], entries[1], entries[0]]);
+    expect(filterModelItems(entries, "nothing-matches")).toEqual([]);
+    expect(filterModelItems(entries, "  ")).toBe(entries);
   });
 });
 

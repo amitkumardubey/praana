@@ -64,6 +64,13 @@ function makeSink(extra: Partial<SinkOpts> = {}) {
 }
 
 describe("OpenTuiSink", () => {
+  it("exposes a pause handler only when one was provided", async () => {
+    expect(makeSink().sink.onStepPause).toBeUndefined();
+    const handler = mock(async (_steps: number) => false);
+    const { sink } = makeSink({ onStepPause: handler });
+    expect(await sink.onStepPause?.(7)).toBe(false);
+    expect(handler).toHaveBeenCalledWith(7);
+  });
   it("disables shell live streaming so output stays in the transcript", () => {
     const { sink } = makeSink();
     expect(sink.shellLiveStream).toBe(false);

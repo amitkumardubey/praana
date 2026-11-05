@@ -58,6 +58,9 @@ export function createTranscriptStore(): TranscriptStoreApi {
         );
       },
       appendAssistantDelta(id, delta) {
+        // The sink probes for an existing row, then appends it on a miss.
+        // Mark even that first delta live before its entry can be rendered.
+        addStreaming(id);
         const i = indexOfId(entries, id);
         if (i < 0) return false;
         setEntries(
@@ -68,7 +71,6 @@ export function createTranscriptStore(): TranscriptStoreApi {
             }
           }),
         );
-        addStreaming(id);
         return true;
       },
       appendThinkingDelta(id, delta) {

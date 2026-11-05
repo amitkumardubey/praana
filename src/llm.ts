@@ -11,6 +11,7 @@ import {
   getUserProviderConfig,
   listUserDeclaredProviderIds,
   type ProviderConfig,
+  type ProviderWireCompat,
 } from "./provider-registry.js";
 import { resolveApiKey, hasApiKey, hasCredentials } from "./credentials.js";
 import {
@@ -254,7 +255,13 @@ function buildModel(
   };
 
   if (pc.compat) {
-    model.compat = { ...pc.compat };
+    const compat: ProviderWireCompat = { ...pc.compat };
+    // A configured base_url points at a gateway, not the vendor's own endpoint,
+    // so drop the vendor-specific field name and keep the generic default.
+    if (config.base_url && compat.maxTokensField) {
+      delete compat.maxTokensField;
+    }
+    model.compat = compat;
   }
 
   if (config.provider === "amazon-bedrock") {

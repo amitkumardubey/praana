@@ -7,6 +7,7 @@ import { mapProviderToPiAi } from "./model-context.js";
 import {
   listProviderCatalogModels,
   providerSupportsLiveCatalog,
+  isChatToolModel,
 } from "./provider-catalog.js";
 import { getCuratedModels } from "./llm/catalog.js";
 
@@ -65,6 +66,7 @@ export interface ListModelsForProviderOptions {
   /** When set, skip env-key re-check (caller already gated availability). */
   available?: boolean;
   disabledReason?: string;
+  currentModelId?: string;
   /**
    * Called when the live catalog fails but curated models remain, so the
    * caller can report the failure without dropping the merged list.
@@ -86,6 +88,8 @@ export async function listModelsForProvider(
       : providerAvailability(provider);
 
   const byId = new Map<string, ModelListEntry>();
+  let liveOrder: Map<string, number> | undefined;
+  let liveWithoutTimes = false;
 
   for (const entry of collectPiAiModels(provider, available, disabledReason)) {
     byId.set(entry.modelId, entry);
@@ -96,10 +100,18 @@ export async function listModelsForProvider(
   if (available && providerSupportsLiveCatalog(provider)) {
     try {
       const catalog = await listProviderCatalogModels(provider);
+      if (catalog.some((entry) => entry.created !== undefined)) {
+        liveOrder = new Map(catalog.map((entry, index) => [entry.id, index]));
+      } else if (catalog.length) {
+        liveWithoutTimes = true;
+      }
       for (const { id, contextWindow } of catalog) {
+        if (!byId.has(id) && id !== opts?.currentModelId && !isChatToolModel(id)) continue;
         const existing = byId.get(id);
         if (existing) {
-          if (existing.contextWindow == null && contextWindow != null) {
+          // The live listing is authoritative for the window: curated entries
+          // are a fallback and may hold placeholder values.
+          if (contextWindow != null) {
             existing.contextWindow = contextWindow;
           }
           continue;
@@ -121,23 +133,27 @@ export async function listModelsForProvider(
     }
   }
 
-  return [...byId.values()].sort((a, b) => a.modelId.localeCompare(b.modelId));
+  const entries = [...byId.values()];
+  if (liveOrder?.size) {
+    const order = liveOrder;
+    entries.sort((a, b) => (order.get(a.modelId) ?? Infinity) - (order.get(b.modelId) ?? Infinity));
+  } else if (liveWithoutTimes) {
+    entries.sort((a, b) => a.modelId.localeCompare(b.modelId));
+  }
+  return entries;
 }
 
 /**
  * Static/curated models for available providers (no network). Same provider
  * and model set the live listing starts from, minus live-catalog additions.
- * Models are sorted by modelId within each provider, matching the live
- * listing's order so it never depends on which fetches succeed.
+ * Curated models retain their written order.
  */
 export function listStaticAvailableModels(): ModelListEntry[] {
   const providers = listKnownProviders().filter((p) => isProviderAvailable(p));
   const out: ModelListEntry[] = [];
   for (const provider of providers) {
     out.push(
-      ...collectPiAiModels(provider, true).sort((a, b) =>
-        a.modelId.localeCompare(b.modelId),
-      ),
+      ...collectPiAiModels(provider, true),
     );
   }
   return out;
@@ -152,6 +168,8 @@ export interface ModelListUpdateMeta {
 }
 
 export interface ListAllAvailableModelsOptions {
+  currentProvider?: string;
+  currentModelId?: string;
   /**
    * Called with the current merged snapshot whenever it changes: once
    * synchronously with static models before any network I/O, then again as
@@ -164,7 +182,7 @@ export interface ListAllAvailableModelsOptions {
  * Flat list across available providers for the `/model` selector.
  * Loads fresh each open (no session-long cache). Providers are queried in
  * parallel; the result order is deterministic (same provider order as
- * `listKnownProviders()`, models sorted by id within each provider).
+ * `listKnownProviders()`, live catalog order within each provider).
  * Throws when every available provider fails to yield models.
  */
 export async function listAllAvailableModels(
@@ -174,7 +192,7 @@ export async function listAllAvailableModels(
 
   // Per-provider snapshots keep the final order identical to the old
   // sequential listing: providers in `listKnownProviders()` order, each
-  // provider's models sorted by modelId.
+  // provider's models in catalog order.
   const perProvider = new Map<string, Map<string, ModelListEntry>>();
   const snapshot = (): ModelListEntry[] => {
     const out: ModelListEntry[] = [];
@@ -188,9 +206,7 @@ export async function listAllAvailableModels(
 
   for (const provider of providers) {
     perProvider.set(provider, new Map());
-    const curated = collectPiAiModels(provider, true).sort((a, b) =>
-      a.modelId.localeCompare(b.modelId),
-    );
+    const curated = collectPiAiModels(provider, true);
     for (const entry of curated) {
       perProvider.get(provider)!.set(entry.modelId, entry);
     }
@@ -213,6 +229,7 @@ export async function listAllAvailableModels(
       try {
         const live = await listModelsForProvider(provider, {
           available: true,
+          currentModelId: opts?.currentProvider === provider ? opts.currentModelId : undefined,
           onLiveError: (message) => {
             errors.push(`${provider}: ${message}`);
           },
@@ -347,9 +364,7 @@ export function formatModelsCliOutput(
       lines.push(`${provider} (unavailable: ${reason ?? "not configured"})`);
     }
 
-    const modelRows = models
-      .filter((m) => m.modelId !== "")
-      .sort((a, b) => a.modelId.localeCompare(b.modelId));
+    const modelRows = models.filter((m) => m.modelId !== "");
 
     if (modelRows.length === 0) {
       lines.push("  (no models in catalog)");

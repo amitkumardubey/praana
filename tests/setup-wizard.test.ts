@@ -325,8 +325,8 @@ describe("setup wizard", () => {
 
   describe("fetchProviderModels", () => {
     it("returns empty array for provider without live catalog support", async () => {
-      const models = await fetchProviderModels("anthropic");
-      // anthropic doesn't support live catalog (not OpenAI-compatible)
+      const models = await fetchProviderModels("mistral");
+      // mistral uses its own conversations API, not a `/models` listing
       expect(models).toEqual([]);
     });
   });

@@ -2,11 +2,22 @@
  * Solid transcript entry rows — visual parity with imperative components/*.ts.
  */
 import { For, Show } from "solid-js";
+import { extend, useRenderer } from "@opentui/solid";
 import { TUI_STYLE, truncateSegments, type SpanStyle, type TextSegment } from "../theme.js";
 import { wrapContent } from "./render-utils.js";
 import { buildMarkdownSyntaxStyle } from "./markdown-theme.js";
+import { stabilizeStreamingMarkdown } from "./streaming-markdown.js";
+import { RetainedMarkdownRenderable } from "./retained-markdown.js";
 import type { IndexedTranscriptEntry } from "./index.js";
 import type { TranscriptRenderOpts } from "./opts.js";
+
+extend({ retained_markdown: RetainedMarkdownRenderable });
+
+declare module "@opentui/solid" {
+  interface OpenTUIComponents {
+    retained_markdown: typeof RetainedMarkdownRenderable;
+  }
+}
 
 const BODY_PREVIEW_LINES = 24;
 
@@ -111,6 +122,7 @@ export function TranscriptEntryView(props: {
   width: number;
 }) {
   const e = props.entry;
+  const renderer = useRenderer();
 
   if (e.role === "user") {
     return (
@@ -127,10 +139,13 @@ export function TranscriptEntryView(props: {
           when={props.opts.markdownRendering}
           fallback={<text>{e.text}</text>}
         >
-          <markdown
-            content={e.text}
+          <retained_markdown
+            content={props.streaming ? stabilizeStreamingMarkdown(e.text, { withholdIncomplete: true }) : e.text}
             streaming={props.streaming}
-            syntaxStyle={buildMarkdownSyntaxStyle(props.opts.syntaxTheme)}
+            syntaxStyle={buildMarkdownSyntaxStyle(
+              renderer.nativeScene,
+              props.opts.syntaxTheme,
+            )}
           />
         </Show>
       </box>

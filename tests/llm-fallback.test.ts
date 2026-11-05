@@ -9,6 +9,7 @@ import * as toolsActual from "../src/tools/index.js";
 import * as compileClassicActual from "../src/compile-classic.js";
 import * as autoCompactActual from "../src/auto-compact.js";
 import * as uiActual from "../src/ui.js";
+import * as oauthActual from "../src/oauth.js";
 
 const nativeLlmReal = { ...nativeLlmActual };
 const llmReal = { ...llmActual };
@@ -16,6 +17,9 @@ const toolsReal = { ...toolsActual };
 const compileClassicReal = { ...compileClassicActual };
 const autoCompactReal = { ...autoCompactActual };
 const uiReal = { ...uiActual };
+const oauthReal = { ...oauthActual };
+const mockResolveAuth = mock(async (_provider: string, _signal?: AbortSignal): Promise<any> => null);
+mock.module("../src/oauth.js", () => ({ ...oauthReal, resolveOAuthModelAuth: mockResolveAuth }));
 
 const mockStream = mock();
 
@@ -86,8 +90,16 @@ mock.module("../src/ui.js", () => ({
 }));
 
 const piStream = mockStream;
-import { runTurn, runLlmStream, isRecoverableStreamError } from "../src/turn.js";
+import {
+  runTurn,
+  runLlmStream,
+  isRecoverableStreamError,
+  fallbackFinishedCleanly,
+  recordedFallbackReason,
+} from "../src/turn.js";
 import { StateGraph } from "../src/state-graph.js";
+import { TurnAbortedError } from "../src/turn-control.js";
+import { estimateAssistantMessageTokens } from "../src/context-display.js";
 import { createNullScorecard } from "../src/context-engine/telemetry.js";
 import { createBuiltinHookRegistry } from "../src/hooks/index.js";
 import type { Event } from "../src/types.js";
@@ -99,6 +111,7 @@ afterAll(() => {
   mock.module("../src/compile-classic.js", () => compileClassicReal);
   mock.module("../src/auto-compact.js", () => autoCompactReal);
   mock.module("../src/ui.js", () => uiReal);
+  mock.module("../src/oauth.js", () => oauthReal);
 });
 
 const fallbackLogDir = mkdtempSync(join(tmpdir(), "praana-test-sessions-fallback-"));
@@ -125,7 +138,7 @@ const makeConfig = () => ({
     compression_flush_fraction: 0.30,
   },
   session: { log_dir: fallbackLogDir },
-  turn: { max_steps: 25 },
+  turn: { max_steps: 25, pause_after_steps: 50, hard_max_steps: 300 },
   tools: { block_repeat_reads: false },
   skills: {
     enabled: false,
@@ -159,6 +172,7 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
     readAllUncompressedAfterResetBoundary: mock(() => events.slice()),
     search: mock(),
     clear: mock(() => { events.length = 0; }),
+    markEventsAsCompressed: mock(),
   };
 
   const session: any = {
@@ -316,6 +330,252 @@ describe("runLlmStream", () => {
     expect(result.pendingToolCalls).toHaveLength(1);
     expect(result.pendingToolCalls[0].toolName).toBe("read_file");
   });
+
+  it("records whether a done event was actually received", async () => {
+    (piStream as any).mockReturnValue((async function* () {
+      yield { type: "text_delta", delta: "hi" };
+      yield { type: "done", reason: "stop", message: { role: "assistant", content: "hi" } };
+    })());
+    const finished = await runLlmStream({
+      model: { id: "m" } as any,
+      modelName: "m",
+      providerName: "p",
+      compiledPrompt: "sys",
+      history: [{ role: "user", content: "hi" }],
+      piTools: [],
+    });
+    expect(finished.doneReceived).toBe(true);
+
+    (piStream as any).mockReturnValue((async function* () {
+      yield { type: "text_delta", delta: "partial" };
+    })());
+    const cut = await runLlmStream({
+      model: { id: "m" } as any,
+      modelName: "m",
+      providerName: "p",
+      compiledPrompt: "sys",
+      history: [{ role: "user", content: "hi" }],
+      piTools: [],
+    });
+    expect(cut.finalReason).toBe("stop");
+    expect(cut.doneReceived).toBe(false);
+    expect(cut.interrupted).toBe(false);
+  });
+});
+
+describe("credential busy retry", () => {
+  afterEach(() => { mockResolveAuth.mockReset(); mockResolveAuth.mockResolvedValue(null); });
+
+  it("retries a busy refresh and recovers on the second retry", async () => {
+    const session = makeMockSession();
+    mockResolveAuth.mockRejectedValueOnce(new oauthReal.OAuthRefreshBusyError("umans"));
+    mockResolveAuth.mockRejectedValueOnce(new oauthReal.OAuthRefreshBusyError("umans"));
+    mockResolveAuth.mockResolvedValueOnce(null);
+    piStream.mockReturnValue((async function* () {
+      yield { type: "text_delta", delta: "ok" };
+      yield { type: "done", reason: "stop", message: { role: "assistant", content: "ok" } };
+    })());
+    const response = await runTurn(session, "hello", undefined, { credentialRetryWait: async () => {} });
+    expect(response).toContain("ok");
+    expect(mockResolveAuth).toHaveBeenCalledTimes(3);
+  });
+
+  it("drops the turn after three busy failures", async () => {
+    const session = makeMockSession();
+    const errors: string[] = [];
+    mockResolveAuth.mockImplementation(async () => { throw new oauthReal.OAuthRefreshBusyError("umans"); });
+    const response = await runTurn(session, "hello", undefined, {
+      sink: { onError: (entry) => errors.push(entry.message) },
+      credentialRetryWait: async () => {},
+    });
+    expect(response).toBe("");
+    expect(mockResolveAuth).toHaveBeenCalledTimes(3);
+    expect(errors).toEqual(["another PRAANA session is refreshing; try again in a moment"]);
+    expect(session.getTurnCount()).toBe(0);
+    expect(session.eventLog.markEventsAsCompressed).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not report a credential error when aborted during the wait", async () => {
+    const session = makeMockSession();
+    const errors: string[] = [];
+    const controller = new AbortController();
+    mockResolveAuth.mockRejectedValue(new oauthReal.OAuthRefreshBusyError("umans"));
+    await expect(runTurn(session, "hello", undefined, {
+      signal: controller.signal,
+      sink: { onError: (entry) => { if (entry.domain === "credentials") errors.push(entry.message); } },
+      credentialRetryWait: async () => { controller.abort(); },
+    })).rejects.toBeInstanceOf(TurnAbortedError);
+    expect(mockResolveAuth).toHaveBeenCalledTimes(1);
+    expect(errors).toEqual([]);
+  });
+});
+
+describe("credential fallback", () => {
+  beforeEach(() => { mockResolveAuth.mockReset(); piStream.mockReset(); });
+  afterEach(() => { mockResolveAuth.mockReset(); mockResolveAuth.mockResolvedValue(null); });
+
+  function configured() {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "backup";
+    return session;
+  }
+
+  for (const ceiling of [false, true]) {
+    it(ceiling ? "enforces the hard step ceiling on credential fallback" : "pauses and wraps up on the credential fallback model", async () => {
+      const session = configured();
+      session.config.turn.pause_after_steps = 1;
+      session.config.turn.hard_max_steps = ceiling ? 1 : 3;
+      mockResolveAuth.mockImplementation(async (provider) => {
+        if (provider === "umans") throw new oauthReal.OAuthRefreshError("umans", "umans", "expired");
+        return null;
+      });
+      const requests: any[] = [];
+      piStream.mockImplementation((request: any) => {
+        requests.push(request);
+        if (requests.length === 1) return completedToolCall("fallback-tool");
+        return (async function* () {
+          yield { type: "text_delta", delta: "fallback summary" };
+          yield { type: "done", reason: "stop", message: { role: "assistant", content: "fallback summary" } };
+        })();
+      });
+      const pause = mock(() => false);
+      const response = await runTurn(session, "hello", undefined, { sink: { onStepPause: pause } });
+      expect(pause).toHaveBeenCalledTimes(ceiling ? 0 : 1);
+      if (!ceiling) expect(pause.mock.calls[0]?.[0]).toBe(1);
+      expect(requests).toHaveLength(2);
+      expect(requests.map((request) => [request.provider, request.model])).toEqual([
+        ["openrouter", "backup"], ["openrouter", "backup"],
+      ]);
+      expect(requests[1].tools).toHaveLength(0);
+      expect(response).toContain("fallback summary");
+    });
+  }
+
+  it("answers on the fallback and commits only after a clean finish", async () => {
+    const session = configured();
+    const lines: string[] = [];
+    const errors: string[] = [];
+    mockResolveAuth.mockImplementation(async (provider) => {
+      if (provider === "umans") throw new oauthReal.OAuthRefreshError("umans", "Umans", "expired");
+      return { apiKey: "fallback-test-key", baseUrl: "https://fallback.invalid", headers: { "x-test": "fallback" } };
+    });
+    piStream.mockImplementation((request: any) => (async function* () {
+      expect(request.apiKey).toBe("fallback-test-key");
+      expect(request.baseUrl).toBe("https://fallback.invalid");
+      expect(request.headers["x-test"]).toBe("fallback");
+      expect(session.getProviderOverride()).toBeNull();
+      yield { type: "text_delta", delta: "backup answer" };
+      yield { type: "done", reason: "stop", message: { role: "assistant", content: "backup answer" } };
+    })());
+    const response = await runTurn(session, "hello", undefined, { sink: {
+      onSystemLines: (value) => lines.push(...value), onError: (entry) => errors.push(entry.message),
+    } });
+    expect(response).toContain("backup answer");
+    expect(lines).toEqual(["Switched to openrouter/backup after umans sign-in unavailable"]);
+    expect(errors).toEqual([]);
+    expect(session.getProviderOverride()).toBe("openrouter");
+    expect(session.getModelOverride()).toBe("backup");
+    expect(session.getTurnCount()).toBe(1);
+    expect(mockResolveAuth.mock.calls.map((call) => call[0])).toEqual(["umans", "openrouter"]);
+  });
+
+  it("treats an abort during credential fallback as an interruption", async () => {
+    const session = configured();
+    const controller = new AbortController();
+    const errors: string[] = [];
+    const text: string[] = [];
+    mockResolveAuth.mockImplementation(async (provider) => {
+      if (provider === "umans") throw new oauthReal.OAuthRefreshError("umans", "umans", "expired");
+      return null;
+    });
+    piStream.mockImplementation(() => (async function* () {
+      yield { type: "text_delta", delta: "uncommitted" };
+      controller.abort();
+    })());
+    await expect(runTurn(session, "hello", undefined, {
+      signal: controller.signal,
+      sink: { onError: (entry) => errors.push(entry.message), onTextDelta: (delta) => text.push(delta) },
+    })).rejects.toBeInstanceOf(TurnAbortedError);
+    expect(errors).toEqual([]);
+    expect(text).toEqual([]);
+    expect(session.getProviderOverride()).toBeNull();
+  });
+
+  it("drops the turn with one primary error if fallback credentials fail", async () => {
+    const session = configured();
+    const errors: string[] = [];
+    mockResolveAuth.mockImplementation(async (provider) => { throw new oauthReal.OAuthRefreshError(provider, provider, "expired"); });
+    const result = await runTurn(session, "hello", undefined, { sink: { onError: (entry) => errors.push(entry.message) } });
+    expect(result).toBe("");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("umans session expired");
+    expect(errors[0]).toContain("fallback unavailable");
+    expect(errors[0]).not.toContain("openrouter session expired");
+    expect(session.getTurnCount()).toBe(0);
+    expect(session.getProviderOverride()).toBeNull();
+  });
+
+  it("does not commit or surface partial text when the fallback stream fails", async () => {
+    const session = configured();
+    const errors: string[] = [];
+    const text: string[] = [];
+    mockResolveAuth.mockImplementation(async (provider) => {
+      if (provider === "umans") throw new oauthReal.OAuthRefreshError("umans", "umans", "expired");
+      return null;
+    });
+    piStream.mockReturnValue((async function* () {
+      yield { type: "text_delta", delta: "partial" };
+      yield { type: "error", reason: "error", error: { role: "assistant", errorMessage: "failed" } };
+    })());
+    const result = await runTurn(session, "hello", undefined, { sink: {
+      onTextDelta: (delta) => text.push(delta), onError: (entry) => errors.push(entry.message),
+    } });
+    expect(result).toBe("");
+    expect(text).toEqual([]);
+    expect(errors).toHaveLength(1);
+    expect(session.getProviderOverride()).toBeNull();
+    expect(session.getTurnCount()).toBe(0);
+  });
+
+  it("preserves the original failure when no fallback is configured", async () => {
+    const session = makeMockSession();
+    const errors: string[] = [];
+    mockResolveAuth.mockRejectedValue(new oauthReal.OAuthRefreshError("umans", "umans", "expired"));
+    await runTurn(session, "hello", undefined, { sink: { onError: (entry) => errors.push(entry.message) } });
+    expect(errors).toEqual(["umans session expired and could not be refreshed: expired. Run /login umans again."]);
+    expect(mockResolveAuth).toHaveBeenCalledTimes(1);
+    expect(session.getTurnCount()).toBe(0);
+  });
+
+  it("uses the fallback after busy retries are exhausted", async () => {
+    const session = configured();
+    const waits: number[] = [];
+    mockResolveAuth.mockImplementation(async (provider) => {
+      if (provider === "umans") throw new oauthReal.OAuthRefreshBusyError(provider);
+      return null;
+    });
+    piStream.mockReturnValue((async function* () {
+      yield { type: "text_delta", delta: "backup" };
+      yield { type: "done", reason: "stop", message: { role: "assistant", content: "backup" } };
+    })());
+    const response = await runTurn(session, "hello", undefined, {
+      sink: {}, credentialRetryWait: async (ms) => { waits.push(ms); },
+    });
+    expect(response).toContain("backup");
+    expect(waits).toEqual([1000, 2000]);
+    expect(mockResolveAuth.mock.calls.map((call) => call[0])).toEqual(["umans", "umans", "umans", "openrouter"]);
+  });
+
+  it("does not switch when a user override is set", async () => {
+    const session = configured();
+    session.setModelOverride("custom");
+    mockResolveAuth.mockRejectedValue(new oauthReal.OAuthRefreshError("umans", "umans", "expired"));
+    await runTurn(session, "hello", undefined, { sink: {} });
+    expect(mockResolveAuth).toHaveBeenCalledTimes(1);
+    expect(session.getProviderOverride()).toBeNull();
+    expect(session.getTurnCount()).toBe(0);
+  });
 });
 
 describe("LLM fallback", () => {
@@ -361,7 +621,7 @@ describe("LLM fallback", () => {
     let callCount = 0;
     (piStream as any).mockImplementation(() => {
       callCount++;
-      if (callCount <= 2) {
+      if (callCount === 1) {
         return (async function* () {
           yield { type: "error", reason: "timeout", error: { role: "assistant", errorMessage: "request timed out" } };
         })();
@@ -374,6 +634,7 @@ describe("LLM fallback", () => {
 
     const response = await runTurn(session, "hello");
     expect(response).toContain("timeout fallback ok");
+    expect(callCount).toBe(2);
     expect(session.getEffectiveProvider()).toBe("openrouter");
   });
 
@@ -552,5 +813,890 @@ describe("LLM fallback", () => {
     expect(isRecoverableStreamError(rateLimited)).toBe(true);
     const tooMany: any = { interrupted: false, finalReason: "error", errorMessage: "Too Many Requests", fullResponse: "", pendingToolCalls: [] };
     expect(isRecoverableStreamError(tooMany)).toBe(true);
+  });
+
+  it("does not treat a bare 429 or 529 in free text as a rate limit", () => {
+    const tokens: any = { interrupted: false, finalReason: "error", errorMessage: "used 529 tokens", fullResponse: "", pendingToolCalls: [] };
+    const requestId: any = { interrupted: false, finalReason: "error", errorMessage: "request id 429", fullResponse: "", pendingToolCalls: [] };
+    expect(isRecoverableStreamError(tokens)).toBe(false);
+    expect(isRecoverableStreamError(requestId)).toBe(false);
+    const http: any = { interrupted: false, finalReason: "error", errorMessage: "HTTP 529", fullResponse: "", pendingToolCalls: [] };
+    const status: any = { interrupted: false, finalReason: "error", errorMessage: "status 429", fullResponse: "", pendingToolCalls: [] };
+    expect(isRecoverableStreamError(http)).toBe(true);
+    expect(isRecoverableStreamError(status)).toBe(true);
+    const structured: any = { interrupted: false, finalReason: "error", errorMessage: "used 529 tokens", status: 429, fullResponse: "", pendingToolCalls: [] };
+    expect(isRecoverableStreamError(structured)).toBe(true);
+  });
+
+  it("retries a mid-stream overload once the provider status is visible", async () => {
+    const session = makeMockSession();
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      if (callCount === 1) {
+        return (async function* () {
+          yield {
+            type: "error",
+            error: new Error("Resource exhausted"),
+            status: 429,
+            retryable: false,
+          };
+        })();
+      }
+      return (async function* () {
+        yield { type: "text_delta", delta: "retried" };
+        yield { type: "done", reason: "stop", message: { role: "assistant", content: "retried" } };
+      })();
+    });
+
+    const response = await runTurn(session, "hello");
+    expect(response).toContain("retried");
+    expect(callCount).toBe(2);
+  });
+
+  function emptyStop() {
+    return (async function* () {
+      yield { type: "done", reason: "stop", message: { role: "assistant", content: "" } };
+    })();
+  }
+
+  it("does not commit a fallback that ended in a non-recoverable error", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    const lines: string[] = [];
+    let call = 0;
+    (piStream as any).mockImplementation(() => {
+      call += 1;
+      if (call <= 2) return emptyStop();
+      return (async function* () {
+        yield { type: "error", error: new Error("model exploded"), retryable: false };
+      })();
+    });
+
+    await runTurn(session, "hello", undefined, {
+      sink: { onSystemLines: (rows) => lines.push(...rows) },
+    });
+
+    expect(session.getEffectiveProvider()).toBe("umans");
+    expect(session.getActiveModelId()).toBe("umans-coder");
+    expect(lines.some((line) => line.startsWith("Switched to"))).toBe(false);
+    const overrides = session.eventLog.readAll().filter(
+      (event: { kind?: string }) => event.kind === "system_note",
+    );
+    expect(overrides).toEqual([]);
+  });
+
+  it("does not commit a fallback whose done reason is abort", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    let call = 0;
+    (piStream as any).mockImplementation(() => {
+      call += 1;
+      if (call <= 2) return emptyStop();
+      return (async function* () {
+        yield {
+          type: "done",
+          reason: "abort",
+          message: { role: "assistant", content: "" },
+        };
+      })();
+    });
+    await runTurn(session, "hello");
+    expect(session.getEffectiveProvider()).toBe("umans");
+  });
+
+  it("does not commit a fallback whose error kind is set", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    let call = 0;
+    (piStream as any).mockImplementation(() => {
+      call += 1;
+      if (call <= 2) return emptyStop();
+      return (async function* () {
+        yield {
+          type: "error",
+          error: new Error("stream ended before the provider sent a final event (finish_reason or [DONE])"),
+          retryable: false,
+          kind: "premature_end",
+        };
+      })();
+    });
+    await runTurn(session, "hello");
+    expect(session.getEffectiveProvider()).toBe("umans");
+  });
+
+  it("records an idle timeout as the fallback reason, not an empty response", async () => {
+    const session = makeMockSession();
+    session.config.llm.stream_idle_timeout_ms = 5_000;
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    const lines: string[] = [];
+    let call = 0;
+    (piStream as any).mockImplementation(() => {
+      call += 1;
+      if (call === 1) {
+        return (async function* () {
+          yield { type: "done", reason: "timeout", message: { role: "assistant", content: "" } };
+        })();
+      }
+      return (async function* () {
+        yield { type: "text_delta", delta: "fallback ok" };
+        yield { type: "done", reason: "stop", message: { role: "assistant", content: "fallback ok" } };
+      })();
+    });
+
+    await runTurn(session, "hello", undefined, {
+      sink: { onSystemLines: (rows) => lines.push(...rows) },
+    });
+
+    expect(session.getEffectiveProvider()).toBe("openrouter");
+    expect(lines).toContain(
+      "Switched to openrouter/fallback-model after idle timeout after 5s",
+    );
+    expect(lines.some((line) => line.includes("empty response"))).toBe(false);
+  });
+
+  it("still records empty response when a clean fallback follows an empty stop", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    const lines: string[] = [];
+    let call = 0;
+    (piStream as any).mockImplementation(() => {
+      call += 1;
+      if (call <= 2) return emptyStop();
+      return (async function* () {
+        yield { type: "text_delta", delta: "fallback ok" };
+        yield { type: "done", reason: "stop", message: { role: "assistant", content: "fallback ok" } };
+      })();
+    });
+    await runTurn(session, "hello", undefined, {
+      sink: { onSystemLines: (rows) => lines.push(...rows) },
+    });
+    expect(lines).toContain("Switched to openrouter/fallback-model after empty response");
+  });
+
+  function primaryThen(fallback: () => AsyncIterable<unknown>): void {
+    let call = 0;
+    (piStream as any).mockImplementation(() => {
+      call += 1;
+      if (call <= 2) return emptyStop();
+      return fallback();
+    });
+  }
+
+  function watchSink() {
+    const lines: string[] = [];
+    const deltas: string[] = [];
+    const errors: Array<{ details?: { model?: string; provider?: string; reason?: string } }> = [];
+    return {
+      lines,
+      deltas,
+      errors,
+      sink: {
+        onSystemLines: (rows: string[]) => lines.push(...rows),
+        onTextDelta: (delta: string) => deltas.push(delta),
+        onError: (entry: { details?: { model?: string; provider?: string; reason?: string } }) => {
+          errors.push(entry);
+        },
+      },
+    };
+  }
+
+  it("does not commit an empty fallback stop or surface it instead of the primary", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    const watched = watchSink();
+    primaryThen(() => emptyStop());
+
+    await runTurn(session, "hello", undefined, { sink: watched.sink });
+
+    expect(session.getEffectiveProvider()).toBe("umans");
+    expect(session.getActiveModelId()).toBe("umans-coder");
+    expect(watched.lines.some((line) => line.startsWith("Switched to"))).toBe(false);
+    expect(watched.errors.at(-1)?.details).toMatchObject({
+      model: "umans-coder",
+      provider: "umans",
+      reason: "stop",
+    });
+  });
+
+  it("does not commit a fallback the user aborted, and does not show its text", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    const watched = watchSink();
+    const controller = new AbortController();
+    primaryThen(() => (async function* () {
+      controller.abort();
+      yield { type: "text_delta", delta: "should-not-surface" };
+      yield { type: "done", reason: "stop", message: { role: "assistant", content: "should-not-surface" } };
+    })());
+
+    // A user abort ends the turn as an interruption (TurnAbortedError), like
+    // Esc or Ctrl+C: nothing from the aborted stream is surfaced or stored.
+    const outcome = await runTurn(session, "hello", undefined, {
+      signal: controller.signal,
+      sink: watched.sink,
+    }).then(
+      (response) => ({ response, error: undefined as unknown }),
+      (error: unknown) => ({ response: undefined as string | undefined, error }),
+    );
+
+    expect(outcome.error).toBeInstanceOf(TurnAbortedError);
+    expect((outcome.error as TurnAbortedError).partialResponse).not.toContain("should-not-surface");
+    expect(watched.deltas.join("")).not.toContain("should-not-surface");
+    expect(session.getEffectiveProvider()).toBe("umans");
+    expect(watched.lines.some((line) => line.startsWith("Switched to"))).toBe(false);
+    // A user abort is not an LLM error.
+    expect(watched.errors).toHaveLength(0);
+  });
+
+  it("does not commit a fallback stream that ends without a done event", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    const watched = watchSink();
+    primaryThen(() => (async function* () {
+      yield { type: "text_delta", delta: "orphan fallback" };
+    })());
+
+    const response = await runTurn(session, "hello", undefined, { sink: watched.sink });
+
+    expect(response).not.toContain("orphan fallback");
+    expect(watched.deltas.join("")).toBe("");
+    expect(session.getEffectiveProvider()).toBe("umans");
+    expect(session.getActiveModelId()).toBe("umans-coder");
+    expect(watched.lines.some((line) => line.startsWith("Switched to"))).toBe(false);
+    expect(watched.errors.at(-1)?.details).toMatchObject({
+      model: "umans-coder",
+      provider: "umans",
+      reason: "stop",
+    });
+  });
+
+  it("commits a length fallback that includes real text and announces the switch", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    const watched = watchSink();
+    primaryThen(() => (async function* () {
+      yield { type: "text_delta", delta: "partial answer" };
+      yield { type: "done", reason: "length", message: { role: "assistant", content: "partial answer" } };
+    })());
+
+    const response = await runTurn(session, "hello", undefined, { sink: watched.sink });
+
+    expect(response).toContain("partial answer");
+    expect(watched.deltas.join("")).toBe("partial answer");
+    expect(session.getEffectiveProvider()).toBe("openrouter");
+    expect(session.getActiveModelId()).toBe("fallback-model");
+    expect(watched.lines).toContain("Switched to openrouter/fallback-model after empty response");
+  });
+
+  it("does not commit a length fallback with no text, and reports the primary failure", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    const watched = watchSink();
+    primaryThen(() => (async function* () {
+      yield { type: "done", reason: "length", message: { role: "assistant", content: "" } };
+    })());
+
+    const response = await runTurn(session, "hello", undefined, { sink: watched.sink });
+
+    expect(response).not.toContain("fallback-model");
+    expect(session.getEffectiveProvider()).toBe("umans");
+    expect(session.getActiveModelId()).toBe("umans-coder");
+    expect(watched.lines.some((line) => line.startsWith("Switched to"))).toBe(false);
+    expect(watched.errors.at(-1)?.details).toMatchObject({
+      model: "umans-coder",
+      provider: "umans",
+      reason: "stop",
+    });
+  });
+});
+
+describe("fallback commit predicate", () => {
+  const stopped = {
+    interrupted: false,
+    finalReason: "stop",
+    fullResponse: "",
+    pendingToolCalls: [],
+    doneReceived: true,
+    errorKind: undefined,
+  };
+
+  it("rejects an empty stop even when done was received", () => {
+    expect(fallbackFinishedCleanly(stopped as any)).toBe(false);
+  });
+
+  it("rejects an interrupted result and a result with no done event", () => {
+    expect(fallbackFinishedCleanly({ ...stopped, fullResponse: "hi", interrupted: true, doneReceived: false } as any)).toBe(false);
+    expect(fallbackFinishedCleanly({ ...stopped, fullResponse: "hi", doneReceived: false } as any)).toBe(false);
+  });
+
+  it("accepts length with real text and rejects length without text", () => {
+    expect(fallbackFinishedCleanly({ ...stopped, finalReason: "length", fullResponse: "partial answer" } as any)).toBe(true);
+    expect(fallbackFinishedCleanly({ ...stopped, finalReason: "length", fullResponse: "   " } as any)).toBe(false);
+    expect(fallbackFinishedCleanly({ ...stopped, finalReason: "length", fullResponse: "" } as any)).toBe(false);
+  });
+
+  it("records an idle timeout as a lowercase fragment", () => {
+    expect(recordedFallbackReason({ ...stopped, finalReason: "timeout" } as any, 30_000)).toBe("idle timeout after 30s");
+    expect(recordedFallbackReason({ ...stopped, finalReason: "timeout" } as any, 5_000)).toBe("idle timeout after 5s");
+    expect(recordedFallbackReason({ ...stopped, finalReason: "stop" } as any, 30_000)).toBe("empty response");
+  });
+});
+
+const IDLE_TIMEOUT_ERROR =
+  "The model stopped responding (idle timeout after 5s). The partial answer above was not completed.";
+const IDLE_TIMEOUT_BARE = "The model stopped responding (idle timeout after 5s).";
+
+function unpairedToolIds(messages: unknown): string[] {
+  if (!Array.isArray(messages)) return ["invalid-history"];
+  const pending: string[] = [];
+  for (const message of messages) {
+    if (!message || typeof message !== "object") continue;
+    const record = message as { role?: string; toolCalls?: Array<{ id?: string }>; toolCallId?: string };
+    if (record.role === "assistant" && Array.isArray(record.toolCalls)) {
+      for (const call of record.toolCalls) {
+        if (call?.id) pending.push(call.id);
+      }
+    } else if (record.role === "tool_result" && record.toolCallId) {
+      const index = pending.indexOf(record.toolCallId);
+      if (index >= 0) pending.splice(index, 1);
+    }
+  }
+  return pending;
+}
+
+function timeoutMidToolCall(text: string) {
+  return (async function* () {
+    yield { type: "tool_call_start", id: "call_partial", name: "shell" };
+    yield { type: "tool_call_delta", id: "call_partial", argsDelta: '{"command":"ech' };
+    yield {
+      type: "done",
+      reason: "timeout",
+      message: {
+        role: "assistant",
+        content: text,
+        toolCalls: [{ id: "call_partial", name: "shell", args: { command: "ech" } }],
+      },
+    };
+  })();
+}
+
+function completedToolCall(id: string) {
+  return (async function* () {
+    yield {
+      type: "toolcall_end",
+      toolCall: { id, name: "shell", arguments: { command: "echo hi" } },
+    };
+    yield {
+      type: "done",
+      reason: "toolUse",
+      message: {
+        role: "assistant",
+        content: "",
+        toolCalls: [{ id, name: "shell", args: { command: "echo hi" } }],
+      },
+    };
+  })();
+}
+
+describe("timeout history", () => {
+  beforeEach(() => {
+    (piStream as any).mockReset();
+  });
+
+  it("does not retry a step-0 idle timeout that ends mid-tool-call", async () => {
+    const session = makeMockSession();
+    session.config.llm.stream_idle_timeout_ms = 5_000;
+    const histories: unknown[] = [];
+    const errors: string[] = [];
+    (piStream as any).mockImplementation((req: { messages: unknown }) => {
+      histories.push(req.messages);
+      return timeoutMidToolCall("");
+    });
+
+    await runTurn(session, "hello", undefined, {
+      sink: { onError: (entry) => errors.push(entry.message) },
+    });
+
+    expect(histories).toHaveLength(1);
+    expect(histories.every((messages) => unpairedToolIds(messages).length === 0)).toBe(true);
+    expect(JSON.stringify(histories)).not.toContain("call_partial");
+    expect(errors).toContain(IDLE_TIMEOUT_BARE);
+    expect(errors.some((message) => message.includes("partial answer"))).toBe(false);
+  });
+
+  it("keeps history valid when a later tool step times out mid-tool-call", async () => {
+    const session = makeMockSession();
+    session.config.llm.stream_idle_timeout_ms = 5_000;
+    const histories: unknown[] = [];
+    const errors: string[] = [];
+    const texts: string[] = [];
+    let call = 0;
+    (piStream as any).mockImplementation((req: { messages: unknown }) => {
+      call += 1;
+      histories.push(req.messages);
+      if (call <= 2) return completedToolCall(`tool_${call}`);
+      return (async function* () {
+        yield { type: "text_delta", delta: "Partial answer" };
+        yield* timeoutMidToolCall("Partial answer");
+      })();
+    });
+
+    const response = await runTurn(session, "hello", undefined, {
+      sink: {
+        onError: (entry) => errors.push(entry.message),
+        onTextDelta: (delta) => texts.push(delta),
+      },
+    });
+
+    expect(call).toBe(3);
+    expect(histories.every((messages) => unpairedToolIds(messages).length === 0)).toBe(true);
+    expect(JSON.stringify(histories)).not.toContain("call_partial");
+    expect(texts).toEqual(["Partial answer"]);
+    expect(response).toContain("Partial answer");
+    expect(errors).toContain(IDLE_TIMEOUT_ERROR);
+  });
+
+  it("counts only the retained assistant text after a timeout", async () => {
+    const session = makeMockSession();
+    const deltas: Array<{ tokensAdded: number; source: string }> = [];
+    (piStream as any).mockImplementation(() => (async function* () {
+      yield { type: "text_delta", delta: "Partial" };
+      yield { type: "tool_call_start", id: "big", name: "shell" };
+      yield { type: "done", reason: "timeout", message: {
+        role: "assistant", content: [
+          { type: "text", text: "Partial" },
+          { type: "tool_use", id: "big", name: "shell", arguments: { command: "x".repeat(4000) } },
+        ],
+      } };
+    })());
+    await runTurn(session, "hello", undefined, {
+      sink: { onContextHistoryDelta: (delta) => deltas.push(delta) },
+    });
+    expect(deltas.filter((delta) => delta.source === "assistant").map((delta) => delta.tokensAdded))
+      .toEqual([estimateAssistantMessageTokens({ role: "assistant", content: "Partial" })]);
+  });
+
+  it("asks the fallback after one idle timeout without a same-model retry", async () => {
+    const session = makeMockSession();
+    session.config.llm.stream_idle_timeout_ms = 5_000;
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    const lines: string[] = [];
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      if (callCount === 1) {
+        return (async function* () {
+          yield { type: "done", reason: "timeout", message: { role: "assistant", content: "" } };
+        })();
+      }
+      return (async function* () {
+        yield { type: "text_delta", delta: "fallback ok" };
+        yield { type: "done", reason: "stop", message: { role: "assistant", content: "fallback ok" } };
+      })();
+    });
+
+    const response = await runTurn(session, "hello", undefined, {
+      sink: { onSystemLines: (rows) => lines.push(...rows) },
+    });
+
+    expect(callCount).toBe(2);
+    expect(response).toContain("fallback ok");
+    expect(session.getEffectiveProvider()).toBe("openrouter");
+    expect(session.getActiveModelId()).toBe("fallback-model");
+    expect(lines).toContain(
+      "Switched to openrouter/fallback-model after idle timeout after 5s",
+    );
+  });
+
+  it("reports an idle timeout without a same-model retry when no fallback is configured", async () => {
+    const session = makeMockSession();
+    session.config.llm.stream_idle_timeout_ms = 5_000;
+    const errors: string[] = [];
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      return (async function* () {
+        yield { type: "done", reason: "timeout", message: { role: "assistant", content: "" } };
+      })();
+    });
+
+    await runTurn(session, "hello", undefined, {
+      sink: { onError: (entry) => errors.push(entry.message) },
+    });
+
+    expect(callCount).toBe(1);
+    expect(errors).toContain(IDLE_TIMEOUT_BARE);
+    expect(session.getEffectiveProvider()).toBe("umans");
+  });
+
+  it("reports an idle timeout without a same-model retry when fallback is not allowed", async () => {
+    const session = makeMockSession();
+    session.config.llm.stream_idle_timeout_ms = 5_000;
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    session.setProviderOverride("anthropic");
+    session.setModelOverride("claude-sonnet-4");
+    const errors: string[] = [];
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      return (async function* () {
+        yield { type: "done", reason: "timeout", message: { role: "assistant", content: "" } };
+      })();
+    });
+
+    await runTurn(session, "hello", "claude-sonnet-4", {
+      sink: { onError: (entry) => errors.push(entry.message) },
+    });
+
+    expect(callCount).toBe(1);
+    expect(errors).toContain(IDLE_TIMEOUT_BARE);
+    expect(session.getEffectiveProvider()).toBe("anthropic");
+    expect(session.getActiveModelId()).toBe("claude-sonnet-4");
+  });
+
+  it("does not retry a step-0 idle timeout after partial text", async () => {
+    const session = makeMockSession();
+    session.config.llm.stream_idle_timeout_ms = 5_000;
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    const texts: string[] = [];
+    const errors: string[] = [];
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      return (async function* () {
+        yield { type: "text_delta", delta: "Hello" };
+        yield {
+          type: "done",
+          reason: "timeout",
+          message: { role: "assistant", content: "Hello" },
+        };
+      })();
+    });
+
+    const response = await runTurn(session, "hello", undefined, {
+      sink: {
+        onTextDelta: (delta) => texts.push(delta),
+        onError: (entry) => errors.push(entry.message),
+      },
+    });
+
+    expect(callCount).toBe(1);
+    expect(texts).toEqual(["Hello"]);
+    expect(response.match(/Hello/g)?.length).toBe(1);
+    expect(errors).toContain(IDLE_TIMEOUT_ERROR);
+  });
+
+  it("retries and falls back when attempts emit only thinking", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    let calls = 0;
+    (piStream as any).mockImplementation(() => {
+      calls++;
+      const attempt = calls;
+      return (async function* () {
+        if (attempt < 3) {
+          yield { type: "thinking_delta", delta: "thinking" };
+          yield { type: "done", reason: "stop", message: { role: "assistant", content: "" } };
+        } else {
+          yield { type: "text_delta", delta: "answer" };
+          yield { type: "done", reason: "stop", message: { role: "assistant", content: "answer" } };
+        }
+      })();
+    });
+    const result = await runTurn(session, "hello");
+    expect(calls).toBe(3);
+    expect(result).toContain("answer");
+  });
+
+  it("does not fall back when the second attempt already streamed text", async () => {
+    const session = makeMockSession();
+    session.config.llm.stream_idle_timeout_ms = 5_000;
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    const texts: string[] = [];
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      if (callCount === 1) {
+        return (async function* () {
+          yield { type: "done", reason: "stop", message: { role: "assistant", content: "" } };
+        })();
+      }
+      if (callCount === 2) {
+        return (async function* () {
+          yield { type: "text_delta", delta: "Partial" };
+          yield {
+            type: "done",
+            reason: "timeout",
+            message: { role: "assistant", content: "Partial" },
+          };
+        })();
+      }
+      return (async function* () {
+        yield { type: "text_delta", delta: "fallback should not run" };
+        yield {
+          type: "done",
+          reason: "stop",
+          message: { role: "assistant", content: "fallback should not run" },
+        };
+      })();
+    });
+
+    const response = await runTurn(session, "hello", undefined, {
+      sink: { onTextDelta: (delta) => texts.push(delta) },
+    });
+
+    expect(callCount).toBe(2);
+    expect(texts).toEqual(["Partial"]);
+    expect(response).toContain("Partial");
+    expect(response).not.toContain("fallback should not run");
+    expect(session.getEffectiveProvider()).toBe("umans");
+  });
+});
+
+function prematureEnd(retryable: boolean, message = "stream ended before the provider sent a final event (message_stop)") {
+  return (async function* () {
+    yield {
+      type: "error",
+      error: new Error(message),
+      retryable,
+      kind: "premature_end" as const,
+    };
+  })();
+}
+
+describe("premature stream end retry", () => {
+  beforeEach(() => {
+    (piStream as any).mockReset();
+  });
+
+  it("retries once at step 0 when nothing was emitted and the end is retryable", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      if (callCount === 1) return prematureEnd(true);
+      return (async function* () {
+        yield { type: "text_delta", delta: "recovered" };
+        yield { type: "done", reason: "stop", message: { role: "assistant", content: "recovered" } };
+      })();
+    });
+
+    const response = await runTurn(session, "hello");
+    expect(response).toContain("recovered");
+    expect(callCount).toBe(2);
+    expect(session.getEffectiveProvider()).toBe("umans");
+  });
+
+  it("retries a premature end when the message text is reworded", async () => {
+    const session = makeMockSession();
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      if (callCount === 1) return prematureEnd(true, "the socket closed early");
+      return (async function* () {
+        yield { type: "text_delta", delta: "recovered" };
+        yield { type: "done", reason: "stop", message: { role: "assistant", content: "recovered" } };
+      })();
+    });
+
+    const response = await runTurn(session, "hello");
+    expect(response).toContain("recovered");
+    expect(callCount).toBe(2);
+  });
+
+  it("does not retry the old premature-end sentence when the kind marker is absent", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      return (async function* () {
+        yield {
+          type: "error",
+          error: new Error("stream ended before the provider sent a final event (message_stop)"),
+          retryable: true,
+        };
+      })();
+    });
+
+    await runTurn(session, "hello");
+    expect(callCount).toBe(1);
+  });
+
+  it("skips the step-0 retry for a connect timeout and goes to the fallback", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      if (callCount === 1) {
+        return (async function* () {
+          yield {
+            type: "error",
+            error: new Error("ETIMEDOUT: connect timeout after 60000ms (llm.connect_timeout_ms)"),
+            retryable: false,
+            kind: "connect_timeout",
+          };
+        })();
+      }
+      return (async function* () {
+        yield { type: "text_delta", delta: "fallback" };
+        yield { type: "done", reason: "stop", message: { role: "assistant", content: "fallback" } };
+      })();
+    });
+
+    const response = await runTurn(session, "hello");
+    expect(response).toContain("fallback");
+    expect(callCount).toBe(2);
+    expect(session.getEffectiveProvider()).toBe("openrouter");
+  });
+
+  it("retries a mid-stream ETIMEDOUT that is not a connect timeout", async () => {
+    const session = makeMockSession();
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      if (callCount === 1) {
+        return (async function* () {
+          yield {
+            type: "error",
+            error: new Error("read ETIMEDOUT: timeout while reading the response body"),
+            retryable: false,
+          };
+        })();
+      }
+      return (async function* () {
+        yield { type: "text_delta", delta: "retried" };
+        yield { type: "done", reason: "stop", message: { role: "assistant", content: "retried" } };
+      })();
+    });
+
+    const response = await runTurn(session, "hello");
+    expect(response).toContain("retried");
+    expect(callCount).toBe(2);
+  });
+
+  it("skips the step-0 retry for a connect timeout marker without matching the message text", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      if (callCount === 1) {
+        return (async function* () {
+          yield {
+            type: "error",
+            error: new Error("timeout"),
+            retryable: false,
+            kind: "connect_timeout",
+          };
+        })();
+      }
+      return (async function* () {
+        yield { type: "text_delta", delta: "fallback" };
+        yield { type: "done", reason: "stop", message: { role: "assistant", content: "fallback" } };
+      })();
+    });
+
+    const response = await runTurn(session, "hello");
+    expect(response).toContain("fallback");
+    expect(callCount).toBe(2);
+    expect(session.getEffectiveProvider()).toBe("openrouter");
+  });
+
+  it("falls back after the one premature-end retry also fails", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      if (callCount <= 2) return prematureEnd(true);
+      return (async function* () {
+        yield { type: "text_delta", delta: "fallback recovered" };
+        yield {
+          type: "done",
+          reason: "stop",
+          message: { role: "assistant", content: "fallback recovered" },
+        };
+      })();
+    });
+
+    const response = await runTurn(session, "hello");
+    expect(response).toContain("fallback recovered");
+    expect(callCount).toBe(3);
+    expect(session.getEffectiveProvider()).toBe("openrouter");
+  });
+
+  it("does not retry a premature end after text was already shown", async () => {
+    const session = makeMockSession();
+    session.config.llm.fallback_provider = "openrouter";
+    session.config.llm.fallback_model = "fallback-model";
+    const texts: string[] = [];
+    const errors: string[] = [];
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      return (async function* () {
+        yield { type: "text_delta", delta: "Partial" };
+        yield {
+          type: "error",
+          error: new Error("stream ended before the provider sent a final event (message_stop)"),
+          retryable: true,
+        };
+      })();
+    });
+
+    const response = await runTurn(session, "hello", undefined, {
+      sink: {
+        onTextDelta: (delta) => texts.push(delta),
+        onError: (entry) => errors.push(entry.message),
+      },
+    });
+
+    expect(callCount).toBe(1);
+    expect(texts).toEqual(["Partial"]);
+    expect(response).toContain("Partial");
+    expect(errors.some((message) => message.includes("stream ended before"))).toBe(true);
+  });
+
+  it("does not retry a premature end after a tool call was emitted", async () => {
+    const session = makeMockSession();
+    let callCount = 0;
+    (piStream as any).mockImplementation(() => {
+      callCount += 1;
+      return (async function* () {
+        yield { type: "tool_call_start", id: "call_1", name: "shell" };
+        yield {
+          type: "error",
+          error: new Error("stream ended before the provider sent a final event (message_stop)"),
+          retryable: true,
+        };
+      })();
+    });
+
+    await runTurn(session, "hello");
+    expect(callCount).toBe(1);
   });
 });

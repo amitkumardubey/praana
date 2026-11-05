@@ -34,10 +34,14 @@ import {
 import type { TranscriptEntry } from "./transcript/model.js";
 import { TranscriptProjection } from "./transcript/projection.js";
 import { createTranscriptStore } from "./transcript/store.js";
+import { releaseMarkdownSyntaxStyles } from "./transcript/markdown-theme.js";
 import { OpenTuiSink } from "./sink.js";
+import type { OverlayKind } from "./overlays/state.js";
+import { waitForSubmittedFrame } from "./submit-frame.js";
 import { listAllAvailableModels } from "../../model-listing.js";
 import { App } from "./app.js";
 import { createShellUi } from "./shell-ui.js";
+import { parseSynchronizedOutput } from "./render-options.js";
 import { createOverlayUi } from "./overlays/state.js";
 import type { PromptHandle } from "./prompt/index.js";
 import { DEFAULT_CONTEXT_WINDOW } from "../../status-bar.js";
@@ -98,6 +102,11 @@ function toastToneToType(
   if (tone === "error") return "error";
   if (tone === "success") return "success";
   return "info";
+}
+
+/** Focus the prompt after a step-pause confirm only when nothing else is open. */
+export function focusPromptAfterConfirm(kind: OverlayKind, focusPrompt: () => void): void {
+  if (kind === "none") focusPrompt();
 }
 
 /**
@@ -165,6 +174,7 @@ export async function runTui(
     width: process.stdout.columns ?? 80,
     height: process.stdout.rows ?? 24,
     exitOnCtrlC: false,
+    synchronizedOutput: parseSynchronizedOutput(process.env.PRAANA_TUI_SYNC_OUTPUT),
     consoleOptions: {
       position: ConsolePosition.BOTTOM,
       sizePercent: 25,
@@ -313,7 +323,7 @@ export async function runTui(
       void doShutdown(setupOutcome);
       return;
     }
-    focusPrompt();
+    focusPromptAfterConfirm(overlay.kind(), focusPrompt);
   };
 
   const handleSlashTrigger = () => {
@@ -477,13 +487,39 @@ export async function runTui(
     }
     setupOutcome = result.success ? "completed" : "failed";
     void applySetupToLiveSession(result);
-    focusPrompt();
+    focusPromptAfterConfirm(overlay.kind(), focusPrompt);
   };
 
   const handleConsentComplete = (proceed: boolean) => {
     setEmbedderConsent(proceed ? "proceed" : "skip");
     overlay.dismiss();
     if (!session) void startSessionFromOverlay();
+  };
+
+  /**
+   * Interactive step-pause: open a small confirm overlay (spinner stopped).
+   * Enter continues. Esc stops and asks for a summary. Ctrl+C is left for
+   * the global handler, which aborts the turn signal; the confirm closes
+   * on that abort and the turn does not request a wrap-up.
+   */
+  const askContinueFromOverlay = async (stepsUsed: number, signal: AbortSignal): Promise<boolean> => {
+    if (signal.aborted) return false;
+    ui.spinner.stop();
+    // showConfirm closes itself when `signal` aborts, so a cancelled turn
+    // cannot leave "Continue?" or its key intercept on screen.
+    const pending = overlay.showConfirm(`Used ${stepsUsed} steps this turn. Continue?`, signal);
+    renderer.requestRender();
+    try {
+      const cont = await pending;
+      // showConfirm already settles on abort and updates overlay kind, and
+      // the host re-renders when kind changes. The finally below requests
+      // another frame, so a separate abort listener is not required.
+      focusPromptAfterConfirm(overlay.kind(), focusPrompt);
+      if (cont && !signal.aborted) ui.spinner.start("working…");
+      return cont && !signal.aborted;
+    } finally {
+      renderer.requestRender();
+    }
   };
 
   const handleLogoutComplete = (result: LogoutWizardResult) => {
@@ -520,7 +556,17 @@ export async function runTui(
     transcript.dispose();
     overlay.dispose();
     ui.dispose();
+    // OpenTUI 0.6.0+ destroys the renderer asynchronously (terminal restore);
+    // await renderer.closed so the shell is left clean before process.exit().
+    // Also release the per-scene markdown SyntaxStyle cache before the scene
+    // owns native resources that stop working once the renderer is destroyed.
+    releaseMarkdownSyntaxStyles(renderer.nativeScene);
     renderer.destroy();
+    try {
+      await renderer.closed;
+    } catch {
+      // Renderer teardown failure: still exit with the requested code.
+    }
     if (!session) {
       process.exit(exitCode);
       return;
@@ -716,6 +762,7 @@ export async function runTui(
     turnRunning = true;
 
     try {
+      await waitForSubmittedFrame(renderer);
       await controller.runUserTurn(input, openTuiSink);
     } finally {
       turnRunning = false;
@@ -760,7 +807,6 @@ export async function runTui(
                 handlePaletteCancel();
               } else {
                 dismissOverlay();
-                focusPrompt();
               }
               renderer.requestRender();
               return;
@@ -774,7 +820,6 @@ export async function runTui(
               handlePaletteCancel();
             } else if (overlay.kind() === "model") {
               dismissOverlay();
-              focusPrompt();
             }
             if (!session) {
               void doShutdown(setupOutcome);
@@ -808,7 +853,7 @@ export async function runTui(
           transcriptOpts={transcriptOpts}
           currentProvider={() => session?.getEffectiveProvider() ?? config.llm.provider}
           currentModelId={() => session?.getActiveModelId() ?? config.llm.model}
-          loadModels={(opts) => listAllAvailableModels(opts)}
+          loadModels={(opts) => listAllAvailableModels({ ...opts, currentProvider: session?.getEffectiveProvider() ?? config.llm.provider, currentModelId: session?.getActiveModelId() ?? config.llm.model })}
           onModelSelect={handleModelSelect}
           onLoginComplete={handleLoginComplete}
           onLogoutComplete={handleLogoutComplete}
@@ -854,6 +899,9 @@ export async function runTui(
               onSpinnerMessage: (msg: string) => {
                 ui.spinner.setMessage(msg);
               },
+              onSpinnerStop: () => {
+                ui.spinner.stop();
+              },
               ctxWindowTokens: ctxWindow,
               engineMode: live.isContextEngineEnabled(),
               projection,
@@ -863,6 +911,7 @@ export async function runTui(
                 overlay.showSlash(lines);
                 renderer.requestRender();
               },
+              onStepPause: askContinueFromOverlay,
               onContextPreview: (snapshot: ContextDisplaySnapshot) => {
                 ui.chrome.setStatus(withUpdateFlags(controller.getStatusBarInput()), {
                   showCost: config.ui.show_cost,

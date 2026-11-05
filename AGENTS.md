@@ -86,7 +86,7 @@ Typing `/` opens the slash palette (fuzzy filter; non-destructive first; Enter r
 
 ## Testing
 
-`bun test` (full suite; `bun run test:parallel` opt-in). Tests live in `tests/`; keep the suite passing before committing and add tests for new logic. In-memory SQLite (`:memory:`) tests must use `openDatabase()` (`src/sqlite.ts`), never raw `new Database(":memory:")`. `bunfig.toml` preloads `tests/helpers/solid-client.ts` under `bun test` (client build of solid-js + Solid JSX transform) so OpenTUI Solid UI tests are reactive.
+`bun test` (full suite; `bun run test:parallel` opt-in). Tests live in `tests/`; keep the suite passing before committing and add tests for new logic. In-memory SQLite (`:memory:`) tests must use `openDatabase()` (`src/sqlite.ts`), never raw `new Database(":memory:")`. `bunfig.toml` preloads `tests/helpers/solid-client.ts` under `bun test` (client build of solid-js + Solid JSX transform) so OpenTUI Solid UI tests are reactive. `bunfig.toml` also preloads `tests/helpers/isolated-home.ts`, which points `HOME`/`USERPROFILE`/`PRAANA_HOME` at a per-run temp dir and clears provider credential env vars so the suite never reads or writes your real `~/.praana`; set `PRAANA_TEST_REAL_HOME=1` to opt out for a rare live test.
 
 ## Code Conventions
 
@@ -137,7 +137,7 @@ src/
 - Repeat-read interceptor: a second read of an unchanged file returns the artifact card (configurable `[tools] block_repeat_reads`); in engine mode use `retrieve_artifact(id)` instead of re-reading.
 - Skills: catalog (name + description) injected every turn, usefulness-ranked in both modes; `load_skill(skill_id)` fetches the body on demand (load tracking + stale eviction are engine mode only).
 - Memory scopes: default `user:<prefix>`, `agent:praana`, `context:<prefix>` — 12-char SHA-256 prefixes (`hashString`) of `$USER` / cwd; project memories carry all three, global `user` + `agent` only; recall enforces AND-scoping.
-- Responses driver: a function-call argument delta that does not extend a call announced by `output_item.added` ends the stream with a non-retryable error (all Responses providers). `tests/responses-driver.test.ts` compares against `tests/fixtures/openai-responses-main-golden.json` (regenerate with `PRAANA_UPDATE_RESPONSES_GOLDEN=1`).
+- Responses driver: Codex rejects a function-call argument delta that does not extend a call announced by `output_item.added` (non-retryable). Other Responses providers buffer those deltas by `item_id` and complete the call at `output_item.done`; a call that never receives `done` is the same error. `tests/responses-driver.test.ts` compares against `tests/fixtures/openai-responses-main-golden.json` (regenerate with `PRAANA_UPDATE_RESPONSES_GOLDEN=1`).
 - TUI (`src/ui/tui/`): Ctrl+C copies the selection (`clipboard.ts`); wizard Esc walks a visited-step history (`src/setup/wizard-nav.ts`); Esc in any OAuth prompt raises `OAuthUserCancelledError` (quiet step back) while other aborts are `AbortError`; mouse selection never steals prompt focus; `/help` and `praana --help` share one help source; exit codes: 0 after successful setup, 1 if setup succeeded but no session started.
 - Windows: absolute-path decisions use `resolveAgainstCwd` / `path.isAbsolute` (`src/app-identity.ts`), never `startsWith("/")`; the app logger suppresses stderr while the TUI owns the terminal (`withStderrSuppressed`).
 

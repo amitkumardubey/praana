@@ -126,6 +126,23 @@ export interface LlmConfig {
   reasoning_effort?: string;
   /** AWS region for amazon-bedrock catalog + invoke. Ignored by other providers. */
   region?: string;
+  /**
+   * Milliseconds to wait for response headers before aborting the request.
+   * `0` disables the connect timer. Omitted: 60000 for anthropic, openai,
+   * google, vertex, and amazon-bedrock; 300000 for every other provider.
+   * An explicit value applies to every provider.
+   */
+  connect_timeout_ms?: number;
+  /**
+   * Milliseconds of upstream silence before the stream is aborted.
+   * `0` disables. Omitted: 300000 for every provider.
+   */
+  stream_idle_timeout_ms?: number;
+  /**
+   * How to treat a clean stream close that lacks the provider's final signal.
+   * `auto` (default), `strict`, or `lenient`. Invalid values fall back to `auto`.
+   */
+  stream_end_check?: "auto" | "strict" | "lenient";
 }
 
 // ---- User-Declared Providers (declarative config) ----
@@ -404,8 +421,24 @@ export interface ProjectDetectionConfig {
 }
 
 export interface TurnConfig {
-  /** Max LLM rounds per user message (each round may batch multiple tool calls). */
+  /**
+   * Hard cap on steps per user message when the session is headless or the
+   * UI sink does not provide `onStepPause`. The last batch executes, then a
+   * wrap-up runs. Default: 25.
+   */
   max_steps: number;
+  /**
+   * Soft-pause interval when the sink provides `onStepPause`. Default: 50.
+   * If `hard_max_steps` is not above this value, the pause is disabled and
+   * the turn stops at the ceiling with a wrap-up.
+   */
+  pause_after_steps: number;
+  /**
+   * Absolute ceiling when the sink provides `onStepPause` (wrap-up without
+   * prompting; the pending batch is not executed). Default: 300.
+   * When this is not above `pause_after_steps`, the pause is disabled.
+   */
+  hard_max_steps: number;
 }
 
 export interface CircuitConfig {

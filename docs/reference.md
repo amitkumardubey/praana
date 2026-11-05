@@ -89,6 +89,12 @@ bun run build:compile   # → dist/praana
 
 Unreleased / dirty trees bake `--version` as `{package}-dev.<shortsha>[.dirty]` (exact release tag + clean tree stays the package version).
 
+PRAANA pins `@opentui/core`, `@opentui/solid`, and `@opentui/keymap` to exactly `0.8.0` (no caret), and carries the eight `@opentui/core-<os>-<cpu>` native platform packages as `optionalDependencies` pinned to `0.8.0` so each platform installs (and bundles) only its own binary. OpenTUI's experimental native input parser is opt-in: try it with `OTUI_NATIVE_INPUT_PARSER=1`. Synchronized output uses OpenTUI's `auto` default (the wrapper is skipped in remote sessions that do not report mode 2026).
+
+For terminals where streaming answers flicker, set `PRAANA_TUI_SYNC_OUTPUT` to `always` to force synchronized output or `never` to disable it. Values are case-insensitive; `auto`, an unset variable, or any other value uses OpenTUI's default.
+
+While an assistant answer is still streaming, the transcript omits an unfinished list marker, trailing spaces on a list item, and trailing newlines from the markdown view. OpenTUI's streaming preview paints those tails as an extra row and the next frame removes it; following both heights bounced the viewport by one line. The finished answer is rendered in full.
+
 ## First run
 
 ```bash
@@ -107,6 +113,31 @@ praana setup   # Interactive provider/config setup wizard (also `praana init` al
 ```
 
 Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harbor/CI), `praana resume` (continues your most recent session for the current project when given no id), `praana upgrade` (installs the latest GitHub Release binary + sidecar; alias `praana update`), `praana doctor` (checks config + provider keys), `praana providers` (lists configured providers; `--all` includes unconfigured), `praana models` (lists models), and `praana memory dedupe` (merges duplicate Cognitive Memory entries). See [`praana.config.example.toml`](https://github.com/amitkumardubey/praana/blob/main/praana.config.example.toml) for all settings. Harbor / Terminal-Bench: [`harbor_eval/README.md`](https://github.com/amitkumardubey/praana/blob/main/harbor_eval/README.md).
+
+### Per-turn step budget
+
+A *step* is one model round-trip (it may contain several parallel tool calls). The `[turn]` section controls how long a single turn may keep calling tools:
+
+| Key | Default | Meaning |
+|---|---|---|
+| `max_steps` | 25 | Hard cap on steps per user message when the session is **headless** (`praana run`, Harbor, CI) **or** the UI sink does not provide `onStepPause` (non-interactive sinks, subagents, tests). `--max-steps N` overrides it for one headless run. Reaching the cap executes the current tool batch, then runs the wrap-up. |
+| `pause_after_steps` | 50 | When the sink provides `onStepPause`, the session pauses before executing the next tool batch every time steps used reaches a multiple of this value. |
+| `hard_max_steps` | 300 | Absolute ceiling for those interactive sessions: reaching it stops *without asking* and writes the wrap-up summary. If this is not above `pause_after_steps` (lower or equal), PRAANA warns, keeps this ceiling, and disables the pause: the turn stops at the ceiling with a wrap-up and does not ask. |
+
+The pause/ceiling path runs only when the sink provides `onStepPause`. Headless runs and every other sink use `max_steps` and never prompt.
+
+When an interactive turn reaches a multiple of `pause_after_steps`, PRAANA stops the spinner and shows a small prompt: `Used N steps this turn. Continue?` In the TUI, **Enter** continues, **Esc** stops and asks for a short summary, and **Ctrl+C** aborts the turn without that summary. An Enter or Esc that is already in flight is ignored for a brief moment so the prompt does not continue or stop by accident. Ctrl+C is not delayed. A slash-result panel does not hold that prompt: it closes and the continue question opens immediately. Opening another interactive dialog (palette, model, login, logout, setup) while the prompt is up waits until you answer; it does not count as stop, and the other dialog opens afterwards. Closing the prompt answers only the prompt on screen, so a dialog requested while it was showing still opens, and the keyboard stays with that dialog until nothing is left open. Cancelling the turn closes the prompt. On the plain terminal the prompt says `Enter or y = continue, anything else = stop` — **Enter**, **y**, or **yes** continues, and any other line stops (readline has no Esc key). Ctrl+C there is the terminal interrupt: while a turn is running it aborts that turn and does not ask for a summary. The next pause is another `pause_after_steps` later. Focus returns to the input when the prompt closes and nothing else is open, and the spinner starts again if you continue.
+
+**Wrap-up:** a turn that stops at a limit runs one final model call with **no tools**, asking for a short summary of what was done and what remains. While that request is in flight the spinner reads `wrapping up…` until the first text arrives, or until the request ends, fails, or is aborted. The summary streams like a normal reply, separated from the preceding step text by a blank line. The "do not call tools" instruction is sent only with that call and is not kept in the transcript. The summary is stored only when it has visible text (a thinking-only or blank reply is not stored). If the model still returns tool calls, they are dropped and not executed. If the wrap-up call fails, the error is reported the same way as any other model error (and, when nothing was streamed yet, the turn still ends with the normal banner). A summary that exists only on the final message of a failed wrap-up is not shown or stored, and the context token count includes a wrap-up reply only when that reply is kept. Ctrl+C during the wrap-up interrupts the turn and keeps whatever summary text was already streamed.
+
+Tool results on that no-tools request include text only (image and other non-text parts are omitted). Each result is cut at 2,000 characters and ends with `[truncated]` when it was cut. Adjacent user messages are merged so the request alternates roles.
+
+What is already in history depends on which limit fired:
+
+- **Soft-pause stop** and **hard ceiling** (`hard_max_steps`): the model has already asked for a tool batch, but that batch is **not executed** (stopping must not edit files). Each pending tool call is recorded as an error result: `Not executed: the step budget was reached and the turn was stopped.` Then the wrap-up runs.
+- **Headless cap** and **any sink without `onStepPause`** (`max_steps`): the last tool batch **runs first**, its results stay in history, and then the wrap-up runs.
+
+Set any of the three keys to `0` (or use a non-positive value) to fall back to the default; invalid values log a config warning and use the default. A NaN, fraction, or negative that reaches a turn without going through config loading is clamped to the same default and does not warn again.
 
 ### Supported providers
 
@@ -133,6 +164,31 @@ Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harb
 | OpenAI Codex | ChatGPT subscription sign-in with `/login openai-codex`: browser (default) or device code |
 
 Provider resolution order: explicit config → credential store (`~/.praana/credentials.json`) → environment-detected key → interactive setup.
+
+### LLM fallback
+
+Set both `[llm]` `fallback_provider` and `fallback_model` to use another provider/model after an eligible stream failure or when the primary sign-in cannot be refreshed. An explicit session model or provider override disables automatic fallback. The fallback becomes the session model only after it produces a usable finished answer.
+
+### LLM stream timeouts
+
+These keys live in `[llm]`. A value that is not a non-negative integer warns and the provider default is used instead. An integer above `2147483647` is also rejected with a warning and the provider default is used: `setTimeout` overflows past that and the timer would fire immediately. `0` turns that timer off. An explicit value applies to every provider. Omitting a key does not change timeouts for other streams in the process; each request resolves its own budget.
+
+Connect time is time until the first response headers. Local and self-hosted servers often spend that time loading a model or prefilling the prompt, so they get a longer budget than hosted APIs. Idle time is silence from the server after the response has started, including a reasoning model that has not emitted a token yet. It is not reset by the client being slow to read a chunk it already received.
+
+| Key | Default | Behaviour |
+|---|---|---|
+| `connect_timeout_ms` | `60000` when the provider is `anthropic`, `openai`, `google`, `vertex`, or `amazon-bedrock` and the effective base URL is unset or is that provider's built-in host. `300000` when `base_url` points at any other host (including loopback and private addresses), for every other provider, and for a user-declared id even when that id is also in the hosted list. An explicit number always wins. | Abort the request if response headers have not arrived. A connect timeout is fetched at most twice (the first attempt plus one retry, with up to 1.2s of backoff). The turn recognises that failure from a connect-timeout marker on the error, not from the letters ETIMEDOUT in the message, and does not retry it again: if a fallback model is configured, that model is asked next. A mid-stream socket error that merely mentions ETIMEDOUT still gets the turn's one retry. Worst case before the fallback request starts is about 121s on the 60s budget and about 601s on the 300s budget. Other retryable errors still use up to three driver retries and one more turn attempt before the fallback model. An idle timeout does not get that extra turn attempt: the same model is not asked again, and a configured fallback is used when automatic fallback is allowed. No tokens have been emitted yet. |
+| `stream_idle_timeout_ms` | `300000` | Abort if the server stays silent this long. The timer resets when an upstream chunk arrives, including SSE comment keep-alives, and pauses while that chunk is processed. Anthropic finishes at `message_stop` (usage already arrived on `message_delta`) and Google finishes at `finishReason` (usage arrives on that same chunk); both cancel the rest of the body. OpenAI-compatible streams keep reading after `finish_reason` until a usage chunk or `[DONE]`, and Bedrock keeps reading after `messageStop` until `metadata`. That wait ends when the trailer arrives, the body ends, or 2 seconds pass (the idle budget, when that is shorter; 2 seconds when idle is disabled), then the body is cancelled. A connection left open cannot use up the idle budget. The stream ends with reason `timeout` only when the server actually goes silent. Partial text is kept. Tool calls from a stream that did not finish normally are never executed, including tool calls that already looked complete. The turn reports `The model stopped responding (idle timeout after Ns).` and adds `The partial answer above was not completed.` only when some text was streamed. On the first step the turn does not retry the same model after an idle timeout. When a fallback model is configured and automatic fallback is allowed, that model is asked next; otherwise the idle-timeout error is shown immediately. Text already streamed still skips both the retry and the fallback. A premature stream end is still retried once on the same model. A user abort is still reason `abort`. |
+
+A non-OK response body is read under one deadline: the idle budget, capped at 15 seconds (or 15 seconds when idle is disabled). Bytes that trickle in do not reset that deadline. The read also stops after 64 KiB. If the body has not finished by the deadline, the error is the HTTP status plus `response body timed out`. A 429 or other retryable status waits for a `Retry-After` header when one is present, instead of the jittered backoff, and that wait is still capped at 10 seconds. A user abort before the response headers, including one during that wait, ends the stream with reason `abort`, the same as an abort after text has started. After the provider's terminal event, a socket error while reading a usage trailer is treated as the body ending: the completion already in hand is kept, including any tool calls that terminal authorized.
+
+### LLM stream end check
+
+`stream_end_check` lives in `[llm]`. A value other than `auto`, `strict`, or `lenient` warns and falls back to `auto`.
+
+| Key | Default | Behaviour |
+|---|---|---|
+| `stream_end_check` | `auto` | What to do when a stream closes cleanly without the provider's final signal (Anthropic `message_stop` / `stop_reason`, OpenAI-compatible `finish_reason` or `[DONE]`, Responses `response.completed` / `response.incomplete` / `response.done` / `[DONE]`, Google `finishReason`, Bedrock `messageStop`). `strict` returns an error whose event has `kind: "premature_end"` (the turn retries from that marker, not from the message text). `lenient` keeps text received so far. A tool call whose arguments parsed as sent may still run. A call that was still open, whose argument text is empty or does not start with `{`, or whose arguments had to be repaired, is not run; the stream ends with a non-retryable error (`The response was cut off while the model was calling a tool`) and the text already streamed is kept. A lenient accept writes a debug log: `<provider>: stream ended without a final event; accepted (lenient)`. `auto` uses the same hosted rule as the connect budget: strict when the base URL is unset or, ignoring surrounding whitespace, is the built-in host, lenient when `base_url` points at another host. A user-declared id is lenient under `auto` even if that id is also in the hosted list. Explicit `strict` or `lenient` always wins. Codex (`openai-codex`) still reports a missing terminal event as an error when `auto` would otherwise be lenient for that id. A partial SSE line left in the buffer when the socket closes is not dispatched, and that discard is logged once at warn level with its byte count only. |
 
 ### ChatGPT subscription login
 
@@ -283,8 +339,20 @@ plain text finishes with the partial output and reason `length`. A cutoff while 
 tool call is still being sent is an error: `The response was cut off while the
 model was calling a tool.` That check is the same for `response.incomplete`,
 `response.done`, and `response.completed` when the status is incomplete.
-A tool call that has already finished is still published. Other Responses providers keep the previous stream
-behaviour.
+A tool call that has already finished is still published. A function-call
+argument delta with no announced call is a non-retryable error for Codex.
+Other Responses providers buffer those deltas by `item_id` and complete the
+call when `response.output_item.done` arrives with the name, call id, and
+arguments. If that `done` never arrives, the stream ends with the same
+non-retryable error and no assistant `done`. Those providers share the
+connect and idle guard. A clean close with no terminal event stays a normal
+finish unless `stream_end_check` resolves to strict; a strict close is
+`kind: "premature_end"`. An `error` frame, `response.failed`, and a
+`response.done` or `response.completed` whose status is `failed` or
+`cancelled` are errors for every provider and every strictness. Strictness
+does not turn a failed response into a normal finish.
+
+When an attempt streams only reasoning and then ends empty, the turn retries that step and can fall back to another model. The reasoning may appear twice, or from two models. Answer text already shown prevents that retry.
 
 ## Slash command palette
 
@@ -309,7 +377,7 @@ A normal quit — `/exit`, or Ctrl+C with an empty prompt — exits `0` when a s
 | `/stats` | Session + memory stats |
 | `/scorecard` | Per-session telemetry signals |
 | `/events` | Last 20 session log events |
-| `/model [provider] <id>` | Switch model (bare `/model` opens a searchable selector) |
+| `/model [provider] <id>` | Switch model (bare `/model` opens a selector searchable by provider or model) |
 | `/reasoning <level>` | Set reasoning effort (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`) |
 | `/sessions` | List sessions to resume |
 | `/login [provider]` | Add or update a provider credential |
@@ -333,6 +401,22 @@ A normal quit — `/exit`, or Ctrl+C with an empty prompt — exits `0` when a s
 ```
 
 Unknown ids resolve against the bundled pi-ai catalog first, then against the provider's live catalog (HTTP `/models` or Bedrock control-plane APIs; cached 6 hours at `~/.praana/provider-catalog-cache.json`).
+
+### Choosing a model
+
+`/model` with no argument opens a searchable picker; `/model [provider] <id>` switches straight to a model you already know. The picker pins the current model at the top, groups the rest by provider, and lists newest first within a provider when that provider reports creation times. Known non-chat models (embeddings, speech, image, video, moderation, legacy completions) are left out of live lists; built-in fallback lists keep their written order.
+
+**Search** splits the query on spaces and `/`. A word that appears in a provider name narrows the list to that provider's models, and every other word fuzzy-matches model ids:
+
+```text
+anthropic          # everything Anthropic offers
+openai gpt         # OpenAI models matching "gpt"
+openrouter/claude  # OpenRouter models matching "claude"
+```
+
+Live model lists are cached for six hours. When a provider's live list cannot be fetched, the picker shows that provider's built-in list and adds a `live catalog unavailable` note naming the provider.
+
+`/reasoning <level>` sets reasoning effort for the session (`off`, `minimal`, `low`, `medium`, `high`, `xhigh`). Claude 5 models use adaptive thinking, and the effort level maps onto it. On first-party OpenAI, gpt-6.1 models use reasoning effort `none` when tools are present due to a chat completions limitation.
 
 ## Prompt keys
 

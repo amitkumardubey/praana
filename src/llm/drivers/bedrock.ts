@@ -16,9 +16,58 @@ import type {
 } from "../types.js";
 import { parseAwsEventStream } from "../aws-sigv4.js";
 import { ToolCallAccumulator } from "../tool-accumulator.js";
-import { withPreEmissionRetry } from "../retry.js";
+import { runGuardedProviderStream } from "../stream-guard.js";
+import { logLenientStreamEnd, prematureEndError } from "../stream-end.js";
 import { authorizeAwsRequest } from "../aws-credentials.js";
 import { resolveBedrockRegion } from "../../bedrock/region.js";
+
+const BEDROCK_EXCEPTION_STATUS: Record<string, number> = {
+  throttlingException: 429,
+  serviceUnavailableException: 503,
+  internalServerException: 500,
+  modelStreamErrorException: 424,
+  modelTimeoutException: 408,
+  validationException: 400,
+  accessDeniedException: 403,
+  resourceNotFoundException: 404,
+};
+
+function bedrockStreamException(
+  frame: Record<string, unknown>,
+): { message: string; status?: number } | null {
+  if (
+    frame[":message-type"] === "error" ||
+    typeof frame[":error-code"] === "string" ||
+    typeof frame[":error-message"] === "string"
+  ) {
+    const code = typeof frame[":error-code"] === "string" ? frame[":error-code"] : "";
+    const headerMessage = typeof frame[":error-message"] === "string" ? frame[":error-message"] : "";
+    const raw = typeof frame.message === "string" ? frame.message : "";
+    const detail = [headerMessage, raw].filter((value, index, all) => value && all.indexOf(value) === index).join(": ");
+    const message = code && detail ? `${code}: ${detail}` : code || detail || "Bedrock stream error";
+    return { message, status: code ? BEDROCK_EXCEPTION_STATUS[code] : undefined };
+  }
+  const headerType = typeof frame[":exception-type"] === "string" ? frame[":exception-type"] : undefined;
+  if (headerType) {
+    const wrapped = frame[headerType];
+    const wrappedMessage =
+      wrapped && typeof wrapped === "object" ? (wrapped as { message?: unknown }).message : undefined;
+    const message =
+      typeof wrappedMessage === "string"
+        ? wrappedMessage
+        : typeof frame.message === "string"
+          ? frame.message
+          : headerType;
+    return { message, status: BEDROCK_EXCEPTION_STATUS[headerType] };
+  }
+  for (const [name, status] of Object.entries(BEDROCK_EXCEPTION_STATUS)) {
+    const value = frame[name];
+    if (!value || typeof value !== "object") continue;
+    const message = (value as { message?: unknown }).message;
+    return { message: typeof message === "string" ? message : name, status };
+  }
+  return null;
+}
 
 export class BedrockDriver implements LlmDriver {
   readonly protocol = "bedrock-converse-stream";
@@ -78,64 +127,45 @@ export class BedrockDriver implements LlmDriver {
       return;
     }
 
-    let response: Response;
-    try {
-      response = await withPreEmissionRetry(
-        async () => {
-          const res = await fetch(endpoint, {
-            method: "POST",
-            headers,
-            body: bodyStr,
-            signal: req.signal,
-          });
-
-          if (!res.ok) {
-            const errText = await res.text().catch(() => "");
-            const err: any = new Error(`AWS Bedrock API error (${res.status}): ${errText}`);
-            err.status = res.status;
-            throw err;
-          }
-
-          if (!res.body) {
-            throw new Error("Empty response body from AWS Bedrock endpoint");
-          }
-
-          return res;
-        },
-        { signal: req.signal },
-      );
-    } catch (err: any) {
-      yield {
-        type: "error",
-        error: err instanceof Error ? err : new Error(String(err)),
-        status: err.status,
-        retryable: false,
-      };
-      return;
-    }
-
     const accumulator = new ToolCallAccumulator();
     let accumulatedContent = "";
     let accumulatedThinking = "";
     let finishReason: (Extract<StreamEvent, { type: "done" }>)["reason"] = "stop";
+    let sawTerminal = false;
+    let emittedDelta = false;
 
-    try {
-      for await (const frame of parseAwsEventStream(response.body!)) {
-        if (req.signal?.aborted) {
-          yield {
-            type: "done",
-            reason: "abort",
-            message: {
-              role: "assistant",
-              content: accumulatedContent,
-              thinking: accumulatedThinking || undefined,
-              toolCalls: accumulator.flush(),
-            },
-          };
-          return;
+    const haltedMessage = (): AssistantMessage => ({
+      role: "assistant",
+      content: accumulatedContent,
+      thinking: accumulatedThinking || undefined,
+      toolCalls: [],
+    });
+
+    yield* runGuardedProviderStream({
+      req,
+      haltedMessage,
+      httpErrorLabel: "AWS Bedrock API error",
+      emptyBodyMessage: "Empty response body from AWS Bedrock endpoint",
+      request: (guard) =>
+        guard.fetch(endpoint, {
+          method: "POST",
+          headers,
+          body: bodyStr,
+        }),
+      frames: (byteStream) => parseAwsEventStream(byteStream),
+      onFrame: (frame) => {
+        const events: StreamEvent[] = [];
+        const exception = bedrockStreamException(frame);
+        if (exception) {
+          events.push({
+            type: "error",
+            error: new Error(exception.message),
+            status: exception.status,
+            retryable: false,
+          });
+          return { events, stop: true };
         }
 
-        // 1. Text delta
         if (frame.contentBlockDelta) {
           const deltaObj = frame.contentBlockDelta as any;
           const delta = deltaObj.delta;
@@ -143,11 +173,13 @@ export class BedrockDriver implements LlmDriver {
 
           if (delta?.text) {
             accumulatedContent += delta.text;
-            yield { type: "text_delta", delta: delta.text };
+            emittedDelta = true;
+            events.push({ type: "text_delta", delta: delta.text });
           }
           if (delta?.reasoningContent?.text) {
             accumulatedThinking += delta.reasoningContent.text;
-            yield { type: "thinking_delta", delta: delta.reasoningContent.text };
+            emittedDelta = true;
+            events.push({ type: "thinking_delta", delta: delta.reasoningContent.text });
           }
           if (delta?.toolUse) {
             const res = accumulator.processChunk({
@@ -155,12 +187,12 @@ export class BedrockDriver implements LlmDriver {
               argsDelta: delta.toolUse.input,
             });
             if (res.delta) {
-              yield { type: "tool_call_delta", id: res.delta.id, argsDelta: res.delta.argsDelta };
+              emittedDelta = true;
+              events.push({ type: "tool_call_delta", id: res.delta.id, argsDelta: res.delta.argsDelta });
             }
           }
         }
 
-        // 2. Tool block start
         if (frame.contentBlockStart) {
           const startObj = frame.contentBlockStart as any;
           const start = startObj.start;
@@ -173,62 +205,72 @@ export class BedrockDriver implements LlmDriver {
               name: start.toolUse.name,
             });
             if (res.started) {
-              yield { type: "tool_call_start", id: res.started.id, name: res.started.name };
+              emittedDelta = true;
+              events.push({ type: "tool_call_start", id: res.started.id, name: res.started.name });
             }
           }
         }
 
-        // 3. Metadata / Usage
         if (frame.metadata) {
           const meta = frame.metadata as any;
           if (meta.usage) {
-            yield {
+            events.push({
               type: "usage",
               usage: {
                 input: meta.usage.inputTokens ?? 0,
                 output: meta.usage.outputTokens ?? 0,
                 totalTokens: meta.usage.totalTokens ?? 0,
               },
-            };
+            });
           }
+          if (sawTerminal) return { events: [...events, ...finishBedrock()], stop: true };
         }
 
-        // 4. Message stop
         if (frame.messageStop) {
+          sawTerminal = true;
           const stop = frame.messageStop as any;
           if (stop.stopReason === "tool_use") finishReason = "tool_use";
           else if (stop.stopReason === "max_tokens") finishReason = "length";
-          else finishReason = "stop";
+          else if (stop.stopReason === "end_turn" || stop.stopReason === "stop_sequence") finishReason = "stop";
+          else finishReason = "error";
+          // usage arrives in a later metadata event. Read until that frame,
+          // the body end, or the trailer grace.
+          return { events, awaitTrailer: true };
         }
-      }
+        return { events };
+      },
+      onComplete: () => finishBedrock(),
+    });
 
-      const completedToolCalls = accumulator.flush();
-      if (completedToolCalls.length > 0) {
-        finishReason = "tool_use";
-        for (const tc of completedToolCalls) {
-          yield { type: "tool_call_end", toolCall: tc };
+    function finishBedrock(): StreamEvent[] {
+        const events: StreamEvent[] = [];
+        if (!sawTerminal) {
+          if (req.strictStreamEnd !== false) {
+            events.push(prematureEndError("messageStop", !emittedDelta));
+            return events;
+          }
+          logLenientStreamEnd(req.provider);
         }
-      }
 
-      const finalAssistant: AssistantMessage = {
-        role: "assistant",
-        content: accumulatedContent,
-        thinking: accumulatedThinking || undefined,
-        toolCalls: completedToolCalls.length > 0 ? completedToolCalls : undefined,
-      };
+        const completedToolCalls = finishReason === "tool_use" ? accumulator.flush().calls : [];
+        if (completedToolCalls.length > 0) {
+          finishReason = "tool_use";
+          for (const tc of completedToolCalls) {
+            events.push({ type: "tool_call_end", toolCall: tc });
+          }
+        }
 
-      yield {
-        type: "done",
-        reason: finishReason,
-        message: finalAssistant,
-      };
-    } catch (err: any) {
-      yield {
-        type: "error",
-        error: err instanceof Error ? err : new Error(String(err)),
-        status: err.status,
-        retryable: false,
-      };
+        events.push({
+          type: "done",
+          reason: finishReason,
+          message: {
+            role: "assistant",
+            content: accumulatedContent,
+            thinking: accumulatedThinking || undefined,
+            toolCalls: completedToolCalls.length > 0 ? completedToolCalls : undefined,
+          },
+        });
+        return events;
     }
   }
 

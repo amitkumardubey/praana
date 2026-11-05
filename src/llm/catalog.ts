@@ -12,10 +12,40 @@ export interface ModelCatalogEntry {
 }
 
 export const CURATED_MODELS: Record<string, ModelCatalogEntry[]> = {
+  // Newest first. Context windows are 200_000 placeholders: the live
+  // /v1/models listing (max_input_tokens) is authoritative for key holders.
   anthropic: [
     {
+      id: "claude-fable-5-1",
+      name: "Claude Fable 5.1",
+      provider: "anthropic",
+      contextWindow: 200_000,
+      reasoning: true,
+    },
+    {
+      id: "claude-opus-5-5",
+      name: "Claude Opus 5.5",
+      provider: "anthropic",
+      contextWindow: 200_000,
+      reasoning: true,
+    },
+    {
+      id: "claude-sonnet-5-5",
+      name: "Claude Sonnet 5.5",
+      provider: "anthropic",
+      contextWindow: 200_000,
+      reasoning: true,
+    },
+    {
+      id: "claude-haiku-5-5",
+      name: "Claude Haiku 5.5",
+      provider: "anthropic",
+      contextWindow: 200_000,
+      reasoning: true,
+    },
+    {
       id: "claude-sonnet-4-6",
-      name: "Claude 3.7 Sonnet (Hybrid Thinking)",
+      name: "Claude Sonnet 4.6",
       provider: "anthropic",
       contextWindow: 200_000,
       reasoning: true,

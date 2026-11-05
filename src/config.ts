@@ -19,6 +19,7 @@ import {
 import { setUserProviders } from "./provider-registry.js";
 import { parseReasoningEffort } from "./llm.js";
 import { setBedrockConfigRegion } from "./bedrock/region.js";
+import { type StreamEndCheck } from "./llm/stream-end.js";
 import { RISK_CLASS_SET } from "./risk/classes.js";
 
 function configWarn(
@@ -30,6 +31,15 @@ function configWarn(
     cause: opts?.cause,
     code: opts?.code ?? "CONFIG_INVALID",
   });
+}
+
+/** Keep a positive integer, or warn and use `fallback`. */
+function requirePositiveInt(value: number, key: string, fallback: number): number {
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value <= 0) {
+    configWarn(`Invalid ${key}, using default ${fallback}`);
+    return fallback;
+  }
+  return value;
 }
 
 /** Tracks which config files were loaded in the last loadConfig() call. */
@@ -53,6 +63,7 @@ const DEFAULT_CONFIG: PraanaConfig = {
     provider: "",   // empty → main.ts runs guided setup (env keys are not auto-selected)
     model: "",
     reasoning_effort: "medium",
+    stream_end_check: "auto",
   },
   memory: {
     enabled: true,
@@ -173,8 +184,36 @@ const DEFAULT_CONFIG: PraanaConfig = {
   },
   turn: {
     max_steps: 25,
+    pause_after_steps: 50,
+    hard_max_steps: 300,
   },
 };
+
+const STREAM_END_CHECK_VALUES = new Set<StreamEndCheck>(["auto", "strict", "lenient"]);
+
+function normalizeStreamEndCheck(value: unknown): StreamEndCheck {
+  if (value === undefined) return "auto";
+  const text = typeof value === "string" ? value.trim() : "";
+  if (STREAM_END_CHECK_VALUES.has(text as StreamEndCheck)) return text as StreamEndCheck;
+  configWarn(`Invalid llm.stream_end_check ${JSON.stringify(value)}, using auto`);
+  return "auto";
+}
+
+/** Largest delay `setTimeout` accepts. Above this, the delay overflows and fires immediately. */
+const MAX_SETTIMEOUT_MS = 2_147_483_647;
+
+function normalizeLlmTimeout(value: unknown, name: string): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+    configWarn(`Invalid llm.${name}, using the provider default`);
+    return undefined;
+  }
+  if (value > MAX_SETTIMEOUT_MS) {
+    configWarn(`Invalid llm.${name} above ${MAX_SETTIMEOUT_MS}, using the provider default`);
+    return undefined;
+  }
+  return value;
+}
 
 function expandHome(p: string): string {
   return p.startsWith("~/") ? p.replace(/^~\//, `${homedir()}/`) : p;
@@ -509,6 +548,15 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
     out.llm.reasoning_effort = DEFAULT_CONFIG.llm.reasoning_effort;
   }
 
+  const connectTimeout = normalizeLlmTimeout(out.llm.connect_timeout_ms, "connect_timeout_ms");
+  if (connectTimeout === undefined) delete out.llm.connect_timeout_ms;
+  else out.llm.connect_timeout_ms = connectTimeout;
+  const idleTimeout = normalizeLlmTimeout(out.llm.stream_idle_timeout_ms, "stream_idle_timeout_ms");
+  if (idleTimeout === undefined) delete out.llm.stream_idle_timeout_ms;
+  else out.llm.stream_idle_timeout_ms = idleTimeout;
+
+  out.llm.stream_end_check = normalizeStreamEndCheck(out.llm.stream_end_check);
+
   const hasFallbackProvider = !!out.llm.fallback_provider;
   const hasFallbackModel = !!out.llm.fallback_model;
   if (hasFallbackProvider !== hasFallbackModel) {
@@ -826,6 +874,32 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
     if (typeof out.ui.banner !== "boolean") {
       out.ui.banner = DEFAULT_CONFIG.ui.banner;
     }
+  }
+
+  // Turn step budget validation ([turn]) — invalid/zero values fall back to defaults.
+  const turnDefaults = DEFAULT_CONFIG.turn;
+  out.turn.max_steps = requirePositiveInt(
+    out.turn.max_steps,
+    "turn.max_steps",
+    turnDefaults.max_steps,
+  );
+  out.turn.pause_after_steps = requirePositiveInt(
+    out.turn.pause_after_steps,
+    "turn.pause_after_steps",
+    turnDefaults.pause_after_steps,
+  );
+  out.turn.hard_max_steps = requirePositiveInt(
+    out.turn.hard_max_steps,
+    "turn.hard_max_steps",
+    turnDefaults.hard_max_steps,
+  );
+  // A ceiling that is not above the pause interval never gets to ask: the
+  // shared step (or an earlier ceiling) stops the turn first. Keep the user's
+  // ceiling and disable the pause so the turn stops there with a wrap-up.
+  if (out.turn.hard_max_steps <= out.turn.pause_after_steps) {
+    configWarn(
+      `turn.hard_max_steps (${out.turn.hard_max_steps}) is not above turn.pause_after_steps (${out.turn.pause_after_steps}); the pause is disabled and the turn stops at the ceiling (${out.turn.hard_max_steps}) with a wrap-up.`,
+    );
   }
 
   // User-declared providers validation ([providers.<id>] sections)

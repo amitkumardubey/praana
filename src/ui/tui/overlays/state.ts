@@ -11,7 +11,15 @@ export type OverlayKind =
   | "logout"
   | "palette"
   | "setup"
-  | "consent";
+  | "consent"
+  | "confirm";
+
+/** Minimal confirm prompt used by the per-turn step pause. */
+export interface ConfirmPromptState {
+  message: string;
+  /** Changes for every confirm that is shown, so Enter's arm delay resets. */
+  id: number;
+}
 
 /**
  * Full-screen modal overlays that cover the screen and would let the idle
@@ -34,6 +42,7 @@ export interface OverlayUi {
   readonly slashLines: Accessor<string[]>;
   readonly loginHint: Accessor<string | undefined>;
   readonly logoutHint: Accessor<string | undefined>;
+  readonly confirmPrompt: Accessor<ConfirmPromptState | null>;
   showSlash(lines: string[]): void;
   showModel(): void;
   showLogin(providerHint?: string): void;
@@ -41,6 +50,16 @@ export interface OverlayUi {
   showPalette(): void;
   showSetup(): void;
   showConsent(): void;
+  /**
+   * Open a small confirm overlay; resolves true on Enter, false on Esc
+   * or when `signal` aborts. Ctrl+C is not answered here: it aborts the
+   * turn signal, which settles this promise false and skips the wrap-up.
+   * If an interactive overlay or confirm is already open, this waits until
+   * that one closes, then shows. A passive slash panel is cleared instead.
+   * Aborting `signal` while waiting resolves false and drops just this request.
+   */
+  showConfirm(message: string, signal?: AbortSignal): Promise<boolean>;
+  resolveConfirm(cont: boolean): void;
   dismiss(): void;
   dispose(): void;
 }
@@ -51,43 +70,210 @@ export function createOverlayUi(): OverlayUi {
     const [slashLines, setSlashLines] = createSignal<string[]>([]);
     const [loginHint, setLoginHint] = createSignal<string | undefined>(undefined);
     const [logoutHint, setLogoutHint] = createSignal<string | undefined>(undefined);
+    const [confirmPrompt, setConfirmPrompt] = createSignal<ConfirmPromptState | null>(null);
+    let confirmResolver: ((cont: boolean) => void) | null = null;
+    let nextConfirmId = 0;
+    // Confirms and overlays waiting to be shown. A confirm requested while
+    // something else is open waits here and listens to its own signal.
+    // Non-confirm requests queue behind an open confirm (a later one replaces
+    // only a trailing overlay, never a confirm). dismiss() of an open confirm
+    // settles only that confirm and promote() shows the queue. dispose() drops it.
+    type QueuedConfirm = {
+      type: "confirm";
+      message: string;
+      signal?: AbortSignal;
+      resolve: (value: boolean) => void;
+      onAbort: () => void;
+      settled: boolean;
+    };
+    type QueuedOverlay = { type: "overlay"; open: () => void };
+    const queue: Array<QueuedConfirm | QueuedOverlay> = [];
+
+    // One gate for "this confirm settles exactly once", whether it is queued or visible.
+    const settleOnce = (
+      gate: { settled: boolean },
+      signal: AbortSignal | undefined,
+      onAbort: () => void,
+      resolve: (value: boolean) => void,
+      value: boolean,
+    ): boolean => {
+      if (gate.settled) return false;
+      gate.settled = true;
+      signal?.removeEventListener("abort", onAbort);
+      resolve(value);
+      return true;
+    };
+
+    const dropQueue = () => {
+      const dropped = queue.splice(0);
+      for (const entry of dropped) {
+        if (entry.type === "confirm") settleOnce(entry, entry.signal, entry.onAbort, entry.resolve, false);
+      }
+    };
+
+    const clearOverlayFields = () => {
+      setSlashLines([]);
+      setLoginHint(undefined);
+      setLogoutHint(undefined);
+    };
+
+    const promote = () => {
+      if (confirmResolver) return;
+      while (queue.length > 0) {
+        const next = queue[0]!;
+        if (next.type === "overlay") {
+          if (kind() !== "none" && kind() !== "confirm") return;
+          queue.shift();
+          setConfirmPrompt(null);
+          next.open();
+          return;
+        }
+        if (kind() !== "none" && kind() !== "confirm") return;
+        queue.shift();
+        next.signal?.removeEventListener("abort", next.onAbort);
+        if (next.signal?.aborted) {
+          settleOnce(next, next.signal, next.onAbort, next.resolve, false);
+          continue;
+        }
+        openConfirm(next.message, next.signal, next.resolve, next);
+        return;
+      }
+      if (kind() === "confirm") setKind("none");
+    };
+
+    const openConfirm = (
+      message: string,
+      signal: AbortSignal | undefined,
+      resolve: (value: boolean) => void,
+      entry?: QueuedConfirm,
+    ) => {
+      const gate = entry ?? { settled: false };
+      let onAbort = () => {};
+      const finish = (cont: boolean) => {
+        if (!settleOnce(gate, signal, onAbort, resolve, cont)) return;
+        confirmResolver = null;
+        setConfirmPrompt(null);
+        promote();
+      };
+      onAbort = () => finish(false);
+      if (signal) signal.addEventListener("abort", onAbort, { once: true });
+      confirmResolver = finish;
+      setConfirmPrompt({ message, id: ++nextConfirmId });
+      setKind("confirm");
+    };
+
+    const enqueueConfirm = (message: string, signal?: AbortSignal): Promise<boolean> => {
+      return new Promise((resolve) => {
+        const entry: QueuedConfirm = {
+          type: "confirm",
+          message,
+          signal,
+          resolve,
+          onAbort: () => {},
+          settled: false,
+        };
+        entry.onAbort = () => {
+          if (entry.settled) return;
+          const idx = queue.indexOf(entry);
+          if (idx >= 0) queue.splice(idx, 1);
+          settleOnce(entry, entry.signal, entry.onAbort, entry.resolve, false);
+        };
+        if (signal) signal.addEventListener("abort", entry.onAbort, { once: true });
+        queue.push(entry);
+      });
+    };
+
+    const showConfirm = (message: string, signal?: AbortSignal): Promise<boolean> => {
+      if (signal?.aborted) return Promise.resolve(false);
+      // A slash panel closes on any key. Leave it up and the pause looks hung,
+      // because the spinner is already stopped. Clear it and ask immediately.
+      // Interactive overlays (palette, model, login, logout, setup, consent) still defer.
+      if (kind() === "slash") {
+        setSlashLines([]);
+        setKind("none");
+        // Work queued behind the panel stays queued. Opening through the
+        // blocked path would promote that work and hide this confirm.
+        return new Promise((resolve) => openConfirm(message, signal, resolve));
+      }
+      const blocked = confirmResolver !== null || kind() !== "none" || queue.length > 0;
+      if (!blocked) return new Promise((resolve) => openConfirm(message, signal, resolve));
+      const pending = enqueueConfirm(message, signal);
+      if (!confirmResolver && kind() === "none") promote();
+      return pending;
+    };
+
+    const enqueueOverlay = (open: () => void) => {
+      // No visible confirm: open now. A confirm that is only queued stays queued.
+      if (!confirmResolver) {
+        open();
+        return;
+      }
+      const last = queue[queue.length - 1];
+      if (last?.type === "overlay") {
+        queue[queue.length - 1] = { type: "overlay", open };
+        return;
+      }
+      queue.push({ type: "overlay", open });
+    };
 
     return {
       kind,
       slashLines,
       loginHint,
       logoutHint,
+      confirmPrompt,
       showSlash(lines: string[]) {
-        setSlashLines(lines);
-        setKind("slash");
+        enqueueOverlay(() => {
+          setSlashLines(lines);
+          setKind("slash");
+        });
       },
       showModel() {
-        setKind("model");
+        enqueueOverlay(() => setKind("model"));
       },
       showLogin(providerHint?: string) {
-        setLoginHint(providerHint);
-        setKind("login");
+        enqueueOverlay(() => {
+          setLoginHint(providerHint);
+          setKind("login");
+        });
       },
       showLogout(providerHint?: string) {
-        setLogoutHint(providerHint);
-        setKind("logout");
+        enqueueOverlay(() => {
+          setLogoutHint(providerHint);
+          setKind("logout");
+        });
       },
       showPalette() {
-        setKind("palette");
+        enqueueOverlay(() => setKind("palette"));
       },
       showSetup() {
-        setKind("setup");
+        enqueueOverlay(() => setKind("setup"));
       },
       showConsent() {
-        setKind("consent");
+        enqueueOverlay(() => setKind("consent"));
+      },
+      showConfirm,
+      resolveConfirm(cont: boolean) {
+        confirmResolver?.(cont);
       },
       dismiss() {
+        // Every overlay close path must go through dismiss() or promote().
+        // A close that only clears kind leaves a queued confirm waiting, and its turn hangs.
+        if (confirmResolver) {
+          // finish() clears the prompt and promote() shows the queue.
+          // setKind/setConfirmPrompt here would race that and are not needed.
+          confirmResolver(false);
+          return;
+        }
         setKind("none");
-        setSlashLines([]);
-        setLoginHint(undefined);
-        setLogoutHint(undefined);
+        clearOverlayFields();
+        promote();
       },
-      dispose,
+      dispose() {
+        dropQueue();
+        if (confirmResolver) confirmResolver(false);
+        dispose();
+      },
     };
   });
 }

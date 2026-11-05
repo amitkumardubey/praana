@@ -47,6 +47,30 @@ describe("precomputeVectors", () => {
     expect(calls).toBe(2);
   });
 
+  it("yields between synchronous embeddings while preserving vectors and cache hits", async () => {
+    const events: string[] = [];
+    const embedder: Embedder = {
+      dim: 2,
+      embed: async (text) => {
+        events.push(text);
+        if (text === "a") setImmediate(() => events.push("immediate"));
+        return new Float32Array([text.charCodeAt(0), 1]);
+      },
+    };
+    const cache = new EmbeddingCache();
+    const vectors = await precomputeVectors(["a", "b", "c"], embedder, cache);
+    expect(events).toContain("immediate");
+    expect(events.indexOf("immediate")).toBeLessThan(events.indexOf("b"));
+    expect([...vectors.entries()]).toEqual([
+      ["a", new Float32Array([97, 1])],
+      ["b", new Float32Array([98, 1])],
+      ["c", new Float32Array([99, 1])],
+    ]);
+    const cached = await precomputeVectors(["a", "b", "c"], embedder, cache);
+    expect([...cached.entries()]).toEqual([...vectors.entries()]);
+    expect(events.filter((event) => event !== "immediate")).toEqual(["a", "b", "c"]);
+  });
+
   it("falls back gracefully when embedder throws", async () => {
     const embedder: Embedder = {
       dim: 2,

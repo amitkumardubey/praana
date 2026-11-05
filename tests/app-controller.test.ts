@@ -128,6 +128,15 @@ describe("AppController", () => {
     }
   });
 
+  it("does not manufacture a pause handler for sinks without one", async () => {
+    const controller = new AppController({ cwd: "/tmp", config: baseConfig, parsed: baseParsed });
+    await controller.start();
+    await controller.runUserTurn("hello", {});
+    const calls = (runTurn as unknown as Mock<any>).mock.calls;
+    const wrapped = calls.at(-1)?.[3]?.sink;
+    expect(wrapped.onStepPause).toBeUndefined();
+  });
+
   it("starts a session and exposes status bar input", async () => {
     const controller = new AppController({
       cwd: "/tmp",
@@ -308,6 +317,36 @@ describe("AppController", () => {
     // Rollback restored a session object so the controller is still usable.
     expect(controller.session).toBeDefined();
     expect(controller.sessionEnded).toBe(false);
+  });
+
+  it("suppresses logger stderr in a real session recreated after config reload", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "praana-reload-logger-"));
+    try {
+      const configPath = join(dir, "config.json");
+      writeFileSync(configPath, JSON.stringify({ memory: { enabled: false }, session: { log_dir: join(dir, "logs") } }));
+      const controller = new AppController({ cwd: dir, config: baseConfig, parsed: { ...baseParsed, configPath, incognito: true } });
+      await controller.start();
+      (Session.create as Mock<typeof Session.create>).mockImplementationOnce(sessionReal.Session.create.bind(sessionReal.Session));
+      await controller.startNewSession();
+      expect(controller.session.shouldSuppressLoggerStderr()).toBe(true);
+      await controller.shutdown();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("suppresses logger stderr in a real rollback session", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "praana-rollback-logger-"));
+    try {
+      const config = { ...baseConfig, session: { log_dir: join(dir, "logs") } };
+      const controller = new AppController({ cwd: dir, config, parsed: { ...baseParsed, incognito: true } });
+      (Session.create as Mock<typeof Session.create>).mockImplementationOnce(sessionReal.Session.create.bind(sessionReal.Session));
+      await (controller as any).rollbackToFreshSession(config);
+      expect(controller.session.shouldSuppressLoggerStderr()).toBe(true);
+      await controller.shutdown();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("shutdown() returns 'noop' on the second call", async () => {
