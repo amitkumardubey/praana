@@ -1,1 +1,8 @@
-[{"query":"typescript satisfies operator","authoritative_url":"https://www.typescriptlang.org/docs/handbook/release-notes/typescript-4-9.html","expected_domains":["typescriptlang.org"],"answer_snippets":["satisfies"],"niche":"docs","verified_at":"2026-11-05"}]
+[
+  {"query":"typescript satisfies operator","authoritative_url":"https://www.typescriptlang.org/docs/handbook/release-notes/typescript-4-9.html","expected_domains":["typescriptlang.org"],"answer_snippets":["satisfies"],"niche":"docs","verified_at":"2026-11-05"},
+  {"query":"bun test preload option","authoritative_url":"https://bun.com/docs/test","expected_domains":["bun.com"],"answer_snippets":["preload"],"niche":"docs","verified_at":"2026-11-05"},
+  {"query":"pytest fixture scope","authoritative_url":"https://docs.pytest.org/en/stable/how-to/fixtures.html","expected_domains":["docs.pytest.org"],"answer_snippets":["scope"],"niche":"docs","verified_at":"2026-11-05"},
+  {"query":"rust tokio select macro","authoritative_url":"https://docs.rs/tokio/latest/tokio/macro.select.html","expected_domains":["docs.rs"],"answer_snippets":["select!"],"niche":"docs","verified_at":"2026-11-05"},
+  {"query":"react useEffect hook","authoritative_url":"https://react.dev/reference/react/useEffect","expected_domains":["react.dev"],"answer_snippets":["useEffect"],"niche":"docs","verified_at":"2026-11-05"},
+  {"query":"typescript 5.0 release notes","authoritative_url":"https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-0.html","expected_domains":["typescriptlang.org"],"answer_snippets":["TypeScript 5.0"],"niche":"release","verified_at":"2026-11-05"}
+]

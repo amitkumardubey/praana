@@ -2,7 +2,7 @@
 
 This directory currently contains only the beginning of the task-validation work.
 It is **not an evaluation harness** and must not be used to rank backends. The
-search set has one verified example, not the required 60; the fetch set and all
+search set has six verified examples, not the required 60; the fetch set and all
 runners, scoring, terms checks and results are still missing.
 
 Validate a candidate set and check its expected strings against its authoritative
