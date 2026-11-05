@@ -196,8 +196,11 @@ user-declared provider's explicitly chosen `api` still wins. The separate
 
 The first-party Responses request sends the system prompt as `instructions`,
 flat function tool definitions, tool results as `function_call_output`, text/image
-input parts, and `max_output_tokens`. It does not add Codex headers, `store: false`,
-or default Codex instructions. Unset temperature is omitted. PRAANA's enabled
+input parts, and `max_output_tokens`. It sends `store: false`, so OpenAI does not
+retain requests and responses through the Responses API's default storage. Reasoning
+items are not carried across turns or tool steps; supporting encrypted reasoning
+content is a follow-up. It does not add Codex headers or default Codex instructions.
+Unset temperature is omitted. PRAANA's enabled
 reasoning levels `minimal`, `low`, `medium`, `high`, and `xhigh` map unchanged to
 `reasoning.effort`: the upstream
 [OpenAI SDK type](https://github.com/openai/openai-node/blob/master/src/resources/shared.ts)

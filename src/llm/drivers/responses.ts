@@ -191,7 +191,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
       stream: true,
       ...(req.provider === "openai-codex"
         ? { store: false, instructions: instructions?.trim() ? instructions : "You are a helpful assistant." }
-        : instructions ? { instructions } : {}),
+        : { ...(req.provider === "openai" ? { store: false } : {}), ...(instructions ? { instructions } : {}) }),
       ...(tools.length > 0 ? { tools, tool_choice: "auto" } : {}),
       ...(req.provider !== "openai-codex" && req.temperature !== undefined ? { temperature: req.temperature } : {}),
       ...(req.provider !== "openai-codex" && req.maxTokens !== undefined ? { max_output_tokens: req.maxTokens } : {}),

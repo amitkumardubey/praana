@@ -56,7 +56,7 @@ describe("first-party Responses request parity", () => {
           { type: "function_call", call_id: "call_1", name: "read_file", arguments: '{"path":"a.ts"}' },
           { type: "function_call_output", call_id: "call_1", output: "file contents" },
           { role: "user", content: "Explain it" },
-        ], stream: true, instructions: "Follow project rules.\nBe concise.",
+        ], stream: true, store: false, instructions: "Follow project rules.\nBe concise.",
         tools: [{ type: "function", ...tool }], tool_choice: "auto",
         reasoning: { effort: "high" }, max_output_tokens: 4096,
       },
@@ -75,7 +75,7 @@ describe("first-party Responses request parity", () => {
     let body: Record<string, unknown> = {};
     globalThis.fetch = (async (_url, init) => { body = JSON.parse(String(init?.body)); return sse([completed]); }) as typeof fetch;
     await collect({ reasoningEffort });
-    expect(body).toEqual({ model: request.model, input: [{ role: "user", content: "hi" }], stream: true });
+    expect(body).toEqual({ model: request.model, input: [{ role: "user", content: "hi" }], stream: true, store: false });
   });
 
   it("keeps token totals and cached input across partial usage readings", async () => {

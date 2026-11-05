@@ -6,7 +6,7 @@
     "src/llm/drivers/anthropic.ts": "03e7c2b436de06d61f0f90c262644c63c493501cebc1b1ea3b298760fcecea52",
     "src/llm/drivers/base.ts": "b0cc64042cef8c21adfdb81c8abda6e8619dea4ee05e90dba105ee38488e8d01",
     "src/llm/drivers/openai.ts": "e781aff7ee768d6478c760b556736f106f98c56f21d66ec46d969ac9a59e75bd",
-    "src/llm/drivers/responses.ts": "45ca62bb3d01f7db2567e523dd8b896d320f4be95e03de174d5d441a8fafea3d",
+    "src/llm/drivers/responses.ts": "3f42abfd37c3ed978f9724452a9d6bd2de916c60107a858ad70b1267f567dfa7",
     "src/llm/resolver.ts": "57f9f08352ca46610f1aaab73fad21645992d5dc1df8a83761bf5d8e25178662",
     "src/llm/retry.ts": "a9906f2d281323ea5f8c2ab1e733279a321577efe9933242f87bcf3b5632cbaa",
     "src/llm/sse.ts": "2363b78f3623cc14d704fa71b9222fdccd0654fcd6cde83d4b66d884dcde8c62",
