@@ -24,7 +24,10 @@ are owned separately. No live backend evaluations, terms verdicts or rankings.
   Actual fixture-only CLI dry-run wrote JSON/Markdown with 0 HTTP requests.
   Self-review added regressions for split-CRLF SSE, 504 classification and
   redirect accounting; no extra agents or live backends were used.
-- [ ] D0 Usage, runner/env list, politeness, Terms check placeholder.
+- [x] D0 Usage, runner/env list, politeness, Terms check placeholder.
+  README documents metrics/denominators, confidence limitations, offline usage,
+  official adapter-format sources and the Parallel blocker. No terms table,
+  permissions verdict, live-result artifacts or final ranking was added.
 - [ ] F `bun typecheck && bun test tests/`, plus harness TypeScript check.
 
 Each item gets a separate additive `chore(web-eval): ...` commit. Long commands
