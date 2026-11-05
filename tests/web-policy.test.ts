@@ -11,7 +11,7 @@ import { redactSecrets } from "../src/redact/secrets.js";
 import { classifyRisk } from "../src/risk/classify.js";
 import { formatWebFetchPrompt } from "../src/risk/prompt.js";
 import { createAllTools, describeTools } from "../src/tools/index.js";
-import { DEFAULT_WEB_CONFIG, decideWebHost, hostMatchesDomain } from "../src/tools/web/policy.js";
+import { DEFAULT_WEB_CONFIG, decideWebHost, hostMatchesDomain, normalizeDomainRule } from "../src/tools/web/policy.js";
 import { createWebFetchTool } from "../src/tools/web/tool.js";
 import type { WebFetchOptions, WebFetchResult } from "../src/tools/web/fetch.js";
 
@@ -338,6 +338,76 @@ describe("web_fetch risk, config, and redaction", () => {
     });
     await overridden.web_fetch.execute({ url: "https://example.com/a", max_chars: 80 });
     expect(seen?.maxChars).toBe(80);
+  });
+
+  it("blocks the punycode host when a deny rule is written in Unicode", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "praana-web-idna-"));
+    try {
+      const path = join(dir, "web.toml");
+      writeFileSync(path, '[tools.web]\ndeny_domains = ["münchen.de"]\n', "utf-8");
+      const config = loadConfig(path);
+      expect(config.tools.web.deny_domains).toEqual(["xn--mnchen-3ya.de"]);
+      expect(decideWebHost("xn--mnchen-3ya.de", config.tools.web)).toBe("deny");
+      expect(decideWebHost("www.xn--mnchen-3ya.de", config.tools.web)).toBe("deny");
+      expect(hostMatchesDomain("münchen.de", "xn--mnchen-3ya.de")).toBe(true);
+      expect(hostMatchesDomain("www.münchen.de", "münchen.de")).toBe(true);
+      expect(hostMatchesDomain("notxn--mnchen-3ya.de", "xn--mnchen-3ya.de")).toBe(false);
+
+      const tool = createWebFetchTool({
+        getWebConfig: () => config.tools.web,
+        fetchPage: async () => {
+          throw new Error("should not fetch a denied host");
+        },
+      });
+      const puny = await tool.web_fetch.execute({ url: "https://xn--mnchen-3ya.de/a" });
+      const unicode = await tool.web_fetch.execute({ url: "https://münchen.de/a" });
+      expect(puny.ok).toBe(false);
+      expect(unicode.ok).toBe(false);
+      if (!puny.ok) expect(puny.reason).toContain("xn--mnchen-3ya.de");
+      if (!unicode.ok) expect(unicode.reason).toContain("xn--mnchen-3ya.de");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("normalizes a mixed-case domain rule to punycode", () => {
+    expect(normalizeDomainRule("München.DE")).toBe("xn--mnchen-3ya.de");
+    expect(decideWebHost("xn--mnchen-3ya.de", { ...DEFAULT_WEB_CONFIG, deny_domains: ["München.DE"] })).toBe("deny");
+  });
+
+  it("normalizes a trailing dot on a domain rule", () => {
+    expect(normalizeDomainRule("münchen.de.")).toBe("xn--mnchen-3ya.de");
+    expect(hostMatchesDomain("München.DE.", "münchen.de.")).toBe(true);
+    expect(hostMatchesDomain("xn--mnchen-3ya.de", "münchen.de.")).toBe(true);
+  });
+
+  it("treats a leading *. prefix as the punycode suffix", () => {
+    expect(normalizeDomainRule("*.München.DE")).toBe("xn--mnchen-3ya.de");
+    expect(
+      decideWebHost("www.xn--mnchen-3ya.de", { ...DEFAULT_WEB_CONFIG, allow_domains: ["*.münchen.de"] }),
+    ).toBe("allow");
+    expect(
+      decideWebHost("xn--mnchen-3ya.de", { ...DEFAULT_WEB_CONFIG, allow_domains: ["*.münchen.de"] }),
+    ).toBe("allow");
+    expect(
+      decideWebHost("other.example", { ...DEFAULT_WEB_CONFIG, allow_domains: ["*.münchen.de"] }),
+    ).toBe("deny");
+  });
+
+  it("warns and drops a domain rule that cannot be normalised", () => {
+    expect(normalizeDomainRule("foo\u0000.com")).toBeNull();
+    const dir = mkdtempSync(join(tmpdir(), "praana-web-idna-bad-"));
+    try {
+      const path = join(dir, "web.toml");
+      writeFileSync(path, '[tools.web]\ndeny_domains = ["foo\\u0000.com", "münchen.de"]\n', "utf-8");
+      const config = loadConfig(path);
+      expect(config.tools.web.deny_domains).toEqual(["xn--mnchen-3ya.de"]);
+      const warnings = getConfigWarnings().join("\n");
+      expect(warnings).toContain("tools.web.deny_domains");
+      expect(warnings).toContain("foo");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("fetches in headless when the risk class is allowed, and after the session remembers the host", async () => {

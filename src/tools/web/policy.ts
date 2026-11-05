@@ -9,6 +9,7 @@
  * per-session confirmation (or a headless risk allow).
  */
 
+import { domainToASCII } from "node:url";
 import { displayFetchUrl } from "../../redact/url-query.js";
 import type { WebToolsConfig } from "../../types.js";
 
@@ -22,26 +23,49 @@ export const DEFAULT_WEB_CONFIG: WebToolsConfig = {
 
 export type WebHostDecision = "deny" | "allow" | "confirm";
 
-export function normalizeHost(host: string): string {
-  let name = host.trim().toLowerCase();
-  if (name.startsWith("[") && name.endsWith("]")) name = name.slice(1, -1);
+function stripDots(host: string): string {
+  let name = host;
+  while (name.startsWith(".")) name = name.slice(1);
   while (name.endsWith(".")) name = name.slice(0, -1);
   return name;
 }
 
+/** Hostname as the URL parser spells it: lowercase punycode, no trailing dot. IPv6 is left as-is. */
+export function normalizeHost(host: string): string {
+  let name = host.trim().toLowerCase();
+  if (name.startsWith("[") && name.endsWith("]")) name = name.slice(1, -1);
+  name = stripDots(name);
+  if (!name || name.includes(":")) return name;
+  try {
+    const ascii = domainToASCII(name);
+    if (!ascii) return name;
+    return stripDots(ascii);
+  } catch {
+    return name;
+  }
+}
+
 /** Config-file domain rule. A leading "*." is the same suffix match. */
 export function normalizeDomainRule(raw: string): string | null {
-  let rule = raw.trim().toLowerCase();
-  if (rule.startsWith("*.")) rule = rule.slice(2);
-  while (rule.startsWith(".")) rule = rule.slice(1);
-  while (rule.endsWith(".")) rule = rule.slice(0, -1);
+  let rule = raw.trim();
+  if (rule.toLowerCase().startsWith("*.")) rule = rule.slice(2);
+  rule = stripDots(rule);
   if (!rule || /[\s/:*]/.test(rule) || rule.includes("://")) return null;
-  return rule;
+  let ascii = "";
+  try {
+    ascii = domainToASCII(rule);
+  } catch {
+    return null;
+  }
+  if (!ascii) return null;
+  const name = stripDots(ascii);
+  if (!name || /[\s/:*]/.test(name) || name.includes("://")) return null;
+  return name;
 }
 
 export function hostMatchesDomain(host: string, rule: string): boolean {
   const name = normalizeHost(host);
-  const domain = normalizeHost(rule);
+  const domain = normalizeDomainRule(rule);
   if (!name || !domain) return false;
   return name === domain || name.endsWith(`.${domain}`);
 }
