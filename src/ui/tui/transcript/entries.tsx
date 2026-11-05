@@ -125,9 +125,20 @@ export function TranscriptEntryView(props: {
   const renderer = useRenderer();
 
   if (e.role === "user") {
+    // The coral `❯ ` is a fixed two-column prefix box, not part of the text:
+    // the message stays plain in the store/event log, and the flexGrow text box
+    // gives wrapped and multi-line text a two-column hanging indent under the
+    // first character after the prefix.
     return (
-      <box id={`entry-${e.id}`} flexDirection="column">
-        <text>{e.text}</text>
+      <box id={`entry-${e.id}`} flexDirection="row">
+        <box width={2} flexShrink={0}>
+          <text>
+            <span style={TUI_STYLE.accent}>{"\u276f "}</span>
+          </text>
+        </box>
+        <box flexGrow={1}>
+          <text>{e.text}</text>
+        </box>
       </box>
     );
   }
