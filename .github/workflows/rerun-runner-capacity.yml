@@ -1,0 +1,125 @@
+name: rerun-runner-capacity
+
+on:
+  workflow_run:
+    workflows: ["release-please", "natives"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Workflow run ID to inspect
+        required: true
+        type: string
+      dry_run:
+        description: Print the decision without taking action
+        type: boolean
+        default: true
+
+permissions:
+  actions: write
+  checks: read
+  issues: write
+  contents: read
+
+concurrency:
+  group: rerun-${{ github.event.workflow_run.id || inputs.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    if: ${{ github.event.workflow_run.event != 'pull_request' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.0"
+      - name: Inspect and handle runner capacity failures
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ github.event.workflow_run.id || inputs.run_id }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || false }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RUN_ID" =~ ^[0-9]+$ ]] || { echo 'Invalid run ID' >&2; exit 1; }
+          run=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID")
+          # Manual dispatch must not bypass the trigger's workflow, branch, or event restrictions.
+          if ! jq -e '.status == "completed" and .head_branch == "main" and (.event == "push" or .event == "workflow_dispatch") and (.name == "release-please" or .name == "natives")' <<<"$run" >/dev/null; then
+            echo 'Ignoring run outside the allowed completed main-branch workflows and events.'
+            exit 0
+          fi
+          attempt=$(jq -r '.run_attempt' <<<"$run")
+          deadline=$((SECONDS + 900))
+          while :; do
+            jobs=$(gh api --paginate --slurp "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$attempt/jobs?per_page=100" | jq '[.[].jobs[] | {id, name, status, conclusion, annotations: []}]')
+            while IFS= read -r id; do
+              annotations=$(gh api --paginate --slurp "repos/$GH_REPO/check-runs/$id/annotations?per_page=100" | jq '[.[][] | .message]')
+              jobs=$(jq --argjson id "$id" --argjson annotations "$annotations" 'map(if .id == $id then .annotations = $annotations else . end)' <<<"$jobs")
+            done < <(jq -r '.[] | select(.conclusion != "success" and .conclusion != "skipped") | .id' <<<"$jobs")
+            decision=$(jq -n --arg conclusion "$(jq -r '.conclusion' <<<"$run")" --argjson attempt "$attempt" --argjson jobs "$jobs" '{runConclusion: $conclusion, runAttempt: $attempt, jobs: $jobs}' | bun -e 'import { decideRerun } from "./scripts/ci/runner-capacity.ts"; console.log(JSON.stringify(decideRerun(await Bun.stdin.json())));')
+            echo "Decision: $decision"
+            [[ $(jq -r '.action' <<<"$decision") == 'wait' ]] || break
+            remaining=$((deadline - SECONDS))
+            if (( remaining <= 0 )); then
+              echo 'Gave up waiting for jobs to settle after 15 minutes.'
+              break
+            fi
+            if (( remaining > 60 )); then sleep 60; else sleep "$remaining"; fi
+            current=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID")
+            if ! jq -e --argjson attempt "$attempt" '.status == "completed" and .run_attempt == $attempt' <<<"$current" >/dev/null; then
+              echo 'Run is no longer completed at the inspected attempt; stopping inspection.'
+              exit 0
+            fi
+            run=$current
+          done
+          if [[ "$DRY_RUN" == "true" ]]; then exit 0; fi
+          action=$(jq -r '.action' <<<"$decision")
+          case "$action" in
+            rerun)
+              if (( attempt >= 3 )); then echo 'Attempt cap reached; refusing rerun.' >&2; exit 1; fi
+              sleep 240
+              current=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID")
+              if ! jq -e --argjson attempt "$attempt" '.status == "completed" and .run_attempt == $attempt' <<<"$current" >/dev/null; then
+                echo 'Run is no longer completed at the inspected attempt; not rerunning.'
+                exit 0
+              fi
+              current_jobs=$(gh api --paginate --slurp "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$attempt/jobs?per_page=100" | jq '[.[].jobs[] | {status, conclusion}]')
+              if ! bun -e 'import { jobsSettled } from "./scripts/ci/runner-capacity.ts"; if (!jobsSettled(await Bun.stdin.json())) process.exit(1);' <<<"$current_jobs"; then
+                echo 'Jobs are no longer settled; not rerunning.'
+                exit 0
+              fi
+              current=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID")
+              if ! jq -e --argjson attempt "$attempt" '.status == "completed" and .run_attempt == $attempt' <<<"$current" >/dev/null; then
+                echo 'Run is no longer completed at the inspected attempt; not rerunning.'
+                exit 0
+              fi
+              gh run rerun "$RUN_ID" --failed
+              ;;
+            alert)
+              title='CI: runner capacity failure'
+              url=$(jq -r '.html_url' <<<"$run")
+              workflow=$(jq -r '.name' <<<"$run")
+              failed_names=$(jq -r '.[] | select(.conclusion != "success" and .conclusion != "skipped") | "- " + .name' <<<"$jobs")
+              body=$(printf 'Run: %s\nWorkflow: %s\nAttempt: %s\n\nFailed jobs:\n%s' "$url" "$workflow" "$attempt" "$failed_names")
+              if [[ "$workflow" == 'release-please' ]]; then
+                body+=$'\n\nThe GitHub release has no assets until the run is re-run.'
+              fi
+              issue=$(gh issue list --state open --search 'CI: runner capacity failure in:title' --limit 100 --json number,title | jq -r --arg title "$title" '[.[] | select(.title == $title)][0].number // empty')
+              if [[ -n "$issue" ]]; then
+                gh issue comment "$issue" --body "$body"
+              else
+                labels=$(gh label list --limit 1000 --json name)
+                if jq -e 'any(.[]; .name == "bug")' <<<"$labels" >/dev/null; then
+                  gh issue create --title "$title" --body "$body" --label bug
+                else
+                  gh issue create --title "$title" --body "$body"
+                fi
+              fi
+              ;;
+            wait) echo 'Jobs did not settle; no action required.' ;;
+            ignore) echo 'No action required.' ;;
+            *) echo "Unexpected decision: $action" >&2; exit 1 ;;
+          esac

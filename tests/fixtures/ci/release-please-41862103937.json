@@ -1,0 +1,21 @@
+{
+  "runConclusion": "failure",
+  "runAttempt": 1,
+  "jobs": [
+    { "name": "release-please", "conclusion": "success", "annotations": [] },
+    { "name": "quality-gate", "conclusion": "success", "annotations": [] },
+    { "name": "build-binaries (macos-15-intel, praana-darwin-x64, true)", "conclusion": "success", "annotations": [] },
+    { "name": "build-binaries (ubuntu-24.04-arm, bun-linux-arm64, praana-linux-arm64, true)", "conclusion": "success", "annotations": [] },
+    { "name": "build-binaries (windows-latest, praana-windows-x64.exe, true)", "conclusion": "success", "annotations": [] },
+    { "name": "build-binaries (ubuntu-latest, bun-linux-x64, praana-linux-x64, true)", "conclusion": "success", "annotations": [] },
+    { "name": "build-binaries (macos-latest, bun-darwin-arm64, praana-darwin-arm64, true)", "conclusion": "cancelled", "annotations": ["The job was not acquired by Runner of type hosted even after multiple attempts"] },
+    { "name": "build-natives / aarch64-unknown-linux-gnu", "conclusion": "success", "annotations": [] },
+    { "name": "build-natives / x86_64-apple-darwin", "conclusion": "cancelled", "annotations": ["The job was not acquired by Runner of type hosted even after multiple attempts"] },
+    { "name": "build-natives / x86_64-pc-windows-msvc", "conclusion": "success", "annotations": [] },
+    { "name": "build-natives / aarch64-apple-darwin", "conclusion": "cancelled", "annotations": ["The job was not acquired by Runner of type hosted even after multiple attempts"] },
+    { "name": "build-natives / x86_64-unknown-linux-gnu", "conclusion": "success", "annotations": [] },
+    { "name": "build-natives / x86_64-unknown-linux-musl", "conclusion": "success", "annotations": [] },
+    { "name": "publish", "conclusion": "skipped", "annotations": [] },
+    { "name": "package-release", "conclusion": "skipped", "annotations": [] }
+  ]
+}
