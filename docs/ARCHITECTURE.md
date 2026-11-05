@@ -323,6 +323,7 @@ Defined in `src/tools/` using Zod 4 schemas and converted to JSON Schema (draft-
 - `write_file(path, content)` — writes or overwrites a file (creates parent directories)
 - `edit_file(path, oldText, newText)` — replaces text based on exact, unique matching (optional diff preview)
 - `batch_write(files[])` / `batch_edit(edits[])` — multi-file create/replace in one turn
+- `web_fetch(url, focus?)` — GET a public http(s) URL and return readable text (untrusted data; private networks blocked)
 
 Shell spawn uses `node:child_process` with `detached` (new process group on POSIX) and `process.kill(-pid)` plus SIGTERM→SIGKILL settle so orphaned children like `find` cannot hang the session. **Bun.Terminal** (`Bun.spawn({ terminal })`, Bun ≥1.3.5 / improved in 1.4) is a suitable future primitive for a *PTY-backed interactive* shell (vim, pagers, password prompts) without `node-pty`. It is **not** a drop-in replacement for the current spawn path: it does not provide equivalent process-tree cancellation, and it is not a UI replacement for OpenTUI. Do not switch the shell tool to `Bun.spawn`/`Bun.Terminal` until tree-kill semantics match.
 
@@ -563,6 +564,9 @@ emergency_at = 0.85
 
 [tools]
 block_repeat_reads = false   # warn and return artifact card (default); true = hard-block repeat read_file of unchanged files
+
+[tools.web]
+enabled = true                # web_fetch; allow_domains / deny_domains (deny wins); private nets always blocked
 
 [session]
 log_dir = "~/.praana/sessions"

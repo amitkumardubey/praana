@@ -472,9 +472,15 @@ The footer abbreviations, also listed by `/help`:
 
 **Project context:** loads `AGENTS.md` / `CLAUDE.md` and an optional stack fingerprint on session start.
 
-**Tools:** structured `search_code` and `find_files` (native addon) plus git tools (`git_status`, `git_diff`, `git_commit`), shell, file read/write/edit, and memory tools. Prefer the git tools over `shell git …` for agent decisions; `git_commit` is blocked in plan mode.
+**Tools:** structured `search_code` and `find_files` (native addon) plus git tools (`git_status`, `git_diff`, `git_commit`), shell, file read/write/edit, `web_fetch`, and memory tools. Prefer the git tools over `shell git …` for agent decisions; `git_commit` is blocked in plan mode. `web_fetch` is read-only and stays available in plan mode.
 
-**Session safety:** plan mode gates mutating tools behind your approval; destructive or outward actions (`rm`, force-push, package installs, writes outside the project) ask for confirmation, and headless runs refuse them unless allowed in `[risk].allow`; known secret patterns are redacted from tool results and the event log; a loop breaker blocks a third identical mutating tool call, or a third attempt after two errors on the same file or command; a repeat-read interceptor warns or blocks re-reading unchanged files; `praana resume` with no id continues your most recent session for the current project.
+**Session safety:** plan mode gates mutating tools behind your approval; destructive or outward actions (`rm`, force-push, package installs, writes outside the project) ask for confirmation, and headless runs refuse them unless allowed in `[risk].allow`; `web_fetch` asks the first time each host is fetched in a session, then remembers that host, and a headless run refuses the host unless it matches `[tools.web].allow_domains` or `[risk].allow` includes `web_fetch_host`; private and local addresses are always refused; known secret patterns, including URL query values named `token`, `key`, `secret`, `password`, `sig`, `auth`, `api_key`, or `access_token`, are redacted from tool results and the event log; a loop breaker blocks a third identical mutating tool call, or a third attempt after two errors on the same file or command (reads, including `web_fetch`, are not gated); a repeat-read interceptor warns or blocks re-reading unchanged files; `praana resume` with no id continues your most recent session for the current project.
+
+### web_fetch
+
+`web_fetch(url, max_chars?, focus?)` GETs a public http(s) URL and returns readable text. HTML becomes markdown (scripts, styles, nav, footers, and cookie banners are dropped). Plain text and markdown are kept. JSON is pretty-printed. PDF and other binary types are refused. The page text is untrusted data: the tool result starts with a banner naming the host, and instructions inside the page must not be followed.
+
+`[tools.web]` keys (defaults in parentheses): `enabled` (true), `allow_domains` ([]), `deny_domains` ([]), `timeout_ms` (15000), `max_chars` (20000, hard cap 100000). A domain rule matches the exact hostname or a subdomain (`example.com` matches `a.example.com` and does not match `notexample.com`). A leading `*.` is accepted and means the same suffix. Deny wins. An empty `allow_domains` is not an allowlist. A non-empty list rejects every other host. The download itself stops at 2 MB. Bot-wall and empty script shells come back as blocked, not as page text.
 
 ## Known limitations
 

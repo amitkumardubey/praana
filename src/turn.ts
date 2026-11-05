@@ -782,6 +782,10 @@ export async function runTurn(
     skills: session.skills ?? [],
     skillRuntime: session.skillRuntime,
     blockRepeatReads: session.config.tools?.block_repeat_reads ?? false,
+    webConfig: session.config.tools?.web,
+    headless: session.headless,
+    riskAllow: session.config.risk?.allow,
+    webHostRemembered: (host) => session.webFetchHostRemembered(host),
     hasReadPath: (absPath) => session.scorecard.hasReadPath(absPath),
     getReadPathMtime: (absPath) => session.scorecard.getReadPathMtime(absPath),
     clearReadPath: (absPath) => {
