@@ -14,6 +14,8 @@ export interface Outcome {
   error_kind?: ErrorKind;
   blocked?: boolean;
   skipped?: string;
+  /** Optional explicit acknowledgement of weak search evidence. */
+  weak?: boolean;
   /** Provider-reported credits only. Absent means unknown, not zero. */
   credits?: number;
 }

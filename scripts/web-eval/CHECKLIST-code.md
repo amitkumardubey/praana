@@ -12,7 +12,10 @@ are owned separately. No live backend evaluations, terms verdicts or rankings.
   needs an official output example/schema, not a guessed REST wrapper. README links
   the checked official sources. Live keyless checks are deferred by scope, not run.
   Firecrawl scrape credits are unknown when not supplied by the response.
-- [ ] C1 Pure scoring, confidence intervals and JSON/Markdown reporting.
+- [x] C1 Pure scoring, confidence intervals and JSON/Markdown reporting.
+  Verified: 9 hand-made scoring/report tests; harness typecheck; full gate
+  3359 pass / 0 fail. Weighted uncertainty is labelled descriptive per-tier
+  Wilson bounds (weights never inflate independent sample counts).
 - [ ] C2 Budgeted, paced CLI and offline fake-runner tests.
 - [ ] D0 Usage, runner/env list, politeness, Terms check placeholder.
 - [ ] F `bun typecheck && bun test tests/`, plus harness TypeScript check.
