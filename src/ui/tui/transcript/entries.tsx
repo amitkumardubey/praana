@@ -8,14 +8,19 @@ import { wrapContent } from "./render-utils.js";
 import { buildMarkdownSyntaxStyle } from "./markdown-theme.js";
 import { stabilizeStreamingMarkdown } from "./streaming-markdown.js";
 import { RetainedMarkdownRenderable } from "./retained-markdown.js";
+import { PrefixGlyphRenderable } from "./prefix-glyph.js";
 import type { IndexedTranscriptEntry } from "./index.js";
 import type { TranscriptRenderOpts } from "./opts.js";
 
-extend({ retained_markdown: RetainedMarkdownRenderable });
+extend({
+  retained_markdown: RetainedMarkdownRenderable,
+  prefix_glyph: PrefixGlyphRenderable,
+});
 
 declare module "@opentui/solid" {
   interface OpenTUIComponents {
     retained_markdown: typeof RetainedMarkdownRenderable;
+    prefix_glyph: typeof PrefixGlyphRenderable;
   }
 }
 
@@ -125,9 +130,20 @@ export function TranscriptEntryView(props: {
   const renderer = useRenderer();
 
   if (e.role === "user") {
+    // The coral `❯ ` is a fixed two-column prefix box, not part of the text:
+    // the message stays plain in the store/event log, and the flexGrow text box
+    // gives wrapped and multi-line text a two-column hanging indent under the
+    // first character after the prefix.
     return (
-      <box id={`entry-${e.id}`} flexDirection="column">
-        <text>{e.text}</text>
+      <box id={`entry-${e.id}`} flexDirection="row">
+        <box width={2} flexShrink={0}>
+          <prefix_glyph>
+            <span style={TUI_STYLE.accent}>{"\u276f "}</span>
+          </prefix_glyph>
+        </box>
+        <box flexGrow={1}>
+          <text>{e.text}</text>
+        </box>
       </box>
     );
   }
