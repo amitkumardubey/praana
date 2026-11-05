@@ -165,6 +165,25 @@ Set any of the three keys to `0` (or use a non-positive value) to fall back to t
 
 Provider resolution order: explicit config → credential store (`~/.praana/credentials.json`) → environment-detected key → interactive setup.
 
+### Force OpenAI Chat Completions
+
+If a first-party model rejects Responses, force Chat Completions with the existing
+user-provider override (no new `[llm]` key). Keep `llm.provider = "openai"` and your
+chosen `llm.model`; add this provider table:
+
+```toml
+[providers.openai]
+api = "openai-completions"
+base_url = "https://api.openai.com/v1"
+env_key = "OPENAI_API_KEY"
+```
+
+This disables automatic Responses routing for **all** models under `openai` and
+retains first-party `max_completion_tokens` handling and the existing
+`reasoning_effort: "none"` tools workaround. Remove the table to restore automatic
+routing. User-declared providers are lenient under `stream_end_check = "auto"`;
+set `[llm] stream_end_check = "strict"` to keep strict first-party stream checks.
+
 ### LLM fallback
 
 Set both `[llm]` `fallback_provider` and `fallback_model` to use another provider/model after an eligible stream failure or when the primary sign-in cannot be refreshed. An explicit session model or provider override disables automatic fallback. The fallback becomes the session model only after it produces a usable finished answer.

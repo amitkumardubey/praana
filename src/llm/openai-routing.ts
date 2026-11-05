@@ -1,4 +1,4 @@
-import { isUserDeclaredProvider } from "../provider-registry.js";
+import { getUserProviderConfig, isUserDeclaredProvider, PROVIDER_REGISTRY, type ProviderWireCompat } from "../provider-registry.js";
 import type { StreamRequest } from "./types.js";
 
 /**
@@ -9,6 +9,16 @@ import type { StreamRequest } from "./types.js";
 export function openaiUsesResponses(modelId: string): boolean {
   const match = /^gpt-(5|6)(?:\.(0|[1-9]\d*))?(?:-[a-z0-9]+(?:-[a-z0-9]+)*)?$/.exec(modelId);
   return !!match && (match[1] === "6" || (match[2] !== undefined && Number(match[2]) >= 4));
+}
+
+/** The built-in-id Chat override must retain OpenAI's max_completion_tokens. */
+export function openaiChatOverrideCompat(provider: string): ProviderWireCompat | undefined {
+  const user = getUserProviderConfig(provider);
+  if (provider === "openai" && user?.api === "openai-completions" &&
+      user.base_url.replace(/\/+$/, "") === PROVIDER_REGISTRY.openai.baseUrl) {
+    return { ...PROVIDER_REGISTRY.openai.compat };
+  }
+  return undefined;
 }
 
 export function isFirstPartyOpenAI(req: Pick<StreamRequest, "provider" | "baseUrl" | "baseUrlOverride" | "endpointUrl">): boolean {

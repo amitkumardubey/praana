@@ -14,7 +14,7 @@ import type {
 import { getDriverForProvider } from "./resolver.js";
 import { resolveProviderAuth } from "./auth.js";
 import { getUserProviderConfig } from "../provider-registry.js";
-import { shouldUseOpenAIResponses } from "./openai-routing.js";
+import { openaiChatOverrideCompat, shouldUseOpenAIResponses } from "./openai-routing.js";
 import { resolveProviderWireDefaults } from "./wire-config.js";
 import { OAuthRefreshBusyError, OAuthRefreshError, resolveOAuthModelAuth, resolveCopilotModelAuth } from "../oauth.js";
 import { CredentialLockTimeoutError } from "../credential-lock.js";
@@ -160,7 +160,7 @@ export async function* streamLlmResponse(
     ...req,
     baseUrl: effectiveBaseUrl,
     headers: mergedAuth.headers,
-    compat: req.compat ?? wire.compat,
+    compat: req.compat ?? wire.compat ?? openaiChatOverrideCompat(req.provider),
     api: req.api ?? wire.api,
     connectTimeoutMs: timeouts.connectTimeoutMs,
     idleTimeoutMs: timeouts.idleTimeoutMs,

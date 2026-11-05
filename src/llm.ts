@@ -23,7 +23,7 @@ import { resolveBedrockRegion } from "./bedrock/region.js";
 import { isOAuthOnlyProvider, supportsOAuthLogin } from "./oauth.js";
 import { getCuratedModels, getModelCatalogEntry } from "./llm/catalog.js";
 import { DEFAULT_MODELS as NATIVE_DEFAULT_MODELS } from "./llm/resolver.js";
-import { openaiUsesResponses, shouldUseOpenAIResponses } from "./llm/openai-routing.js";
+import { openaiChatOverrideCompat, openaiUsesResponses, shouldUseOpenAIResponses } from "./llm/openai-routing.js";
 
 export {
   resolveContextWindowSync,
@@ -260,8 +260,9 @@ function buildModel(
     maxTokens: userModel?.max_tokens ?? 8192,
   };
 
-  if (pc.compat) {
-    const compat: ProviderWireCompat = { ...pc.compat };
+  const wireCompat = pc.compat ?? openaiChatOverrideCompat(config.provider);
+  if (wireCompat) {
+    const compat: ProviderWireCompat = { ...wireCompat };
     // A configured base_url points at a gateway, not the vendor's own endpoint,
     // so drop the vendor-specific field name and keep the generic default.
     if (config.base_url && compat.maxTokensField) {
