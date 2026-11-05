@@ -258,5 +258,256 @@
   ],
   "niche": "docs",
   "verified_at": "2026-11-05"
+ },
+ {
+  "query": "go errgroup Wait",
+  "authoritative_url": "https://pkg.go.dev/golang.org/x/sync/errgroup",
+  "expected_domains": [
+   "pkg.go.dev"
+  ],
+  "answer_snippets": [
+   "errgroup",
+   "Wait"
+  ],
+  "niche": "docs",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "go table driven tests",
+  "authoritative_url": "https://go.dev/wiki/TableDrivenTests",
+  "expected_domains": [
+   "go.dev"
+  ],
+  "answer_snippets": [
+   "table-driven",
+   "t.Run"
+  ],
+  "niche": "docs",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "java stream map collect",
+  "authoritative_url": "https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/util/stream/Stream.html",
+  "expected_domains": [
+   "docs.oracle.com"
+  ],
+  "answer_snippets": [
+   "Interface Stream",
+   "collect"
+  ],
+  "niche": "docs",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "spring boot external configuration properties",
+  "authoritative_url": "https://docs.spring.io/spring-boot/reference/features/external-config.html",
+  "expected_domains": [
+   "docs.spring.io"
+  ],
+  "answer_snippets": [
+   "application.properties",
+   "@Value"
+  ],
+  "niche": "docs",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "gradle kotlin dsl build.gradle.kts",
+  "authoritative_url": "https://docs.gradle.org/current/userguide/kotlin_dsl.html",
+  "expected_domains": [
+   "docs.gradle.org"
+  ],
+  "answer_snippets": [
+   "build.gradle.kts",
+   "Kotlin DSL"
+  ],
+  "niche": "docs",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "junit 5 parameterized tests",
+  "authoritative_url": "https://junit.org/junit5/docs/current/user-guide/",
+  "expected_domains": [
+   "junit.org"
+  ],
+  "answer_snippets": [
+   "Parameterized Classes and Tests",
+   "parameterized"
+  ],
+  "niche": "docs",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "docker compose depends_on startup order",
+  "authoritative_url": "https://docs.docker.com/compose/how-tos/startup-order/",
+  "expected_domains": [
+   "docs.docker.com"
+  ],
+  "answer_snippets": [
+   "depends_on",
+   "service_started"
+  ],
+  "niche": "docs",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "kubernetes liveness probe configure",
+  "authoritative_url": "https://kubernetes.io/docs/tasks/configure-pod-container/configure-liveness-readiness-startup-probes/",
+  "expected_domains": [
+   "kubernetes.io"
+  ],
+  "answer_snippets": [
+   "livenessProbe",
+   "readinessProbe"
+  ],
+  "niche": "docs",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "terraform for_each meta argument",
+  "authoritative_url": "https://developer.hashicorp.com/terraform/language/meta-arguments/for_each",
+  "expected_domains": [
+   "developer.hashicorp.com"
+  ],
+  "answer_snippets": [
+   "for_each",
+   "each.key"
+  ],
+  "niche": "docs",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "nginx proxy_pass directive",
+  "authoritative_url": "https://nginx.org/en/docs/http/ngx_http_proxy_module.html",
+  "expected_domains": [
+   "nginx.org"
+  ],
+  "answer_snippets": [
+   "proxy_pass",
+   "Syntax:"
+  ],
+  "niche": "docs",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "E0502 cannot borrow as mutable",
+  "authoritative_url": "https://doc.rust-lang.org/error_codes/E0502.html",
+  "expected_domains": [
+   "doc.rust-lang.org"
+  ],
+  "answer_snippets": [
+   "Error code E0502",
+   "cannot borrow"
+  ],
+  "niche": "error",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "E0277 trait bound is not satisfied",
+  "authoritative_url": "https://doc.rust-lang.org/error_codes/E0277.html",
+  "expected_domains": [
+   "doc.rust-lang.org"
+  ],
+  "answer_snippets": [
+   "trait bound"
+  ],
+  "niche": "error",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "EADDRINUSE address already in use",
+  "authoritative_url": "https://nodejs.org/api/errors.html",
+  "expected_domains": [
+   "nodejs.org"
+  ],
+  "answer_snippets": [
+   "EADDRINUSE"
+  ],
+  "niche": "error",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "ENOENT no such file or directory",
+  "authoritative_url": "https://nodejs.org/api/errors.html",
+  "expected_domains": [
+   "nodejs.org"
+  ],
+  "answer_snippets": [
+   "ENOENT"
+  ],
+  "niche": "error",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "MaxListenersExceededWarning",
+  "authoritative_url": "https://nodejs.org/api/events.html",
+  "expected_domains": [
+   "nodejs.org"
+  ],
+  "answer_snippets": [
+   "MaxListenersExceededWarning"
+  ],
+  "niche": "error",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "CORS No Access-Control-Allow-Origin header",
+  "authoritative_url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CORS/Errors/CORSMissingAllowOrigin",
+  "expected_domains": [
+   "developer.mozilla.org"
+  ],
+  "answer_snippets": [
+   "Access-Control-Allow-Origin"
+  ],
+  "niche": "error",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "CORS preflight request did not succeed",
+  "authoritative_url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CORS/Errors/CORSPreflightDidNotSucceed",
+  "expected_domains": [
+   "developer.mozilla.org"
+  ],
+  "answer_snippets": [
+   "preflight"
+  ],
+  "niche": "error",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "502 Bad Gateway",
+  "authoritative_url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/502",
+  "expected_domains": [
+   "developer.mozilla.org"
+  ],
+  "answer_snippets": [
+   "502 Bad Gateway"
+  ],
+  "niche": "error",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "ModuleNotFoundError No module named",
+  "authoritative_url": "https://docs.python.org/3/library/exceptions.html",
+  "expected_domains": [
+   "docs.python.org"
+  ],
+  "answer_snippets": [
+   "ModuleNotFoundError"
+  ],
+  "niche": "error",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "java.lang.NullPointerException",
+  "authoritative_url": "https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/NullPointerException.html",
+  "expected_domains": [
+   "docs.oracle.com"
+  ],
+  "answer_snippets": [
+   "NullPointerException"
+  ],
+  "niche": "error",
+  "verified_at": "2026-11-05"
  }
 ]
