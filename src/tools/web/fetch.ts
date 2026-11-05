@@ -13,6 +13,7 @@ import { displayFetchUrl } from "../../redact/url-query.js";
 import { fetchGuarded, type GuardPin, type GuardTransport, type HopCheck, type HostLookup } from "./ssrf.js";
 import { htmlToMarkdown } from "./html-to-markdown.js";
 import { blockReason } from "./honesty.js";
+import { sanitizeWebJson, sanitizeWebText } from "./sanitize.js";
 
 export const DEFAULT_TIMEOUT_MS = 15_000;
 export const DEFAULT_MAX_BYTES = 2 * 1024 * 1024;
@@ -344,10 +345,27 @@ function boundText(text: string, maxChars: number, total: number): { content: st
   return { content: `${slice}${notice}`, truncated: true };
 }
 
+function present(result: WebFetchResult): WebFetchResult {
+  if (result.ok) {
+    return {
+      ...result,
+      url: sanitizeWebText(result.url),
+      final_url: sanitizeWebText(result.final_url),
+      content_type: sanitizeWebText(result.content_type),
+      content: sanitizeWebText(result.content),
+    };
+  }
+  return {
+    ...result,
+    reason: sanitizeWebText(result.reason),
+    ...(result.redirect_to !== undefined ? { redirect_to: sanitizeWebText(result.redirect_to) } : {}),
+  };
+}
+
 function renderBody(text: string, type: string, pageUrl: string): { ok: true; text: string } | { ok: false; reason: string } {
   if (type === "application/json" || type.endsWith("+json")) {
     try {
-      return { ok: true, text: JSON.stringify(JSON.parse(text), null, 2) };
+      return { ok: true, text: JSON.stringify(sanitizeWebJson(JSON.parse(text)), null, 2) };
     } catch (err) {
       return { ok: false, reason: `response was not valid JSON (${errorMessage(err)})` };
     }
@@ -375,17 +393,17 @@ export async function webFetch(input: string, opts: WebFetchOptions = {}): Promi
   try {
     raw = await fetchGuarded(input, { lookup: opts.lookup, transport, checkHop: opts.checkHop });
   } catch (err) {
-    return { ok: false, reason: errorMessage(err) };
+    return present({ ok: false, reason: errorMessage(err) });
   }
-  if (!raw.ok) return raw;
+  if (!raw.ok) return present(raw);
 
   const contentType = header(raw.headers, "content-type") ?? "";
   const type = mediaType(contentType);
   if (type === "application/pdf" || ((type === "" || type === "application/octet-stream") && looksLikePdf(raw.body))) {
-    return { ok: false, reason: "PDF extraction is not supported" };
+    return present({ ok: false, reason: "PDF extraction is not supported" });
   }
   if (type !== "" && !textual(type)) {
-    return { ok: false, reason: `binary content (${type}) is not supported` };
+    return present({ ok: false, reason: `binary content (${type}) is not supported` });
   }
 
   const text = decodeDocument(raw.body, contentType, type);
@@ -400,21 +418,22 @@ export async function webFetch(input: string, opts: WebFetchOptions = {}): Promi
     text: extracted,
     contentType: effectiveType,
   });
-  if (blocked) return { ok: false, blocked: true, reason: blocked };
+  if (blocked) return present({ ok: false, blocked: true, reason: blocked });
   if (raw.status < 200 || raw.status >= 300) {
-    return { ok: false, reason: `HTTP ${raw.status}` };
+    return present({ ok: false, reason: `HTTP ${raw.status}` });
   }
 
   const rendered = effectiveType === "text/html" || effectiveType === "application/xhtml+xml"
     ? { ok: true as const, text: extracted }
     : renderBody(text, effectiveType, raw.finalUrl);
-  if (!rendered.ok) return rendered;
+  if (!rendered.ok) return present(rendered);
 
-  const total = rendered.text.length;
-  const focused = applyFocus(rendered.text, opts.focus);
+  const clean = sanitizeWebText(rendered.text);
+  const total = clean.length;
+  const focused = applyFocus(clean, opts.focus);
   const bounded = boundText(focused, clampMaxChars(opts.maxChars), opts.focus?.trim() ? total : focused.length);
   const finalUrl = redactResultUrl(raw.finalUrl);
-  return {
+  return present({
     ok: true,
     url: redactResultUrl(input),
     final_url: finalUrl,
@@ -423,5 +442,5 @@ export async function webFetch(input: string, opts: WebFetchOptions = {}): Promi
     truncated: bounded.truncated,
     bytes: raw.body.byteLength,
     content: `${untrustedBanner(finalUrl)}\n${bounded.content}`,
-  };
+  });
 }
