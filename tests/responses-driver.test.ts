@@ -436,7 +436,7 @@ describe("Responses stream termination", () => {
       { type: "response.output_text.delta", delta: "Hi" },
       { type: "response.completed", response: { status: "completed", usage: nested } },
     ]);
-    expect(completedEvents).toContainEqual({ type: "usage", usage: mapped });
+    expect(completedEvents).toContainEqual({ type: "usage", usage: { ...mapped, cacheReadTokens: 4 } });
     const incompleteEvents = await run(req, { bearerToken: jwt() }, [
       { type: "response.output_text.delta", delta: "partial" },
       { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, usage: nested } },
