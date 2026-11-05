@@ -3,6 +3,32 @@ import { join } from "node:path";
 import { runUpgrade } from "../src/update/upgrade.js";
 
 describe("runUpgrade", () => {
+  it("reports when neither source nor cache is available", async () => {
+    const result = await runUpgrade({ kind: "standalone", checkOffline: true, runInstaller: async () => { throw new Error("must not run"); } });
+    expect(result.lines.join("\n")).toContain("Could not check for a newer version");
+    expect(result.ranInstaller).toBe(false);
+    expect(result.exitCode).toBe(1);
+  });
+
+  it("reports the last known version when a forced check fails", async () => {
+    const result = await runUpgrade({ kind: "standalone", currentVersion: "v0.18.0", latestVersion: "0.18.0", checkOffline: true });
+    expect(result.lines.join("\n")).toContain("Could not check for a newer version (offline); using the last known: v0.18.0");
+  });
+
+  it("keeps the up-to-date message for a matching fresh version", async () => {
+    const result = await runUpgrade({ kind: "standalone", currentVersion: "v0.18.0", latestVersion: "0.18.0" });
+    expect(result.lines).toEqual(["Already up to date (v0.18.0)."]);
+    expect(result.ranInstaller).toBe(false);
+  });
+
+  it("suggests clearing the shell command cache only after success", async () => {
+    const hint = "If your shell still shows the old version, run `hash -r` (bash) or `rehash` (zsh).";
+    const success = await runUpgrade({ kind: "standalone", runInstaller: async () => ({ ok: true, output: "" }), versionOf: () => null });
+    expect(success.lines).toContain(hint);
+    const failure = await runUpgrade({ kind: "standalone", runInstaller: async () => ({ ok: false, output: "failed" }) });
+    expect(failure.lines).not.toContain(hint);
+  });
+
   it("refuses to overwrite a source checkout", async () => {
     const result = await runUpgrade({
       kind: "source",
