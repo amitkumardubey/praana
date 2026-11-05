@@ -11,6 +11,7 @@ import { createBrotliDecompress, createGunzip, createInflate, type BrotliDecompr
 import { APP_VERSION } from "../../app-version.js";
 import { fetchGuarded, type GuardPin, type GuardTransport, type HostLookup } from "./ssrf.js";
 import { htmlToMarkdown } from "./html-to-markdown.js";
+import { blockReason } from "./honesty.js";
 
 export const DEFAULT_TIMEOUT_MS = 15_000;
 export const DEFAULT_MAX_BYTES = 2 * 1024 * 1024;
@@ -360,13 +361,27 @@ export async function webFetch(input: string, opts: WebFetchOptions = {}): Promi
   if (type !== "" && !textual(type)) {
     return { ok: false, reason: `binary content (${type}) is not supported` };
   }
+
+  const text = decodeDocument(raw.body, contentType, type);
+  const effectiveType = type || (text.trimStart().startsWith("<") ? "text/html" : "text/plain");
+  const extracted = effectiveType === "text/html" || effectiveType === "application/xhtml+xml"
+    ? htmlToMarkdown(text, raw.finalUrl)
+    : text;
+  const blocked = blockReason({
+    status: raw.status,
+    headers: raw.headers,
+    raw: text,
+    text: extracted,
+    contentType: effectiveType,
+  });
+  if (blocked) return { ok: false, blocked: true, reason: blocked };
   if (raw.status < 200 || raw.status >= 300) {
     return { ok: false, reason: `HTTP ${raw.status}` };
   }
 
-  const text = decodeDocument(raw.body, contentType, type);
-  const effectiveType = type || (text.trimStart().startsWith("<") ? "text/html" : "text/plain");
-  const rendered = renderBody(text, effectiveType, raw.finalUrl);
+  const rendered = effectiveType === "text/html" || effectiveType === "application/xhtml+xml"
+    ? { ok: true as const, text: extracted }
+    : renderBody(text, effectiveType, raw.finalUrl);
   if (!rendered.ok) return rendered;
 
   const total = rendered.text.length;
