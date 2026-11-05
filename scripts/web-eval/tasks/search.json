@@ -13,6 +13,54 @@
   "verified_at": "2026-11-05"
  },
  {
+  "query": "typescript satisfies operator",
+  "authoritative_url": "https://www.typescriptlang.org/docs/handbook/release-notes/typescript-4-9.html",
+  "expected_domains": [
+   "typescriptlang.org"
+  ],
+  "answer_snippets": [
+   "satisfies"
+  ],
+  "niche": "docs",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "bun test preload option",
+  "authoritative_url": "https://bun.com/docs/test",
+  "expected_domains": [
+   "bun.com"
+  ],
+  "answer_snippets": [
+   "preload"
+  ],
+  "niche": "docs",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "rust tokio select macro",
+  "authoritative_url": "https://docs.rs/tokio/latest/tokio/macro.select.html",
+  "expected_domains": [
+   "docs.rs"
+  ],
+  "answer_snippets": [
+   "select!"
+  ],
+  "niche": "docs",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "react useEffect hook",
+  "authoritative_url": "https://react.dev/reference/react/useEffect",
+  "expected_domains": [
+   "react.dev"
+  ],
+  "answer_snippets": [
+   "useEffect"
+  ],
+  "niche": "docs",
+  "verified_at": "2026-11-05"
+ },
+ {
   "query": "typescript utility types Partial",
   "authoritative_url": "https://www.typescriptlang.org/docs/handbook/utility-types.html",
   "expected_domains": [
@@ -39,19 +87,6 @@
   "verified_at": "2026-11-05"
  },
  {
-  "query": "javascript Promise.all",
-  "authoritative_url": "https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/all",
-  "expected_domains": [
-   "developer.mozilla.org"
-  ],
-  "answer_snippets": [
-   "Promise.all()",
-   "iterable"
-  ],
-  "niche": "docs",
-  "verified_at": "2026-11-05"
- },
- {
   "query": "react useMemo hook",
   "authoritative_url": "https://react.dev/reference/react/useMemo",
   "expected_domains": [
@@ -60,32 +95,6 @@
   "answer_snippets": [
    "useMemo",
    "memoized"
-  ],
-  "niche": "docs",
-  "verified_at": "2026-11-05"
- },
- {
-  "query": "next js layout file convention",
-  "authoritative_url": "https://nextjs.org/docs/app/api-reference/file-conventions/layout",
-  "expected_domains": [
-   "nextjs.org"
-  ],
-  "answer_snippets": [
-   "layout",
-   "children"
-  ],
-  "niche": "docs",
-  "verified_at": "2026-11-05"
- },
- {
-  "query": "bun workspaces monorepo",
-  "authoritative_url": "https://bun.com/docs/install/workspaces",
-  "expected_domains": [
-   "bun.com"
-  ],
-  "answer_snippets": [
-   "workspaces",
-   "catalog"
   ],
   "niche": "docs",
   "verified_at": "2026-11-05"
@@ -294,19 +303,6 @@
   "answer_snippets": [
    "Interface Stream",
    "collect"
-  ],
-  "niche": "docs",
-  "verified_at": "2026-11-05"
- },
- {
-  "query": "spring boot external configuration properties",
-  "authoritative_url": "https://docs.spring.io/spring-boot/reference/features/external-config.html",
-  "expected_domains": [
-   "docs.spring.io"
-  ],
-  "answer_snippets": [
-   "application.properties",
-   "@Value"
   ],
   "niche": "docs",
   "verified_at": "2026-11-05"
@@ -647,14 +643,13 @@
   "verified_at": "2026-11-05"
  },
  {
-  "query": "bun 1.1 release",
-  "authoritative_url": "https://bun.com/blog/bun-v1.1",
+  "query": "typescript 5.0 release notes",
+  "authoritative_url": "https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-0.html",
   "expected_domains": [
-   "bun.com"
+   "typescriptlang.org"
   ],
   "answer_snippets": [
-   "Bun 1.1",
-   "Windows"
+   "TypeScript 5.0"
   ],
   "niche": "release",
   "verified_at": "2026-11-05"
