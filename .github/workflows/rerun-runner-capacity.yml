@@ -52,19 +52,45 @@ jobs:
             exit 0
           fi
           attempt=$(jq -r '.run_attempt' <<<"$run")
-          jobs=$(gh api --paginate --slurp "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$attempt/jobs?per_page=100" | jq '[.[].jobs[] | {id, name, conclusion, annotations: []}]')
-          while IFS= read -r id; do
-            annotations=$(gh api --paginate --slurp "repos/$GH_REPO/check-runs/$id/annotations?per_page=100" | jq '[.[][] | .message]')
-            jobs=$(jq --argjson id "$id" --argjson annotations "$annotations" 'map(if .id == $id then .annotations = $annotations else . end)' <<<"$jobs")
-          done < <(jq -r '.[] | select(.conclusion != "success" and .conclusion != "skipped") | .id' <<<"$jobs")
-          decision=$(jq -n --arg conclusion "$(jq -r '.conclusion' <<<"$run")" --argjson attempt "$attempt" --argjson jobs "$jobs" '{runConclusion: $conclusion, runAttempt: $attempt, jobs: $jobs}' | bun -e 'import { decideRerun } from "./scripts/ci/runner-capacity.ts"; console.log(JSON.stringify(decideRerun(await Bun.stdin.json())));')
-          echo "Decision: $decision"
+          deadline=$((SECONDS + 900))
+          while :; do
+            jobs=$(gh api --paginate --slurp "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$attempt/jobs?per_page=100" | jq '[.[].jobs[] | {id, name, status, conclusion, annotations: []}]')
+            while IFS= read -r id; do
+              annotations=$(gh api --paginate --slurp "repos/$GH_REPO/check-runs/$id/annotations?per_page=100" | jq '[.[][] | .message]')
+              jobs=$(jq --argjson id "$id" --argjson annotations "$annotations" 'map(if .id == $id then .annotations = $annotations else . end)' <<<"$jobs")
+            done < <(jq -r '.[] | select(.conclusion != "success" and .conclusion != "skipped") | .id' <<<"$jobs")
+            decision=$(jq -n --arg conclusion "$(jq -r '.conclusion' <<<"$run")" --argjson attempt "$attempt" --argjson jobs "$jobs" '{runConclusion: $conclusion, runAttempt: $attempt, jobs: $jobs}' | bun -e 'import { decideRerun } from "./scripts/ci/runner-capacity.ts"; console.log(JSON.stringify(decideRerun(await Bun.stdin.json())));')
+            echo "Decision: $decision"
+            [[ $(jq -r '.action' <<<"$decision") == 'wait' ]] || break
+            remaining=$((deadline - SECONDS))
+            if (( remaining <= 0 )); then
+              echo 'Gave up waiting for jobs to settle after 15 minutes.'
+              break
+            fi
+            if (( remaining > 60 )); then sleep 60; else sleep "$remaining"; fi
+            current=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID")
+            if ! jq -e --argjson attempt "$attempt" '.status == "completed" and .run_attempt == $attempt' <<<"$current" >/dev/null; then
+              echo 'Run is no longer completed at the inspected attempt; stopping inspection.'
+              exit 0
+            fi
+            run=$current
+          done
           if [[ "$DRY_RUN" == "true" ]]; then exit 0; fi
           action=$(jq -r '.action' <<<"$decision")
           case "$action" in
             rerun)
               if (( attempt >= 3 )); then echo 'Attempt cap reached; refusing rerun.' >&2; exit 1; fi
               sleep 240
+              current=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID")
+              if ! jq -e --argjson attempt "$attempt" '.status == "completed" and .run_attempt == $attempt' <<<"$current" >/dev/null; then
+                echo 'Run is no longer completed at the inspected attempt; not rerunning.'
+                exit 0
+              fi
+              current_jobs=$(gh api --paginate --slurp "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$attempt/jobs?per_page=100" | jq '[.[].jobs[] | {status, conclusion}]')
+              if ! bun -e 'import { jobsSettled } from "./scripts/ci/runner-capacity.ts"; if (!jobsSettled(await Bun.stdin.json())) process.exit(1);' <<<"$current_jobs"; then
+                echo 'Jobs are no longer settled; not rerunning.'
+                exit 0
+              fi
               current=$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID")
               if ! jq -e --argjson attempt "$attempt" '.status == "completed" and .run_attempt == $attempt' <<<"$current" >/dev/null; then
                 echo 'Run is no longer completed at the inspected attempt; not rerunning.'
@@ -93,6 +119,7 @@ jobs:
                 fi
               fi
               ;;
+            wait) echo 'Jobs did not settle; no action required.' ;;
             ignore) echo 'No action required.' ;;
             *) echo "Unexpected decision: $action" >&2; exit 1 ;;
           esac

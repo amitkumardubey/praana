@@ -1,5 +1,6 @@
 export interface CapacityJob {
   name: string;
+  status?: string;
   conclusion: string | null;
   annotations: string[];
 }
@@ -11,7 +12,15 @@ export interface CapacityRun {
   maxAttempts?: number;
 }
 
-export function decideRerun({ runConclusion, runAttempt, jobs, maxAttempts = 3 }: CapacityRun): { action: "rerun" | "alert" | "ignore"; reason: string } {
+export function jobsSettled(jobs: { status?: string; conclusion: string | null }[]): boolean {
+  return jobs.every((job) =>
+    !["queued", "in_progress", "waiting", "pending"].includes(job.status ?? "") &&
+    (job.conclusion !== null || job.status === "completed")
+  );
+}
+
+export function decideRerun({ runConclusion, runAttempt, jobs, maxAttempts = 3 }: CapacityRun): { action: "rerun" | "alert" | "ignore" | "wait"; reason: string } {
+  if (!jobsSettled(jobs)) return { action: "wait", reason: "Jobs have not settled" };
   if (runConclusion !== "failure") return { action: "ignore", reason: "Run did not fail" };
   const failed = jobs.filter((job) => job.conclusion !== "success" && job.conclusion !== "skipped");
   if (failed.length === 0 || !failed.every((job) =>

@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { decideRerun } from "../scripts/ci/runner-capacity.js";
+import { decideRerun, jobsSettled } from "../scripts/ci/runner-capacity.js";
+import staleFixture from "./fixtures/ci/release-please-41862103937-stale.json";
 import releaseFixture from "./fixtures/ci/release-please-41862103937.json";
 import nativesFixture from "./fixtures/ci/natives-41862103985.json";
 import failureFixture from "./fixtures/ci/real-failure.json";
@@ -10,11 +11,33 @@ const base = { runConclusion: "failure", runAttempt: 1, jobs: [mac("macOS arm64"
 
 describe("recorded runner capacity decisions", () => {
   test.each([
+    ["release-please stale jobs", staleFixture, "wait"],
     ["release-please 41862103937 attempt 1", releaseFixture, "rerun"],
     ["natives 41862103985 attempt 1", nativesFixture, "rerun"],
     ["genuine failure", failureFixture, "ignore"],
   ] as const)("%s", (_name, fixture, expected) => {
     expect(decideRerun(fixture).action).toBe(expected);
+  });
+});
+
+describe("job settlement", () => {
+  test.each(["queued", "in_progress", "waiting", "pending"])('treats %s as unsettled even with a conclusion', (status) => {
+    expect(jobsSettled([{ status, conclusion: "cancelled" }])).toBe(false);
+  });
+  test("requires a conclusion unless status is completed", () => {
+    expect(jobsSettled([{ conclusion: null }])).toBe(false);
+    expect(jobsSettled([{ status: "unknown", conclusion: null }])).toBe(false);
+    expect(jobsSettled([{ status: "completed", conclusion: null }])).toBe(true);
+    expect(jobsSettled([{ conclusion: "success" }])).toBe(true);
+  });
+  test("wait takes precedence over other decision rules", () => {
+    expect(decideRerun({ ...staleFixture, runConclusion: "success", runAttempt: 3 }).action).toBe("wait");
+  });
+  test("reruns stale jobs once all settle with capacity annotations", () => {
+    const jobs = staleFixture.jobs.map((job) => ({ ...job, status: "completed", conclusion: "cancelled", annotations: [annotation] }));
+    expect(decideRerun({ ...staleFixture, jobs }).action).toBe("rerun");
+    expect(decideRerun({ ...staleFixture, jobs, runAttempt: 3 }).action).toBe("alert");
+    expect(decideRerun({ ...staleFixture, jobs: [...jobs, { name: "tests", status: "completed", conclusion: "failure", annotations: [] }] }).action).toBe("ignore");
   });
 });
 
