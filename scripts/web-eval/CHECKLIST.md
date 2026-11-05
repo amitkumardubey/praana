@@ -1,0 +1,9 @@
+- [ ] A1 search.json: 60 verified developer queries in the required categories.
+- [ ] A2 fetch.json: 30 verified URLs, including six documented bot-wall honesty probes.
+- [ ] B1 Runner interface, error taxonomy, local-fetch and Jina runners, offline fixtures.
+- [ ] B2 Officially documented search and fetch runners, including Firecrawl credit accounting.
+- [ ] C1 Scoring and JSON/markdown reporting with offline unit tests.
+- [ ] C2 Polite, budgeted harness CLI with offline tests.
+- [ ] D1 Official-source terms table for every backend.
+- [ ] E1 Run keyless runners and save dated results.
+- [ ] F1 Pass typecheck and offline test suite; report limitations.
