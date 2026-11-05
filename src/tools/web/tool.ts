@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { WebToolsConfig } from "../../types.js";
 import { defineTool } from "../tool-def.js";
 import { HARD_MAX_CHARS, webFetch, type WebFetchOptions } from "./fetch.js";
-import { DEFAULT_WEB_CONFIG, decideWebHost, hostnameOf } from "./policy.js";
+import { createRedirectHopCheck, DEFAULT_WEB_CONFIG, decideWebHost, hostnameOf } from "./policy.js";
 
 const webFetchSchema = z.object({
   url: z.string().describe("http or https URL to fetch"),
@@ -59,11 +59,27 @@ export function createWebFetchTool(deps?: WebFetchToolDeps) {
           const reason = refusal(host, config, deps ?? {});
           if (reason) return { ok: false, reason };
         }
+        let checkHop: ReturnType<typeof createRedirectHopCheck> | undefined;
+        if (gated) {
+          try {
+            const initial = new URL(url);
+            if (initial.protocol === "http:" || initial.protocol === "https:") {
+              checkHop = createRedirectHopCheck(initial, config, {
+                hostRemembered: (name) => deps?.hostRemembered?.(name) ?? false,
+                headless: deps?.headless,
+                riskAllow: deps?.riskAllow,
+              });
+            }
+          } catch {
+            checkHop = undefined;
+          }
+        }
         return fetchPage(url, {
           maxChars: resolveMaxChars(args.max_chars, config.max_chars),
           focus: args.focus,
           timeoutMs: config.timeout_ms,
           signal: deps?.getSignal?.(),
+          checkHop,
         });
       },
     }),

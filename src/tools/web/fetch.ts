@@ -9,7 +9,8 @@ import http from "node:http";
 import https from "node:https";
 import { createBrotliDecompress, createGunzip, createInflate, type BrotliDecompress, type Gunzip, type Inflate } from "node:zlib";
 import { APP_VERSION } from "../../app-version.js";
-import { fetchGuarded, type GuardPin, type GuardTransport, type HostLookup } from "./ssrf.js";
+import { displayFetchUrl } from "../../redact/url-query.js";
+import { fetchGuarded, type GuardPin, type GuardTransport, type HopCheck, type HostLookup } from "./ssrf.js";
 import { htmlToMarkdown } from "./html-to-markdown.js";
 import { blockReason } from "./honesty.js";
 
@@ -26,6 +27,8 @@ export interface WebFetchOptions {
   maxChars?: number;
   focus?: string;
   signal?: AbortSignal;
+  /** Host policy for each redirect target. The initial URL is checked by the caller. */
+  checkHop?: (url: URL) => HopCheck;
 }
 
 export type WebFetchResult =
@@ -39,7 +42,7 @@ export type WebFetchResult =
       bytes: number;
       content: string;
     }
-  | { ok: false; reason: string; blocked?: boolean };
+  | { ok: false; reason: string; blocked?: boolean; redirect_to?: string };
 
 type Decoder = Gunzip | BrotliDecompress | Inflate;
 
@@ -311,6 +314,16 @@ function applyFocus(markdown: string, focus: string | undefined): string {
   return hits.map((block) => block.text).join("\n\n");
 }
 
+function redactResultUrl(raw: string): string {
+  const shown = displayFetchUrl(raw);
+  if (!shown) return raw;
+  try {
+    return `${shown}${new URL(raw).hash}`;
+  } catch {
+    return shown;
+  }
+}
+
 function untrustedBanner(finalUrl: string): string {
   let host = "unknown";
   try {
@@ -360,7 +373,7 @@ export async function webFetch(input: string, opts: WebFetchOptions = {}): Promi
 
   let raw: Awaited<ReturnType<typeof fetchGuarded>>;
   try {
-    raw = await fetchGuarded(input, { lookup: opts.lookup, transport });
+    raw = await fetchGuarded(input, { lookup: opts.lookup, transport, checkHop: opts.checkHop });
   } catch (err) {
     return { ok: false, reason: errorMessage(err) };
   }
@@ -400,14 +413,15 @@ export async function webFetch(input: string, opts: WebFetchOptions = {}): Promi
   const total = rendered.text.length;
   const focused = applyFocus(rendered.text, opts.focus);
   const bounded = boundText(focused, clampMaxChars(opts.maxChars), opts.focus?.trim() ? total : focused.length);
+  const finalUrl = redactResultUrl(raw.finalUrl);
   return {
     ok: true,
-    url: input,
-    final_url: raw.finalUrl,
+    url: redactResultUrl(input),
+    final_url: finalUrl,
     status: raw.status,
     content_type: contentType || effectiveType,
     truncated: bounded.truncated,
     bytes: raw.body.byteLength,
-    content: `${untrustedBanner(raw.finalUrl)}\n${bounded.content}`,
+    content: `${untrustedBanner(finalUrl)}\n${bounded.content}`,
   };
 }

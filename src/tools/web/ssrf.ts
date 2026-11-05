@@ -43,6 +43,8 @@ export interface GuardTransport {
   exchange(pin: GuardPin): Promise<GuardedExchange>;
 }
 
+export type HopCheck = { ok: true } | { ok: false; reason: string; redirect_to?: string };
+
 export type FetchGuardedResult =
   | {
       ok: true;
@@ -52,7 +54,7 @@ export type FetchGuardedResult =
       finalUrl: string;
       address: string;
     }
-  | { ok: false; reason: string };
+  | { ok: false; reason: string; redirect_to?: string };
 
 /** Node-style lookup. `options.all` is what Bun's HTTP client passes. */
 export type PinnedLookup = (
@@ -366,7 +368,13 @@ function header(headers: Record<string, string>, name: string): string | undefin
 
 export async function fetchGuarded(
   input: string,
-  deps: { lookup?: HostLookup; transport: GuardTransport; maxRedirects?: number },
+  deps: {
+    lookup?: HostLookup;
+    transport: GuardTransport;
+    maxRedirects?: number;
+    /** Runs before the SSRF guard on each redirect target. The first URL is not passed here. */
+    checkHop?: (url: URL) => HopCheck;
+  },
 ): Promise<FetchGuardedResult> {
   const initial = parseHttpUrl(input);
   if (!(initial instanceof URL)) return initial;
@@ -391,6 +399,14 @@ export async function fetchGuarded(
     if (followed >= maxRedirects) return { ok: false, reason: "too many redirects" };
     const next = assessRedirect(guarded.pin.url, location);
     if (!next.ok) return next;
+    if (deps.checkHop) {
+      const hop = deps.checkHop(next.url);
+      if (!hop.ok) {
+        return hop.redirect_to
+          ? { ok: false, reason: hop.reason, redirect_to: hop.redirect_to }
+          : { ok: false, reason: hop.reason };
+      }
+    }
     current = next.url;
     followed += 1;
   }

@@ -9,6 +9,7 @@
  * per-session confirmation (or a headless risk allow).
  */
 
+import { displayFetchUrl } from "../../redact/url-query.js";
 import type { WebToolsConfig } from "../../types.js";
 
 export const DEFAULT_WEB_CONFIG: WebToolsConfig = {
@@ -50,6 +51,51 @@ export function decideWebHost(host: string, config: WebToolsConfig): WebHostDeci
   if (config.allow_domains.some((rule) => hostMatchesDomain(host, rule))) return "allow";
   if (config.allow_domains.length > 0) return "deny";
   return "confirm";
+}
+
+export type RedirectHopDecision =
+  | { ok: true }
+  | { ok: false; reason: string; redirect_to?: string };
+
+export interface RedirectHopAccess {
+  hostRemembered?: (host: string) => boolean;
+  headless?: boolean;
+  riskAllow?: readonly string[];
+}
+
+function redirectRefusal(host: string, target: URL): RedirectHopDecision {
+  return {
+    ok: false,
+    reason: `redirected to ${host}, which is not allowed or not confirmed; call web_fetch again with that URL to confirm it`,
+    redirect_to: displayFetchUrl(target.href) ?? target.href,
+  };
+}
+
+/**
+ * Policy for one redirect target. The same host is followed. A different host
+ * is followed only when deny does not match, a non-empty allowlist matches,
+ * and the host is already confirmed or covered by allow_domains / headless
+ * `[risk].allow`. Otherwise the caller must stop before contacting it.
+ */
+export function createRedirectHopCheck(
+  initial: URL,
+  config: WebToolsConfig,
+  access: RedirectHopAccess,
+): (url: URL) => RedirectHopDecision {
+  let currentHost = normalizeHost(initial.hostname);
+  return (target) => {
+    const host = normalizeHost(target.hostname);
+    if (host && host === currentHost) return { ok: true };
+    const decision = decideWebHost(host, config);
+    const remembered = access.hostRemembered?.(host) ?? false;
+    const headlessCovered =
+      access.headless === true && (access.riskAllow?.includes("web_fetch_host") ?? false);
+    if (decision === "deny" || (decision !== "allow" && !remembered && !headlessCovered)) {
+      return redirectRefusal(host || "unknown", target);
+    }
+    currentHost = host;
+    return { ok: true };
+  };
 }
 
 export function hostnameOf(raw: string): string | null {
