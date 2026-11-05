@@ -7,6 +7,7 @@ export const RISK_CLASSES = [
   "gh_pr_merge",
   "package_install",
   "write_outside_cwd",
+  "web_fetch_host",
 ] as const;
 
 export type RiskClass = (typeof RISK_CLASSES)[number];

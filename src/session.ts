@@ -31,6 +31,7 @@ import { loadConfig } from "./config.js";
 import { createConfirmLock } from "./risk/confirm-lock.js";
 import { promptYesNo } from "./risk/prompt.js";
 import type { RiskClass, RiskConfirmResult } from "./risk/classes.js";
+import { DEFAULT_WEB_CONFIG, decideWebHost, normalizeHost } from "./tools/web/policy.js";
 import { SessionNotFoundError } from "./session-errors.js";
 export { SessionNotFoundError } from "./session-errors.js";
 import {
@@ -161,6 +162,8 @@ export class Session {
   headless = false;
   /** When true, mutating tools are blocked until the user approves the plan. */
   planMode = false;
+  /** Hosts the user already confirmed for web_fetch in this process. */
+  private webFetchHosts = new Set<string>();
   /** Internal turn-loop hook dispatcher (issue #574). */
   hooks: HookRegistry;
   /** Mutating-tool loop breaker (issue #578). */
@@ -593,6 +596,21 @@ export class Session {
   /** Whether the session is currently in plan mode. */
   isPlanMode(): boolean {
     return this.planMode;
+  }
+
+  webFetchPolicy(host: string): "disabled" | "deny" | "allow" | "confirm" {
+    const web = this.config.tools?.web ?? DEFAULT_WEB_CONFIG;
+    if (!web.enabled) return "disabled";
+    return decideWebHost(host, web);
+  }
+
+  webFetchHostRemembered(host: string): boolean {
+    return this.webFetchHosts.has(normalizeHost(host));
+  }
+
+  rememberWebFetchHost(host: string): void {
+    const name = normalizeHost(host);
+    if (name) this.webFetchHosts.add(name);
   }
 
   async confirmRisk(classId: RiskClass, prompt: string): Promise<RiskConfirmResult> {

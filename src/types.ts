@@ -297,9 +297,27 @@ export interface RiskConfig {
   allow: readonly string[];
 }
 
+export interface WebToolsConfig {
+  /** When false, web_fetch refuses every URL. Default: true. */
+  enabled: boolean;
+  /**
+   * Dot-boundary suffix allowlist. Empty means "not an allowlist": a TTY session
+   * confirms the first fetch of each host. A non-empty list rejects other hosts.
+   */
+  allow_domains: readonly string[];
+  /** Dot-boundary suffix denylist. A match always wins over allow_domains. */
+  deny_domains: readonly string[];
+  /** Request timeout in milliseconds. Default: 15000. */
+  timeout_ms: number;
+  /** Default page-text cap. Default: 20000. Hard ceiling is 100000. */
+  max_chars: number;
+}
+
 export interface ToolsConfig {
   /** When true, second+ read_file of the same abs path hard-fails. Default: false (warn and return artifact card). */
   block_repeat_reads: boolean;
+  /** web_fetch settings. Omitted objects use the built-in defaults. */
+  web?: WebToolsConfig;
 }
 
 export interface SearchCodeConfig {
@@ -461,7 +479,7 @@ export interface PraanaConfig {
   edit: EditConfig;
   /** Optional; defaults to { allow: [] } when omitted. */
   risk?: RiskConfig;
-  /** Optional; defaults to { block_repeat_reads: false } when omitted. */
+  /** Optional; defaults to block_repeat_reads false and web_fetch enabled. */
   tools?: ToolsConfig;
   search_code?: SearchCodeConfig;
   /** Optional; defaults to { enabled: true, require: false } when omitted. */

@@ -1,4 +1,5 @@
 import { isAbsolute, relative, resolve } from "node:path";
+import { displayFetchUrl } from "../redact/url-query.js";
 import type { RiskHit } from "./classes.js";
 
 const PKG = new Set(["npm", "pnpm", "yarn", "bun", "pip", "pip3"]);
@@ -108,6 +109,11 @@ export function classifyRisk(
   }
   if (toolName === "shell" && typeof args.command === "string") {
     return classifyShell(args.command);
+  }
+  if (toolName === "web_fetch" && typeof args.url === "string") {
+    const detail = displayFetchUrl(args.url);
+    if (!detail) return null;
+    return { class: "web_fetch_host", detail };
   }
   return null;
 }

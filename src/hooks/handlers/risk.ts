@@ -6,13 +6,35 @@
 
 import { classifyRisk } from "../../risk/classify.js";
 import type { RiskConfirmResult } from "../../risk/classes.js";
+import { formatWebFetchPrompt } from "../../risk/prompt.js";
+import { hostnameOf } from "../../tools/web/policy.js";
 import type { PreToolCallHandler } from "../types.js";
+
+function fetchHost(args: Record<string, unknown>): string {
+  return typeof args.url === "string" ? hostnameOf(args.url) ?? "" : "";
+}
 
 export function createRiskPreToolCallHandler(cwd: string): PreToolCallHandler {
   return async (ctx) => {
     const hit = classifyRisk(ctx.toolName, ctx.args, cwd);
     if (!hit) return;
-    const prompt = `${hit.class}: ${hit.detail}`;
+    if (hit.class === "web_fetch_host") {
+      const host = fetchHost(ctx.args);
+      const policy = ctx.session.webFetchPolicy?.(host) ?? "confirm";
+      if (policy === "disabled") {
+        return { action: "block", error: "web_fetch is disabled", isError: true };
+      }
+      if (policy === "deny") {
+        return {
+          action: "block",
+          error: `Blocked by tools.web domain rules (${host})`,
+          isError: true,
+        };
+      }
+      if (policy === "allow" || ctx.session.webFetchHostRemembered?.(host)) return;
+    }
+    const prompt =
+      hit.class === "web_fetch_host" ? formatWebFetchPrompt(hit.detail) : `${hit.class}: ${hit.detail}`;
     let result: RiskConfirmResult;
     if (!ctx.session.confirmRisk) {
       result = { allowed: false, reason: "headless" };
@@ -23,10 +45,18 @@ export function createRiskPreToolCallHandler(cwd: string): PreToolCallHandler {
         result = { allowed: false, reason: "declined" };
       }
     }
-    if (result.allowed) return;
+    if (result.allowed) {
+      if (hit.class === "web_fetch_host") {
+        const host = fetchHost(ctx.args);
+        if (host) ctx.session.rememberWebFetchHost?.(host);
+      }
+      return;
+    }
     const error =
       result.reason === "headless"
-        ? `Blocked in headless (${hit.class}). Add it to [risk].allow to permit.`
+        ? hit.class === "web_fetch_host"
+          ? "Blocked in headless (web_fetch_host). Add the host to [tools.web].allow_domains or add web_fetch_host to [risk].allow."
+          : `Blocked in headless (${hit.class}). Add it to [risk].allow to permit.`
         : `User declined ${hit.class}: ${hit.detail}`;
     return { action: "block", error, isError: true };
   };
