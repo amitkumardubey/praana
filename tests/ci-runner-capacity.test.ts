@@ -1,9 +1,22 @@
 import { describe, expect, test } from "bun:test";
 import { decideRerun } from "../scripts/ci/runner-capacity.js";
+import releaseFixture from "./fixtures/ci/release-please-41862103937.json";
+import nativesFixture from "./fixtures/ci/natives-41862103985.json";
+import failureFixture from "./fixtures/ci/real-failure.json";
 
 const annotation = "The job was not acquired by Runner of type hosted even after multiple attempts";
 const mac = (name: string) => ({ name, conclusion: "cancelled", annotations: [annotation] });
 const base = { runConclusion: "failure", runAttempt: 1, jobs: [mac("macOS arm64"), mac("macOS x64")] };
+
+describe("recorded runner capacity decisions", () => {
+  test.each([
+    ["release-please 41862103937 attempt 1", releaseFixture, "rerun"],
+    ["natives 41862103985 attempt 1", nativesFixture, "rerun"],
+    ["genuine failure", failureFixture, "ignore"],
+  ] as const)("%s", (_name, fixture, expected) => {
+    expect(decideRerun(fixture).action).toBe(expected);
+  });
+});
 
 describe("runner capacity decisions", () => {
   test("reruns when all failed macOS jobs were not acquired", () => {
