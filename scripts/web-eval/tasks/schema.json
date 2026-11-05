@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "anyOf": [
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1
+          },
+          "authoritative_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "expected_domains": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$"
+            }
+          },
+          "answer_snippets": {
+            "minItems": 1,
+            "maxItems": 3,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "niche": {
+            "type": "string",
+            "enum": [
+              "docs",
+              "error",
+              "release",
+              "version-change"
+            ]
+          },
+          "verified_at": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          }
+        },
+        "required": [
+          "query",
+          "authoritative_url",
+          "expected_domains",
+          "answer_snippets",
+          "niche",
+          "verified_at"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "$schema": "https://json-schema.org/draft/2020-12/schema",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "probe": {
+            "type": "string",
+            "minLength": 1
+          },
+          "tier": {
+            "anyOf": [
+              {
+                "type": "number",
+                "const": 1
+              },
+              {
+                "type": "number",
+                "const": 2
+              },
+              {
+                "type": "number",
+                "const": 3
+              }
+            ]
+          },
+          "verified_at": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          }
+        },
+        "required": [
+          "url",
+          "probe",
+          "tier",
+          "verified_at"
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}
