@@ -1,0 +1,7 @@
+{
+  "runConclusion": "failure",
+  "runAttempt": 1,
+  "jobs": [
+    { "name": "unit tests", "conclusion": "failure", "annotations": [] }
+  ]
+}
