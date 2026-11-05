@@ -100,6 +100,7 @@ export async function main() {
     const check = await refreshUpdateCheck({
       currentVersion: APP_VERSION,
       ignoreSkip: true,
+      forceRefresh: true,
       isTty: true,
       runMode: false,
     });
@@ -107,6 +108,7 @@ export async function main() {
       force: parsed.force,
       currentVersion: APP_VERSION,
       latestVersion: check?.latest,
+      checkOffline: check?.fromCache,
     });
     for (const line of result.lines) console.log(line);
     process.exit(result.exitCode);

@@ -78,6 +78,30 @@ describe("refreshUpdateCheck", () => {
     expect(result?.fromCache).toBe(true);
   });
 
+  it("forces a fresh registry check despite a fresh cache and updates it", async () => {
+    writeUpdateCheckCache({ version: 1, checkedAt: Date.now(), latestVersion: "0.18.0", source: "npm" });
+    const result = await refreshUpdateCheck({
+      currentVersion: "v0.18.0", env: {}, forceRefresh: true,
+      fetchImpl: async () => new Response(JSON.stringify({ version: "0.18.1" })),
+    });
+    expect(result?.latest).toBe("0.18.1");
+    expect(result?.available).toBe(true);
+    expect(result?.fromCache).toBe(false);
+    expect(readUpdateCheckCache()?.latestVersion).toBe("0.18.1");
+  });
+
+  it("uses a fresh cache only as fallback when a forced registry check fails", async () => {
+    writeUpdateCheckCache({ version: 1, checkedAt: Date.now(), latestVersion: "0.18.0", source: "npm" });
+    let fetched = false;
+    const result = await refreshUpdateCheck({
+      currentVersion: "v0.18.0", env: {}, forceRefresh: true,
+      fetchImpl: async () => { fetched = true; throw new Error("offline"); },
+    });
+    expect(fetched).toBe(true);
+    expect(result?.fromCache).toBe(true);
+    expect(result?.latest).toBe("0.18.0");
+  });
+
   it("fetches npm latest when the cache is stale", async () => {
     writeUpdateCheckCache({
       version: 1,

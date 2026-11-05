@@ -36,6 +36,7 @@ export interface RefreshUpdateCheckOptions {
   isTty?: boolean;
   runMode?: boolean;
   ignoreSkip?: boolean;
+  forceRefresh?: boolean;
   now?: number;
   fetchImpl?: typeof fetch;
 }
@@ -157,7 +158,7 @@ export async function refreshUpdateCheck(
   const current = opts.currentVersion ?? "0.0.0";
   const now = opts.now ?? Date.now();
   const cached = readUpdateCheckCache();
-  if (cached && now - cached.checkedAt <= UPDATE_CHECK_TTL_MS) {
+  if (!opts.forceRefresh && cached && now - cached.checkedAt <= UPDATE_CHECK_TTL_MS) {
     return toResult(current, cached.latestVersion, true);
   }
 

@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { classifyInstallKind, type InstallKind } from "./install-kind.js";
-import { isNewer } from "./semver.js";
+import { isNewer, normalizeVersionLabel } from "./semver.js";
 import { APP_VERSION } from "../app-banner.js";
 
 export const INSTALL_SH_URL =
@@ -34,6 +34,7 @@ export interface RunUpgradeOptions {
   userprofile?: string;
   currentVersion?: string;
   latestVersion?: string;
+  checkOffline?: boolean;
   runInstaller?: (args: InstallerArgs) => Promise<{ ok: boolean; output: string }>;
   whichPraana?: () => string | null;
   versionOf?: (bin: string) => string | null;
@@ -139,13 +140,16 @@ export async function runUpgrade(opts: RunUpgradeOptions = {}): Promise<UpgradeR
   }
 
   const current = opts.currentVersion ?? APP_VERSION;
+  const checkLines = opts.checkOffline && opts.latestVersion
+    ? [`Could not check for a newer version (offline); using the last known: ${normalizeVersionLabel(opts.latestVersion)}`]
+    : [];
   if (
     !opts.force &&
     opts.latestVersion &&
     !isNewer(opts.latestVersion, current)
   ) {
     return {
-      lines: [`Already up to date (${current}).`],
+      lines: [...checkLines, `Already up to date (${current}).`],
       exitCode: 0,
       ranInstaller: false,
     };
@@ -168,6 +172,7 @@ export async function runUpgrade(opts: RunUpgradeOptions = {}): Promise<UpgradeR
   if (!installed.ok) {
     return {
       lines: [
+        ...checkLines,
         "Upgrade failed.",
         installed.output.trim() || "installer exited non-zero",
       ],
@@ -180,7 +185,7 @@ export async function runUpgrade(opts: RunUpgradeOptions = {}): Promise<UpgradeR
   const bin = join(prefix, platform === "win32" ? "praana.exe" : "praana");
   const versionOf = opts.versionOf ?? defaultVersionOf;
   const versionLine = versionOf(bin);
-  const lines: string[] = [];
+  const lines: string[] = [...checkLines];
   if (installed.output.trim()) lines.push(installed.output.trim());
   if (versionLine) lines.push(versionLine);
   lines.push("Restart praana to use the new binary.");
