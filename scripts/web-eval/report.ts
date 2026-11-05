@@ -1,9 +1,11 @@
-import { scoreFetch, scoreSearch, type FetchSample, type Rate, type SearchSample } from "./scoring.js";
+import { latencyStats, rate, scoreFetch, scoreSearch, type FetchSample, type Rate, type SearchSample } from "./scoring.js";
+import type { HttpAttempt } from "./polite.js";
 
 export interface ReportInput {
   createdAt: string;
   dryRun?: boolean;
-  requests?: { budget: number; used: number };
+  requests?: { budget: number; used: number; attempts?: HttpAttempt[] };
+  plan?: { runner: string; searchTasks: number; fetchTasks: number; skipped: string | null }[];
   taskDigest?: string;
   runners?: { id: string; skipped?: string }[];
   search: SearchSample[];
@@ -14,6 +16,11 @@ export function buildReport(input: ReportInput) {
   return {
     schemaVersion: 1,
     ...input,
+    http: input.requests?.attempts ? {
+      failureRate: rate(input.requests.attempts.filter(a => a.error_kind !== undefined).length, input.requests.attempts.length),
+      rateLimitRate: rate(input.requests.attempts.filter(a => a.status === 429 || a.error_kind === "rate_limited").length, input.requests.attempts.length),
+      latencyMs: latencyStats(input.requests.attempts.map(a => a.latencyMs)),
+    } : null,
     scores: ids.map(runner => ({
       runner,
       skipped: input.runners?.find(r => r.id === runner)?.skipped ?? null,
@@ -45,6 +52,8 @@ export function renderMarkdown(report: EvalReport): string {
     report.taskDigest ? `Task SHA-256: ${report.taskDigest}` : "",
     "No ranking is implied. One run, one IP and small samples cannot establish an ordering. Compare identical task digests across repeated days/IPs and review terms before live use.",
     "Rates show Wilson 95% intervals and n; empty cells are unknown. Snippet trials within a query are correlated, so precision intervals are descriptive. Tier weighting is T1×1, T2×2, T3×3; its bounds are weighted per-tier Wilson bounds, not a binomial CI with duplicated samples.",
+    report.http ? `HTTP attempt failures: ${cell(report.http.failureRate)}; rate limits: ${cell(report.http.rateLimitRate)}. These include retries even when the final tool call succeeds.` : "",
+    ...(report.plan ? ["## Request plan", table(["Runner", "Search tasks", "Fetch tasks", "Skip reason"], report.plan.map(p => [escape(p.runner), String(p.searchTasks), String(p.fetchTasks), escape(p.skipped ?? "—")]))] : []),
     "## Availability",
     table(["Runner", "Status", "Search attempted / skipped", "Fetch attempted / skipped"], rows.map(r => [escape(r.runner), escape(r.skipped ? `skipped: ${r.skipped}` : "configured (not a success claim)"), `${r.search.n} / ${r.search.skipped}`, `${r.fetch.n} / ${r.fetch.skipped}`])),
     "## Search quality",

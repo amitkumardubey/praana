@@ -126,6 +126,21 @@ describe("offline hosted MCP adapters", () => {
     expect(result).toMatchObject({ ok: false, error_kind: "rate_limited", results: [] });
     expect(JSON.stringify(result)).not.toContain("secret");
   });
+  test("SSE handles CRLF split across chunks and closes once a matching reply arrives", async () => {
+    const encoder = new TextEncoder();
+    const runner = createExaMcpRunner({ env: {}, request: async (_url, init) => {
+      const body = JSON.parse(String(init?.body));
+      if (body.method === "initialize") return Response.json(recordings.initialize);
+      if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      const payload = `event: message\r\ndata: ${JSON.stringify(recordings.exaMcp)}\r\n\r\n`;
+      const chunks = payload.split(/(?<=\r)/);
+      return new Response(new ReadableStream({ start(controller) {
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+        controller.close();
+      } }), { headers: { "content-type": "text/event-stream" } });
+    } });
+    expect((await runner.search!("fixture", 5)).ok).toBe(true);
+  });
   test("Parallel reports unverified output format rather than guessing or contacting an endpoint", async () => {
     const runner = createParallelMcpRunner({ env: {}, request: never });
     expect(await runner.search!("fixture", 5)).toMatchObject({ ok: false, skipped: "endpoint not verified" });

@@ -11,6 +11,7 @@ describe("web eval base taxonomy", () => {
     expect(classifyError(402, "")).toBe("credit_depleted");
     expect(classifyError(429, "")).toBe("rate_limited");
     expect(classifyError(503, "")).toBe("server_error");
+    expect(classifyError(504, "")).toBe("timeout");
     expect(classifyError(403, "bot challenge")).toBe("blocked");
     expect(classifyError(400, "API key is invalid")).toBe("invalid_key");
     expect(classifyError(400, "credits exhausted")).toBe("credit_depleted");

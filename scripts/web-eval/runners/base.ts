@@ -42,8 +42,8 @@ export function classifyError(status?: number, hint = ""): ErrorKind {
   if (status === 401 || /invalid.{0,20}(api.?key|token)|api.?key.{0,20}(invalid|required|missing)/i.test(hint)) return "invalid_key";
   if (status === 402 || /credits?.{0,20}(exhausted|depleted|insufficient)|insufficient.{0,20}(credits?|balance)/i.test(hint)) return "credit_depleted";
   if (status === 429 || /rate.?limit/i.test(hint)) return "rate_limited";
-  if (status !== undefined && status >= 500) return "server_error";
   if (status === 408 || status === 504) return "timeout";
+  if (status !== undefined && status >= 500) return "server_error";
   if (status === 403 || isBotWall(hint)) return "blocked";
   return "other";
 }
@@ -51,6 +51,10 @@ export function classifyError(status?: number, hint = ""): ErrorKind {
 /** Conservative hints, not a proof of real content. The task probe is the scoring oracle. */
 export function isBotWall(text: string): boolean {
   return /<title>\s*(just a moment|attention required)|verify (that )?you are human|checking your browser before|cf-chl-|captcha challenge|enable javascript and cookies to continue|access denied.{0,100}(cloudflare|bot)/is.test(text);
+}
+
+export class SkippedError extends Error {
+  constructor(public reason: string) { super(reason); }
 }
 
 export class RunnerError extends Error {
@@ -74,6 +78,7 @@ export async function readResponse(deps: RunnerDeps, url: string, init?: Request
 
 export function failure(error: unknown, latencyMs: number): Outcome {
   // Never propagate raw exceptions, request headers, URLs or provider error bodies.
+  if (error instanceof SkippedError) return { ok: false, latencyMs, tokens: 0, skipped: error.reason };
   if (error instanceof RunnerError) return { ok: false, latencyMs, tokens: 0, status: error.status, error_kind: error.kind, blocked: error.kind === "blocked" };
   const name = error instanceof Error ? error.name : "";
   return { ok: false, latencyMs, tokens: 0, error_kind: /Timeout|Abort/.test(name) ? "timeout" : "other" };

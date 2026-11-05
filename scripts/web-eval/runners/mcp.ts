@@ -15,7 +15,8 @@ async function rpcReply(response: Response, id: number): Promise<any> {
       const { value, done } = await reader.read();
       bytes += value?.byteLength ?? 0;
       if (bytes > 2_000_000) throw new RunnerError("other");
-      buffer += decoder.decode(value, { stream: !done }).replace(/\r\n/g, "\n");
+      buffer += decoder.decode(value, { stream: !done });
+      buffer = buffer.replace(/\r\n/g, "\n");
       let end: number;
       while ((end = buffer.indexOf("\n\n")) >= 0) {
         const event = buffer.slice(0, end);
