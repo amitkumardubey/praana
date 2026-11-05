@@ -243,4 +243,116 @@ describe("user message prefix", () => {
     expect(firstTextColumn(grid[row + 2]!)).toBe(col + 2);
     expect(firstTextColumn(grid[row + 3]!)).toBe(col + 2);
   });
+
+  it("aligns CJK and emoji (width 2) continuation rows", async () => {
+    const h = await mountTranscript(20, 12);
+    h.sink.appendUser("漢字のテストです これはとても長い行です 😀😀 おわり");
+    await paint(h);
+
+    const grid = h.grid();
+    const { row, col } = h.prefixAt(grid);
+    const rows = rowsFrom(grid, row, col);
+    expect(rows.length).toBeGreaterThan(1);
+    expect(rows[0]).toBe(`${PREFIX} 漢字のテストで`);
+    // Continuation rows hang under the first character (CJK is width 2).
+    for (const frameRow of grid.slice(row + 1)) {
+      if (textFrom(frameRow, col).length === 0) continue;
+      expect(firstTextColumn(frameRow)).toBe(col + 2);
+    }
+    // No row overflows the terminal: 20 columns of painted cells at most.
+    for (const frameRow of grid) {
+      expect(frameRow.filter((cell) => cell.ch !== "").length).toBeLessThanOrEqual(20);
+    }
+    // A width-2 emoji owns two cells; the wrap never splits it.
+    const emojiRow = grid.find((frameRow) => frameRow.some((cell) => cell.ch === "😀"));
+    expect(emojiRow).toBeDefined();
+    const at = emojiRow!.findIndex((cell) => cell.ch === "😀");
+    expect(emojiRow![at + 1]!.ch).toBe("");
+  });
+
+  it("shows a converted shell command as the transcript stores it", async () => {
+    const h = await mountTranscript(80, 12);
+    // run.tsx rewrites `!<cmd>` to `/shell <cmd>` before appending the entry.
+    h.sink.appendUser("/shell ls -la");
+    await paint(h);
+
+    const grid = h.grid();
+    const { row, col } = h.prefixAt(grid);
+    expect(textFrom(grid[row]!, col)).toBe(`${PREFIX} /shell ls -la`);
+    expect(h.store.entries.filter((entry) => entry.role === "user").map((e) => e.text)).toEqual([
+      "/shell ls -la",
+    ]);
+  });
+
+  it("keeps the prefix for an empty-looking message", async () => {
+    const h = await mountTranscript(80, 12);
+    h.sink.appendUser("");
+    await paint(h);
+
+    const grid = h.grid();
+    const { row, col } = h.prefixAt(grid);
+    expect(grid[row]![col]!.ch).toBe(PREFIX);
+    expect(isCoral(grid[row]![col]!.fg)).toBe(true);
+    expect(textFrom(grid[row]!, col)).toBe(PREFIX);
+  });
+
+  it("wraps with the hanging indent in a 20-column terminal", async () => {
+    const h = await mountTranscript(20, 12);
+    h.sink.appendUser("alpha beta gamma delta epsilon zeta");
+    await paint(h);
+
+    const grid = h.grid();
+    const { row, col } = h.prefixAt(grid);
+    const rows = rowsFrom(grid, row, col);
+    expect(rows.length).toBeGreaterThan(1);
+    expect(rows[0]).toBe(`${PREFIX} alpha beta`);
+    // 20 columns - 2 gutter each side - 2 prefix = 14 text columns.
+    for (const text of rows.slice(1)) {
+      expect(text.length).toBeLessThanOrEqual(14);
+      expect(text.startsWith("  ")).toBe(true);
+    }
+    for (const frameRow of grid.slice(row + 1)) {
+      if (textFrom(frameRow, col).length === 0) continue;
+      expect(firstTextColumn(frameRow)).toBe(col + 2);
+    }
+  });
+
+  it("keeps the sticky bottom while an assistant answer streams", async () => {
+    const h = await mountTranscript(80, 20);
+    h.sink.appendUser("first question");
+    await paint(h);
+
+    const tops: number[] = [];
+    const delta = "Streaming answer paragraph that keeps growing so the viewport must follow it. ";
+    for (let i = 0; i < 12; i++) {
+      h.sink.onTextDelta(delta);
+      await h.setup.renderOnce();
+      tops.push(h.scroll.scrollTop);
+    }
+
+    // A user message arriving mid-stream must not bounce the sticky bottom.
+    h.sink.nextGroup();
+    h.sink.appendUser("a second question while the answer streams");
+    for (let i = 0; i < 6; i++) {
+      h.sink.onTextDelta(delta);
+      await h.setup.renderOnce();
+      tops.push(h.scroll.scrollTop);
+    }
+
+    // Sticky bottom only ever follows the content down; it never reverses.
+    for (let i = 1; i < tops.length; i++) {
+      expect(tops[i]!).toBeGreaterThanOrEqual(tops[i - 1]!);
+    }
+    const grid = h.grid();
+    const row = grid.findIndex((cells) =>
+      textFrom(cells).includes("a second question while the answer streams"),
+    );
+    expect(row).toBeGreaterThanOrEqual(0);
+    // The new user row carries its own prefix, two columns in.
+    expect(textFrom(grid[row]!, GUTTER)).toBe(`${PREFIX} a second question while the answer streams`);
+    // The viewport still ends at the bottom of the content.
+    expect(h.scroll.scrollTop + h.scroll.height).toBeGreaterThanOrEqual(h.scroll.scrollHeight - 1);
+    // The prefix uses the existing coral accent, not a new colour.
+    expect(TUI_PALETTE.coral).toBe("#c4887a");
+  });
 });
