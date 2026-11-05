@@ -7,6 +7,10 @@
  * first character after the prefix. The prefix is layout, never part of
  * `entry.text`: the store, the event log and search keep the plain message.
  *
+ * The prefix is also layout for the clipboard: a selection that spans a user
+ * row copies the message alone, never `❯ `. Selection still *starts* on the
+ * two glyph columns; those cells simply contribute no text.
+ *
  * Assertions use `captureSpans()` cell widths (Bun.stringWidth), so CJK and
  * emoji (width 2) are measured in real terminal cells, not UTF-16 units.
  */
@@ -39,6 +43,12 @@ const TOAST: ToastApi = {
 };
 
 const PREFIX = "\u276f";
+/**
+ * Plain-text rendering for the copy cases: retained markdown paints
+ * asynchronously and stays blank in the test renderer, and the copy assertions
+ * need the following assistant row painted. The prefix layout is identical.
+ */
+const PLAIN_OPTS: TranscriptRenderOpts = { ...OPTS, markdownRendering: false };
 /** `scrollbox paddingLeft={2}` in the transcript view. */
 const GUTTER = 2;
 
@@ -58,6 +68,11 @@ interface Harness {
   grid(): Cell[][];
   /** Row and column of the first `❯` in the frame. */
   prefixAt(grid: Cell[][]): { row: number; col: number };
+  /**
+   * Mouse-drag a selection from one frame cell to another and return the text
+   * Ctrl+C would copy, plus whether a selection was created at all.
+   */
+  select(from: [number, number], to: [number, number]): Promise<{ selected: boolean; text: string }>;
   dispose(): Promise<void>;
 }
 
@@ -111,7 +126,11 @@ function firstTextColumn(row: Cell[], from = 0): number {
 
 const live: Harness[] = [];
 
-async function mountTranscript(width: number, height: number): Promise<Harness> {
+async function mountTranscript(
+  width: number,
+  height: number,
+  opts: TranscriptRenderOpts = OPTS,
+): Promise<Harness> {
   const setup = await createTestRenderer({ width, height, footerHeight: 0 });
   const store = createTranscriptStore();
   const sink = new OpenTuiSink({ ...store.mount }, TOAST, {
@@ -127,7 +146,7 @@ async function mountTranscript(width: number, height: number): Promise<Harness> 
     () => (
       <KeymapProvider keymap={keymap}>
         <box width="100%" height="100%" flexDirection="column">
-          <TranscriptView store={store} opts={OPTS} />
+          <TranscriptView store={store} opts={opts} />
         </box>
       </KeymapProvider>
     ),
@@ -149,6 +168,14 @@ async function mountTranscript(width: number, height: number): Promise<Harness> 
         if (col >= 0) return { row, col };
       }
       throw new Error(`no ${PREFIX} prefix in frame`);
+    },
+    async select(from, to) {
+      setup.renderer.clearSelection();
+      await setup.renderOnce();
+      await setup.mockMouse.drag(from[0], from[1], to[0], to[1], undefined, { delayMs: 5 });
+      await setup.renderOnce();
+      const selection = setup.renderer.getSelection();
+      return { selected: selection !== null, text: selection?.getSelectedText() ?? "" };
     },
     async dispose() {
       releaseMarkdownSyntaxStyles(setup.renderer.nativeScene);
@@ -354,5 +381,56 @@ describe("user message prefix", () => {
     expect(h.scroll.scrollTop + h.scroll.height).toBeGreaterThanOrEqual(h.scroll.scrollHeight - 1);
     // The prefix uses the existing coral accent, not a new colour.
     expect(TUI_PALETTE.coral).toBe("#c4887a");
+  });
+
+  it("copies only the message when a selection spans the whole user row", async () => {
+    const h = await mountTranscript(80, 16, PLAIN_OPTS);
+    h.sink.appendUser("Explain the sky.");
+    await paint(h);
+
+    const { row, col } = h.prefixAt(h.grid());
+    // Start on the glyph and drag well past the end of the message.
+    const copy = await h.select([col, row], [col + 30, row]);
+    expect(copy.selected).toBe(true);
+    expect(copy.text).toBe("Explain the sky.");
+    expect(copy.text.includes(PREFIX)).toBe(false);
+  });
+
+  it("still starts a selection inside the prefix columns, without the glyph", async () => {
+    const h = await mountTranscript(80, 16, PLAIN_OPTS);
+    h.sink.appendUser("Explain the sky.");
+    await paint(h);
+
+    const { row, col } = h.prefixAt(h.grid());
+    // A drag that begins on the glyph column starts a selection and copies the
+    // message cells it covers (columns 4-6 here), not the prefix.
+    const onGlyph = await h.select([col, row], [col + 4, row]);
+    expect(onGlyph.selected).toBe(true);
+    expect(onGlyph.text).toBe("Exp");
+    // The glyph's trailing space column behaves the same way.
+    const onSpace = await h.select([col + 1, row], [col + 4, row]);
+    expect(onSpace.selected).toBe(true);
+    expect(onSpace.text).toBe("Exp");
+    // The two prefix cells on their own copy nothing: they are layout, not text.
+    const glyphOnly = await h.select([col, row], [col + 1, row]);
+    expect(glyphOnly.selected).toBe(true);
+    expect(glyphOnly.text).toBe("");
+  });
+
+  it("copies message then assistant text across a user row", async () => {
+    const h = await mountTranscript(80, 16, PLAIN_OPTS);
+    h.sink.appendUser("Explain the sky.");
+    h.sink.nextGroup();
+    h.sink.onTextDelta("Assistant answer text here.");
+    h.sink.nextGroup();
+    await paint(h);
+
+    const { row, col } = h.prefixAt(h.grid());
+    // The assistant row is two rows down: the user row, then its blank line.
+    expect(textFrom(h.grid()[row + 2]!, GUTTER)).toBe("Assistant answer text here.");
+    const copy = await h.select([col, row], [col + 40, row + 2]);
+    expect(copy.selected).toBe(true);
+    expect(copy.text).toBe("Explain the sky.\nAssistant answer text here.");
+    expect(copy.text.includes(PREFIX)).toBe(false);
   });
 });

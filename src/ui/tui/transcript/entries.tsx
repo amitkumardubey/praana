@@ -8,14 +8,19 @@ import { wrapContent } from "./render-utils.js";
 import { buildMarkdownSyntaxStyle } from "./markdown-theme.js";
 import { stabilizeStreamingMarkdown } from "./streaming-markdown.js";
 import { RetainedMarkdownRenderable } from "./retained-markdown.js";
+import { PrefixGlyphRenderable } from "./prefix-glyph.js";
 import type { IndexedTranscriptEntry } from "./index.js";
 import type { TranscriptRenderOpts } from "./opts.js";
 
-extend({ retained_markdown: RetainedMarkdownRenderable });
+extend({
+  retained_markdown: RetainedMarkdownRenderable,
+  prefix_glyph: PrefixGlyphRenderable,
+});
 
 declare module "@opentui/solid" {
   interface OpenTUIComponents {
     retained_markdown: typeof RetainedMarkdownRenderable;
+    prefix_glyph: typeof PrefixGlyphRenderable;
   }
 }
 
@@ -132,9 +137,9 @@ export function TranscriptEntryView(props: {
     return (
       <box id={`entry-${e.id}`} flexDirection="row">
         <box width={2} flexShrink={0}>
-          <text>
+          <prefix_glyph>
             <span style={TUI_STYLE.accent}>{"\u276f "}</span>
-          </text>
+          </prefix_glyph>
         </box>
         <box flexGrow={1}>
           <text>{e.text}</text>
