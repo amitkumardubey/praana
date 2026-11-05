@@ -110,6 +110,14 @@ describe("offline evaluation CLI", () => {
     await Bun.write(join(dir, "fetch.json"), "[]");
     await expect(loadTasks(dir)).rejects.toThrow("Invalid search tasks");
   });
+  test("CLI loader accepts the real committed task sets", async () => {
+    const dir = fileURLToPath(new URL("../scripts/web-eval/tasks", import.meta.url));
+    const tasks = await loadTasks(dir);
+    expect(tasks.search).toHaveLength(60);
+    expect(tasks.fetch).toHaveLength(30);
+    expect(tasks.fetch.filter(task => task.tier === 3)).toHaveLength(6);
+    expect(tasks.fetch.filter(task => task.tier === 3).every(task => task.observed_status === 403)).toBe(true);
+  });
   test("fake fetch outcomes distinguish challenge, honest block and real content", async () => {
     const tasks = await loadTasks(fixtureDir);
     tasks.fetch = tasks.fetch.filter(task => task.tier === 3);
