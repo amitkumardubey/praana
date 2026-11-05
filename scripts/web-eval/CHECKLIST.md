@@ -1,5 +1,5 @@
-- [ ] A1 search.json: 60 verified developer queries in the required categories. Progress: six verified (five docs, one release); the remaining categories and counts are incomplete.
-- [ ] A2 fetch.json: 30 verified URLs, including six documented bot-wall honesty probes.
+- [x] A1 search.json: 60 verified developer queries in the required categories. Progress: complete and verified on 2026-11-05 — 30 docs, 15 error, 10 release, 5 version-change.
+- [x] A2 fetch.json: 30 verified URLs, including six documented bot-wall honesty probes. Progress: complete and verified on 2026-11-05 — 16 tier 1, 8 tier 2, 6 tier 3 (all 403 with a recorded marker).
 - [ ] B1 Runner interface, error taxonomy, local-fetch and Jina runners, offline fixtures.
 - [ ] B2 Officially documented search and fetch runners, including Firecrawl credit accounting.
 - [ ] C1 Scoring and JSON/markdown reporting with offline unit tests.
