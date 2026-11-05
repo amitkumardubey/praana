@@ -1,0 +1,32 @@
+: Synthetic first-party OpenAI fixture; not captured from a live API.
+
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_first_party","model":"gpt-6.1-terra","status":"in_progress"}}
+
+event: response.reasoning_text.delta
+data: {"type":"response.reasoning_text.delta","delta":"Inspect the file."}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"Reading "}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","delta":"README.md."}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_read","call_id":"call_read","name":"read_file","arguments":""}}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","item_id":"fc_read","delta":"{\"path\":"}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","item_id":"fc_read","delta":"\"README.md\"}"}
+
+event: response.function_call_arguments.done
+data: {"type":"response.function_call_arguments.done","item_id":"fc_read","arguments":"{\"path\":\"README.md\"}"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":1,"item":{"type":"function_call","id":"fc_read","call_id":"call_read","name":"read_file","arguments":"{\"path\":\"README.md\"}"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_first_party","status":"completed","usage":{"input_tokens":30,"output_tokens":8,"total_tokens":38,"input_tokens_details":{"cached_tokens":12},"output_tokens_details":{"reasoning_tokens":3}}}}
+
