@@ -13,6 +13,9 @@ import { TranscriptView } from "../src/ui/tui/transcript/view.js";
 describe("transcript capability listeners", () => {
   it("shares one listener across thirty entries and unregisters them on removal", async () => {
     const setup = await createTestRenderer({ width: 80, height: 40 });
+    // Pin the starting capabilities: terminal detection depends on the environment,
+    // and the refresh rule only fires when the hyperlink capability actually changes.
+    setRendererCapabilities(setup.renderer, createTerminalCapabilities({ hyperlinks: false }));
     const store = createTranscriptStore();
     const keymap = createDefaultOpenTuiKeymap(setup.renderer);
     // OpenTUI itself also lazily installs one shared markdown listener.
