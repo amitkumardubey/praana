@@ -509,5 +509,256 @@
   ],
   "niche": "error",
   "verified_at": "2026-11-05"
+ },
+ {
+  "query": "java.lang.OutOfMemoryError",
+  "authoritative_url": "https://docs.oracle.com/en/java/javase/21/docs/api/java.base/java/lang/OutOfMemoryError.html",
+  "expected_domains": [
+   "docs.oracle.com"
+  ],
+  "answer_snippets": [
+   "OutOfMemoryError"
+  ],
+  "niche": "error",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "javax.net.ssl.SSLHandshakeException",
+  "authoritative_url": "https://docs.oracle.com/en/java/javase/21/docs/api/java.base/javax/net/ssl/SSLHandshakeException.html",
+  "expected_domains": [
+   "docs.oracle.com"
+  ],
+  "answer_snippets": [
+   "SSLHandshakeException"
+  ],
+  "niche": "error",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "warning LF will be replaced by CRLF",
+  "authoritative_url": "https://git-scm.com/docs/git-config",
+  "expected_domains": [
+   "git-scm.com"
+  ],
+  "answer_snippets": [
+   "core.autocrlf",
+   "CRLF"
+  ],
+  "niche": "error",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "permission denied while trying to connect to the Docker daemon socket",
+  "authoritative_url": "https://docs.docker.com/engine/install/linux-postinstall/",
+  "expected_domains": [
+   "docs.docker.com"
+  ],
+  "answer_snippets": [
+   "permission denied"
+  ],
+  "niche": "error",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "go cannot find main module",
+  "authoritative_url": "https://go.dev/ref/mod",
+  "expected_domains": [
+   "go.dev"
+  ],
+  "answer_snippets": [
+   "go.mod"
+  ],
+  "niche": "error",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "node js 22 release notes",
+  "authoritative_url": "https://nodejs.org/en/blog/announcements/v22-release-announce",
+  "expected_domains": [
+   "nodejs.org"
+  ],
+  "answer_snippets": [
+   "Node.js 22"
+  ],
+  "niche": "release",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "python 3.13 what's new release notes",
+  "authoritative_url": "https://docs.python.org/3/whatsnew/3.13.html",
+  "expected_domains": [
+   "docs.python.org"
+  ],
+  "answer_snippets": [
+   "free-threaded",
+   "3.13"
+  ],
+  "niche": "release",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "go 1.23 release notes",
+  "authoritative_url": "https://go.dev/doc/go1.23",
+  "expected_domains": [
+   "go.dev"
+  ],
+  "answer_snippets": [
+   "Go 1.23",
+   "range-over-func"
+  ],
+  "niche": "release",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "rust 1.80 release",
+  "authoritative_url": "https://blog.rust-lang.org/2024/07/25/Rust-1.80.0/",
+  "expected_domains": [
+   "blog.rust-lang.org"
+  ],
+  "answer_snippets": [
+   "Rust 1.80.0",
+   "LazyCell"
+  ],
+  "niche": "release",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "kubernetes 1.31 release",
+  "authoritative_url": "https://kubernetes.io/blog/2024/08/13/kubernetes-v1-31-release/",
+  "expected_domains": [
+   "kubernetes.io"
+  ],
+  "answer_snippets": [
+   "Kubernetes v1.31"
+  ],
+  "niche": "release",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "react 19 release blog",
+  "authoritative_url": "https://react.dev/blog/2024/12/05/react-19",
+  "expected_domains": [
+   "react.dev"
+  ],
+  "answer_snippets": [
+   "React 19"
+  ],
+  "niche": "release",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "bun 1.1 release",
+  "authoritative_url": "https://bun.com/blog/bun-v1.1",
+  "expected_domains": [
+   "bun.com"
+  ],
+  "answer_snippets": [
+   "Bun 1.1",
+   "Windows"
+  ],
+  "niche": "release",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "vite 6 announcement",
+  "authoritative_url": "https://vite.dev/blog/announcing-vite6",
+  "expected_domains": [
+   "vite.dev"
+  ],
+  "answer_snippets": [
+   "Vite 6",
+   "Environment API"
+  ],
+  "niche": "release",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "postgresql 17 release notes",
+  "authoritative_url": "https://www.postgresql.org/docs/current/release-17.html",
+  "expected_domains": [
+   "postgresql.org"
+  ],
+  "answer_snippets": [
+   "Release 17",
+   "PostgreSQL 17 contains many new features"
+  ],
+  "niche": "release",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "eslint 9 release",
+  "authoritative_url": "https://eslint.org/blog/2024/04/eslint-v9.0.0-released/",
+  "expected_domains": [
+   "eslint.org"
+  ],
+  "answer_snippets": [
+   "ESLint v9.0.0"
+  ],
+  "niche": "release",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "what changed in typescript 5.5",
+  "authoritative_url": "https://www.typescriptlang.org/docs/handbook/release-notes/typescript-5-5.html",
+  "expected_domains": [
+   "typescriptlang.org"
+  ],
+  "answer_snippets": [
+   "TypeScript 5.5",
+   "inferred type predicates"
+  ],
+  "niche": "version-change",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "what changed in python 3.12",
+  "authoritative_url": "https://docs.python.org/3/whatsnew/3.12.html",
+  "expected_domains": [
+   "docs.python.org"
+  ],
+  "answer_snippets": [
+   "Python 3.12",
+   "type parameter"
+  ],
+  "niche": "version-change",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "what changed in go 1.22",
+  "authoritative_url": "https://go.dev/doc/go1.22",
+  "expected_domains": [
+   "go.dev"
+  ],
+  "answer_snippets": [
+   "Go 1.22",
+   "range"
+  ],
+  "niche": "version-change",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "what changed in rust 1.82",
+  "authoritative_url": "https://blog.rust-lang.org/2024/10/17/Rust-1.82.0/",
+  "expected_domains": [
+   "blog.rust-lang.org"
+  ],
+  "answer_snippets": [
+   "Rust 1.82.0",
+   "precise capturing"
+  ],
+  "niche": "version-change",
+  "verified_at": "2026-11-05"
+ },
+ {
+  "query": "what changed in npm 10",
+  "authoritative_url": "https://github.com/npm/cli/releases/tag/v10.0.0",
+  "expected_domains": [
+   "github.com"
+  ],
+  "answer_snippets": [
+   "v10.0.0"
+  ],
+  "niche": "version-change",
+  "verified_at": "2026-11-05"
  }
 ]
