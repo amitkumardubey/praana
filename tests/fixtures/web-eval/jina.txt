@@ -1,0 +1,8 @@
+Title: Fixture docs
+
+URL Source: https://example.org/docs
+
+Markdown Content:
+# Fixture docs
+
+Real documentation with `code`.
