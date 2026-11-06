@@ -3,15 +3,11 @@ resolver = "2"
 members = [
   "crates/praana-native-core",
   "crates/praana-natives",
-  "crates/praana-core",
-  "crates/praana-cli",
-  "crates/praana-xtask",
 ]
 
 [profile.dev]
-# Every integration test binary links all of praana-core, so full debug info
-# made a single target directory 20-40 GB (about 4 GB with line tables only).
-# Backtraces keep file and line numbers. `test` inherits from `dev`.
+# Line tables only keep the target directory small; backtraces still carry
+# file and line numbers. `test` inherits from `dev`.
 debug = "line-tables-only"
 
 [profile.release]
