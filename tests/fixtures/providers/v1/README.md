@@ -1,8 +1,8 @@
-# Normative provider v1 fixtures (Phase 2)
+# Provider v1 fixtures
 
-Fixtures in this directory implement `docs/RUST_V2_OPENAI_SPEC.md`. They are
-the normative wire-format authority for the Rust v2 provider runtime and may
-intentionally differ from the legacy TypeScript observations under `../legacy-ts/`.
+Fixtures in this directory pin the wire formats (request bodies, SSE streams,
+event JSONL) the TypeScript drivers consume and emit. They may intentionally
+differ from the legacy observations under `../legacy-ts/`.
 
 Rules for all `v1/` fixtures:
 
@@ -16,6 +16,6 @@ Rules for all `v1/` fixtures:
 - No fixture contains a real credential, response ID, user path, username, or
   machine-specific value.
 
-Do not make the normative fixtures pass through the legacy TypeScript driver
-when the normative behavior is intentionally new, and do not copy legacy
-outputs into this directory merely to populate its subdirectories.
+Do not make the v1 fixtures pass through the legacy TypeScript driver when the
+v1 behavior is intentionally new, and do not copy legacy outputs into this
+directory merely to populate its subdirectories.

@@ -1,11 +1,11 @@
 // ============================================================
-// PRAANA — Rust v2 Phase 0 legacy safety-hook and tool-result fixtures
+// PRAANA — safety-hook and tool-result fixtures
 //
 // Drives the production hook handlers (plan → validate → risk → circuit →
 // write-path, then lsp → verify → enrich → redact → circuit → release) with
 // injected fakes. No workspace mutation, subprocess, prompt, or network.
-// The committed fixtures are non-normative TypeScript observations; future
-// behavior is owned by RUST_V2_TOOL_RUNTIME_SPEC.md.
+// The committed fixtures are regression observations of the shipping hook
+// pipeline and tool-result path.
 // ============================================================
 
 import { afterAll, describe, expect, it, mock } from "bun:test";
@@ -37,7 +37,7 @@ import type { LspManager } from "../src/lsp/manager.js";
 import { checkoutDigest, isWindows, normalizeText } from "./helpers/platform.js";
 
 const REPO_ROOT = join(import.meta.dir, "..");
-const FIXTURE_ROOT = "tests/fixtures/rust-v2/safety";
+const FIXTURE_ROOT = "tests/fixtures/safety";
 
 /** Exact Section 5 inventory for the safety fixture family. */
 const EXPECTED_INVENTORY = [
@@ -1057,7 +1057,7 @@ async function captureAllScenarios(): Promise<CapturedScenarios> {
 
 // ── Static fixture assertions ────────────────────────────────
 
-describe("rust-v2 safety legacy fixtures", () => {
+describe("safety legacy fixtures", () => {
   it("safety fixture inventory is complete", () => {
     const present = new Set(listFixtureFiles());
     const missing = EXPECTED_INVENTORY.filter((rel) => !present.has(rel));

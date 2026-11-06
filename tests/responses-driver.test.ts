@@ -413,7 +413,7 @@ describe("Responses stream termination", () => {
   });
 
   it("plain OpenAI unterminated streams match main byte for byte", async () => {
-    const root = join(import.meta.dir, "../tests/fixtures/rust-v2/providers/v1/openai-responses/streams");
+    const root = join(import.meta.dir, "../tests/fixtures/providers/v1/openai-responses/streams");
     const cases: GoldenCase[] = [];
     for (const provider of ["openai", "openai-responses"]) {
       for (const name of OPENAI_MAIN_STREAMS) {

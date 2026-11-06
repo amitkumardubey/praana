@@ -1,17 +1,15 @@
-# Rust v2 Phase 0 provider fixtures
+# Provider fixtures
 
-This directory holds two distinct kinds of evidence for the Rust v2 migration.
+This directory holds two distinct kinds of evidence for the provider drivers.
 A fixture must never be shared between the two meanings below.
 
-## `legacy-ts/` — legacy TypeScript observations
+## `legacy-ts/` — TypeScript observations
 
 Files under `legacy-ts/` record what the current TypeScript drivers
 (`src/llm/drivers/openai.ts`, `src/llm/drivers/responses.ts`) put on the wire
 today. They are captured with a mocked `globalThis.fetch` — no network request
-is ever made. These fixtures are **non-normative evidence** of current behavior;
-the current Responses driver does not preserve encrypted reasoning items or
-response continuation state, and these fixtures record that fact without making
-it the v2 contract.
+is ever made. The current Responses driver does not preserve encrypted reasoning
+items or response continuation state, and these fixtures record that fact.
 
 Rules for `legacy-ts/` fixtures:
 
@@ -27,8 +25,8 @@ Rules for `legacy-ts/` fixtures:
   read from the environment, host clock, random source, or checkout path.
 - Tests assert the manifest SHA-256 digests; they never rewrite goldens.
 
-## `v1/` — normative v2 fixtures
+## `v1/` — fixed-format fixtures
 
-Files under `v1/` implement `docs/RUST_V2_OPENAI_SPEC.md` and may intentionally
-differ from legacy behavior. They are created in Phase 2; Phase 0 only adds the
-`v1/README.md` authority statement.
+Files under `v1/` pin the wire formats (request bodies, SSE streams, event
+JSONL) the drivers consume and emit, and may intentionally differ from legacy
+behavior. They serve as the regression oracle for those formats.

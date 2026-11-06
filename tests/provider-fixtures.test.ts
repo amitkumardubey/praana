@@ -1,11 +1,12 @@
 // ============================================================
-// PRAANA — Rust v2 Phase 0 legacy provider fixture evidence
+// PRAANA — provider fixture evidence
 //
 // Captures deterministic, redacted evidence of what the current
 // TypeScript OpenAI/OpenRouter drivers put on the wire, using a
 // mocked globalThis.fetch. Never contacts a real provider.
-// The committed fixtures are legacy TypeScript observations only;
-// normative v2 behavior is owned by RUST_V2_OPENAI_SPEC.md.
+// The committed fixtures are regression observations of the
+// shipping driver behaviour; nothing here is normative for any
+// other runtime.
 // ============================================================
 
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
@@ -23,7 +24,7 @@ import {
 import { checkoutDigest, normalizeText } from "./helpers/platform.js";
 
 const REPO_ROOT = join(import.meta.dir, "..");
-const FIXTURE_ROOT = "tests/fixtures/rust-v2/providers";
+const FIXTURE_ROOT = "tests/fixtures/providers";
 
 /** Exact Section 5 inventory for the provider fixture family. */
 const EXPECTED_INVENTORY = [
@@ -271,7 +272,7 @@ async function collectDriverEvents(
   return events;
 }
 
-/** Driver events are legacy evidence, not a v2 contract. Errors become plain records. */
+/** Driver events are captured evidence of shipping behaviour. Errors become plain records. */
 function normalizeEvent(ev: StreamEvent): Record<string, unknown> {
   if (ev.type === "error") {
     const out: Record<string, unknown> = {
@@ -344,7 +345,7 @@ const OPENROUTER_HEADERS = {
   "X-Title": "PRAANA",
 };
 
-describe("rust-v2 provider legacy fixtures", () => {
+describe("provider legacy fixtures", () => {
   it("provider fixture inventory is complete", () => {
     const present = new Set(listFixtureFiles());
     const missing = EXPECTED_INVENTORY.filter((rel) => !present.has(rel));

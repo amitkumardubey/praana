@@ -1,10 +1,8 @@
-# Rust v2 Phase 0 safety-hook and tool-result fixtures (legacy TypeScript)
+# Safety-hook and tool-result fixtures (TypeScript)
 
-These fixtures are **non-normative TypeScript observations** captured from the
-current production hook pipeline and the `src/turn.ts` tool path. They record
-today's behavior as evidence for the Rust v2 migration. They do not predeclare
-the future Tool Runtime contract; that behavior is owned by
-`docs/RUST_V2_TOOL_RUNTIME_SPEC.md`.
+These fixtures are **regression observations** captured from the current
+production hook pipeline and the `src/turn.ts` tool path. They record the
+shipping behavior of the hook pipeline and tool-result shapes.
 
 ## `legacy-ts/pipeline/` — hook-pipeline ordering evidence
 

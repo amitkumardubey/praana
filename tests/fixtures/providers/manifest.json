@@ -18,7 +18,7 @@
     "src/provider-registry.ts": "0e7f90149b676189df56f7404c08bf9780c4dde3fa5f5ecd329501f57f463fc6"
   },
   "fixture_sha256_by_file": {
-    "README.md": "8285ef84a200b1a6fa73e2eb283393243370e40cd47fa3f1a7c0be474c139335",
+    "README.md": "e5d1b7a433cab21de49f45857c60a34d5eefb069f9655e4e5f5a2525f746dfac",
     "legacy-ts/openai-chat/basic.request.json": "85b5925cb2272d9f118db45449664b5c6ccdba5b482a3463d14761fd7b4bbefb",
     "legacy-ts/openai-chat/multimodal-tools.request.json": "c065c9dba30c2a84e0a1e18b3c51512e11d0c0f754297958742ebb3ba4f3f2ca",
     "legacy-ts/openai-chat/parallel-tools.events.jsonl": "e2b7204853b05226fc803f5add5dd267cadc709e5c740dee0843506674e0c551",
@@ -30,7 +30,7 @@
     "legacy-ts/openrouter-chat/basic.request.json": "4c93c4e2df34329e2f755057a5a7c6b25fd91d6674664487efbbe81682da3a34",
     "legacy-ts/openrouter-chat/reasoning.events.jsonl": "1e1c9ce9005626c89101c28f7d60cb8c3218275252e4852f8622976609d5af8f",
     "legacy-ts/openrouter-chat/reasoning.stream.sse": "36760a3a46de390548c1e6cd3d910beef5d56b6f35dada5670cc3b57c765b291",
-    "v1/README.md": "f41c800fe8f04fb694dd1c04621a3d2ee3839fe9be2e3e8528e6bec20dabe210",
+    "v1/README.md": "0447402ded3e6d331010d9d41705c0a95930383f36556a6b6f6892dd7d302d85",
     "v1/common-sse/comments-fields.sse": "0513d25f91c6a74149b7e699838b19bed19f9ffaa29373d878077e07a14145d0",
     "v1/common-sse/invalid-utf8.bin": "250577cef6c4109187b8235c1f67c109f4bc75b00e2d6827e84e8bcae42ad1e4",
     "v1/common-sse/multiline-crlf.sse": "17cdac5bd5baeddf907538a85b1f66642ca1e360e8d22239017b70f323f7d328",
