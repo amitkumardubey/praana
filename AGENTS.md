@@ -7,13 +7,13 @@ PRAANA is a TypeScript CLI coding agent built around two systems:
 
 ## Public repository
 
-This repository is public. Design specs, implementation plans, owner decisions and amendment logs are kept outside it (a private repository) and must not be added here. Issues/PRs describe what changed and why in technical terms, citing spec sections by name only. Code comments may cite a spec by file name (e.g. `RUST_V2_CONFIG_SPEC.md §5.1`) but the files are not in this tree; set `PRAANA_SPEC_DIR` to their directory to run the spec cross-check test.
+This repository is public. Design specs, implementation plans, owner decisions and amendment logs are kept outside it (a private repository) and must not be added here. Issues/PRs describe what changed and why in technical terms.
 
 ## Git Conventions
 
 - **Commits:** conventional commits — `feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `test:` (release-please uses these for `CHANGELOG.md`).
 - **Changelog:** don't edit `CHANGELOG.md` by hand; release-please opens a version PR from commit history — merge it.
-  - **Exception:** curate the release PR's generated section/body once, immediately before merging; any push to `main` regenerates it, so push nothing to `main` until merged. Commit internal Rust v2 work as `chore(rust-v2)` (not `feat(rust-v2)`) so it stays out of the changelog.
+  - **Exception:** curate the release PR's generated section/body once, immediately before merging; any push to `main` regenerates it, so push nothing to `main` until merged. Commit internal-only work under a `chore(...)` scope so it stays out of the changelog.
 - **Tags:** semver (release-please creates tags). **Branch:** `main`.
 - **Issue work:** dedicated branch per GitHub issue before code changes (example: `feat/phase1-issue-56`).
 - **Before commit:** `bun typecheck && bun test` — both must pass clean.
@@ -123,8 +123,6 @@ src/
   ui/tui/ — OpenTUI + Solid terminal shell
   event-log.ts / state-graph.ts / state-graph-checkpoint.ts / sqlite.ts — event log, tiered state + resume snapshot, SQLite helpers
 ```
-
-**Rust v2:** `crates/` holds a work-in-progress Rust next-generation core; not user-facing — the TypeScript CLI is what ships today.
 
 **Native addon (`@praana/natives`):** optional cdylib providing tree-sitter `code_*`, `search_code` / `find_files`, and ONNX embeddings. Probed once at session start (`loadNative()`), surfaced in the boot banner and compiled system frame so the agent avoids `code_*` when unavailable. Native grep is synchronous — blocks the event loop and cannot be aborted; use `shell rg` for huge trees or when you need abort. `search_code` accepts an absolute `path` (shell sandbox is off by default).
 
