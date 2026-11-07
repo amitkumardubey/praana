@@ -32,6 +32,13 @@ pub(crate) mod crash_point;
 pub fn arm_test_failpoint(label: &str) -> Result<(), &'static str> {
     crash_point::arm_for_test(label)
 }
+
+/// Registers pause/fail hooks for one history rebuild. Feature-enabled test
+/// builds stay inert until a test calls this. The guard clears the registration
+/// on drop and holds the process-wide hook lock so registering tests do not overlap.
+#[cfg(feature = "failpoints")]
+#[doc(hidden)]
+pub use crash_point::{register_rebuild_hook, RebuildHookGuard, RebuildHookKind};
 pub mod credentials;
 pub mod history;
 pub mod hooks;
