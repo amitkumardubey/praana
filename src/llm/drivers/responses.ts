@@ -76,7 +76,7 @@ function usageRecord(value: unknown): Record<string, unknown> | undefined {
 }
 
 /** Keep earlier totals for fields this event does not report. Absent objects emit nothing. */
-function usageFrom(raw: Record<string, unknown>, previous: ProviderUsage | null): ProviderUsage | null {
+function usageFrom(raw: Record<string, unknown>, previous: ProviderUsage | null, includeCacheRead: boolean): ProviderUsage | null {
   const input = finiteToken(raw.input_tokens) ?? finiteToken(raw.prompt_tokens);
   const output = finiteToken(raw.output_tokens) ?? finiteToken(raw.completion_tokens);
   const totalTokens = finiteToken(raw.total_tokens);
@@ -91,10 +91,14 @@ function usageFrom(raw: Record<string, unknown>, previous: ProviderUsage | null)
     (input !== undefined || output !== undefined
       ? resolvedInput + resolvedOutput
       : previous?.totalTokens ?? 0);
+  const cacheReadTokens = includeCacheRead
+    ? finiteToken(usageRecord(raw.input_tokens_details)?.cached_tokens) ?? previous?.cacheReadTokens
+    : undefined;
   return {
     input: resolvedInput,
     output: resolvedOutput,
     totalTokens: resolvedTotal,
+    ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
   };
 }
 
@@ -106,6 +110,7 @@ function usageFrom(raw: Record<string, unknown>, previous: ProviderUsage | null)
 function readResponsesUsage(
   parsed: Record<string, unknown>,
   previous: ProviderUsage | null,
+  includeCacheRead: boolean,
 ): ProviderUsage | null {
   const response = parsed.response;
   const nested = response && typeof response === "object"
@@ -113,10 +118,10 @@ function readResponsesUsage(
     : undefined;
   const top = usageRecord(parsed.usage);
   if (nested) {
-    const parsedNested = usageFrom(nested, previous);
+    const parsedNested = usageFrom(nested, previous, includeCacheRead);
     if (parsedNested) return parsedNested;
   }
-  return top ? usageFrom(top, previous) : null;
+  return top ? usageFrom(top, previous, includeCacheRead) : null;
 }
 
 export class OpenAIResponsesDriver implements LlmDriver {
@@ -186,13 +191,16 @@ export class OpenAIResponsesDriver implements LlmDriver {
       stream: true,
       ...(req.provider === "openai-codex"
         ? { store: false, instructions: instructions?.trim() ? instructions : "You are a helpful assistant." }
-        : instructions ? { instructions } : {}),
+        : { ...(req.provider === "openai" ? { store: false } : {}), ...(instructions ? { instructions } : {}) }),
       ...(tools.length > 0 ? { tools, tool_choice: "auto" } : {}),
       ...(req.provider !== "openai-codex" && req.temperature !== undefined ? { temperature: req.temperature } : {}),
       ...(req.provider !== "openai-codex" && req.maxTokens !== undefined ? { max_output_tokens: req.maxTokens } : {}),
     };
 
     if (req.reasoningEffort && req.reasoningEffort !== "off") {
+      // openai-node shared.ReasoningEffort includes minimal/low/medium/high/xhigh
+      // (also none/max/null); no clamping is needed for PRAANA's enabled levels.
+      // Model-specific acceptance is not implied by that SDK-wide union.
       body.reasoning = { effort: req.reasoningEffort };
     }
 
@@ -319,7 +327,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
           else if (outcome === "error") return fail(responsesErrorMessage(parsed, type), responsesErrorStatus(parsed));
         }
 
-        const usage = readResponsesUsage(parsed, latestUsage);
+        const usage = readResponsesUsage(parsed, latestUsage, req.provider === "openai");
         if (usage) {
           latestUsage = usage;
           events.push({ type: "usage", usage: latestUsage });

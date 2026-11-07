@@ -436,7 +436,7 @@ describe("Responses stream termination", () => {
       { type: "response.output_text.delta", delta: "Hi" },
       { type: "response.completed", response: { status: "completed", usage: nested } },
     ]);
-    expect(completedEvents).toContainEqual({ type: "usage", usage: mapped });
+    expect(completedEvents).toContainEqual({ type: "usage", usage: { ...mapped, cacheReadTokens: 4 } });
     const incompleteEvents = await run(req, { bearerToken: jwt() }, [
       { type: "response.output_text.delta", delta: "partial" },
       { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, usage: nested } },
@@ -517,7 +517,7 @@ describe("Responses stream termination", () => {
   });
 });
 
-it("keeps the ordinary OpenAI Responses request byte-identical", async () => {
+it("sends store false in the first-party OpenAI Responses request", async () => {
   const signal = new AbortController().signal;
   await run({ ...req, provider: "openai", systemPrompt: "System", maxTokens: 42, temperature: 0.25, reasoningEffort: "low", signal,
     headers: { "X-Caller": "caller" }, tools: [{ name: "read_file", description: "Read", parameters: { type: "object" } }],
@@ -525,10 +525,42 @@ it("keeps the ordinary OpenAI Responses request byte-identical", async () => {
   expect(calls).toEqual([{ url: "https://api.openai.com/v1/responses", init: {
     method: "POST", signal,
     headers: { "Content-Type": "application/json", Authorization: "Bearer synthetic-openai-key", "X-Caller": "caller", "X-Auth": "auth" },
-    body: '{"model":"gpt-5.4","input":[{"role":"user","content":"hi"}],"stream":true,"instructions":"System","tools":[{"type":"function","name":"read_file","description":"Read","parameters":{"type":"object"}}],"tool_choice":"auto","temperature":0.25,"max_output_tokens":42,"reasoning":{"effort":"low"}}',
+    body: '{"model":"gpt-5.4","input":[{"role":"user","content":"hi"}],"stream":true,"store":false,"instructions":"System","tools":[{"type":"function","name":"read_file","description":"Read","parameters":{"type":"object"}}],"tool_choice":"auto","temperature":0.25,"max_output_tokens":42,"reasoning":{"effort":"low"}}',
   } }]);
   await run({ ...req, provider: "openai" }, { apiKey: "synthetic-openai-key" });
-  expect(calls[1]!.init.body).toBe('{"model":"gpt-5.4","input":[{"role":"user","content":"hi"}],"stream":true}');
+  expect(calls[1]!.init.body).toBe('{"model":"gpt-5.4","input":[{"role":"user","content":"hi"}],"stream":true,"store":false}');
+});
+
+it.each(["azure-openai-responses", "openai-responses", "gateway"])("does not set store for %s", async (provider) => {
+  await run({ ...req, provider }, { apiKey: "synthetic-key" });
+  expect(JSON.parse(String(calls[0]!.init.body))).not.toHaveProperty("store");
+});
+
+it("replays a first-party tool turn without stored item references or reasoning ids", async () => {
+  const request: StreamRequest = { ...req, provider: "openai" };
+  const events = await run(request, { apiKey: "synthetic-key" }, [
+    { type: "response.output_item.added", output_index: 0, item: { type: "reasoning", id: "rs_stored", summary: [] } },
+    { type: "response.reasoning_text.delta", delta: "Thinking" },
+    { type: "response.output_item.done", output_index: 0, item: { type: "reasoning", id: "rs_stored", summary: [] } },
+    { type: "response.output_item.added", output_index: 1, item: { type: "function_call", id: "fc_stored", call_id: "call-1", name: "read_file", arguments: "" } },
+    { type: "response.function_call_arguments.delta", output_index: 1, delta: '{"path":"a.ts"}' },
+    { type: "response.function_call_arguments.done", output_index: 1 },
+    completed,
+  ]);
+  const done = events.find((event) => event.type === "done");
+  if (!done || done.type !== "done") throw new Error("Missing completed tool turn");
+  expect(done.reason).toBe("tool_use");
+  await run({ ...request, messages: [...request.messages, done.message, { role: "tool_result", toolCallId: "call-1", result: "file contents" }] }, { apiKey: "synthetic-key" });
+  const body = JSON.parse(String(calls[1]!.init.body));
+  expect(body).toEqual({
+    model: "gpt-5.4", stream: true, store: false,
+    input: [
+      { role: "user", content: "hi" },
+      { type: "function_call", call_id: "call-1", name: "read_file", arguments: '{"path":"a.ts"}' },
+      { type: "function_call_output", call_id: "call-1", output: "file contents" },
+    ],
+  });
+  expect(body).not.toHaveProperty("previous_response_id");
 });
 
 it("keeps request-level token overrides consistent through the real stream facade", async () => {
