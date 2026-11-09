@@ -99,15 +99,21 @@ describe("webFetch content", () => {
     if (md.ok) expect(pageText(md.content)).toBe("# Keep\n\nme");
   });
 
-  it("pretty-prints JSON and refuses invalid JSON, PDF, and other binary", async () => {
+  it("renders JSON compact and bounded, and refuses invalid JSON, PDF, and other binary", async () => {
     const json = await webFetch("https://example.com/j", {
       lookup: publicLookup,
-      transport: textBody('{"z":1,"a":[2]}', "application/json"),
+      transport: textBody(JSON.stringify({ z: 1, a: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15] }), "application/json"),
+      maxChars: 40,
     });
     expect(json.ok).toBe(true);
     if (json.ok) {
-      expect(json.content).toContain('"z": 1');
-      expect(json.content).toContain('"a": [');
+      // Compact rendering, bounded at maxChars with an ellipsis (no pretty-print
+      // amplification: a deeply nested body cannot expand to hundreds of MiB).
+      const text = pageText(json.content);
+      expect(text).toContain('"z":1');
+      expect(json.truncated).toBe(true);
+      expect(text).toContain("truncated to 40");
+      expect(text.length).toBeLessThanOrEqual(120);
     }
 
     const bad = await webFetch("https://example.com/j", {

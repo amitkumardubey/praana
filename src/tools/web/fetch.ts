@@ -265,10 +265,15 @@ function clampMaxChars(value: number | undefined): number {
   return Math.min(Math.floor(value), HARD_MAX_CHARS);
 }
 
+const MAX_FOCUS_CHARS = 1_000;
+const MAX_FOCUS_TERMS = 20;
+
 function termsOf(focus: string): string[] {
-  const terms = focus.toLowerCase().split(/[^a-z0-9]+/i).filter((term) => term.length >= 2);
-  if (terms.length > 0) return terms;
-  const raw = focus.trim().toLowerCase();
+  const bounded = focus.slice(0, MAX_FOCUS_CHARS);
+  const terms = bounded.toLowerCase().split(/[^a-z0-9]+/i).filter((term) => term.length >= 2);
+  const unique = [...new Set(terms)].slice(0, MAX_FOCUS_TERMS);
+  if (unique.length > 0) return unique;
+  const raw = bounded.trim().toLowerCase();
   return raw ? [raw] : [];
 }
 
@@ -345,6 +350,93 @@ function boundText(text: string, maxChars: number, total: number): { content: st
   return { content: `${slice}${notice}`, truncated: true };
 }
 
+/**
+ * Compact JSON serialization that stops once `maxChars` characters are
+ * produced; the remainder is dropped. Indented output would let a ~1 MiB
+ * deeply nested response amplify to hundreds of MiB, so JSON renders
+ * compact with the budget enforced during serialization.
+ */
+function stringifyBounded(value: unknown, maxChars: number): { text: string; truncated: boolean } {
+  const parts: string[] = [];
+  let length = 0;
+  let truncated = false;
+
+  const push = (text: string): boolean => {
+    if (length >= maxChars) {
+      truncated = true;
+      return false;
+    }
+    if (length + text.length > maxChars) {
+      // Keep as much of this chunk as fits, then stop.
+      const room = Math.max(0, maxChars - length);
+      if (room > 0) parts.push(text.slice(0, room));
+      length = maxChars;
+      truncated = true;
+      return false;
+    }
+    parts.push(text);
+    length += text.length;
+    return true;
+  };
+
+  const append = (item: unknown): void => {
+    if (length >= maxChars) {
+      truncated = true;
+      return;
+    }
+    if (item === null) {
+      push("null");
+      return;
+    }
+    switch (typeof item) {
+      case "boolean":
+        push(String(item));
+        return;
+      case "number":
+        push(String(item));
+        return;
+      case "string":
+        push(JSON.stringify(item));
+        return;
+      case "object": {
+        if (Array.isArray(item)) {
+          if (!push("[")) return;
+          for (let index = 0; index < item.length; index += 1) {
+            if (index > 0 && !push(",")) return;
+            append(item[index]);
+            if (length >= maxChars) {
+              truncated = true;
+              return;
+            }
+          }
+          push("]");
+          return;
+        }
+        if (!push("{")) return;
+        let first = true;
+        for (const [key, entry] of Object.entries(item)) {
+          if (!first && !push(",")) return;
+          first = false;
+          if (!push(JSON.stringify(key))) return;
+          if (!push(":")) return;
+          append(entry);
+          if (length >= maxChars) {
+            truncated = true;
+            return;
+          }
+        }
+        push("}");
+        return;
+      }
+      default:
+        push("null");
+    }
+  };
+
+  append(value);
+  return { text: parts.join(""), truncated };
+}
+
 function present(result: WebFetchResult): WebFetchResult {
   if (result.ok) {
     return {
@@ -358,22 +450,28 @@ function present(result: WebFetchResult): WebFetchResult {
   return {
     ...result,
     reason: sanitizeWebText(result.reason),
-    ...(result.redirect_to !== undefined ? { redirect_to: sanitizeWebText(result.redirect_to) } : {}),
+    ...(result.redirect_to === undefined ? {} : { redirect_to: sanitizeWebText(result.redirect_to) }),
   };
 }
 
-function renderBody(text: string, type: string, pageUrl: string): { ok: true; text: string } | { ok: false; reason: string } {
+function renderBody(
+  text: string,
+  type: string,
+  pageUrl: string,
+  maxChars: number,
+): { ok: true; text: string; truncated: boolean } | { ok: false; reason: string } {
   if (type === "application/json" || type.endsWith("+json")) {
     try {
-      return { ok: true, text: JSON.stringify(sanitizeWebJson(JSON.parse(text)), null, 2) };
+      const rendered = stringifyBounded(sanitizeWebJson(JSON.parse(text)), maxChars);
+      return { ok: true, text: rendered.text, truncated: rendered.truncated };
     } catch (err) {
       return { ok: false, reason: `response was not valid JSON (${errorMessage(err)})` };
     }
   }
   if (type === "text/html" || type === "application/xhtml+xml") {
-    return { ok: true, text: htmlToMarkdown(text, pageUrl) };
+    return { ok: true, text: htmlToMarkdown(text, pageUrl), truncated: false };
   }
-  return { ok: true, text };
+  return { ok: true, text, truncated: false };
 }
 
 export async function webFetch(input: string, opts: WebFetchOptions = {}): Promise<WebFetchResult> {
@@ -424,14 +522,23 @@ export async function webFetch(input: string, opts: WebFetchOptions = {}): Promi
   }
 
   const rendered = effectiveType === "text/html" || effectiveType === "application/xhtml+xml"
-    ? { ok: true as const, text: extracted }
-    : renderBody(text, effectiveType, raw.finalUrl);
+    ? { ok: true as const, text: extracted, truncated: false }
+    : renderBody(text, effectiveType, raw.finalUrl, clampMaxChars(opts.maxChars));
   if (!rendered.ok) return present(rendered);
 
   const clean = sanitizeWebText(rendered.text);
   const total = clean.length;
   const focused = applyFocus(clean, opts.focus);
-  const bounded = boundText(focused, clampMaxChars(opts.maxChars), opts.focus?.trim() ? total : focused.length);
+  const cap = clampMaxChars(opts.maxChars);
+  let bounded = boundText(focused, cap, opts.focus?.trim() ? total : focused.length);
+  // JSON serialization truncates during rendering (bounded serializer), so the
+  // standard notice never appears; report it in the same shape here.
+  if (rendered.truncated && !bounded.truncated && focused.length > 0) {
+    bounded = {
+      content: `${bounded.content}\n\n[truncated to ${Math.min(focused.length, cap)} of ${total} characters; pass focus to narrow]`,
+      truncated: true,
+    };
+  }
   const finalUrl = redactResultUrl(raw.finalUrl);
   return present({
     ok: true,
@@ -439,7 +546,7 @@ export async function webFetch(input: string, opts: WebFetchOptions = {}): Promi
     final_url: finalUrl,
     status: raw.status,
     content_type: contentType || effectiveType,
-    truncated: bounded.truncated,
+    truncated: bounded.truncated || rendered.truncated,
     bytes: raw.body.byteLength,
     content: `${untrustedBanner(finalUrl)}\n${bounded.content}`,
   });

@@ -1,6 +1,11 @@
 /**
  * Compact HTML to readable markdown. Not a general browser.
  * Drops scripts, styles, navigation, footers, and cookie/consent chrome.
+ *
+ * One linear pass with explicit index advancement: every byte of the input
+ * is consumed at most once, so adversarial unterminated tags or comments
+ * cannot cause quadratic work. Raw-text elements (script/style) consume
+ * through their literal closing tag instead of nesting depth counting.
  */
 
 const SKIP_TAGS = new Set([
@@ -15,6 +20,27 @@ const SKIP_TAGS = new Set([
   "template",
 ]);
 
+/** HTML void elements: never have a closing tag. */
+const VOID_TAGS = new Set([
+  "area",
+  "base",
+  "br",
+  "col",
+  "embed",
+  "hr",
+  "img",
+  "input",
+  "link",
+  "meta",
+  "param",
+  "source",
+  "track",
+  "wbr",
+]);
+
+/** Elements whose content is raw text: consume to the literal closing tag. */
+const RAW_TEXT_TAGS = new Set(["script", "style"]);
+
 const NAMED_ENTITIES: Record<string, string> = {
   amp: "&",
   lt: "<",
@@ -23,11 +49,6 @@ const NAMED_ENTITIES: Record<string, string> = {
   apos: "'",
   nbsp: " ",
 };
-
-interface SkipFrame {
-  tag: string;
-  depth: number;
-}
 
 function decodeEntities(text: string): string {
   return text.replace(/&(#x?[0-9a-f]+|[a-z]+);/gi, (full, body: string) => {
@@ -45,15 +66,34 @@ function decodeEntities(text: string): string {
   });
 }
 
-function attr(raw: string, name: string): string | undefined {
-  const match = new RegExp(`\\b${name}\\s*=\\s*("([^"]*)"|'([^']*)'|([^\\s"'=<>]+))`, "i").exec(raw);
-  return match?.[2] ?? match?.[3] ?? match?.[4];
+/**
+ * Parse an open tag's attributes into (lowercased name, decoded value) pairs.
+ * Respects quoted values, so a quoted `data-href="..."` never matches a
+ * request for `href`, and `data-class` never matches `class`.
+ */
+function parseAttributes(raw: string): Array<[string, string]> {
+  const out: Array<[string, string]> = [];
+  const re = /([a-zA-Z_:@][\w:.@-]*)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(raw)) !== null) {
+    const name = match[1].toLowerCase();
+    const value = match[2] ?? match[3] ?? match[4] ?? "";
+    out.push([name, decodeEntities(value)]);
+  }
+  return out;
 }
 
-function isChrome(raw: string): boolean {
-  const id = attr(raw, "id") ?? "";
-  const cls = attr(raw, "class") ?? "";
-  const role = (attr(raw, "role") ?? "").toLowerCase();
+function attrOf(attrs: Array<[string, string]>, name: string): string | undefined {
+  for (const [key, value] of attrs) {
+    if (key === name) return value;
+  }
+  return undefined;
+}
+
+function isChrome(attrs: Array<[string, string]>): boolean {
+  const id = attrOf(attrs, "id") ?? "";
+  const cls = attrOf(attrs, "class") ?? "";
+  const role = (attrOf(attrs, "role") ?? "").toLowerCase();
   if (role === "navigation" || role === "contentinfo") return true;
   return /cookie|consent|gdpr/i.test(`${id} ${cls}`);
 }
@@ -69,11 +109,104 @@ function resolveHref(href: string, baseUrl?: string): string | null {
   }
 }
 
+/** Find the end of a tag starting at `<`; returns -1 when unterminated. */
+function tagEnd(html: string, from: number): number {
+  for (let i = from + 1; i < html.length; i += 1) {
+    if (html[i] === ">") return i;
+    if (html[i] === '"') {
+      const close = html.indexOf('"', i + 1);
+      if (close === -1) return -1;
+      i = close;
+      continue;
+    }
+    if (html[i] === "'") {
+      const close = html.indexOf("'", i + 1);
+      if (close === -1) return -1;
+      i = close;
+    }
+  }
+  return -1;
+}
+
+/** Find the end of a comment starting at `<!--`; -1 when unterminated. */
+function commentEnd(html: string, from: number): number {
+  const close = html.indexOf("-->", from + 4);
+  return close === -1 ? -1 : close + 3;
+}
+
+/** Literal closing-tag scan for raw-text elements. -1 when unterminated. */
+function rawTextEnd(html: string, from: number, tag: string): number {
+  const needle = `</${tag}`;
+  const lowerNeedle = needle.toLowerCase();
+  let search = from;
+  while (search + needle.length <= html.length) {
+    const at = html.toLowerCase().indexOf(lowerNeedle, search);
+    if (at === -1) return -1;
+    const after = html[at + needle.length];
+    if (after === undefined || after === ">" || after === "/" || /\s/.test(after)) {
+      return at;
+    }
+    search = at + 1;
+  }
+  return -1;
+}
+
+interface TagToken {
+  token: string;
+  name: string;
+  closing: boolean;
+  selfClosing: boolean;
+  attrs: Array<[string, string]>;
+}
+
+type ScanKind = "text" | "skip" | "tag";
+
+/**
+ * Scan the next token at `from`. Returns the kind, an optional tag token, and
+ * the index just past it. Unterminated tags/comments consume the rest of the
+ * input once. Every path advances the index, so the scan is linear.
+ */
+function nextToken(html: string, from: number): { kind: ScanKind; token: TagToken | null; next: number } | null {
+  if (from >= html.length) return null;
+  if (html[from] !== "<") {
+    const next = html.indexOf("<", from);
+    return { kind: "text", token: null, next: next === -1 ? html.length : next };
+  }
+
+  if (html.startsWith("<!--", from)) {
+    const end = commentEnd(html, from);
+    return { kind: "skip", token: null, next: end === -1 ? html.length : end };
+  }
+
+  // Declaration or bogus comment (doctype, CDATA, <?php …): consume to '>' once.
+  if (html[from + 1] === "!" || html[from + 1] === "?") {
+    const end = tagEnd(html, from);
+    return { kind: "skip", token: null, next: end === -1 ? html.length : end + 1 };
+  }
+
+  const nameMatch = /^<\/?([a-zA-Z][\w:-]*)/.exec(html.slice(from));
+  if (!nameMatch) {
+    // Not a tag (e.g. a stray `<` followed by text): consume one char so we advance.
+    return { kind: "text", token: null, next: from + 1 };
+  }
+
+  const end = tagEnd(html, from);
+  if (end === -1) {
+    // Unterminated tag: consume the rest of the input once.
+    return { kind: "skip", token: null, next: html.length };
+  }
+  const token = html.slice(from, end + 1);
+  const name = nameMatch[1].toLowerCase();
+  const closing = token.startsWith("</");
+  const selfClosing = token.endsWith("/>") || VOID_TAGS.has(name);
+  const attrs = closing ? [] : parseAttributes(token);
+  return { kind: "tag", token: { token, name, closing, selfClosing, attrs }, next: end + 1 };
+}
+
 /**
  * Convert an HTML document to markdown. `baseUrl` resolves relative links.
  */
 export function htmlToMarkdown(html: string, baseUrl?: string): string {
-  const skip: SkipFrame[] = [];
   const lists: Array<{ kind: "ul" | "ol"; n: number }> = [];
   const linkStack: Array<string | null> = [];
   let out = "";
@@ -95,35 +228,51 @@ export function htmlToMarkdown(html: string, baseUrl?: string): string {
     if (text) write(text);
   };
 
-  const re = /<!--[\s\S]*?-->|<\/?([a-zA-Z][\w:-]*)\b[^>]*>|[^<]+/g;
-  let match: RegExpExecArray | null;
-  while ((match = re.exec(html)) !== null) {
-    const token = match[0];
-    if (token.startsWith("<!--")) continue;
-    if (!token.startsWith("<")) {
-      if (skip.length === 0) addText(token);
+  let i = 0;
+  while (i < html.length) {
+    const scanned = nextToken(html, i);
+    if (!scanned) break;
+    if (scanned.kind === "text") {
+      if (i !== scanned.next) addText(html.slice(i, scanned.next));
+      i = scanned.next;
       continue;
     }
+    if (scanned.kind === "skip") {
+      i = scanned.next;
+      continue;
+    }
+    const { token, name, closing, selfClosing, attrs } = scanned.token!;
+    i = scanned.next;
 
-    const name = (match[1] ?? "").toLowerCase();
-    const closing = token.startsWith("</");
-    const selfClosing = token.endsWith("/>") || name === "br" || name === "img" || name === "meta" || name === "hr";
-
-    if (skip.length > 0) {
-      const top = skip[skip.length - 1];
-      if (top && name === top.tag) {
-        if (closing) {
-          top.depth -= 1;
-          if (top.depth <= 0) skip.pop();
-        } else if (!selfClosing) {
-          top.depth += 1;
-        }
+    // Raw-text elements: consume through the literal closing tag.
+    if (!closing && RAW_TEXT_TAGS.has(name)) {
+      const closeAt = rawTextEnd(html, i, name);
+      if (closeAt === -1) {
+        i = html.length;
+      } else {
+        const tagEndAfter = tagEnd(html, closeAt);
+        i = tagEndAfter === -1 ? html.length : tagEndAfter + 1;
       }
       continue;
     }
 
-    if (!closing && (SKIP_TAGS.has(name) || isChrome(token))) {
-      if (!selfClosing) skip.push({ tag: name, depth: 1 });
+    if (!closing && (SKIP_TAGS.has(name) || isChrome(attrs))) {
+      // Nested same-name elements are skipped by depth counting; void/self-closing tags never open a frame.
+      if (selfClosing) continue;
+      let depth = 1;
+      let scan = i;
+      while (scan < html.length && depth > 0) {
+        const inner = nextToken(html, scan);
+        if (!inner) break;
+        if (inner.kind === "tag" && inner.token !== null) {
+          const innerName = inner.token.name;
+          if (innerName === name && !inner.token.selfClosing) {
+            depth += inner.token.closing ? -1 : 1;
+          }
+        }
+        scan = inner.next;
+      }
+      i = scan;
       continue;
     }
 
@@ -176,7 +325,7 @@ export function htmlToMarkdown(html: string, baseUrl?: string): string {
     }
     if (name === "a") {
       if (!closing) {
-        const href = resolveHref(attr(token, "href") ?? "", baseUrl);
+        const href = resolveHref(attrOf(attrs, "href") ?? "", baseUrl);
         linkStack.push(href);
         if (href) write("[");
       } else {
@@ -221,7 +370,7 @@ export function htmlToMarkdown(html: string, baseUrl?: string): string {
       continue;
     }
     if (name === "img" && !closing) {
-      const alt = attr(token, "alt");
+      const alt = attrOf(attrs, "alt");
       if (alt) addText(alt);
     }
   }

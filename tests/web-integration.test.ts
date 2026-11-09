@@ -206,8 +206,8 @@ describe("web_fetch against a local server", () => {
       const json = await webFetch("https://example.com/json", fetchOpts(server.port, hops));
       expect(json.ok).toBe(true);
       if (json.ok) {
-        expect(json.content).toContain('"a": 2');
-        expect(json.content).toContain('"b": 1');
+        expect(json.content).toContain('"a":2');
+        expect(json.content).toContain('"b":1');
       }
 
       const pdf = await webFetch("https://example.com/pdf", fetchOpts(server.port, hops));
