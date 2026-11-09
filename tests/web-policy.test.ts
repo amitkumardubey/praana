@@ -394,17 +394,21 @@ describe("web_fetch risk, config, and redaction", () => {
     ).toBe("deny");
   });
 
-  it("warns and drops a domain rule that cannot be normalised", () => {
+  it("fails closed when a domain rule cannot be normalised", () => {
     expect(normalizeDomainRule("foo\u0000.com")).toBeNull();
     const dir = mkdtempSync(join(tmpdir(), "praana-web-idna-bad-"));
     try {
       const path = join(dir, "web.toml");
       writeFileSync(path, '[tools.web]\ndeny_domains = ["foo\\u0000.com", "münchen.de"]\n', "utf-8");
       const config = loadConfig(path);
+      // The parseable rule is kept, but a malformed entry disables web_fetch
+      // rather than silently dropping a deny rule and weakening the policy.
       expect(config.tools.web.deny_domains).toEqual(["xn--mnchen-3ya.de"]);
+      expect(config.tools.web.enabled).toBe(false);
       const warnings = getConfigWarnings().join("\n");
       expect(warnings).toContain("tools.web.deny_domains");
       expect(warnings).toContain("foo");
+      expect(warnings).toContain("disabled");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

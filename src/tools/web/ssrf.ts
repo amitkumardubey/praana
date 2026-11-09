@@ -132,18 +132,39 @@ function parseLegacyIpv4(input: string): number | null {
   return ipv4ToInt(nums[0] ?? 0, nums[1] ?? 0, nums[2] ?? 0, nums[3] ?? 0);
 }
 
+/** Mask for an IPv4 prefix length, as an unsigned 32-bit number. */
+function v4Mask(prefix: number): number {
+  return prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+}
+
+/**
+ * IANA IPv4 special-purpose ranges that are not globally reachable.
+ * Ordered longest-prefix-first so a specific range wins over a broader one.
+ * 192.0.0.0/24 also covers the PCP/TURN anycast addresses; blocking them
+ * costs nothing (they are not web servers) and keeps the table simple.
+ */
+const IPV4_NON_GLOBAL: ReadonlyArray<{ net: number; prefix: number; kind: string }> = [
+  { net: 0x00000000, prefix: 8, kind: "unspecified" }, // 0.0.0.0/8 "this network"
+  { net: 0x0a000000, prefix: 8, kind: "private" }, // 10.0.0.0/8
+  { net: 0x64400000, prefix: 10, kind: "cgnat" }, // 100.64.0.0/10
+  { net: 0x7f000000, prefix: 8, kind: "loopback" }, // 127.0.0.0/8
+  { net: 0xa9fe0000, prefix: 16, kind: "link-local" }, // 169.254.0.0/16
+  { net: 0xac100000, prefix: 12, kind: "private" }, // 172.16.0.0/12
+  { net: 0xc0000000, prefix: 24, kind: "reserved" }, // 192.0.0.0/24 IETF protocol assignments
+  { net: 0xc0000200, prefix: 24, kind: "documentation" }, // 192.0.2.0/24 TEST-NET-1
+  { net: 0xc0586300, prefix: 24, kind: "reserved" }, // 192.88.99.0/24 6to4 relay anycast (deprecated)
+  { net: 0xc0a80000, prefix: 16, kind: "private" }, // 192.168.0.0/16
+  { net: 0xc6120000, prefix: 15, kind: "benchmarking" }, // 198.18.0.0/15
+  { net: 0xc6336400, prefix: 24, kind: "documentation" }, // 198.51.100.0/24 TEST-NET-2
+  { net: 0xcb007100, prefix: 24, kind: "documentation" }, // 203.0.113.0/24 TEST-NET-3
+  { net: 0xe0000000, prefix: 4, kind: "multicast" }, // 224.0.0.0/4
+  { net: 0xf0000000, prefix: 4, kind: "reserved" }, // 240.0.0.0/4 incl. broadcast
+];
+
 function ipv4Kind(ip: number): string | null {
-  const a = (ip >>> 24) & 255;
-  const b = (ip >>> 16) & 255;
-  if (a === 127) return "loopback";
-  if (a === 0) return "unspecified";
-  if (a === 10) return "private";
-  if (a === 172 && b >= 16 && b <= 31) return "private";
-  if (a === 192 && b === 168) return "private";
-  if (a === 169 && b === 254) return "link-local";
-  if (a === 100 && b >= 64 && b <= 127) return "cgnat";
-  if (a >= 224 && a <= 239) return "multicast";
-  if (a >= 240) return "reserved";
+  for (const range of IPV4_NON_GLOBAL) {
+    if ((ip & v4Mask(range.prefix)) >>> 0 === range.net) return range.kind;
+  }
   return null;
 }
 
@@ -193,9 +214,43 @@ function parseIp(host: string): ParsedIp | null {
   return { family: 4, address: dotted(ipv4), ipv4 };
 }
 
+/** Build a 128-bit network value from a full 32-hex-digit string. */
+function v6Net(hex: string): bigint {
+  return BigInt(`0x${hex}`);
+}
+
+/** True when `ip` falls inside `net`/`prefix`. */
+function v6InRange(ip: bigint, net: bigint, prefix: number): boolean {
+  const shift = BigInt(128 - prefix);
+  return ip >> shift === net >> shift;
+}
+
+/**
+ * IANA IPv6 special-purpose ranges that are not globally reachable, plus
+ * their kind. Checked before the broader transition/embedded-IPv4 cases so
+ * a specific range is not swallowed by a wider one.
+ */
+const IPV6_NON_GLOBAL: ReadonlyArray<{ net: bigint; prefix: number; kind: string }> = [
+  // 64:ff9b:1::/48 — local-use NAT64 (the /96 well-known prefix is handled separately)
+  { net: v6Net("0064ff9b000100000000000000000000"), prefix: 48, kind: "reserved" },
+  // 100::/64 — discard-only
+  { net: v6Net("01000000000000000000000000000000"), prefix: 64, kind: "reserved" },
+  // 2001:db8::/32 — documentation
+  { net: v6Net("20010db8000000000000000000000000"), prefix: 32, kind: "documentation" },
+  // 2001:2::/48 — benchmarking
+  { net: v6Net("20010002000000000000000000000000"), prefix: 48, kind: "benchmarking" },
+  // 2001::/32 — Teredo (IPv4 transition, embedded address)
+  { net: v6Net("20010000000000000000000000000000"), prefix: 32, kind: "reserved" },
+  // 3fff::/20 — documentation (RFC 9637)
+  { net: v6Net("3fff0000000000000000000000000000"), prefix: 20, kind: "documentation" },
+];
+
 function ipv6Kind(ip: bigint): string | null {
   if (ip === 1n) return "loopback";
   if (ip === 0n) return "unspecified";
+  for (const range of IPV6_NON_GLOBAL) {
+    if (v6InRange(ip, range.net, range.prefix)) return range.kind;
+  }
   const high96 = ip >> 32n;
   const embedded = Number(ip & 0xffffffffn);
   if (high96 === 0xffffn) return ipv4Kind(embedded);

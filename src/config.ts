@@ -398,26 +398,33 @@ export function loadConfig(configPath?: string): PraanaConfig {
   return validated;
 }
 
-function domainList(value: unknown, key: string): string[] {
-  if (value === undefined) return [];
+interface DomainListResult {
+  rules: string[];
+  /** Entries that were present but could not be parsed. */
+  invalid: string[];
+}
+
+function domainList(value: unknown, key: string): DomainListResult {
+  if (value === undefined) return { rules: [], invalid: [] };
   if (!Array.isArray(value)) {
     configWarn(`${key} must be a string array, defaulting to []`);
-    return [];
+    return { rules: [], invalid: [] };
   }
-  const out: string[] = [];
+  const rules: string[] = [];
+  const invalid: string[] = [];
   for (const item of value) {
     if (typeof item !== "string") {
-      configWarn(`${key} entries must be strings, ignoring ${JSON.stringify(item)}`);
+      invalid.push(JSON.stringify(item));
       continue;
     }
     const rule = normalizeDomainRule(item);
     if (!rule) {
-      if (item.trim()) configWarn(`${key} entry ${JSON.stringify(item)} is not a hostname, ignoring`);
+      if (item.trim()) invalid.push(JSON.stringify(item));
       continue;
     }
-    out.push(rule);
+    rules.push(rule);
   }
-  return out;
+  return { rules, invalid };
 }
 
 function validateWebTools(raw: WebToolsConfig | undefined): WebToolsConfig {
@@ -434,15 +441,35 @@ function validateWebTools(raw: WebToolsConfig | undefined): WebToolsConfig {
   } else if (typeof web.enabled === "boolean") {
     out.enabled = web.enabled;
   }
-  out.allow_domains = domainList(web.allow_domains, "tools.web.allow_domains");
-  out.deny_domains = domainList(web.deny_domains, "tools.web.deny_domains");
+  const allow = domainList(web.allow_domains, "tools.web.allow_domains");
+  const deny = domainList(web.deny_domains, "tools.web.deny_domains");
+  out.allow_domains = allow.rules;
+  out.deny_domains = deny.rules;
+  // A dropped allow/deny rule silently weakens the access policy (a malformed
+  // deny lets that host through; a fully invalid allowlist turns deny-by-default
+  // into confirm-anything). Fail closed: keep the lists as parsed but disable
+  // web_fetch until the owner fixes the config.
+  if (allow.invalid.length > 0 || deny.invalid.length > 0) {
+    const parts: string[] = [];
+    if (allow.invalid.length > 0) parts.push(`tools.web.allow_domains ${allow.invalid.join(", ")}`);
+    if (deny.invalid.length > 0) parts.push(`tools.web.deny_domains ${deny.invalid.join(", ")}`);
+    configWarn(
+      `${parts.join("; ")} are not hostnames; web_fetch is disabled until they are fixed`,
+    );
+    out.enabled = false;
+  }
   if (
     web.timeout_ms !== undefined &&
-    (typeof web.timeout_ms !== "number" || !Number.isFinite(web.timeout_ms) || web.timeout_ms <= 0)
+    (typeof web.timeout_ms !== "number" ||
+      !Number.isFinite(web.timeout_ms) ||
+      web.timeout_ms <= 0 ||
+      web.timeout_ms > MAX_SETTIMEOUT_MS)
   ) {
-    configWarn("tools.web.timeout_ms must be a positive number, defaulting to 15000");
+    configWarn(
+      `tools.web.timeout_ms must be a positive number no greater than ${MAX_SETTIMEOUT_MS}, defaulting to 15000`,
+    );
   } else if (typeof web.timeout_ms === "number") {
-    out.timeout_ms = web.timeout_ms;
+    out.timeout_ms = Math.floor(web.timeout_ms);
   }
   if (
     web.max_chars !== undefined &&
