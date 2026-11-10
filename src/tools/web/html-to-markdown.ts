@@ -134,21 +134,41 @@ function commentEnd(html: string, from: number): number {
   return close === -1 ? -1 : close + 3;
 }
 
-/** Literal closing-tag scan for raw-text elements. -1 when unterminated. */
+/**
+ * Literal closing-tag scan for raw-text elements. -1 when unterminated.
+ *
+ * Scans for the anchor `</` and compares the tag name ASCII-case-
+ * insensitively. Every anchor is skipped once (search advances past it), so
+ * the whole scan is linear. Earlier versions searched with a lowercased copy
+ * of the document (`html.toLowerCase()`) inside the loop, which copied the
+ * entire input once per false prefix match — or once per raw-text element —
+ * and let adversarial input freeze the event loop for minutes.
+ */
 function rawTextEnd(html: string, from: number, tag: string): number {
-  const needle = `</${tag}`;
-  const lowerNeedle = needle.toLowerCase();
+  /** ASCII lowercase of a code unit; other values pass through. */
+  const lower = (code: number): number => (code >= 65 && code <= 90 ? code + 32 : code);
+  const tagLen = tag.length;
   let search = from;
-  while (search + needle.length <= html.length) {
-    const at = html.toLowerCase().indexOf(lowerNeedle, search);
+  for (;;) {
+    const at = html.indexOf("</", search);
     if (at === -1) return -1;
-    const after = html[at + needle.length];
-    if (after === undefined || after === ">" || after === "/" || /\s/.test(after)) {
-      return at;
+    const nameAt = at + 2;
+    let matches = true;
+    for (let i = 0; i < tagLen; i += 1) {
+      // charCodeAt past the end is NaN, which never equals a tag code.
+      if (lower(html.charCodeAt(nameAt + i)) !== tag.charCodeAt(i)) {
+        matches = false;
+        break;
+      }
     }
-    search = at + 1;
+    if (matches) {
+      const after = html[nameAt + tagLen];
+      if (after === undefined || after === ">" || after === "/" || /\s/.test(after)) {
+        return at;
+      }
+    }
+    search = at + 2;
   }
-  return -1;
 }
 
 interface TagToken {

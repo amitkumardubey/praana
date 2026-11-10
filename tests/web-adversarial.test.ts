@@ -64,6 +64,28 @@ describe("web_fetch adversarial-input regressions", () => {
     expect(elapsed).toBeLessThan(BUDGET_MS);
   });
 
+  it("extracts markdown from repeated false closing-tag prefixes in linear time", () => {
+    // Every "</script" match is followed by "x", so the raw-text scan must
+    // advance past each false prefix without rescanning or recopying the
+    // document. Lowercasing per match froze the event loop for minutes.
+    const adversarial = "<script>" + "</scriptx".repeat(44_000);
+    const start = performance.now();
+    const md = htmlToMarkdown(adversarial);
+    const elapsed = performance.now() - start;
+    expect(md).toBe("");
+    expect(elapsed).toBeLessThan(BUDGET_MS);
+  });
+
+  it("extracts markdown from many small raw-text elements in linear time", () => {
+    // One full-document lowercase per <script> element is also quadratic.
+    const adversarial = "<script>1</script>".repeat(80_000);
+    const start = performance.now();
+    const md = htmlToMarkdown(adversarial);
+    const elapsed = performance.now() - start;
+    expect(md).toBe("");
+    expect(elapsed).toBeLessThan(BUDGET_MS);
+  });
+
   it("extracts markdown from an unterminated comment in linear time", () => {
     const adversarial = `<!--${"x".repeat(600_000)}`;
     const start = performance.now();
