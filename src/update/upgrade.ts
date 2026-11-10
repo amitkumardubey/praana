@@ -3,13 +3,14 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { classifyInstallKind, type InstallKind } from "./install-kind.js";
+import { GITHUB_REPO_SLUG } from "./repo.js";
 import { isNewer, normalizeVersionLabel } from "./semver.js";
 import { APP_VERSION } from "../app-banner.js";
 
 export const INSTALL_SH_URL =
-  "https://raw.githubusercontent.com/amitkumardubey/praana/main/install.sh";
+  `https://raw.githubusercontent.com/${GITHUB_REPO_SLUG}/main/install.sh`;
 export const INSTALL_PS1_URL =
-  "https://raw.githubusercontent.com/amitkumardubey/praana/main/install.ps1";
+  `https://raw.githubusercontent.com/${GITHUB_REPO_SLUG}/main/install.ps1`;
 
 export interface InstallerArgs {
   prefix: string;
@@ -145,12 +146,24 @@ export async function runUpgrade(opts: RunUpgradeOptions = {}): Promise<UpgradeR
   }
   const checkLines = opts.checkOffline && opts.latestVersion
     ? [`Could not check for a newer version (offline); using the last known: ${normalizeVersionLabel(opts.latestVersion)}`]
-    : [];
+    : opts.checkOffline && opts.force
+      ? ["Could not check for a newer version; continuing because --force was given."]
+      : [];
   if (
     !opts.force &&
     opts.latestVersion &&
     !isNewer(opts.latestVersion, current)
   ) {
+    if (opts.checkOffline) {
+      return {
+        lines: [
+          ...checkLines,
+          "Could not verify that you are up to date. Re-run when online, or use --force to reinstall.",
+        ],
+        exitCode: 1,
+        ranInstaller: false,
+      };
+    }
     return {
       lines: [...checkLines, `Already up to date (${current}).`],
       exitCode: 0,
@@ -192,7 +205,9 @@ export async function runUpgrade(opts: RunUpgradeOptions = {}): Promise<UpgradeR
   if (installed.output.trim()) lines.push(installed.output.trim());
   if (versionLine) lines.push(versionLine);
   lines.push("Restart praana to use the new binary.");
-  lines.push("If your shell still shows the old version, run `hash -r` (bash) or `rehash` (zsh).");
+  if (platform !== "win32") {
+    lines.push("If your shell still shows the old version, run `hash -r` (bash) or `rehash` (zsh).");
+  }
 
   if (kind === "bun_global" || kind === "npm_global" || kind === "brew") {
     const resolved = (opts.whichPraana ?? defaultWhichPraana)();

@@ -10,9 +10,29 @@ describe("runUpgrade", () => {
     expect(result.exitCode).toBe(1);
   });
 
-  it("reports the last known version when a forced check fails", async () => {
-    const result = await runUpgrade({ kind: "standalone", currentVersion: "v0.18.0", latestVersion: "0.18.0", checkOffline: true });
-    expect(result.lines.join("\n")).toContain("Could not check for a newer version (offline); using the last known: v0.18.0");
+  it("refuses to claim up to date when the check was offline", async () => {
+    const result = await runUpgrade({ kind: "standalone", currentVersion: "v0.18.1", latestVersion: "0.18.1", checkOffline: true,
+      runInstaller: async () => { throw new Error("must not run"); } });
+    expect(result.lines.join("\n")).toContain("Could not check for a newer version (offline); using the last known: v0.18.1");
+    expect(result.lines.join("\n")).toContain("Could not verify that you are up to date.");
+    expect(result.exitCode).toBe(1);
+    expect(result.ranInstaller).toBe(false);
+  });
+
+  it("proceeds with the installer when the cached latest is newer", async () => {
+    const result = await runUpgrade({ kind: "standalone", currentVersion: "v0.18.0", latestVersion: "0.18.1", checkOffline: true,
+      runInstaller: async () => ({ ok: true, output: "" }), versionOf: () => "PRAANA v0.18.1" });
+    expect(result.lines.join("\n")).toContain("Could not check for a newer version (offline); using the last known: v0.18.1");
+    expect(result.ranInstaller).toBe(true);
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("notes the failed check when --force is given offline without a cache", async () => {
+    const result = await runUpgrade({ kind: "standalone", currentVersion: "v0.18.0", checkOffline: true, force: true,
+      runInstaller: async () => ({ ok: true, output: "" }), versionOf: () => "PRAANA v0.18.0" });
+    expect(result.lines.join("\n")).toContain("Could not check for a newer version; continuing because --force was given.");
+    expect(result.ranInstaller).toBe(true);
+    expect(result.exitCode).toBe(0);
   });
 
   it("keeps the up-to-date message for a matching fresh version", async () => {
@@ -23,10 +43,17 @@ describe("runUpgrade", () => {
 
   it("suggests clearing the shell command cache only after success", async () => {
     const hint = "If your shell still shows the old version, run `hash -r` (bash) or `rehash` (zsh).";
-    const success = await runUpgrade({ kind: "standalone", runInstaller: async () => ({ ok: true, output: "" }), versionOf: () => null });
+    const success = await runUpgrade({ kind: "standalone", platform: "linux", runInstaller: async () => ({ ok: true, output: "" }), versionOf: () => null });
     expect(success.lines).toContain(hint);
-    const failure = await runUpgrade({ kind: "standalone", runInstaller: async () => ({ ok: false, output: "failed" }) });
+    const failure = await runUpgrade({ kind: "standalone", platform: "linux", runInstaller: async () => ({ ok: false, output: "failed" }) });
     expect(failure.lines).not.toContain(hint);
+  });
+
+  it("omits the shell-cache hint on Windows", async () => {
+    const result = await runUpgrade({ kind: "standalone", platform: "win32",
+      runInstaller: async () => ({ ok: true, output: "" }), versionOf: () => "PRAANA v0.18.1" });
+    expect(result.lines.join("\n")).not.toContain("hash -r");
+    expect(result.lines.join("\n")).not.toContain("rehash");
   });
 
   it("refuses to overwrite a source checkout", async () => {
