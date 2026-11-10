@@ -732,3 +732,67 @@ describe("Responses stream guard", () => {
     );
   });
 });
+
+const firstPartyReq: StreamRequest = { provider: "openai", model: "gpt-5.4", messages: [{ role: "user", content: "hi" }] };
+const firstPartyAuth: ResolvedAuth = { apiKey: "synthetic-openai-key" };
+
+describe("first-party refusals and content filtering", () => {
+  it("streams refusal deltas as assistant text and does not repeat the done text", async () => {
+    const events = await run(firstPartyReq, firstPartyAuth, [
+      { type: "response.refusal.delta", delta: "I can't " },
+      { type: "response.refusal.delta", delta: "help." },
+      { type: "response.refusal.done", refusal: "I can't help." },
+      completed,
+    ]);
+    expect(events.filter((event) => event.type === "text_delta")).toEqual([
+      { type: "text_delta", delta: "I can't " },
+      { type: "text_delta", delta: "help." },
+    ]);
+    const done = events.at(-1);
+    expect(done).toEqual({ type: "done", reason: "stop", message: { role: "assistant", content: "I can't help." } });
+  });
+
+  it("surfaces refusal.done text when no deltas arrived", async () => {
+    const events = await run(firstPartyReq, firstPartyAuth, [
+      { type: "response.refusal.done", refusal: "I can't help." },
+      completed,
+    ]);
+    expect(events.filter((event) => event.type === "text_delta")).toEqual([
+      { type: "text_delta", delta: "I can't help." },
+    ]);
+  });
+
+  it("Codex keeps ignoring refusals byte-identically", async () => {
+    const events = await run(req, { bearerToken: jwt() }, [
+      { type: "response.refusal.delta", delta: "I can't " },
+      { type: "response.refusal.done", refusal: "I can't help." },
+      completed,
+    ]);
+    expect(events.some((event) => event.type === "text_delta")).toBe(false);
+    expect(events.at(-1)).toEqual({ type: "done", reason: "stop", message: { role: "assistant", content: "" } });
+  });
+
+  it.each([
+    { frame: { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "content_filter" } } }, message: "content filter" },
+    { frame: { type: "response.completed", response: { status: "incomplete", incomplete_details: { reason: "content_filter", message: "Response filtered" } } }, message: "Response filtered" },
+    { frame: { type: "response.done", response: { status: "incomplete", incomplete_details: { reason: "content_filter" } } }, message: "content filter" },
+  ])("turns an incomplete into a non-retryable content-filter error", async ({ frame, message }) => {
+    const events = await run(firstPartyReq, firstPartyAuth, [frame]);
+    expect(events.some((event) => event.type === "done")).toBe(false);
+    expect(events).toHaveLength(1);
+    const error = events[0];
+    expect(error?.type === "error" && error.retryable).toBe(false);
+    expect(error?.type === "error" && error.error.message).toMatch(new RegExp(message, "i"));
+  });
+
+  it("keeps max_output_tokens incomplete as length on the first-party route", async () => {
+    const events = await run(firstPartyReq, firstPartyAuth, [
+      { type: "response.output_text.delta", delta: "partial" },
+      { type: "response.incomplete", response: { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } } },
+    ]);
+    expect(events).toEqual([
+      { type: "text_delta", delta: "partial" },
+      { type: "done", reason: "length", message: { role: "assistant", content: "partial" } },
+    ]);
+  });
+});

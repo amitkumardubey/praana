@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "bun:test";
 import { streamLlmResponse } from "../src/llm/stream.js";
 import { streamGuardPendingListeners, streamGuardPendingTimers } from "../src/llm/stream-guard.js";
+import { resetChatOnlyFallbackForTests, setChatOnlyFallbackClockForTests } from "../src/llm/openai-first-party.js";
 import { resetUserProvidersForTests } from "../src/provider-registry.js";
 import type { StreamEvent, StreamRequest } from "../src/llm/types.js";
 
@@ -19,6 +20,7 @@ const request: StreamRequest = { provider: "openai", model: "gpt-6.1-terra", api
 afterEach(() => {
   globalThis.fetch = originalFetch;
   resetUserProvidersForTests();
+  resetChatOnlyFallbackForTests();
   expect(streamGuardPendingTimers()).toBe(0);
   expect(streamGuardPendingListeners()).toBe(0);
 });
@@ -63,7 +65,7 @@ describe("first-party Responses request parity", () => {
     });
   });
 
-  it.each(["minimal", "low", "medium", "high", "xhigh"] as const)("passes the SDK-supported %s effort unchanged", async (reasoningEffort) => {
+  it.each(["none", "minimal", "low", "medium", "high", "xhigh"] as const)("passes the SDK-supported %s effort unchanged", async (reasoningEffort) => {
     let body: Record<string, unknown> = {};
     globalThis.fetch = (async (_url, init) => { body = JSON.parse(String(init?.body)); return sse([completed]); }) as typeof fetch;
     await collect({ reasoningEffort, tools: [tool] });
@@ -153,6 +155,56 @@ describe("Responses-to-chat pre-emission fallback", () => {
     expect(calls).toBe(1);
     expect(events.at(-1)).toMatchObject({ type: "error", status: 404 });
     expect(events.some((event) => event.type === "tool_call_end")).toBe(false);
+  });
+
+  it("pins only the credential whose request was rejected", async () => {
+    const urls: string[] = [];
+    const model = "gpt-6-credential-pin";
+    globalThis.fetch = (async (url, init) => {
+      urls.push(String(url));
+      const authorization = new Headers(init?.headers).get("authorization") ?? "";
+      if (String(url).endsWith("/responses") && authorization.includes("key-b")) {
+        return Response.json({ error: { code: "model_not_found", message: "No such model" } }, { status: 404 });
+      }
+      return sse([completed]);
+    }) as typeof fetch;
+    // key-a is accepted by Responses both times: never pinned.
+    await collect({ model, apiKey: "key-a" });
+    await collect({ model, apiKey: "key-a" });
+    // key-b is rejected, pinned, then remembered on its second call.
+    await collect({ model, apiKey: "key-b" });
+    await collect({ model, apiKey: "key-b" });
+    expect(urls).toEqual([
+      "https://api.openai.com/v1/responses",
+      "https://api.openai.com/v1/responses",
+      "https://api.openai.com/v1/responses",
+      "https://api.openai.com/v1/chat/completions",
+      "https://api.openai.com/v1/chat/completions",
+    ]);
+  });
+
+  it("expires the remembered Chat-only fallback after one hour (injected clock)", async () => {
+    let now = 0;
+    setChatOnlyFallbackClockForTests(() => now);
+    const model = "gpt-6-expiry";
+    const urls: string[] = [];
+    globalThis.fetch = (async (url) => {
+      urls.push(String(url));
+      return String(url).endsWith("/responses")
+        ? Response.json({ error: { code: "model_not_found", message: "No such model" } }, { status: 404 })
+        : chat();
+    }) as typeof fetch;
+    await collect({ model }); // 404 -> pinned at t=0, falls back to chat
+    await collect({ model }); // remembered -> chat
+    now = 60 * 60 * 1000 + 1;
+    await collect({ model }); // expired -> Responses 404 again -> chat
+    expect(urls).toEqual([
+      "https://api.openai.com/v1/responses",
+      "https://api.openai.com/v1/chat/completions",
+      "https://api.openai.com/v1/chat/completions",
+      "https://api.openai.com/v1/responses",
+      "https://api.openai.com/v1/chat/completions",
+    ]);
   });
 
   it("does not fall back or remember a model after abort during an HTTP rejection", async () => {

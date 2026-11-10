@@ -67,6 +67,27 @@ describe("first-party Responses through the turn adapter", () => {
     expect(url).toBe(`${base_url}/chat/completions`);
   });
 
+  it("treats an empty llm.base_url as unset and stays on Responses", async () => {
+    let url = "";
+    globalThis.fetch = (async (u) => { url = String(u); return new Response("data: [DONE]\n\n"); }) as typeof fetch;
+    await runLlmStream(input({}, ""));
+    expect(url).toBe("https://api.openai.com/v1/responses");
+  });
+
+  it("sends reasoning.effort none on the wire for llm.reasoning_effort off", async () => {
+    let sent: Record<string, unknown> | undefined;
+    globalThis.fetch = (async (_url, init) => {
+      sent = JSON.parse(String(init?.body));
+      return new Response('data: {"type":"response.completed","response":{"status":"completed"}}\n\ndata: [DONE]\n\n');
+    }) as typeof fetch;
+    const model = createProvider({ provider: "openai", model: "gpt-6.1-terra" })("gpt-6.1-terra");
+    const effort = getReasoningEffort(model, "gpt-6.1-terra", "openai", "off", { firstPartyResponses: true });
+    expect(effort).toBe("none");
+    await runLlmStream(input({ reasoningEffort: effort }));
+    expect(sent?.reasoning).toEqual({ effort: "none" });
+    expect(sent).not.toHaveProperty("reasoning_effort");
+  });
+
   it.each(["auto", "strict", "lenient"] as const)("preserves %s stream-end semantics without a terminal event", async (streamEndCheck) => {
     globalThis.fetch = (async () => new Response(fixture().split("event: response.completed")[0])) as typeof fetch;
     const result = await runLlmStream(input({ streamEndCheck }));
