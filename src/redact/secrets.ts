@@ -2,6 +2,8 @@
  * Deterministic secret redaction for tool results and logged tool-call args (#579).
  */
 
+import { redactUrlsInText } from "./url-query.js";
+
 const MAX_DEPTH = 8;
 const PLACEHOLDER = (kind: string) => `[REDACTED:${kind}]`;
 
@@ -45,7 +47,8 @@ function redactString(text: string): string {
     if (isHexSha(value) || isUlid(value) || isCodeIdentifier(value)) return full;
     return `${name}=${PLACEHOLDER("key-assignment")}`;
   });
-  return out;
+  // After the assignment scan so a short query value is not swallowed with the next parameter.
+  return redactUrlsInText(out);
 }
 
 function walk(value: unknown, depth: number): unknown {
