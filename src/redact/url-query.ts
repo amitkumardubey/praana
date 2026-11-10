@@ -1,6 +1,8 @@
 /**
- * Redact query values whose names carry credentials.
- * The key spellings stay so a log still shows which parameter was removed.
+ * Redact query and fragment values whose names carry credentials, plus any
+ * userinfo password. The key spellings stay so a log still shows which
+ * parameter was removed; fragment pairs can sit behind an SPA route prefix
+ * (`#/cb?token=...`), and legacy http(s) URLs can carry a userinfo password.
  */
 
 /** Exact canonical key names that carry a credential. */
@@ -39,6 +41,16 @@ const SENSITIVE_SUFFIXES = ["token", "secret", "password", "passwd", "signature"
 /** Prefixes reserved for signed cloud requests (AWS SigV4 and friends). */
 const SENSITIVE_PREFIXES = ["x_amz_", "x_goog_"];
 
+/**
+ * Reduce a pair key to its final segment by dropping anything through the
+ * last `?` or `/`, so `/cb?token` -> `token`. Query and fragment keys can
+ * carry an SPA route prefix before the parameter name.
+ */
+function keySegment(rawKey: string): string {
+  const cut = Math.max(rawKey.lastIndexOf("/"), rawKey.lastIndexOf("?"));
+  return cut === -1 ? rawKey : rawKey.slice(cut + 1);
+}
+
 function canonicalKey(raw: string): string {
   let key = raw;
   try {
@@ -61,22 +73,32 @@ function isSensitiveKey(canonical: string): boolean {
   );
 }
 
+/** Redact one `key=value` pair, keeping non-sensitive parts as-is. */
+function redactPair(part: string): string {
+  if (!part) return part;
+  const eq = part.indexOf("=");
+  if (eq === -1) return part;
+  const rawKey = part.slice(0, eq);
+  if (!isSensitiveKey(canonicalKey(keySegment(rawKey)))) return part;
+  return `${rawKey}=[REDACTED]`;
+}
+
 /**
  * Redact sensitive pairs (`key=value`) in a query string (with or without the
- * leading "?") or a URL fragment (with or without the leading "#"). Returns
- * the redacted text, or the input unchanged when no pair is sensitive.
+ * leading "?") or a URL fragment (with or without the leading "#"). Pairs are
+ * separated by either `&` or `;`, and the original separators are preserved so
+ * a `;` never becomes an `&`. Returns the redacted text, or the input
+ * unchanged when no pair is sensitive.
  */
 function redactPairs(raw: string, prefix: string): string | null {
   const body = raw.startsWith(prefix) ? raw.slice(1) : raw;
-  const parts = body.split("&").map((part) => {
-    if (!part) return part;
-    const eq = part.indexOf("=");
-    if (eq === -1) return part;
-    const rawKey = part.slice(0, eq);
-    if (!isSensitiveKey(canonicalKey(rawKey))) return part;
-    return `${rawKey}=[REDACTED]`;
-  });
-  const joined = parts.join("&");
+  const pieces = body.split(/([&;])/);
+  const parts: string[] = [];
+  for (let index = 0; index < pieces.length; index += 2) {
+    parts.push(redactPair(pieces[index]));
+    if (index + 1 < pieces.length) parts.push(pieces[index + 1]);
+  }
+  const joined = parts.join("");
   if (joined === body) return null;
   const redacted = raw.startsWith(prefix) ? `${prefix}${joined}` : joined;
   return redacted;
@@ -100,10 +122,10 @@ export function redactSensitiveFragment(hash: string): string {
 function hasSensitivePair(raw: string, prefix: string): boolean {
   const body = raw.startsWith(prefix) ? raw.slice(1) : raw;
   if (!body) return false;
-  for (const part of body.split("&")) {
+  for (const part of body.split(/[&;]/)) {
     const eq = part.indexOf("=");
     if (eq === -1) continue;
-    if (isSensitiveKey(canonicalKey(part.slice(0, eq)))) return true;
+    if (isSensitiveKey(canonicalKey(keySegment(part.slice(0, eq))))) return true;
   }
   return false;
 }
@@ -123,8 +145,20 @@ function parseHttpUrl(raw: string): URL | null {
   }
 }
 
+/**
+ * Host (with port) for a parsed URL, replacing a userinfo password with
+ * `[REDACTED]`. A bare username has no colon and is left alone.
+ */
+function redactedAuthority(url: URL): { authority: string; changed: boolean } {
+  if (!url.password) return { authority: url.host, changed: false };
+  return {
+    authority: `${url.username}:[REDACTED]@${url.host}`,
+    changed: true,
+  };
+}
+
 function shown(url: URL): string {
-  return `${url.protocol}//${url.host}${url.pathname}${redactSensitiveQuery(url.search)}${redactSensitiveFragment(url.hash)}`;
+  return `${url.protocol}//${redactedAuthority(url).authority}${url.pathname}${redactSensitiveQuery(url.search)}${redactSensitiveFragment(url.hash)}`;
 }
 
 /** Host, path, query, and fragment for a confirmation prompt. Null when the URL is not http(s). */
@@ -134,7 +168,10 @@ export function displayFetchUrl(raw: string): string | null {
 }
 
 /**
- * Redact sensitive query values inside any http(s) URL in a log string.
+ * Redact sensitive query and fragment values, and any userinfo password, inside
+ * any http(s) URL in a log string. A userinfo password
+ * (`user:pw@host` -> `user:[REDACTED]@host`) is redacted even when it is the
+ * URL's only credential; a bare username without a colon stays unchanged.
  *
  * Trailing sentence punctuation is only stripped when the URL carries no
  * credential parameter. If it does, the untrimmed match is redacted whole so
@@ -146,18 +183,18 @@ export function redactUrlsInText(text: string): string {
   // newline still ends the URL.
   return text.replace(/https?:\/\/[^ \n\r\f\v<>"'`]+/gi, (match) => {
     const untrimmed = parseHttpUrl(match);
-    if (untrimmed && hasSensitiveQuery(untrimmed.search, untrimmed.hash)) return shown(untrimmed);
+    if (untrimmed && (hasSensitiveQuery(untrimmed.search, untrimmed.hash) || Boolean(untrimmed.password))) {
+      return shown(untrimmed);
+    }
 
     const trimmed = match.replace(/[),.;]+$/g, "");
     const suffix = match.slice(trimmed.length);
     const url = parseHttpUrl(trimmed);
     if (!url) return match;
     const query = redactSensitiveQuery(url.search);
-    if (query === url.search) return match;
     const fragment = redactSensitiveFragment(url.hash);
-    if (fragment === url.hash) {
-      return `${url.protocol}//${url.host}${url.pathname}${query}${url.hash}${suffix}`;
-    }
-    return `${url.protocol}//${url.host}${url.pathname}${query}${fragment}${suffix}`;
+    const { authority, changed } = redactedAuthority(url);
+    if (query === url.search && fragment === url.hash && !changed) return match;
+    return `${url.protocol}//${authority}${url.pathname}${query}${fragment}${suffix}`;
   });
 }

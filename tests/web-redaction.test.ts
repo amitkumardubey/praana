@@ -149,3 +149,109 @@ describe("displayFetchUrl fragments", () => {
     expect(out).not.toContain("SECRET123456");
   });
 });
+
+describe("redactSensitiveFragment SPA-route and semicolon pairs", () => {
+  it("redacts pairs split by semicolons", () => {
+    expect(redactSensitiveFragment("#a=1;token=abc")).toBe("#a=1;token=[REDACTED]");
+    expect(redactSensitiveFragment("#state=ok;access_token=XYZ")).toBe(
+      "#state=ok;access_token=[REDACTED]",
+    );
+  });
+
+  it("redacts sensitive keys behind an SPA route prefix", () => {
+    expect(redactSensitiveFragment("#/cb?token=SECRET1")).toBe("#/cb?token=[REDACTED]");
+    expect(redactSensitiveFragment("#/x;token=SECRET3")).toBe("#/x;token=[REDACTED]");
+    expect(redactSensitiveFragment("#state=ok&/cb?token=XYZ")).toBe(
+      "#state=ok&/cb?token=[REDACTED]",
+    );
+  });
+
+  it("keeps non-sensitive route-prefixed fragments unchanged", () => {
+    expect(redactSensitiveFragment("#/guide/install")).toBe("#/guide/install");
+    expect(redactSensitiveFragment("#section")).toBe("#section");
+  });
+});
+
+describe("redactSensitiveQuery semicolon pairs", () => {
+  it("keeps existing behaviour for non-sensitive semicolon pairs", () => {
+    expect(redactSensitiveQuery("?a=1;b=2")).toBe("?a=1;b=2");
+  });
+
+  it("redacts a sensitive pair split by a semicolon", () => {
+    expect(redactSensitiveQuery("?a=1;token=abc")).toBe("?a=1;token=[REDACTED]");
+  });
+});
+
+describe("redactUrlsInText SPA-route and semicolon fragment pairs", () => {
+  const cases: Array<{ url: string; redacted: string }> = [
+    { url: "https://a.com/#access_token=SECRET4", redacted: "https://a.com/#access_token=[REDACTED]" },
+    { url: "https://a.com/#/cb?token=SECRET1", redacted: "https://a.com/#/cb?token=[REDACTED]" },
+    { url: "https://a.com/#!/x;token=SECRET3", redacted: "https://a.com/#!/x;token=[REDACTED]" },
+    { url: "https://a.com/#a=1;token=abc", redacted: "https://a.com/#a=1;token=[REDACTED]" },
+    { url: "https://a.com/#state=ok&/cb?token=XYZ", redacted: "https://a.com/#state=ok&/cb?token=[REDACTED]" },
+  ];
+
+  for (const { url, redacted } of cases) {
+    it(`redacts ${url}`, () => {
+      expect(redactUrlsInText(`see ${url}`)).toBe(`see ${redacted}`);
+    });
+  }
+
+  for (const punt of [".", ")", ";"]) {
+    for (const { url, redacted } of cases) {
+      it(`does not restore ${punt} after ${url}`, () => {
+        const expected = punt === ";" ? `${redacted};` : redacted;
+        expect(redactUrlsInText(`see ${url}${punt}`)).toBe(`see ${expected}`);
+      });
+    }
+  }
+
+  it("leaves non-sensitive route-prefixed fragments unchanged", () => {
+    const text = "see https://example.com/#/guide/install and https://example.com/#section";
+    expect(redactUrlsInText(text)).toBe(text);
+  });
+
+  it("leaves a URL with a query and a non-sensitive fragment unchanged", () => {
+    const text = "see https://example.com/?x=1&a=2#section";
+    expect(redactUrlsInText(text)).toBe(text);
+  });
+});
+
+describe("redactUrlsInText userinfo", () => {
+  it("redacts a userinfo password in running text", () => {
+    expect(redactUrlsInText("see https://u:SECRET5@a.com/p")).toBe(
+      "see https://u:[REDACTED]@a.com/p",
+    );
+  });
+
+  it("redacts a userinfo password while keeping query pairs", () => {
+    expect(redactUrlsInText("see https://user:pw@host/p?x=1")).toBe(
+      "see https://user:[REDACTED]@host/p?x=1",
+    );
+  });
+
+  it("leaves a bare username without a colon unchanged", () => {
+    const text = "see https://user@host/p";
+    expect(redactUrlsInText(text)).toBe(text);
+  });
+
+  it("redacts both a userinfo password and a sensitive query", () => {
+    expect(redactUrlsInText("see https://user:pw@host/?token=abc")).toBe(
+      "see https://user:[REDACTED]@host/?token=[REDACTED]",
+    );
+  });
+
+  it("redacts a userinfo password before trailing sentence punctuation", () => {
+    expect(redactUrlsInText("see https://user:pw@host/p.")).toBe(
+      "see https://user:[REDACTED]@host/p.",
+    );
+  });
+});
+
+describe("displayFetchUrl userinfo", () => {
+  it("redacts a userinfo password in the displayed URL", () => {
+    expect(displayFetchUrl("https://user:pw@host/p?x=1")).toBe(
+      "https://user:[REDACTED]@host/p?x=1",
+    );
+  });
+});
