@@ -283,8 +283,11 @@ enabled = true
 # A leading "*." is accepted and means the same thing. Deny wins over allow.
 # An empty allow_domains is not an allowlist (the session confirmation applies).
 # A non-empty allow_domains rejects every host that matches neither list.
+# An entry that is not a hostname disables web_fetch (and warns) rather than
+# being dropped, so a typo cannot silently weaken the policy.
 allow_domains = []
 deny_domains = []
+# At most 2147483647 (the timer limit).
 timeout_ms = 15000
 max_chars = 20000
 
