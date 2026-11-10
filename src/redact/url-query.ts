@@ -1,8 +1,9 @@
 /**
  * Redact query and fragment values whose names carry credentials, plus any
- * userinfo password. The key spellings stay so a log still shows which
+ * userinfo credential. The key spellings stay so a log still shows which
  * parameter was removed; fragment pairs can sit behind an SPA route prefix
- * (`#/cb?token=...`), and legacy http(s) URLs can carry a userinfo password.
+ * (`#/cb?token=...`), and legacy http(s) URLs can carry a userinfo username
+ * or password.
  */
 
 /** Exact canonical key names that carry a credential. */
@@ -42,25 +43,42 @@ const SENSITIVE_SUFFIXES = ["token", "secret", "password", "passwd", "signature"
 const SENSITIVE_PREFIXES = ["x_amz_", "x_goog_"];
 
 /**
- * Reduce a pair key to its final segment by dropping anything through the
- * last `?` or `/`, so `/cb?token` -> `token`. Query and fragment keys can
- * carry an SPA route prefix before the parameter name.
+ * Percent-decode a raw pair key the same way the URL parser would, so an
+ * encoded SPA-route separator (`%2F` `/`, `%3F` `?`, `%3B` `;`, `%21` `!`)
+ * cannot hide the parameter name. Malformed escapes are kept as-is.
  */
-function keySegment(rawKey: string): string {
-  const cut = Math.max(rawKey.lastIndexOf("/"), rawKey.lastIndexOf("?"));
-  return cut === -1 ? rawKey : rawKey.slice(cut + 1);
+function decodeKey(raw: string): string {
+  try {
+    return decodeURIComponent(raw.replace(/\+/g, " "));
+  } catch {
+    return raw;
+  }
 }
 
-function canonicalKey(raw: string): string {
-  let key = raw;
-  try {
-    key = decodeURIComponent(raw.replace(/\+/g, " "));
-  } catch {
-    key = raw;
-  }
+/**
+ * Reduce a decoded pair key to its final segment by dropping anything through
+ * the last `/`, `?`, `;` or `!`, so `/cb?token` -> `token` and `!token` ->
+ * `token`. Query and fragment keys can carry an SPA route prefix before the
+ * parameter name.
+ */
+function keySegment(decodedKey: string): string {
+  const cut = Math.max(
+    decodedKey.lastIndexOf("/"),
+    decodedKey.lastIndexOf("?"),
+    decodedKey.lastIndexOf(";"),
+    decodedKey.lastIndexOf("!"),
+  );
+  return cut === -1 ? decodedKey : decodedKey.slice(cut + 1);
+}
+
+/**
+ * Normalize a decoded key the way the URL parser would: strip the control
+ * characters it removes from URLs, then fold case and hyphen form.
+ */
+function canonicalKey(decoded: string): string {
   // The URL parser removes tab, CR, and LF from a URL, so `?to\tken=` becomes
   // `?token=`. Strip the same characters here or a crafted key slips past.
-  key = key.replace(/[\t\r\n]/g, "");
+  const key = decoded.replace(/[\t\r\n]/g, "");
   return key.trim().toLowerCase().replace(/-/g, "_");
 }
 
@@ -73,35 +91,80 @@ function isSensitiveKey(canonical: string): boolean {
   );
 }
 
-/** Redact one `key=value` pair, keeping non-sensitive parts as-is. */
-function redactPair(part: string): string {
-  if (!part) return part;
-  const eq = part.indexOf("=");
-  if (eq === -1) return part;
-  const rawKey = part.slice(0, eq);
-  if (!isSensitiveKey(canonicalKey(keySegment(rawKey)))) return part;
-  return `${rawKey}=[REDACTED]`;
+/** One `;`-separated piece of an `&`-segment, with offsets into the segment. */
+interface SegmentPiece {
+  /** Offset of the piece within the segment. */
+  start: number;
+  /** Offset just past the end of the piece within the segment. */
+  end: number;
+  /** Index of "=" within the piece, or -1 when the piece has none. */
+  eq: number;
+  /** True when the piece's key carries a credential. */
+  sensitive: boolean;
+}
+
+/** Scan one `&`-segment's `;`-separated pieces left to right. */
+function piecesOf(segment: string): SegmentPiece[] {
+  const pieces: SegmentPiece[] = [];
+  let from = 0;
+  while (from <= segment.length) {
+    const stop = segment.indexOf(";", from);
+    const end = stop === -1 ? segment.length : stop;
+    const piece = segment.slice(from, end);
+    const eq = piece.indexOf("=");
+    pieces.push({
+      start: from,
+      end,
+      eq,
+      sensitive:
+        eq !== -1 &&
+        isSensitiveKey(canonicalKey(keySegment(decodeKey(piece.slice(0, eq))))),
+    });
+    if (stop === -1) break;
+    from = stop + 1;
+  }
+  return pieces;
 }
 
 /**
  * Redact sensitive pairs (`key=value`) in a query string (with or without the
- * leading "?") or a URL fragment (with or without the leading "#"). Pairs are
- * separated by either `&` or `;`, and the original separators are preserved so
- * a `;` never becomes an `&`. Returns the redacted text, or the input
- * unchanged when no pair is sensitive.
+ * leading "?") or a URL fragment (with or without the leading "#"). The body
+ * is split on `&` into segments, then each segment on `;` into pieces. When a
+ * piece's key is sensitive, everything from that piece's value start through
+ * the last non-empty piece is replaced with `[REDACTED]`, so later `;`-pieces
+ * in the segment (which may be the tail of the value) are swallowed; original
+ * `;` and `&` separators before it, and trailing separators with nothing after
+ * them, are preserved. Returns the redacted text, or null when no pair is
+ * sensitive.
  */
 function redactPairs(raw: string, prefix: string): string | null {
   const body = raw.startsWith(prefix) ? raw.slice(1) : raw;
-  const pieces = body.split(/([&;])/);
+  if (!body) return null;
+  const segments = body.split("&");
   const parts: string[] = [];
-  for (let index = 0; index < pieces.length; index += 2) {
-    parts.push(redactPair(pieces[index]));
-    if (index + 1 < pieces.length) parts.push(pieces[index + 1]);
+  let changed = false;
+  for (let index = 0; index < segments.length; index += 1) {
+    if (index > 0) parts.push("&");
+    const segment = segments[index];
+    const pieces = piecesOf(segment);
+    const sensitiveAt = pieces.findIndex((piece) => piece.sensitive);
+    if (sensitiveAt === -1) {
+      parts.push(segment);
+      continue;
+    }
+    changed = true;
+    let lastNonEmptyEnd = -1;
+    for (const piece of pieces) {
+      if (piece.end > piece.start) lastNonEmptyEnd = piece.end;
+    }
+    const piece = pieces[sensitiveAt];
+    const cut = piece.start + piece.eq + 1;
+    parts.push(segment.slice(0, cut));
+    parts.push("[REDACTED]");
+    if (lastNonEmptyEnd > cut) parts.push(segment.slice(lastNonEmptyEnd));
   }
-  const joined = parts.join("");
-  if (joined === body) return null;
-  const redacted = raw.startsWith(prefix) ? `${prefix}${joined}` : joined;
-  return redacted;
+  if (!changed) return null;
+  return raw.startsWith(prefix) ? `${prefix}${parts.join("")}` : parts.join("");
 }
 
 /** Rewrite one query string (with or without the leading "?"). */
@@ -122,10 +185,10 @@ export function redactSensitiveFragment(hash: string): string {
 function hasSensitivePair(raw: string, prefix: string): boolean {
   const body = raw.startsWith(prefix) ? raw.slice(1) : raw;
   if (!body) return false;
-  for (const part of body.split(/[&;]/)) {
-    const eq = part.indexOf("=");
-    if (eq === -1) continue;
-    if (isSensitiveKey(canonicalKey(keySegment(part.slice(0, eq))))) return true;
+  for (const segment of body.split("&")) {
+    for (const piece of piecesOf(segment)) {
+      if (piece.sensitive) return true;
+    }
   }
   return false;
 }
@@ -146,15 +209,23 @@ function parseHttpUrl(raw: string): URL | null {
 }
 
 /**
- * Host (with port) for a parsed URL, replacing a userinfo password with
- * `[REDACTED]`. A bare username has no colon and is left alone.
+ * Host (with port) for a parsed URL, replacing any userinfo credential with
+ * `[REDACTED]`: a password keeps its username (`user:pw@host` ->
+ * `user:[REDACTED]@host`), and a bare username (which is often itself a
+ * credential, such as a GitHub personal access token or a Stripe live key)
+ * becomes `[REDACTED]@host`.
  */
 function redactedAuthority(url: URL): { authority: string; changed: boolean } {
-  if (!url.password) return { authority: url.host, changed: false };
-  return {
-    authority: `${url.username}:[REDACTED]@${url.host}`,
-    changed: true,
-  };
+  if (url.password) {
+    return {
+      authority: `${url.username}:[REDACTED]@${url.host}`,
+      changed: true,
+    };
+  }
+  if (url.username) {
+    return { authority: `[REDACTED]@${url.host}`, changed: true };
+  }
+  return { authority: url.host, changed: false };
 }
 
 function shown(url: URL): string {
@@ -168,10 +239,11 @@ export function displayFetchUrl(raw: string): string | null {
 }
 
 /**
- * Redact sensitive query and fragment values, and any userinfo password, inside
- * any http(s) URL in a log string. A userinfo password
- * (`user:pw@host` -> `user:[REDACTED]@host`) is redacted even when it is the
- * URL's only credential; a bare username without a colon stays unchanged.
+ * Redact sensitive query and fragment values, and any userinfo credential,
+ * inside any http(s) URL in a log string. A userinfo password
+ * (`user:pw@host` -> `user:[REDACTED]@host`) and a bare username
+ * (`user@host` -> `[REDACTED]@host`, often a credential itself) are redacted
+ * even when they are the URL's only credential.
  *
  * Trailing sentence punctuation is only stripped when the URL carries no
  * credential parameter. If it does, the untrimmed match is redacted whole so

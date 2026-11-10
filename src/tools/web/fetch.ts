@@ -9,7 +9,7 @@ import http from "node:http";
 import https from "node:https";
 import { createBrotliDecompress, createGunzip, createInflate, type BrotliDecompress, type Gunzip, type Inflate } from "node:zlib";
 import { APP_VERSION } from "../../app-version.js";
-import { displayFetchUrl, redactUrlsInText } from "../../redact/url-query.js";
+import { displayFetchUrl } from "../../redact/url-query.js";
 import { fetchGuarded, type GuardPin, type GuardTransport, type HopCheck, type HostLookup } from "./ssrf.js";
 import { htmlToMarkdown } from "./html-to-markdown.js";
 import { blockReason } from "./honesty.js";
@@ -322,11 +322,10 @@ function applyFocus(markdown: string, focus: string | undefined): string {
 
 function redactResultUrl(raw: string): string {
   // displayFetchUrl already renders host + query (redacted) + fragment
-  // (redacted), so no fragment needs to be appended here. When the raw
-  // string is not a clean http(s) URL, fall back to text redaction so
-  // query/fragment/userinfo secrets still never leak.
-  const shown = displayFetchUrl(raw);
-  return shown ?? redactUrlsInText(raw);
+  // (redacted), so no fragment needs to be appended here. This only runs on
+  // already-validated http(s) URLs, so fail closed rather than echo the raw
+  // URL back.
+  return displayFetchUrl(raw) ?? "[unparseable url]";
 }
 
 function untrustedBanner(finalUrl: string): string {

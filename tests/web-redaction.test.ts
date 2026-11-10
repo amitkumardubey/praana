@@ -150,6 +150,21 @@ describe("displayFetchUrl fragments", () => {
   });
 });
 
+describe("redactSensitiveFragment encoded route separators", () => {
+  it("redacts keys behind percent-encoded route separators", () => {
+    expect(redactSensitiveFragment("#/cb%3Ftoken=SECRET")).toBe(
+      "#/cb%3Ftoken=[REDACTED]",
+    );
+    expect(redactSensitiveFragment("#%2Fcb%3Ftoken=SECRET")).toBe(
+      "#%2Fcb%3Ftoken=[REDACTED]",
+    );
+  });
+
+  it("redacts a key starting with a bang", () => {
+    expect(redactSensitiveFragment("#!token=abc")).toBe("#!token=[REDACTED]");
+  });
+});
+
 describe("redactSensitiveFragment SPA-route and semicolon pairs", () => {
   it("redacts pairs split by semicolons", () => {
     expect(redactSensitiveFragment("#a=1;token=abc")).toBe("#a=1;token=[REDACTED]");
@@ -179,6 +194,20 @@ describe("redactSensitiveQuery semicolon pairs", () => {
 
   it("redacts a sensitive pair split by a semicolon", () => {
     expect(redactSensitiveQuery("?a=1;token=abc")).toBe("?a=1;token=[REDACTED]");
+  });
+
+  it("swallows the tail of a semicolon-split value", () => {
+    expect(redactSensitiveQuery("?password=pa;ss")).toBe("?password=[REDACTED]");
+    expect(redactSensitiveQuery("?a=1;token=abc;state=ok&b=2")).toBe(
+      "?a=1;token=[REDACTED]&b=2",
+    );
+    expect(redactSensitiveFragment("#access_token=abc;def")).toBe(
+      "#access_token=[REDACTED]",
+    );
+  });
+
+  it("keeps a trailing semicolon after a redacted value", () => {
+    expect(redactSensitiveQuery("?password=abc;")).toBe("?password=[REDACTED];");
   });
 });
 
@@ -230,9 +259,19 @@ describe("redactUrlsInText userinfo", () => {
     );
   });
 
-  it("leaves a bare username without a colon unchanged", () => {
-    const text = "see https://user@host/p";
-    expect(redactUrlsInText(text)).toBe(text);
+  it("redacts a bare username without a colon (often the credential itself)", () => {
+    expect(redactUrlsInText("see https://user@host/p")).toBe(
+      "see https://[REDACTED]@host/p",
+    );
+  });
+
+  it("redacts username-only userinfo credentials in running text", () => {
+    expect(redactUrlsInText("see https://ghp_AbC123@github.com/org/repo")).toBe(
+      "see https://[REDACTED]@github.com/org/repo",
+    );
+    expect(redactUrlsInText("see https://sk_live_XXX:@api.stripe.com/")).toBe(
+      "see https://[REDACTED]@api.stripe.com/",
+    );
   });
 
   it("redacts both a userinfo password and a sensitive query", () => {
@@ -246,6 +285,23 @@ describe("redactUrlsInText userinfo", () => {
       "see https://user:[REDACTED]@host/p.",
     );
   });
+});
+
+describe("redactUrlsInText encoded route separators", () => {
+  const cases: Array<{ url: string; redacted: string }> = [
+    { url: "https://example.com/#/cb%3Ftoken=SECRET", redacted: "https://example.com/#/cb%3Ftoken=[REDACTED]" },
+    { url: "https://example.com/#%2Fcb%3Ftoken=SECRET", redacted: "https://example.com/#%2Fcb%3Ftoken=[REDACTED]" },
+    { url: "https://example.com/#!token=abc", redacted: "https://example.com/#!token=[REDACTED]" },
+  ];
+
+  for (const { url, redacted } of cases) {
+    it(`redacts ${url}`, () => {
+      expect(redactUrlsInText(`see ${url}`)).toBe(`see ${redacted}`);
+    });
+    it(`displayFetchUrl redacts ${url}`, () => {
+      expect(displayFetchUrl(url)).toBe(redacted);
+    });
+  }
 });
 
 describe("displayFetchUrl userinfo", () => {
