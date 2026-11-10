@@ -268,6 +268,34 @@ compact_at = 0.70
 # Emergency: drop all turn digests, keep checkpoint + verbatim last 2 turns
 emergency_at = 0.85
 
+[tools]
+# Second and later read of an unchanged file returns the artifact card (false)
+# or hard-fails (true).
+block_repeat_reads = false
+
+[tools.web]
+# Fetch a public http(s) URL. On by default. Private and local addresses are
+# always refused. The first fetch of a host in a session asks for confirmation;
+# later fetches of that same host do not. A headless run (praana run) refuses
+# unless the host matches allow_domains or [risk].allow includes "web_fetch_host".
+enabled = true
+# Dot-boundary suffix match: "example.com" matches that host and any subdomain.
+# A leading "*." is accepted and means the same thing. Deny wins over allow.
+# An empty allow_domains is not an allowlist (the session confirmation applies).
+# A non-empty allow_domains rejects every host that matches neither list.
+# An entry that is not a hostname disables web_fetch (and warns) rather than
+# being dropped, so a typo cannot silently weaken the policy.
+allow_domains = []
+deny_domains = []
+# At most 2147483647 (the timer limit).
+timeout_ms = 15000
+max_chars = 20000
+
+[risk]
+# Headless-only class ids that skip the confirmation prompt.
+# "web_fetch_host" permits fetching hosts that are not on allow_domains.
+allow = []
+
 [ui]
 # pi-tui terminal shell. The TUI uses native scrollback; there is no alternate
 # screen mode and no readline UI switch in the current CLI.
