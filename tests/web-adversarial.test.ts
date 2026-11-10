@@ -86,6 +86,17 @@ describe("web_fetch adversarial-input regressions", () => {
     expect(elapsed).toBeLessThan(BUDGET_MS);
   });
 
+  it("extracts markdown from dense paired tags in linear time", () => {
+    // The tag-name regex used to run over `html.slice(from)`, copying the
+    // rest of the document per tag token; dense paired tags made that quadratic.
+    const adversarial = "<b>x</b>".repeat(150_000); // ~1.2 MB of pairs
+    const start = performance.now();
+    const md = htmlToMarkdown(adversarial);
+    const elapsed = performance.now() - start;
+    expect(md.length).toBeGreaterThan(0);
+    expect(elapsed).toBeLessThan(BUDGET_MS);
+  });
+
   it("extracts markdown from an unterminated comment in linear time", () => {
     const adversarial = `<!--${"x".repeat(600_000)}`;
     const start = performance.now();

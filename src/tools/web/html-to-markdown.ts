@@ -41,6 +41,13 @@ const VOID_TAGS = new Set([
 /** Elements whose content is raw text: consume to the literal closing tag. */
 const RAW_TEXT_TAGS = new Set(["script", "style"]);
 
+/**
+ * Sticky tag-name matcher. `lastIndex` is set to the token start before each
+ * exec, so the match begins exactly there — no per-token substring copy of the
+ * document, which made tag-dense input quadratic.
+ */
+const TAG_NAME_RE = /<\/?([a-zA-Z][\w:-]*)/y;
+
 const NAMED_ENTITIES: Record<string, string> = {
   amp: "&",
   lt: "<",
@@ -204,7 +211,8 @@ function nextToken(html: string, from: number): { kind: ScanKind; token: TagToke
     return { kind: "skip", token: null, next: end === -1 ? html.length : end + 1 };
   }
 
-  const nameMatch = /^<\/?([a-zA-Z][\w:-]*)/.exec(html.slice(from));
+  TAG_NAME_RE.lastIndex = from;
+  const nameMatch = TAG_NAME_RE.exec(html);
   if (!nameMatch) {
     // Not a tag (e.g. a stray `<` followed by text): consume one char so we advance.
     return { kind: "text", token: null, next: from + 1 };
