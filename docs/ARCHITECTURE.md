@@ -40,7 +40,7 @@ src/
   credentials.ts — Credential store (`~/.praana/credentials.json`); key resolution
   user-settings.ts — Persistent UX prefs (`~/.praana/settings.json`) applied as session defaults
   update/        — Version check cache, install-kind detect, `praana upgrade` / auto_update
-  llm.ts         — Provider registry and model building via pi-ai
+  llm.ts / llm/  — Native model building and protocol drivers; first-party OpenAI GPT-5.4+ (5.x) / GPT-6 use Responses, older ids and Chat overrides use Chat Completions
   config.ts      — Multi-source JSON/TOML config loading & deep-merge (allowlists append-merge)
   types.ts       — Core shared TypeScript types
   ui.ts          — CLI output formatting, banners, and text colors

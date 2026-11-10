@@ -165,6 +165,94 @@ Set any of the three keys to `0` (or use a non-positive value) to fall back to t
 
 Provider resolution order: explicit config → credential store (`~/.praana/credentials.json`) → environment-detected key → interactive setup.
 
+### First-party OpenAI API routing
+
+With provider `openai`, no configured `llm.base_url`, and the built-in
+`https://api.openai.com/v1` endpoint, PRAANA uses **Responses** (`/v1/responses`)
+for bare model ids in these families:
+
+- `gpt-5.4` and later **5.x** minor versions, including hyphenated variants and
+  dated ids (for example `gpt-5.4-mini`, `gpt-5.6-sol`).
+- `gpt-6` and its dotted/hyphenated variants (for example `gpt-6-luna`,
+  `gpt-6.1-terra`).
+
+This is a **routing floor, not a supported-model list**. It addresses OpenAI's
+[documented Chat Completions limit](https://developers.openai.com/api/docs/guides/migrate-to-responses):
+starting with GPT-5.4, tool calling is not supported with `reasoning_effort` other
+than `none`. It does not establish that every id matching the floor exists or
+that Responses accepts it.
+
+**Older models remain on Chat Completions exactly as before:** GPT-3.5, GPT-4,
+GPT-4o, GPT-4.1, o-series, and GPT-5 through GPT-5.3. Their Responses support has
+not been verified for this routing change. Non-text-generation variants whose id
+suffix contains `audio`, `realtime`, `transcribe`, `tts`, `image`, `embedding`,
+`moderation`, `search`, or `chat-latest` also stay on Chat Completions. Unknown
+ids (including future major versions outside GPT-6) stay on Chat Completions.
+Model listing and context window lookup are unchanged; `/models` presence is not
+endpoint-capability data.
+
+Any explicit `llm.base_url` (even the built-in URL), explicit `endpointUrl`, or
+user-declared provider disables this automatic routing. OpenRouter, Umans,
+Poolside, Ollama, and other OpenAI-compatible providers are not migrated. A
+user-declared provider's explicitly chosen `api` still wins. The separate
+`openai-codex` subscription route is unchanged.
+
+The first-party Responses request sends the system prompt as `instructions`,
+flat function tool definitions, tool results as `function_call_output`, text/image
+input parts, and `max_output_tokens`. It sends `store: false`, so OpenAI does not
+retain requests and responses through the Responses API's default storage. Reasoning
+items are not carried across turns or tool steps; supporting encrypted reasoning
+content is a follow-up. It does not add Codex headers or default Codex instructions.
+Unset temperature is omitted. PRAANA's enabled
+reasoning levels `minimal`, `low`, `medium`, `high`, and `xhigh` map unchanged to
+`reasoning.effort`: the upstream
+[OpenAI SDK type](https://github.com/openai/openai-node/blob/master/src/resources/shared.ts)
+also includes `none`, `max`, and `null`. This SDK-wide union does **not** guarantee
+that each model accepts every level. On the first-party Responses route, PRAANA
+resolves `/reasoning off` to `none` (the supported wire level); on other routes it
+keeps the historical `minimal` mapping for inferred reasoning models. A stream
+request with no effort omits `reasoning`.
+
+Input/output/total usage and `input_tokens_details.cached_tokens` are retained
+when reported. Session accounting still consumes input/output totals. Existing
+headless-report limitations are unchanged: `n_cache_tokens` remains `0`, unknown
+model prices produce `cost_usd: null`, and `reasoning_effort_wire` records the last
+effort passed to the stream, not later Chat driver corrections (including fallback
+to `none` with tools). The existing strict/lenient stream-end rules below still
+apply: incomplete or failed responses do not authorize tool execution.
+
+If Responses returns HTTP **404** with `error.code = "model_not_found"` or wording
+that a model is **not supported**, PRAANA tries Chat Completions once, before
+emitting any event, and remembers that model for that credential for one hour.
+A different API key or a later attempt after the hour is not pinned; it retries
+Responses. It never switches protocol after an event or after abort, and never
+switches on an SSE error.
+The SDK verifies the error envelope but not the exact endpoint-rejection wording;
+this conservative 404 heuristic is **unverified live**. Arbitrary 400s (including
+invalid reasoning levels), authentication failures, and generic endpoint 404s are
+surfaced rather than guessed to be model incompatibility. Use the explicit Chat
+override below if needed. The existing Chat Completions reasoning/tools workaround
+is retained for both fallback and override.
+
+### Force OpenAI Chat Completions
+
+If a first-party model rejects Responses, force Chat Completions with the existing
+user-provider override (no new `[llm]` key). Keep `llm.provider = "openai"` and your
+chosen `llm.model`; add this provider table:
+
+```toml
+[providers.openai]
+api = "openai-completions"
+base_url = "https://api.openai.com/v1"
+env_key = "OPENAI_API_KEY"
+```
+
+This disables automatic Responses routing for **all** models under `openai` and
+retains first-party `max_completion_tokens` handling and the existing
+`reasoning_effort: "none"` tools workaround. Remove the table to restore automatic
+routing. User-declared providers are lenient under `stream_end_check = "auto"`;
+set `[llm] stream_end_check = "strict"` to keep strict first-party stream checks.
+
 ### LLM fallback
 
 Set both `[llm]` `fallback_provider` and `fallback_model` to use another provider/model after an eligible stream failure or when the primary sign-in cannot be refreshed. An explicit session model or provider override disables automatic fallback. The fallback becomes the session model only after it produces a usable finished answer.

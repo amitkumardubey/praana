@@ -76,7 +76,7 @@ function usageRecord(value: unknown): Record<string, unknown> | undefined {
 }
 
 /** Keep earlier totals for fields this event does not report. Absent objects emit nothing. */
-function usageFrom(raw: Record<string, unknown>, previous: ProviderUsage | null): ProviderUsage | null {
+function usageFrom(raw: Record<string, unknown>, previous: ProviderUsage | null, includeCacheRead: boolean): ProviderUsage | null {
   const input = finiteToken(raw.input_tokens) ?? finiteToken(raw.prompt_tokens);
   const output = finiteToken(raw.output_tokens) ?? finiteToken(raw.completion_tokens);
   const totalTokens = finiteToken(raw.total_tokens);
@@ -91,10 +91,14 @@ function usageFrom(raw: Record<string, unknown>, previous: ProviderUsage | null)
     (input !== undefined || output !== undefined
       ? resolvedInput + resolvedOutput
       : previous?.totalTokens ?? 0);
+  const cacheReadTokens = includeCacheRead
+    ? finiteToken(usageRecord(raw.input_tokens_details)?.cached_tokens) ?? previous?.cacheReadTokens
+    : undefined;
   return {
     input: resolvedInput,
     output: resolvedOutput,
     totalTokens: resolvedTotal,
+    ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
   };
 }
 
@@ -106,6 +110,7 @@ function usageFrom(raw: Record<string, unknown>, previous: ProviderUsage | null)
 function readResponsesUsage(
   parsed: Record<string, unknown>,
   previous: ProviderUsage | null,
+  includeCacheRead: boolean,
 ): ProviderUsage | null {
   const response = parsed.response;
   const nested = response && typeof response === "object"
@@ -113,10 +118,10 @@ function readResponsesUsage(
     : undefined;
   const top = usageRecord(parsed.usage);
   if (nested) {
-    const parsedNested = usageFrom(nested, previous);
+    const parsedNested = usageFrom(nested, previous, includeCacheRead);
     if (parsedNested) return parsedNested;
   }
-  return top ? usageFrom(top, previous) : null;
+  return top ? usageFrom(top, previous, includeCacheRead) : null;
 }
 
 export class OpenAIResponsesDriver implements LlmDriver {
@@ -186,13 +191,16 @@ export class OpenAIResponsesDriver implements LlmDriver {
       stream: true,
       ...(req.provider === "openai-codex"
         ? { store: false, instructions: instructions?.trim() ? instructions : "You are a helpful assistant." }
-        : instructions ? { instructions } : {}),
+        : { ...(req.provider === "openai" ? { store: false } : {}), ...(instructions ? { instructions } : {}) }),
       ...(tools.length > 0 ? { tools, tool_choice: "auto" } : {}),
       ...(req.provider !== "openai-codex" && req.temperature !== undefined ? { temperature: req.temperature } : {}),
       ...(req.provider !== "openai-codex" && req.maxTokens !== undefined ? { max_output_tokens: req.maxTokens } : {}),
     };
 
     if (req.reasoningEffort && req.reasoningEffort !== "off") {
+      // openai-node shared.ReasoningEffort includes minimal/low/medium/high/xhigh
+      // (also none/max/null); no clamping is needed for PRAANA's enabled levels.
+      // Model-specific acceptance is not implied by that SDK-wide union.
       body.reasoning = { effort: req.reasoningEffort };
     }
 
@@ -204,6 +212,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
     let emitted = false;
     const codex = req.provider === "openai-codex";
     let terminalReceived = false;
+    let refusalTextSeen = false;
     const openFunctionCalls = new Set<number | string>();
     const functionCallIndexById = new Map<string, number | string>();
     const bufferedArgs = new Map<string, string>();
@@ -312,6 +321,14 @@ export class OpenAIResponsesDriver implements LlmDriver {
           finishReason = "length";
           return "length";
         };
+        const isContentFiltered = (): boolean => {
+          const details = (parsed.response as { incomplete_details?: { reason?: string } } | undefined)?.incomplete_details;
+          return details?.reason === "content_filter";
+        };
+        const contentFilterMessage = (p: Record<string, unknown>): string => {
+          const details = (p.response as { incomplete_details?: { message?: string } } | undefined)?.incomplete_details;
+          return details?.message || "The model's response was blocked by the provider's content filter";
+        };
         let toolCutoff = false;
         if (codex && type === "response.incomplete") {
           const outcome = applyCodexIncomplete();
@@ -319,16 +336,34 @@ export class OpenAIResponsesDriver implements LlmDriver {
           else if (outcome === "error") return fail(responsesErrorMessage(parsed, type), responsesErrorStatus(parsed));
         }
 
-        const usage = readResponsesUsage(parsed, latestUsage);
+        const usage = readResponsesUsage(parsed, latestUsage, req.provider === "openai");
         if (usage) {
           latestUsage = usage;
           events.push({ type: "usage", usage: latestUsage });
         }
         if (toolCutoff) return fail(toolCutoffMessage);
 
-        if (type === "response.output_text.delta" || type === "response.reasoning_text.delta") {
+        if (type === "response.output_text.delta" || type === "response.reasoning_text.delta" ||
+            type === "response.refusal.delta" || type === "response.refusal.done") {
+          // Codex keeps its historical behavior: refusals are not surfaced.
+          if (codex && (type === "response.refusal.delta" || type === "response.refusal.done")) {
+            return { events };
+          }
+          if (type === "response.refusal.done") {
+            // Done carries the full refusal text; use it only when no deltas
+            // already delivered it, so combined delta+done streams do not repeat.
+            const refusal = String(parsed.refusal ?? "");
+            if (refusal && !refusalTextSeen) {
+              refusalTextSeen = true;
+              emitted = true;
+              accumulatedContent += refusal;
+              events.push({ type: "text_delta", delta: refusal });
+            }
+            return { events };
+          }
           const delta = String(parsed.delta ?? "");
           if (delta) {
+            if (type === "response.refusal.delta") refusalTextSeen = true;
             emitted = true;
             if (type === "response.reasoning_text.delta") events.push({ type: "thinking_delta", delta });
             else {
@@ -475,6 +510,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
         }
 
         if (!codex && type === "response.done" && (parsed.response as { status?: string } | undefined)?.status === "incomplete") {
+          if (isContentFiltered()) return fail(contentFilterMessage(parsed), responsesErrorStatus(parsed));
           finishReason = "length";
         }
 
@@ -498,6 +534,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
               if (outcome === "cutoff") return fail(toolCutoffMessage);
             }
           } else if (status === "incomplete") {
+            if (isContentFiltered()) return fail(contentFilterMessage(parsed), responsesErrorStatus(parsed));
             finishReason = "length";
           }
         }
@@ -505,6 +542,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
         if (type === "response.incomplete") {
           terminalReceived = true;
           if (codex) return { events, awaitTrailer: true };
+          if (isContentFiltered()) return fail(contentFilterMessage(parsed), responsesErrorStatus(parsed));
           finishReason = "length";
         }
 

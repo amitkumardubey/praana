@@ -79,6 +79,13 @@ export function streamGuardPendingListeners(): number {
   return pendingListeners;
 }
 
+/** A non-OK HTTP response, distinct from errors carried inside a stream. */
+export class ProviderHttpError extends Error {
+  constructor(label: string, readonly status: number, readonly body: string, readonly headers: Headers) {
+    super(`${label} (${status}): ${body}`);
+  }
+}
+
 /**
  * Shared fetch + body-guard lifecycle for the protocol drivers.
  * Owns the connect/idle guard, the non-OK body read, abort/idle `done`
@@ -141,12 +148,7 @@ export async function* runGuardedProviderStream<T>(opts: {
             res = await opts.request(guard);
             continue;
           }
-          const err: Error & { status?: number; headers?: Headers } = new Error(
-            `${opts.httpErrorLabel} (${res.status}): ${errText}`,
-          );
-          err.status = res.status;
-          err.headers = res.headers;
-          throw err;
+          throw new ProviderHttpError(opts.httpErrorLabel, res.status, errText, res.headers);
         }
         if (!res.body) throw new Error(opts.emptyBodyMessage);
         return res;

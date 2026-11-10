@@ -56,6 +56,15 @@ model = "deepseek/deepseek-v4-flash:free"
 
 # Optional: Custom API base URL (e.g., for self-hosted or proxy)
 # base_url = "https://my-proxy.example.com/v1"
+# Any explicit llm.base_url keeps OpenAI on Chat Completions, even the built-in URL.
+# To force Chat Completions when a first-party model rejects Responses, instead
+# add this provider table (llm.provider stays "openai"). Remove it to restore auto.
+# User-declared providers default to lenient stream ends; set llm.stream_end_check
+# to "strict" if you want strict first-party checks with this override.
+# [providers.openai]
+# api = "openai-completions"
+# base_url = "https://api.openai.com/v1"
+# env_key = "OPENAI_API_KEY"
 
 # API keys are read from env vars:
 #   openrouter    → OPENROUTER_API_KEY
