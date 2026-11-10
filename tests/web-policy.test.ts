@@ -63,7 +63,7 @@ describe("web_fetch risk, config, and redaction", () => {
     expect(hit?.class).toBe("web_fetch_host");
     expect(hit?.detail).toBe(REDACTED);
     expect(hit?.detail).not.toContain("sekrit");
-    expect(formatWebFetchPrompt(hit!.detail)).toBe(`Fetch ${REDACTED} ? [y/N]`);
+    expect(formatWebFetchPrompt(hit!.detail)).toBe(`Fetch ${REDACTED}? [y/N]`);
   });
 
   it("does not classify a non-http url", () => {
@@ -164,7 +164,7 @@ describe("web_fetch risk, config, and redaction", () => {
     const args = { url: URL_WITH_SECRETS };
     const first = await pre({ toolName: "web_fetch", args, session });
     expect(first).toBeUndefined();
-    expect(session.prompts).toEqual([`Fetch ${REDACTED} ? [y/N]`]);
+    expect(session.prompts).toEqual([`Fetch ${REDACTED}? [y/N]`]);
     expect(remembered.has("example.com")).toBe(true);
     const second = await pre({ toolName: "web_fetch", args, session });
     expect(second).toBeUndefined();

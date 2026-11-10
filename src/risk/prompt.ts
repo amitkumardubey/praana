@@ -1,9 +1,9 @@
 import { createInterface } from "node:readline";
 import { writeUiStderr } from "../ui.js";
 
-/** Confirmation line for the first fetch of a host. The detail already redacts the query. */
+/** Confirmation line for the first fetch of a host. The detail already redacts the query and fragment. */
 export function formatWebFetchPrompt(detail: string): string {
-  return `Fetch ${detail} ? [y/N]`;
+  return `Fetch ${detail}? [y/N]`;
 }
 
 export async function promptYesNo(question: string): Promise<boolean> {

@@ -321,13 +321,10 @@ function applyFocus(markdown: string, focus: string | undefined): string {
 }
 
 function redactResultUrl(raw: string): string {
+  // displayFetchUrl already renders host + query (redacted) + fragment
+  // (redacted), so no fragment needs to be appended here.
   const shown = displayFetchUrl(raw);
-  if (!shown) return raw;
-  try {
-    return `${shown}${new URL(raw).hash}`;
-  } catch {
-    return shown;
-  }
+  return shown ?? raw;
 }
 
 function untrustedBanner(finalUrl: string): string {
@@ -465,6 +462,12 @@ function renderBody(
       const rendered = stringifyBounded(sanitizeWebJson(JSON.parse(text)), maxChars);
       return { ok: true, text: rendered.text, truncated: rendered.truncated };
     } catch (err) {
+      // Deeply nested payloads overflow the sanitizer/serializer recursion
+      // (and occasionally the parser itself) with a RangeError; neither means
+      // the response was invalid JSON, so report it distinctly.
+      if (err instanceof RangeError) {
+        return { ok: false, reason: "response JSON was too deeply nested to render" };
+      }
       return { ok: false, reason: `response was not valid JSON (${errorMessage(err)})` };
     }
   }

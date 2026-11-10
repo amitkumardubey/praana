@@ -151,7 +151,7 @@ describe("web_fetch redirect host policy", () => {
     const prompted = await pre({ toolName: "web_fetch", args: { url: target }, session });
     expect(prompted).toBeUndefined();
     expect(session.prompts).toEqual([
-      "Fetch https://other.example/path?token=[REDACTED]&page=1 ? [y/N]",
+      "Fetch https://other.example/path?token=[REDACTED]&page=1? [y/N]",
     ]);
     expect(session.prompts[0]).toContain("other.example");
     expect(session.prompts[0]).not.toContain("trusted.example");

@@ -61,10 +61,13 @@ function isSensitiveKey(canonical: string): boolean {
   );
 }
 
-/** Rewrite one query string (with or without the leading "?"). */
-export function redactSensitiveQuery(search: string): string {
-  if (!search || search === "?") return "";
-  const body = search.startsWith("?") ? search.slice(1) : search;
+/**
+ * Redact sensitive pairs (`key=value`) in a query string (with or without the
+ * leading "?") or a URL fragment (with or without the leading "#"). Returns
+ * the redacted text, or the input unchanged when no pair is sensitive.
+ */
+function redactPairs(raw: string, prefix: string): string | null {
+  const body = raw.startsWith(prefix) ? raw.slice(1) : raw;
   const parts = body.split("&").map((part) => {
     if (!part) return part;
     const eq = part.indexOf("=");
@@ -73,19 +76,41 @@ export function redactSensitiveQuery(search: string): string {
     if (!isSensitiveKey(canonicalKey(rawKey))) return part;
     return `${rawKey}=[REDACTED]`;
   });
-  return `?${parts.join("&")}`;
+  const joined = parts.join("&");
+  if (joined === body) return null;
+  const redacted = raw.startsWith(prefix) ? `${prefix}${joined}` : joined;
+  return redacted;
 }
 
-/** True when the query string has at least one credential-bearing key. */
-function hasSensitiveQuery(search: string): boolean {
-  if (!search || search === "?") return false;
-  const body = search.startsWith("?") ? search.slice(1) : search;
+/** Rewrite one query string (with or without the leading "?"). */
+export function redactSensitiveQuery(search: string): string {
+  if (!search || search === "?") return "";
+  const redacted = redactPairs(search, "?");
+  return redacted ?? search;
+}
+
+/** Redact credential-bearing pairs from a URL fragment (with or without the leading "#"). */
+export function redactSensitiveFragment(hash: string): string {
+  if (!hash) return hash;
+  const redacted = redactPairs(hash, "#");
+  return redacted ?? hash;
+}
+
+/** True when a query string (or fragment) has at least one credential-bearing key. */
+function hasSensitivePair(raw: string, prefix: string): boolean {
+  const body = raw.startsWith(prefix) ? raw.slice(1) : raw;
+  if (!body) return false;
   for (const part of body.split("&")) {
     const eq = part.indexOf("=");
     if (eq === -1) continue;
     if (isSensitiveKey(canonicalKey(part.slice(0, eq)))) return true;
   }
   return false;
+}
+
+/** True when a query string (or fragment) has at least one credential-bearing key. */
+function hasSensitiveQuery(search: string, hash: string): boolean {
+  return hasSensitivePair(search, "?") || hasSensitivePair(hash, "#");
 }
 
 function parseHttpUrl(raw: string): URL | null {
@@ -99,10 +124,10 @@ function parseHttpUrl(raw: string): URL | null {
 }
 
 function shown(url: URL): string {
-  return `${url.protocol}//${url.host}${url.pathname}${redactSensitiveQuery(url.search)}${url.hash}`;
+  return `${url.protocol}//${url.host}${url.pathname}${redactSensitiveQuery(url.search)}${redactSensitiveFragment(url.hash)}`;
 }
 
-/** Host, path, and query for a confirmation prompt. Null when the URL is not http(s). */
+/** Host, path, query, and fragment for a confirmation prompt. Null when the URL is not http(s). */
 export function displayFetchUrl(raw: string): string | null {
   const url = parseHttpUrl(raw);
   return url ? shown(url) : null;
@@ -121,7 +146,7 @@ export function redactUrlsInText(text: string): string {
   // newline still ends the URL.
   return text.replace(/https?:\/\/[^ \n\r\f\v<>"'`]+/gi, (match) => {
     const untrimmed = parseHttpUrl(match);
-    if (untrimmed && hasSensitiveQuery(untrimmed.search)) return shown(untrimmed);
+    if (untrimmed && hasSensitiveQuery(untrimmed.search, untrimmed.hash)) return shown(untrimmed);
 
     const trimmed = match.replace(/[),.;]+$/g, "");
     const suffix = match.slice(trimmed.length);
@@ -129,6 +154,10 @@ export function redactUrlsInText(text: string): string {
     if (!url) return match;
     const query = redactSensitiveQuery(url.search);
     if (query === url.search) return match;
-    return `${url.protocol}//${url.host}${url.pathname}${query}${url.hash}${suffix}`;
+    const fragment = redactSensitiveFragment(url.hash);
+    if (fragment === url.hash) {
+      return `${url.protocol}//${url.host}${url.pathname}${query}${url.hash}${suffix}`;
+    }
+    return `${url.protocol}//${url.host}${url.pathname}${query}${fragment}${suffix}`;
   });
 }

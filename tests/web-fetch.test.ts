@@ -138,6 +138,28 @@ describe("webFetch content", () => {
     if (!png.ok) expect(png.reason.toLowerCase()).toContain("not supported");
   });
 
+  it("reports an over-deep JSON body distinctly rather than a misleading parse failure", async () => {
+    const deep = await webFetch("https://example.com/deep", {
+      lookup: publicLookup,
+      transport: textBody("[".repeat(50_000) + "]".repeat(50_000), "application/json"),
+      maxChars: 20_000,
+    });
+    expect(deep.ok).toBe(false);
+    if (!deep.ok) expect(deep.reason).toContain("deeply nested");
+  });
+
+  it("does not duplicate a URL fragment in the result url and final_url", async () => {
+    const result = await webFetch("https://example.com/page#section", {
+      lookup: publicLookup,
+      transport: textBody("hello", "text/plain"),
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.url).toBe("https://example.com/page#section");
+      expect(result.final_url).toBe("https://example.com/page#section");
+    }
+  });
+
   it("decodes the header charset and an HTML meta charset", async () => {
     const latin = Buffer.from("caf\u00e9", "latin1");
     const header = await webFetch("https://example.com/c", {

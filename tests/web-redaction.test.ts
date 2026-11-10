@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { displayFetchUrl, redactSensitiveQuery, redactUrlsInText } from "../src/redact/url-query.js";
+import { displayFetchUrl, redactSensitiveFragment, redactSensitiveQuery, redactUrlsInText } from "../src/redact/url-query.js";
 
 /**
  * Regressions for the OCR review findings on URL credential redaction:
@@ -98,5 +98,54 @@ describe("redactUrlsInText trailing punctuation", () => {
   it("leaves ordinary URLs untouched", () => {
     const text = "see https://example.com/a?page=2 and http://other.test/b";
     expect(redactUrlsInText(text)).toBe(text);
+  });
+});
+
+describe("redactSensitiveFragment", () => {
+  it("redacts sensitive fragment pairs while keeping the fragment prefix", () => {
+    expect(redactSensitiveFragment("#access_token=SECRET123456&state=abc")).toBe(
+      "#access_token=[REDACTED]&state=abc",
+    );
+  });
+
+  it("redacts a short fragment credential", () => {
+    expect(redactSensitiveFragment("#token=abc123")).toBe("#token=[REDACTED]");
+  });
+
+  it("redacts a bare fragment value that is credential-bearing", () => {
+    expect(redactSensitiveFragment("apiKey=SECRET123456")).toBe("apiKey=[REDACTED]");
+  });
+
+  it("leaves an ordinary fragment untouched", () => {
+    expect(redactSensitiveFragment("#section-1")).toBe("#section-1");
+    expect(redactSensitiveFragment("#state=abc")).toBe("#state=abc");
+    expect(redactSensitiveFragment("")).toBe("");
+  });
+});
+
+describe("redactUrlsInText fragments", () => {
+  it("redacts a fragment credential in running text", () => {
+    const out = redactUrlsInText("see https://example.com/cb#access_token=SECRET123456 please");
+    expect(out).toContain("[REDACTED]");
+    expect(out).not.toContain("SECRET123456");
+  });
+
+  it("redacts a credential-bearing oauth-style fragment", () => {
+    const out = redactUrlsInText("fetch https://accounts.example/oauth#access_token=SECRET123456&token_type=Bearer now");
+    expect(out).toContain("[REDACTED]");
+    expect(out).not.toContain("SECRET123456");
+  });
+
+  it("leaves a fragment without credentials untouched", () => {
+    expect(redactUrlsInText("see https://example.com/page#section")).toBe("see https://example.com/page#section");
+  });
+});
+
+describe("displayFetchUrl fragments", () => {
+  it("redacts a fragment credential in the displayed URL", () => {
+    const out = displayFetchUrl("https://example.com/cb#access_token=SECRET123456");
+    expect(out).not.toBeNull();
+    expect(out).toContain("[REDACTED]");
+    expect(out).not.toContain("SECRET123456");
   });
 });
