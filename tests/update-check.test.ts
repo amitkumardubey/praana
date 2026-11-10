@@ -3,12 +3,18 @@ import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { APP_HOME_DIR } from "../src/app-identity.js";
+import { runUpgrade } from "../src/update/upgrade.js";
 import {
+  GITHUB_LATEST_URL,
+  NPM_LATEST_URL,
   UPDATE_CHECK_TTL_MS,
+  UPDATE_CHECK_TIMEOUT_MS,
+  UPGRADE_CHECK_TIMEOUT_MS,
   formatUpdateNotice,
   getUpdateCheckPath,
   readUpdateCheckCache,
   refreshUpdateCheck,
+  refreshUpgradeCheck,
   shouldSkipUpdateCheck,
   writeUpdateCheckCache,
 } from "../src/update/check.js";
@@ -76,6 +82,148 @@ describe("refreshUpdateCheck", () => {
     expect(result?.available).toBe(true);
     expect(result?.latest).toBe("0.16.0");
     expect(result?.fromCache).toBe(true);
+  });
+
+  it("forces a fresh registry check despite a fresh cache and updates it", async () => {
+    writeUpdateCheckCache({ version: 1, checkedAt: Date.now(), latestVersion: "0.18.0", source: "npm" });
+    const result = await refreshUpdateCheck({
+      currentVersion: "v0.18.0", env: {}, forceRefresh: true,
+      fetchImpl: async () => new Response(JSON.stringify({ version: "0.18.1" })),
+    });
+    expect(result?.latest).toBe("0.18.1");
+    expect(result?.available).toBe(true);
+    expect(result?.fromCache).toBe(false);
+    expect(readUpdateCheckCache()?.latestVersion).toBe("0.18.1");
+  });
+
+  it("uses a fresh cache only as fallback when a forced registry check fails", async () => {
+    writeUpdateCheckCache({ version: 1, checkedAt: Date.now(), latestVersion: "0.18.0", source: "npm" });
+    let fetched = false;
+    const result = await refreshUpdateCheck({
+      currentVersion: "v0.18.0", env: {}, forceRefresh: true,
+      fetchImpl: async () => { fetched = true; throw new Error("offline"); },
+    });
+    expect(fetched).toBe(true);
+    expect(result?.fromCache).toBe(true);
+    expect(result?.latest).toBe("0.18.0");
+  });
+
+  it("uses the newer GitHub release when npm lags", async () => {
+    const calls: string[] = [];
+    const result = await refreshUpgradeCheck({ currentVersion: "0.18.0", env: {}, fetchImpl: async (url, init) => {
+      calls.push(String(url));
+      expect((init?.headers as Record<string, string>)["User-Agent"]).toBe("praana/0.18.0");
+      return new Response(JSON.stringify(String(url).includes("github.com") ? { tag_name: "v0.18.1" } : { version: "0.18.0" }));
+    } });
+    expect(calls).toHaveLength(2);
+    expect(result?.latest).toBe("0.18.1");
+    expect(result?.available).toBe(true);
+    const upgrade = await runUpgrade({ kind: "standalone", currentVersion: "v0.18.0", latestVersion: result?.latest,
+      runInstaller: async () => ({ ok: true, output: "" }), versionOf: () => "PRAANA v0.18.1" });
+    expect(upgrade.ranInstaller).toBe(true);
+    expect(upgrade.lines.join("\n")).toContain("PRAANA v0.18.1");
+  });
+
+  it("prefers GitHub even when npm is ahead and reports up to date", async () => {
+    const result = await refreshUpgradeCheck({ currentVersion: "0.18.1", env: {}, fetchImpl: async (url) =>
+      new Response(JSON.stringify(String(url).includes("github.com") ? { tag_name: "v0.18.1" } : { version: "0.18.2" })) });
+    expect(result?.latest).toBe("0.18.1");
+    expect(existsSync(getUpdateCheckPath())).toBe(false);
+    const upgrade = await runUpgrade({ kind: "standalone", currentVersion: "0.18.1", latestVersion: result?.latest,
+      runInstaller: async () => { throw new Error("must not run"); }, versionOf: () => "PRAANA v0.18.1" });
+    expect(upgrade.exitCode).toBe(0);
+    expect(upgrade.ranInstaller).toBe(false);
+    expect(upgrade.lines.join("\n")).toContain("Already up to date");
+  });
+
+  it("prefers GitHub when it is ahead of npm", async () => {
+    const result = await refreshUpgradeCheck({ currentVersion: "0.18.0", env: {}, fetchImpl: async (url) =>
+      new Response(JSON.stringify(String(url).includes("github.com") ? { tag_name: "v0.18.2" } : { version: "0.18.1" })) });
+    expect(result?.latest).toBe("0.18.2");
+  });
+
+  it("uses npm when GitHub is unreachable", async () => {
+    const result = await refreshUpgradeCheck({ currentVersion: "0.18.0", env: {}, fetchImpl: async (url) => {
+      if (String(url).includes("github.com")) throw new Error("network down");
+      return new Response(JSON.stringify({ version: "0.18.1" }));
+    } });
+    expect(result?.latest).toBe("0.18.1");
+  });
+
+  it("uses npm when GitHub is unreachable and the home dir is unwritable", async () => {
+    const homeDir = join(root, APP_HOME_DIR);
+    rmSync(homeDir, { recursive: true, force: true });
+    writeFileSync(homeDir, "blocker");
+    const result = await refreshUpgradeCheck({ currentVersion: "0.18.1", env: {}, fetchImpl: async (url) => {
+      if (String(url).includes("github.com")) throw new Error("network down");
+      return new Response(JSON.stringify({ version: "0.18.1" }));
+    } });
+    expect(result?.latest).toBe("0.18.1");
+    expect(result?.fromCache).toBe(false);
+  });
+
+  it("uses the longer timeout for an explicit upgrade check", async () => {
+    const delays: number[] = [];
+    const originalSetTimeout = globalThis.setTimeout;
+    (globalThis as { setTimeout: typeof setTimeout }).setTimeout = ((fn: TimerHandler, ms?: number, ...args: unknown[]) => {
+      if (ms === UPDATE_CHECK_TIMEOUT_MS || ms === UPGRADE_CHECK_TIMEOUT_MS) delays.push(ms);
+      return originalSetTimeout(fn, ms, ...args);
+    }) as typeof setTimeout;
+    try {
+      await refreshUpgradeCheck({ currentVersion: "0.18.0", env: {}, fetchImpl: async (url) =>
+        new Response(JSON.stringify(String(url).includes("github.com") ? { tag_name: "v0.18.1" } : { version: "0.18.0" })) });
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+    }
+    expect(delays.filter((d) => d === UPGRADE_CHECK_TIMEOUT_MS)).toHaveLength(2);
+    expect(delays.filter((d) => d === UPDATE_CHECK_TIMEOUT_MS)).toHaveLength(0);
+  });
+
+  it("keeps the short timeout for background checks", async () => {
+    const delays: number[] = [];
+    const originalSetTimeout = globalThis.setTimeout;
+    (globalThis as { setTimeout: typeof setTimeout }).setTimeout = ((fn: TimerHandler, ms?: number, ...args: unknown[]) => {
+      if (ms === UPDATE_CHECK_TIMEOUT_MS || ms === UPGRADE_CHECK_TIMEOUT_MS) delays.push(ms);
+      return originalSetTimeout(fn, ms, ...args);
+    }) as typeof setTimeout;
+    try {
+      await refreshUpdateCheck({ currentVersion: "v0.18.0", env: {}, fetchImpl: async () =>
+        new Response(JSON.stringify({ version: "0.18.1" })) });
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+    }
+    expect(delays.filter((d) => d === UPDATE_CHECK_TIMEOUT_MS)).toHaveLength(1);
+    expect(delays.filter((d) => d === UPGRADE_CHECK_TIMEOUT_MS)).toHaveLength(0);
+  });
+
+  it("asks GitHub's API for the JSON representation", async () => {
+    const accepts: Record<string, string> = {};
+    await refreshUpgradeCheck({ currentVersion: "0.18.0", env: {}, fetchImpl: async (url, init) => {
+      const header = (init?.headers as Record<string, string>) ?? {};
+      accepts[String(url)] = header["Accept"] ?? "";
+      return new Response(JSON.stringify(String(url).includes("github.com") ? { tag_name: "v0.18.1" } : { version: "0.18.0" }));
+    } });
+    expect(accepts[GITHUB_LATEST_URL]).toBe("application/vnd.github+json");
+    expect(accepts[NPM_LATEST_URL]).toBe("application/json");
+  });
+
+  it("uses npm when GitHub is rate limited", async () => {
+    const result = await refreshUpgradeCheck({ currentVersion: "0.18.0", env: {}, fetchImpl: async (url) =>
+      String(url).includes("github.com") ? new Response("", { status: 403 }) : new Response(JSON.stringify({ version: "0.18.1" })) });
+    expect(result?.latest).toBe("0.18.1");
+  });
+
+  it("ignores prerelease and invalid release tags", async () => {
+    for (const tag of ["v0.19.0-rc.1", "v0.19.0oops", "garbage"]) {
+      const result = await refreshUpgradeCheck({ currentVersion: "0.18.0", env: {}, fetchImpl: async (url) =>
+        new Response(JSON.stringify(String(url).includes("github.com") ? { tag_name: tag } : { version: "0.18.1" })) });
+      expect(result?.latest).toBe("0.18.1");
+    }
+  });
+
+  it("reports both sources unavailable without a cache", async () => {
+    const result = await refreshUpgradeCheck({ currentVersion: "0.18.0", env: {}, fetchImpl: async () => { throw new Error("offline"); } });
+    expect(result).toBeNull();
   });
 
   it("fetches npm latest when the cache is stale", async () => {

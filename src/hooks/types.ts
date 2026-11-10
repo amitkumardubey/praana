@@ -23,6 +23,12 @@ export interface HookSessionLike {
   listReadPaths?(): string[];
   recentWritesForPath?(absPath: string): Array<{ path: string; turn?: number }>;
   confirmRisk?(classId: RiskClass, prompt: string): Promise<RiskConfirmResult>;
+  /** Shares one in-flight confirmation per host (concurrent batch). */
+  confirmWebFetchHost?(host: string, prompt: string): Promise<RiskConfirmResult>;
+  /** `disabled` / `deny` / `allow` come from `[tools.web]`; `confirm` needs a prompt. */
+  webFetchPolicy?(host: string): "disabled" | "deny" | "allow" | "confirm";
+  webFetchHostRemembered?(host: string): boolean;
+  rememberWebFetchHost?(host: string): void;
   observeCircuitPre?(
     toolName: string,
     args: Record<string, unknown>,

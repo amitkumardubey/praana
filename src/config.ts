@@ -21,6 +21,8 @@ import { parseReasoningEffort } from "./llm.js";
 import { setBedrockConfigRegion } from "./bedrock/region.js";
 import { type StreamEndCheck } from "./llm/stream-end.js";
 import { RISK_CLASS_SET } from "./risk/classes.js";
+import { DEFAULT_WEB_CONFIG, normalizeDomainRule } from "./tools/web/policy.js";
+import type { WebToolsConfig } from "./types.js";
 
 function configWarn(
   message: string,
@@ -118,6 +120,7 @@ const DEFAULT_CONFIG: PraanaConfig = {
   },
   tools: {
     block_repeat_reads: false,
+    web: { ...DEFAULT_WEB_CONFIG },
   },
   native: {
     enabled: true,
@@ -395,6 +398,93 @@ export function loadConfig(configPath?: string): PraanaConfig {
   return validated;
 }
 
+interface DomainListResult {
+  rules: string[];
+  /** Entries that were present but could not be parsed. */
+  invalid: string[];
+}
+
+function domainList(value: unknown, key: string): DomainListResult {
+  if (value === undefined) return { rules: [], invalid: [] };
+  if (!Array.isArray(value)) {
+    configWarn(`${key} must be a string array, defaulting to []`);
+    return { rules: [], invalid: [] };
+  }
+  const rules: string[] = [];
+  const invalid: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") {
+      invalid.push(JSON.stringify(item));
+      continue;
+    }
+    const rule = normalizeDomainRule(item);
+    if (!rule) {
+      if (item.trim()) invalid.push(JSON.stringify(item));
+      continue;
+    }
+    rules.push(rule);
+  }
+  return { rules, invalid };
+}
+
+function validateWebTools(raw: WebToolsConfig | undefined): WebToolsConfig {
+  const web = (raw ?? {}) as Partial<WebToolsConfig>;
+  const out: WebToolsConfig = {
+    enabled: DEFAULT_WEB_CONFIG.enabled,
+    allow_domains: [],
+    deny_domains: [],
+    timeout_ms: DEFAULT_WEB_CONFIG.timeout_ms,
+    max_chars: DEFAULT_WEB_CONFIG.max_chars,
+  };
+  if (web.enabled !== undefined && typeof web.enabled !== "boolean") {
+    configWarn("tools.web.enabled must be boolean, defaulting to true");
+  } else if (typeof web.enabled === "boolean") {
+    out.enabled = web.enabled;
+  }
+  const allow = domainList(web.allow_domains, "tools.web.allow_domains");
+  const deny = domainList(web.deny_domains, "tools.web.deny_domains");
+  out.allow_domains = allow.rules;
+  out.deny_domains = deny.rules;
+  // A dropped allow/deny rule silently weakens the access policy (a malformed
+  // deny lets that host through; a fully invalid allowlist turns deny-by-default
+  // into confirm-anything). Fail closed: keep the lists as parsed but disable
+  // web_fetch until the owner fixes the config.
+  if (allow.invalid.length > 0 || deny.invalid.length > 0) {
+    const parts: string[] = [];
+    if (allow.invalid.length > 0) parts.push(`tools.web.allow_domains ${allow.invalid.join(", ")}`);
+    if (deny.invalid.length > 0) parts.push(`tools.web.deny_domains ${deny.invalid.join(", ")}`);
+    configWarn(
+      `${parts.join("; ")} are not hostnames; web_fetch is disabled until they are fixed`,
+    );
+    out.enabled = false;
+  }
+  if (
+    web.timeout_ms !== undefined &&
+    (typeof web.timeout_ms !== "number" ||
+      !Number.isFinite(web.timeout_ms) ||
+      web.timeout_ms <= 0 ||
+      web.timeout_ms > MAX_SETTIMEOUT_MS)
+  ) {
+    configWarn(
+      `tools.web.timeout_ms must be a positive number no greater than ${MAX_SETTIMEOUT_MS}, defaulting to 15000`,
+    );
+  } else if (typeof web.timeout_ms === "number") {
+    out.timeout_ms = Math.floor(web.timeout_ms);
+  }
+  if (
+    web.max_chars !== undefined &&
+    (typeof web.max_chars !== "number" ||
+      !Number.isInteger(web.max_chars) ||
+      web.max_chars < 1 ||
+      web.max_chars > 100_000)
+  ) {
+    configWarn("tools.web.max_chars must be an integer from 1 to 100000, defaulting to 20000");
+  } else if (typeof web.max_chars === "number") {
+    out.max_chars = web.max_chars;
+  }
+  return out;
+}
+
 function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummarizer?: boolean }): PraanaConfig {
   const out: PraanaConfig = deepMerge(config, {});
 
@@ -666,10 +756,12 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
 
   // Tools config validation
   if (!out.tools) {
-    out.tools = { block_repeat_reads: false };
+    out.tools = { block_repeat_reads: false, web: { ...DEFAULT_WEB_CONFIG } };
   } else if (typeof out.tools.block_repeat_reads !== "boolean") {
     configWarn("tools.block_repeat_reads must be boolean, defaulting to false");
-    out.tools = { ...out.tools, block_repeat_reads: false };
+    out.tools = { ...out.tools, block_repeat_reads: false, web: validateWebTools(out.tools.web) };
+  } else {
+    out.tools = { ...out.tools, web: validateWebTools(out.tools.web) };
   }
 
   // search_code config validation

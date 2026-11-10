@@ -323,6 +323,7 @@ Defined in `src/tools/` using Zod 4 schemas and converted to JSON Schema (draft-
 - `write_file(path, content)` — writes or overwrites a file (creates parent directories)
 - `edit_file(path, oldText, newText)` — replaces text based on exact, unique matching (optional diff preview)
 - `batch_write(files[])` / `batch_edit(edits[])` — multi-file create/replace in one turn
+- `web_fetch(url, focus?)` — GET a public http(s) URL and return readable text (untrusted data; private networks blocked)
 
 Shell spawn uses `node:child_process` with `detached` (new process group on POSIX) and `process.kill(-pid)` plus SIGTERM→SIGKILL settle so orphaned children like `find` cannot hang the session. **Bun.Terminal** (`Bun.spawn({ terminal })`, Bun ≥1.3.5 / improved in 1.4) is a suitable future primitive for a *PTY-backed interactive* shell (vim, pagers, password prompts) without `node-pty`. It is **not** a drop-in replacement for the current spawn path: it does not provide equivalent process-tree cancellation, and it is not a UI replacement for OpenTUI. Do not switch the shell tool to `Bun.spawn`/`Bun.Terminal` until tree-kill semantics match.
 
@@ -564,6 +565,9 @@ emergency_at = 0.85
 [tools]
 block_repeat_reads = false   # warn and return artifact card (default); true = hard-block repeat read_file of unchanged files
 
+[tools.web]
+enabled = true                # web_fetch; allow_domains / deny_domains (deny wins); private nets always blocked
+
 [session]
 log_dir = "~/.praana/sessions"
 ```
@@ -597,7 +601,7 @@ If `[llm] fallback_provider` and `fallback_model` are set, `runTurn()` retries o
 
 ## UI and Slash Commands
 
-PRAANA launches the OpenTUI + Solid terminal shell (`src/ui/tui/`) on an interactive TTY. Headless / non-TTY use `praana run` instead. The TUI is Solid end-to-end for Prompt, transcript, chrome/toast/spinner, overlays, setup, login, and download consent. Buffered shell output and thinking-text rendering when `/thinking on` are supported. Styling is plain data (`SpanStyle` in `src/ui/tui/theme.ts`) applied via native `<span style>` / `<text attributes>` — no ANSI strings. All keyboard handling goes through `@opentui/keymap` (`KeymapProvider` + `useBindings` layers; the prompt's autocomplete/history keys use per-binding `enabled` gating on a focus-scoped layer).
+PRAANA launches the OpenTUI + Solid terminal shell (`src/ui/tui/`) on an interactive TTY. Headless / non-TTY use `praana run` instead. The TUI is Solid end-to-end for Prompt, transcript, chrome/toast/spinner, overlays, setup, login, and download consent. Buffered shell output and thinking-text rendering when `/thinking on` are supported. Styling is plain data (`SpanStyle` in `src/ui/tui/theme.ts`) applied via native `<span style>` / `<text attributes>` — no ANSI strings. Each user turn in the transcript is marked with a coral `❯ ` prefix in a fixed two-column box (`TUI_STYLE.accent`) whose flexGrow text box hangs wrapped and multi-line text under the first character; the prefix is layout only and is never part of the stored message text, and a selection that spans a user row copies the message without it (the glyph renderable contributes no selected text, so `❯ ` cannot reach the clipboard). All keyboard handling goes through `@opentui/keymap` (`KeymapProvider` + `useBindings` layers; the prompt's autocomplete/history keys use per-binding `enabled` gating on a focus-scoped layer).
 
 Slash commands are handled by `src/slash-commands.ts`:
 

@@ -3,13 +3,14 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { classifyInstallKind, type InstallKind } from "./install-kind.js";
-import { isNewer } from "./semver.js";
+import { GITHUB_REPO_SLUG } from "./repo.js";
+import { isNewer, normalizeVersionLabel } from "./semver.js";
 import { APP_VERSION } from "../app-banner.js";
 
 export const INSTALL_SH_URL =
-  "https://raw.githubusercontent.com/amitkumardubey/praana/main/install.sh";
+  `https://raw.githubusercontent.com/${GITHUB_REPO_SLUG}/main/install.sh`;
 export const INSTALL_PS1_URL =
-  "https://raw.githubusercontent.com/amitkumardubey/praana/main/install.ps1";
+  `https://raw.githubusercontent.com/${GITHUB_REPO_SLUG}/main/install.ps1`;
 
 export interface InstallerArgs {
   prefix: string;
@@ -34,6 +35,7 @@ export interface RunUpgradeOptions {
   userprofile?: string;
   currentVersion?: string;
   latestVersion?: string;
+  checkOffline?: boolean;
   runInstaller?: (args: InstallerArgs) => Promise<{ ok: boolean; output: string }>;
   whichPraana?: () => string | null;
   versionOf?: (bin: string) => string | null;
@@ -139,13 +141,31 @@ export async function runUpgrade(opts: RunUpgradeOptions = {}): Promise<UpgradeR
   }
 
   const current = opts.currentVersion ?? APP_VERSION;
+  if (opts.checkOffline && !opts.latestVersion && !opts.force) {
+    return { lines: ["Could not check for a newer version; GitHub and npm are unavailable."], exitCode: 1, ranInstaller: false };
+  }
+  const checkLines = opts.checkOffline && opts.latestVersion
+    ? [`Could not check for a newer version; using the last known: ${normalizeVersionLabel(opts.latestVersion)}`]
+    : opts.checkOffline && opts.force
+      ? ["Could not check for a newer version; continuing because --force was given."]
+      : [];
   if (
     !opts.force &&
     opts.latestVersion &&
     !isNewer(opts.latestVersion, current)
   ) {
+    if (opts.checkOffline) {
+      return {
+        lines: [
+          ...checkLines,
+          "Could not verify that you are up to date. Re-run later, or use --force to reinstall.",
+        ],
+        exitCode: 1,
+        ranInstaller: false,
+      };
+    }
     return {
-      lines: [`Already up to date (${current}).`],
+      lines: [...checkLines, `Already up to date (${current}).`],
       exitCode: 0,
       ranInstaller: false,
     };
@@ -168,6 +188,7 @@ export async function runUpgrade(opts: RunUpgradeOptions = {}): Promise<UpgradeR
   if (!installed.ok) {
     return {
       lines: [
+        ...checkLines,
         "Upgrade failed.",
         installed.output.trim() || "installer exited non-zero",
       ],
@@ -180,10 +201,22 @@ export async function runUpgrade(opts: RunUpgradeOptions = {}): Promise<UpgradeR
   const bin = join(prefix, platform === "win32" ? "praana.exe" : "praana");
   const versionOf = opts.versionOf ?? defaultVersionOf;
   const versionLine = versionOf(bin);
-  const lines: string[] = [];
+  const lines: string[] = [...checkLines];
   if (installed.output.trim()) lines.push(installed.output.trim());
   if (versionLine) lines.push(versionLine);
+  if (
+    versionLine &&
+    opts.latestVersion &&
+    !versionLine.includes(normalizeVersionLabel(opts.latestVersion))
+  ) {
+    lines.push(
+      `Installed version differs from the expected ${normalizeVersionLabel(opts.latestVersion)}; the GitHub release may not be published yet. Re-run later.`,
+    );
+  }
   lines.push("Restart praana to use the new binary.");
+  if (platform !== "win32") {
+    lines.push("If your shell still shows the old version, run `hash -r` (bash) or `rehash` (zsh).");
+  }
 
   if (kind === "bun_global" || kind === "npm_global" || kind === "brew") {
     const resolved = (opts.whichPraana ?? defaultWhichPraana)();

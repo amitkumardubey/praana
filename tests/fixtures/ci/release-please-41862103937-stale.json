@@ -1,0 +1,9 @@
+{
+  "runConclusion": "failure",
+  "runAttempt": 1,
+  "jobs": [
+    { "name": "build-binaries (macos-latest, bun-darwin-arm64, praana-darwin-arm64, true)", "status": "completed", "conclusion": "cancelled", "annotations": ["The job was not acquired by Runner of type hosted even after multiple attempts"] },
+    { "name": "build-natives / x86_64-apple-darwin", "status": "queued", "conclusion": null, "annotations": [] },
+    { "name": "build-natives / aarch64-apple-darwin", "status": "queued", "conclusion": null, "annotations": [] }
+  ]
+}
