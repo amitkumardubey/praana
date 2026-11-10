@@ -29,7 +29,7 @@ import {
   listProvidersForCli,
 } from "./providers-cli.js";
 import { runHeadless } from "./headless-run.js";
-import { refreshUpdateCheck } from "./update/check.js";
+import { refreshUpdateCheck, refreshUpgradeCheck } from "./update/check.js";
 import { runUpgrade } from "./update/upgrade.js";
 
 export async function main() {
@@ -97,9 +97,8 @@ export async function main() {
   }
 
   if (parsed.upgradeMode) {
-    const check = await refreshUpdateCheck({
+    const check = await refreshUpgradeCheck({
       currentVersion: APP_VERSION,
-      ignoreSkip: true,
       isTty: true,
       runMode: false,
     });
@@ -107,6 +106,7 @@ export async function main() {
       force: parsed.force,
       currentVersion: APP_VERSION,
       latestVersion: check?.latest,
+      checkOffline: !check || check.fromCache,
     });
     for (const line of result.lines) console.log(line);
     process.exit(result.exitCode);
