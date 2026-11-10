@@ -40,7 +40,12 @@ export function createRiskPreToolCallHandler(cwd: string): PreToolCallHandler {
       result = { allowed: false, reason: "headless" };
     } else {
       try {
-        result = await ctx.session.confirmRisk(hit.class, prompt);
+        // Share one prompt per host: concurrent fetches to the same new host
+        // would otherwise each pass the "not remembered" check above.
+        result =
+          hit.class === "web_fetch_host" && ctx.session.confirmWebFetchHost
+            ? await ctx.session.confirmWebFetchHost(fetchHost(ctx.args), prompt)
+            : await ctx.session.confirmRisk(hit.class, prompt);
       } catch {
         result = { allowed: false, reason: "declined" };
       }
@@ -52,12 +57,15 @@ export function createRiskPreToolCallHandler(cwd: string): PreToolCallHandler {
       }
       return;
     }
-    const error =
-      result.reason === "headless"
-        ? hit.class === "web_fetch_host"
+    let error: string;
+    if (result.reason === "headless") {
+      error =
+        hit.class === "web_fetch_host"
           ? "Blocked in headless (web_fetch_host). Add the host to [tools.web].allow_domains or add web_fetch_host to [risk].allow."
-          : `Blocked in headless (${hit.class}). Add it to [risk].allow to permit.`
-        : `User declined ${hit.class}: ${hit.detail}`;
+          : `Blocked in headless (${hit.class}). Add it to [risk].allow to permit.`;
+    } else {
+      error = `User declined ${hit.class}: ${hit.detail}`;
+    }
     return { action: "block", error, isError: true };
   };
 }

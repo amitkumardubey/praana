@@ -107,4 +107,28 @@ describe("bot walls and empty shells", () => {
     expect(captcha.ok).toBe(true);
     if (captcha.ok) expect(captcha.content.toLowerCase()).toContain("captcha");
   });
+
+  it("does not block a substantial article that embeds a real captcha widget", async () => {
+    // The page carries a genuine reCAPTCHA widget and its script tag, but the
+    // readable article is long. A marker alone must not discard real content.
+    const body = `<!DOCTYPE html><html><head><title>How to deploy the service</title></head><body>
+<article><h1>How to deploy the service</h1>${'<p>Follow these deployment steps, check the configuration, and restart the workers carefully.</p>'.repeat(40)}</article>
+<form action="/contact"><div class="g-recaptcha" data-sitekey="abc"></div></form>
+<script src="https://www.google.com/recaptcha/api.js"></script>
+</body></html>`;
+    const result = await fetchHtml(body);
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.content).toContain("deployment steps");
+  });
+
+  it("still blocks a short page whose visible text is the challenge", async () => {
+    const result = await fetchHtml(
+      '<html><body><h1>Just a moment...</h1><p>Checking your browser before accessing.</p></body></html>',
+    );
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.blocked).toBe(true);
+      expect(result.reason.toLowerCase()).toContain("cloudflare");
+    }
+  });
 });

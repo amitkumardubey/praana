@@ -49,17 +49,23 @@ function prominent(raw: string, text: string, phrase: RegExp): boolean {
 /**
  * Return a block reason, or null when the body can be shown as content.
  * The reason never includes the page body.
+ *
+ * A marker string alone is not enough: a real article can carry a captcha
+ * widget, example code, or prose that mentions a vendor. A marker blocks only
+ * when something corroborates it — a challenge status, the `cf-mitigated`
+ * header, or the phrase being prominent (short page, or in the title/h1).
  */
 export function blockReason(page: PageSignals): string | null {
-  if (headerValue(page.headers, "cf-mitigated").toLowerCase().includes("challenge")) {
-    return "Blocked: Cloudflare challenge";
-  }
-
-  for (const marker of MARKERS) {
-    if (marker.re.test(page.raw)) return marker.reason;
-  }
+  const mitigated = headerValue(page.headers, "cf-mitigated").toLowerCase().includes("challenge");
+  if (mitigated) return "Blocked: Cloudflare challenge";
 
   const challengeStatus = page.status === 401 || page.status === 403 || page.status === 429 || page.status === 503;
+
+  for (const marker of MARKERS) {
+    if (!marker.re.test(page.raw)) continue;
+    if (challengeStatus || prominent(page.raw, page.text, marker.re)) return marker.reason;
+  }
+
   for (const phrase of INTERSTITIALS) {
     if (phrase.re.test(page.raw) && (challengeStatus || prominent(page.raw, page.text, phrase.re))) {
       return phrase.reason;

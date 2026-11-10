@@ -163,4 +163,39 @@ describe("web_fetch adversarial-input regressions", () => {
     const md = htmlToMarkdown(html, "https://example.com/base");
     expect(md).toContain("](https://example.com/search?q=foo&page=2)");
   });
+
+  it("bounds a stalled DNS lookup with the fetch timeout", async () => {
+    // The HTTP exchange has its own timer, but a resolver that never answers
+    // used to keep the turn waiting past timeout_ms. The guard phase now shares
+    // the deadline.
+    const stalled: HostLookup = { resolve: () => new Promise<never>(() => {}) };
+    const start = performance.now();
+    const result = await webFetch("https://example.com/x", {
+      lookup: stalled,
+      transport: reply("x", "text/plain"),
+      timeoutMs: 100,
+    });
+    const elapsed = performance.now() - start;
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/timed out/i);
+    expect(elapsed).toBeLessThan(2_000);
+  });
+
+  it("aborts a stalled DNS lookup when the signal fires", async () => {
+    const stalled: HostLookup = { resolve: () => new Promise<never>(() => {}) };
+    const controller = new AbortController();
+    const pending = webFetch("https://example.com/x", {
+      lookup: stalled,
+      transport: reply("x", "text/plain"),
+      signal: controller.signal,
+      timeoutMs: 10_000,
+    });
+    setTimeout(() => controller.abort(), 20);
+    const start = performance.now();
+    const result = await pending;
+    const elapsed = performance.now() - start;
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.reason).toMatch(/aborted/i);
+    expect(elapsed).toBeLessThan(2_000);
+  });
 });

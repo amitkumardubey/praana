@@ -164,6 +164,8 @@ export class Session {
   planMode = false;
   /** Hosts the user already confirmed for web_fetch in this process. */
   private webFetchHosts = new Set<string>();
+  /** In-flight confirmations per host, so a concurrent batch prompts once. */
+  private webFetchInflight = new Map<string, Promise<RiskConfirmResult>>();
   /** Internal turn-loop hook dispatcher (issue #574). */
   hooks: HookRegistry;
   /** Mutating-tool loop breaker (issue #578). */
@@ -611,6 +613,30 @@ export class Session {
   rememberWebFetchHost(host: string): void {
     const name = normalizeHost(host);
     if (name) this.webFetchHosts.add(name);
+  }
+
+  /**
+   * Confirm a web_fetch host, sharing one prompt per host. `turn.ts` runs tool
+   * calls concurrently, so several fetches to the same new host would each
+   * pass the "not remembered yet" check and prompt in turn. The first caller
+   * creates the prompt; later callers await the same result.
+   */
+  confirmWebFetchHost(host: string, prompt: string): Promise<RiskConfirmResult> {
+    const name = normalizeHost(host);
+    if (name && this.webFetchHosts.has(name)) return Promise.resolve({ allowed: true });
+    const pending = name ? this.webFetchInflight.get(name) : undefined;
+    if (pending) return pending;
+    const confirmation = this.confirmRisk("web_fetch_host", prompt).then((result) => {
+      if (result.allowed && name) this.webFetchHosts.add(name);
+      return result;
+    });
+    if (name) {
+      this.webFetchInflight.set(name, confirmation);
+      void confirmation.finally(() => {
+        this.webFetchInflight.delete(name);
+      });
+    }
+    return confirmation;
   }
 
   async confirmRisk(classId: RiskClass, prompt: string): Promise<RiskConfirmResult> {

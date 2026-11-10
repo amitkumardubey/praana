@@ -310,8 +310,10 @@ async function systemResolve(hostname: string): Promise<HostAddress[]> {
   const v6 = await readRecords(hostname, 6);
   if (v4.kind === "records") for (const address of v4.records) add(address, 4);
   if (v6.kind === "records") for (const address of v6.records) add(address, 6);
-  const hard = v4.kind === "error" ? v4 : v6.kind === "error" ? v6 : null;
-  if (hard && hard.kind === "error") {
+  let hard: { kind: "error"; message: string } | null = null;
+  if (v4.kind === "error") hard = v4;
+  else if (v6.kind === "error") hard = v6;
+  if (hard) {
     throw new Error(`DNS lookup failed: ${hard.message}`);
   }
   if (found.size === 0) {
@@ -421,6 +423,41 @@ function header(headers: Record<string, string>, name: string): string | undefin
   return undefined;
 }
 
+/**
+ * Settle `work`, or reject first on abort or after `timeoutMs`. The
+ * underlying promise cannot be cancelled (node:dns has no abort), so it is
+ * left to finish; its result is ignored once this has settled.
+ */
+function withDeadline<T>(
+  work: Promise<T>,
+  signal: AbortSignal | undefined,
+  timeoutMs: number | undefined,
+  label: string,
+): Promise<T> {
+  if (signal?.aborted) return Promise.reject(new Error("aborted"));
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (err: Error | null, value?: T): void => {
+      if (settled) return;
+      settled = true;
+      if (timer) clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      if (err) reject(err);
+      else resolve(value as T);
+    };
+    const onAbort = (): void => finish(new Error("aborted"));
+    if (signal) signal.addEventListener("abort", onAbort, { once: true });
+    if (timeoutMs !== undefined && timeoutMs > 0) {
+      timer = setTimeout(() => finish(new Error(`timed out after ${timeoutMs}ms during ${label}`)), timeoutMs);
+    }
+    work.then(
+      (value) => finish(null, value),
+      (err: unknown) => finish(err instanceof Error ? err : new Error(String(err))),
+    );
+  });
+}
+
 export async function fetchGuarded(
   input: string,
   deps: {
@@ -429,6 +466,10 @@ export async function fetchGuarded(
     maxRedirects?: number;
     /** Runs before the SSRF guard on each redirect target. The first URL is not passed here. */
     checkHop?: (url: URL) => HopCheck;
+    /** Cancels the guard phase (DNS resolution) as well as the exchange. */
+    signal?: AbortSignal;
+    /** Deadline for the guard phase; the exchange applies its own timeout. */
+    timeoutMs?: number;
   },
 ): Promise<FetchGuardedResult> {
   const initial = parseHttpUrl(input);
@@ -437,7 +478,15 @@ export async function fetchGuarded(
   let current = initial;
   let followed = 0;
   for (;;) {
-    const guarded = await guardUrl(current, { lookup: deps.lookup });
+    // Bound DNS resolution with the same deadline and abort signal as the
+    // exchange: a stalled resolver must not outlive timeout_ms or survive a
+    // cancellation.
+    const guarded = await withDeadline(
+      guardUrl(current, { lookup: deps.lookup }),
+      deps.signal,
+      deps.timeoutMs,
+      "DNS lookup",
+    );
     if (!guarded.ok) return guarded;
     const res = await deps.transport.exchange(guarded.pin);
     const location = header(res.headers, "location");

@@ -489,7 +489,13 @@ export async function webFetch(input: string, opts: WebFetchOptions = {}): Promi
 
   let raw: Awaited<ReturnType<typeof fetchGuarded>>;
   try {
-    raw = await fetchGuarded(input, { lookup: opts.lookup, transport, checkHop: opts.checkHop });
+    raw = await fetchGuarded(input, {
+      lookup: opts.lookup,
+      transport,
+      checkHop: opts.checkHop,
+      signal: opts.signal,
+      timeoutMs,
+    });
   } catch (err) {
     return present({ ok: false, reason: errorMessage(err) });
   }
