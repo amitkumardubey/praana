@@ -28,7 +28,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubus
 
 Installs `praana` (or `praana.exe` on Windows), `praana-natives.node`, and `praana-natives.json` into `~/.local/bin` / `%USERPROFILE%\.local\bin`. Keep these files in the same directory — search, tree-sitter `code_*`, and native embeddings load the sidecar next to the binary. The scripts on `main` always download the **latest GitHub Release**, which can lag `main` by one version.
 
-Upgrade later with `praana upgrade` (alias `praana update`) — it checks npm and GitHub for releases and re-runs the installer into the current prefix (or `~/.local/bin` if you originally installed via bun/npm); if your shell still shows the old version, run `hash -r` (bash) or `rehash` (zsh). Interactive sessions toast when a newer npm version exists; `/settings set auto_update on` (off by default) applies that upgrade in the background and asks you to restart.
+Upgrade later with `praana upgrade` (alias `praana update`) — it checks GitHub first for the latest release, with npm as the fallback, and re-runs the installer into the current prefix (or `~/.local/bin` if you originally installed via bun/npm); if your shell still shows the old version, run `hash -r` (bash) or `rehash` (zsh). Interactive sessions toast when a newer npm version exists; `/settings set auto_update on` (off by default) applies that upgrade in the background and asks you to restart.
 
 ### Install with Bun
 

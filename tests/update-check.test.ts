@@ -5,7 +5,11 @@ import { tmpdir } from "node:os";
 import { APP_HOME_DIR } from "../src/app-identity.js";
 import { runUpgrade } from "../src/update/upgrade.js";
 import {
+  GITHUB_LATEST_URL,
+  NPM_LATEST_URL,
   UPDATE_CHECK_TTL_MS,
+  UPDATE_CHECK_TIMEOUT_MS,
+  UPGRADE_CHECK_TIMEOUT_MS,
   formatUpdateNotice,
   getUpdateCheckPath,
   readUpdateCheckCache,
@@ -120,14 +124,85 @@ describe("refreshUpdateCheck", () => {
     expect(upgrade.lines.join("\n")).toContain("PRAANA v0.18.1");
   });
 
-  it("uses the higher npm version for the check without claiming it was installed", async () => {
-    const result = await refreshUpgradeCheck({ currentVersion: "0.18.0", env: {}, fetchImpl: async (url) =>
+  it("prefers GitHub even when npm is ahead and reports up to date", async () => {
+    const result = await refreshUpgradeCheck({ currentVersion: "0.18.1", env: {}, fetchImpl: async (url) =>
       new Response(JSON.stringify(String(url).includes("github.com") ? { tag_name: "v0.18.1" } : { version: "0.18.2" })) });
+    expect(result?.latest).toBe("0.18.1");
+    const upgrade = await runUpgrade({ kind: "standalone", currentVersion: "0.18.1", latestVersion: result?.latest,
+      runInstaller: async () => { throw new Error("must not run"); }, versionOf: () => "PRAANA v0.18.1" });
+    expect(upgrade.exitCode).toBe(0);
+    expect(upgrade.ranInstaller).toBe(false);
+    expect(upgrade.lines.join("\n")).toContain("Already up to date");
+  });
+
+  it("prefers GitHub when it is ahead of npm", async () => {
+    const result = await refreshUpgradeCheck({ currentVersion: "0.18.0", env: {}, fetchImpl: async (url) =>
+      new Response(JSON.stringify(String(url).includes("github.com") ? { tag_name: "v0.18.2" } : { version: "0.18.1" })) });
     expect(result?.latest).toBe("0.18.2");
-    const upgrade = await runUpgrade({ kind: "standalone", currentVersion: "0.18.0", latestVersion: result?.latest,
-      runInstaller: async () => ({ ok: true, output: "" }), versionOf: () => "PRAANA v0.18.1" });
-    expect(upgrade.lines.join("\n")).toContain("PRAANA v0.18.1");
-    expect(upgrade.lines.join("\n")).not.toContain("0.18.2");
+  });
+
+  it("uses npm when GitHub is unreachable", async () => {
+    const result = await refreshUpgradeCheck({ currentVersion: "0.18.0", env: {}, fetchImpl: async (url) => {
+      if (String(url).includes("github.com")) throw new Error("network down");
+      return new Response(JSON.stringify({ version: "0.18.1" }));
+    } });
+    expect(result?.latest).toBe("0.18.1");
+  });
+
+  it("keeps a valid GitHub answer when the npm leg throws", async () => {
+    const homeDir = join(root, APP_HOME_DIR);
+    rmSync(homeDir, { recursive: true, force: true });
+    writeFileSync(homeDir, "blocker");
+    const result = await refreshUpgradeCheck({ currentVersion: "0.18.1", env: {}, fetchImpl: async (url) =>
+      new Response(JSON.stringify(String(url).includes("github.com") ? { tag_name: "v0.18.2" } : { version: "0.18.1" })) });
+    expect(result?.latest).toBe("0.18.2");
+    const upgrade = await runUpgrade({ kind: "standalone", currentVersion: "v0.18.1", latestVersion: result?.latest,
+      runInstaller: async () => ({ ok: true, output: "" }), versionOf: () => "PRAANA v0.18.2" });
+    expect(upgrade.ranInstaller).toBe(true);
+    expect(upgrade.exitCode).toBe(0);
+  });
+
+  it("uses the longer timeout for an explicit upgrade check", async () => {
+    const delays: number[] = [];
+    const originalSetTimeout = globalThis.setTimeout;
+    (globalThis as { setTimeout: typeof setTimeout }).setTimeout = ((fn: TimerHandler, ms?: number, ...args: unknown[]) => {
+      delays.push(ms ?? 0);
+      return originalSetTimeout(fn, ms, ...args);
+    }) as typeof setTimeout;
+    try {
+      await refreshUpgradeCheck({ currentVersion: "0.18.0", env: {}, fetchImpl: async (url) =>
+        new Response(JSON.stringify(String(url).includes("github.com") ? { tag_name: "v0.18.1" } : { version: "0.18.0" })) });
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+    }
+    expect(delays.some((d) => d === UPGRADE_CHECK_TIMEOUT_MS)).toBe(true);
+  });
+
+  it("keeps the short timeout for background checks", async () => {
+    const delays: number[] = [];
+    const originalSetTimeout = globalThis.setTimeout;
+    (globalThis as { setTimeout: typeof setTimeout }).setTimeout = ((fn: TimerHandler, ms?: number, ...args: unknown[]) => {
+      delays.push(ms ?? 0);
+      return originalSetTimeout(fn, ms, ...args);
+    }) as typeof setTimeout;
+    try {
+      await refreshUpdateCheck({ currentVersion: "v0.18.0", env: {}, fetchImpl: async () =>
+        new Response(JSON.stringify({ version: "0.18.1" })) });
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+    }
+    expect(delays.some((d) => d === UPDATE_CHECK_TIMEOUT_MS)).toBe(true);
+  });
+
+  it("asks GitHub's API for the JSON representation", async () => {
+    const accepts: Record<string, string> = {};
+    await refreshUpgradeCheck({ currentVersion: "0.18.0", env: {}, fetchImpl: async (url, init) => {
+      const header = (init?.headers as Record<string, string>) ?? {};
+      accepts[String(url)] = header["Accept"] ?? "";
+      return new Response(JSON.stringify(String(url).includes("github.com") ? { tag_name: "v0.18.1" } : { version: "0.18.0" }));
+    } });
+    expect(accepts[GITHUB_LATEST_URL]).toBe("application/vnd.github+json");
+    expect(accepts[NPM_LATEST_URL]).toBe("application/json");
   });
 
   it("uses npm when GitHub is rate limited", async () => {

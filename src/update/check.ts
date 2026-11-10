@@ -8,12 +8,15 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 import { appHomePath } from "../app-identity.js";
+import { GITHUB_REPO_SLUG } from "./repo.js";
 import { isNewer, normalizeVersionLabel } from "./semver.js";
 
 export const UPDATE_CHECK_TTL_MS = 24 * 60 * 60 * 1000;
 export const UPDATE_CHECK_TIMEOUT_MS = 1500;
+export const UPGRADE_CHECK_TIMEOUT_MS = 5000;
 export const NPM_LATEST_URL = "https://registry.npmjs.org/praana/latest";
-export const GITHUB_LATEST_URL = "https://api.github.com/repos/amitkumardubey/praana/releases/latest";
+export const GITHUB_LATEST_URL =
+  `https://api.github.com/repos/${GITHUB_REPO_SLUG}/releases/latest`;
 
 const CACHE_VERSION = 1;
 
@@ -39,6 +42,7 @@ export interface RefreshUpdateCheckOptions {
   ignoreSkip?: boolean;
   forceRefresh?: boolean;
   now?: number;
+  timeoutMs?: number;
   fetchImpl?: typeof fetch;
 }
 
@@ -112,9 +116,10 @@ export function writeUpdateCheckCache(cache: UpdateCheckCache): void {
 async function fetchNpmLatest(
   fetchImpl: typeof fetch,
   userAgent: string,
+  timeoutMs = UPDATE_CHECK_TIMEOUT_MS,
 ): Promise<string | null> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), UPDATE_CHECK_TIMEOUT_MS);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetchImpl(NPM_LATEST_URL, {
       headers: {
@@ -138,12 +143,16 @@ function stableVersion(value: unknown): string | null {
   return value.replace(/^v/, "");
 }
 
-async function fetchGithubLatest(fetchImpl: typeof fetch, userAgent: string): Promise<string | null> {
+async function fetchGithubLatest(
+  fetchImpl: typeof fetch,
+  userAgent: string,
+  timeoutMs = UPDATE_CHECK_TIMEOUT_MS,
+): Promise<string | null> {
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), UPDATE_CHECK_TIMEOUT_MS);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const response = await fetchImpl(GITHUB_LATEST_URL, {
-      headers: { Accept: "application/json", "User-Agent": userAgent },
+      headers: { Accept: "application/vnd.github+json", "User-Agent": userAgent },
       signal: controller.signal,
     });
     if (!response.ok) return null;
@@ -171,16 +180,33 @@ function toResult(
 
 export async function refreshUpgradeCheck(opts: RefreshUpdateCheckOptions = {}): Promise<UpdateCheckResult | null> {
   const current = opts.currentVersion ?? "0.0.0";
-  const [npm, github] = await Promise.all([
-    refreshUpdateCheck({ ...opts, ignoreSkip: true, forceRefresh: true }),
-    fetchGithubLatest(opts.fetchImpl ?? fetch, `praana/${current}`),
+  const timeoutMs = opts.timeoutMs ?? UPGRADE_CHECK_TIMEOUT_MS;
+  const [npm, github] = await Promise.allSettled([
+    refreshUpdateCheck({ ...opts, timeoutMs, ignoreSkip: true, forceRefresh: true }),
+    fetchGithubLatest(opts.fetchImpl ?? fetch, `praana/${current}`, timeoutMs),
   ]);
-  const npmVersion = npm && !npm.fromCache ? stableVersion(npm.latest) : null;
-  if (github || npmVersion) {
-    const latest = github && npmVersion ? (isNewer(npmVersion, github) ? npmVersion : github) : (github ?? npmVersion)!;
-    return toResult(current, latest, false);
+
+  // GitHub is the source of truth: the installer downloads the latest GitHub
+  // release, so its answer wins whenever it answers. npm is only a fallback.
+  if (github.status === "fulfilled" && github.value) {
+    return toResult(current, github.value, false);
   }
-  return npm?.fromCache ? npm : null;
+
+  // npm counts only when it freshly fetched a version; a stale cache is not
+  // trusted as the source of truth for an explicit upgrade.
+  const npmFresh =
+    npm.status === "fulfilled" && npm.value && !npm.value.fromCache
+      ? stableVersion(npm.value.latest)
+      : null;
+  if (npmFresh) {
+    return toResult(current, npmFresh, false);
+  }
+
+  // Both sources failed: fall back to a cached value, if any.
+  if (npm.status === "fulfilled" && npm.value?.fromCache) {
+    return npm.value;
+  }
+  return null;
 }
 
 export async function refreshUpdateCheck(
@@ -203,6 +229,7 @@ export async function refreshUpdateCheck(
   const latest = await fetchNpmLatest(
     opts.fetchImpl ?? fetch,
     `praana/${current}`,
+    opts.timeoutMs,
   );
   if (!latest) return cached ? toResult(current, cached.latestVersion, true) : null;
 
