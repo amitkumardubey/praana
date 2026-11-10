@@ -106,7 +106,7 @@ export interface StreamRequest {
   messages: ConversationMessage[];
   tools?: ToolDefinition[];
   signal?: AbortSignal;
-  reasoningEffort?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  reasoningEffort?: "off" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
   temperature?: number;
   maxTokens?: number;
   baseUrl?: string;

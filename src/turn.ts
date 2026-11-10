@@ -25,7 +25,9 @@ import { EmbeddingCache } from "./context-engine/embedding-cache.js";
 import { buildArtifactCard } from "./context-engine/summarize.js";
 import { buildSkillMetadataCatalog } from "./skills/index.js";
 import { createAllTools, describeTools } from "./tools/index.js";
+import { type ToolDefinition as RuntimeToolDefinition } from "./tools/tool-def.js";
 import { createProvider, resolveModel, getReasoningEffort } from "./llm.js";
+import { shouldUseOpenAIResponses } from "./llm/openai-routing.js";
 import { OAuthRefreshBusyError, OAuthRefreshError, resolveOAuthModelAuth } from "./oauth.js";
 import { CredentialLockTimeoutError } from "./credential-lock.js";
 import {
@@ -441,42 +443,6 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
   };
 }
 
-function parseProviderUsage(message: unknown): ProviderUsage | null {
-  if (typeof message !== "object" || message === null) return null;
-  const usage = (message as { usage?: unknown }).usage;
-  if (typeof usage !== "object" || usage === null) return null;
-  const u = usage as Record<string, unknown>;
-  if (
-    Number.isFinite(u.input) &&
-    Number.isFinite(u.output) &&
-    Number.isFinite(u.totalTokens) &&
-    (u.input as number) >= 0 &&
-    (u.output as number) >= 0 &&
-    (u.totalTokens as number) >= 0
-  ) {
-    const input = u.input as number;
-    const output = u.output as number;
-    const totalTokens = u.totalTokens as number;
-    // Some providers / SDKs initialise a placeholder usage struct with all zeros
-    // when usage metadata is unavailable in streaming mode.
-    if (input === 0 && output === 0 && totalTokens === 0) return null;
-    return { input, output, totalTokens };
-  }
-  return null;
-}
-
-function addProviderUsage(
-  acc: ProviderUsage | null,
-  step: ProviderUsage,
-): ProviderUsage {
-  if (!acc) return { ...step };
-  return {
-    input: acc.input + step.input,
-    output: acc.output + step.output,
-    totalTokens: acc.totalTokens + step.totalTokens,
-  };
-}
-
 function extractKeywords(text: string): string[] {
   return text
     .toLowerCase()
@@ -827,8 +793,6 @@ export async function runTurn(
 
   const modelName = modelOverride ?? session.config.llm.model;
   let contextWindowTokens = await session.ensureModelContextWindow(modelName);
-  const reservedOutputTokens = session.config.compiler.reserved_output_tokens ?? 0;
-
 
   const recentEvents = session.eventLog.readLastUncompressedAfterResetBoundary(
     session.config.compiler.recent_turns
@@ -871,6 +835,8 @@ export async function runTurn(
 
   await session.hooks.runPreCompile({
     session,
+    // SAFETY: compileInput is a flat, JSON-serializable record of prompt
+    // inputs for hooks; the cast widens the literal type to the hook ABI.
     input: compileInput as unknown as Record<string, unknown>,
   });
 
@@ -1148,6 +1114,14 @@ export async function runTurn(
       activeModelName,
       activeProviderName,
       session.getEffectiveReasoningEffort(),
+      {
+        firstPartyResponses: shouldUseOpenAIResponses({
+          provider: activeProviderName,
+          model: typeof activeModel.id === "string" ? activeModel.id : activeModelName,
+          baseUrl: typeof activeModel.baseUrl === "string" ? activeModel.baseUrl : undefined,
+          baseUrlOverride: activeModel.baseUrlOverride === true,
+        }),
+      },
     );
     session.recordReasoningEffortUsed?.(reasoningEffort);
     return runLlmStream({
@@ -1720,7 +1694,7 @@ export async function runTurn(
             };
           }
 
-          const toolDef = (tools as Record<string, any>)[tc.toolName];
+          const toolDef = (tools as Record<string, RuntimeToolDefinition>)[tc.toolName];
           let result: unknown;
           let isError = false;
 

@@ -1,5 +1,5 @@
 import type { PraanaConfig, UserProviderConfig, UserProviderModel } from "./types.js";
-import { mapProviderToPiAi, resolveContextWindowSync, isInPiAiCatalog, normalizeModelIdForProvider } from "./model-context.js";
+import { resolveContextWindowSync, normalizeModelIdForProvider } from "./model-context.js";
 import { getAppLogger } from "./logger.js";
 import {
   PROVIDER_REGISTRY,
@@ -191,9 +191,26 @@ export function getMissingKeyMessage(provider: string): string | null {
   return `Provider "${provider}" is not configured`;
 }
 
+/**
+ * Whether a configured base_url counts as an explicit override. An empty
+ * string is treated the same as an unset value by both routing and the
+ * wire-compat handling below.
+ */
+function baseUrlIsSet(baseUrl: string | undefined): boolean {
+  return baseUrl !== undefined && baseUrl !== "";
+}
+
 /** Whether a model likely requires chain-of-thought enabled on the wire. */
-export function inferReasoningModel(provider: string, modelId: string): boolean {
-  if (provider === "openai" && openaiUsesResponses(modelId)) return true;
+export function inferReasoningModel(
+  provider: string,
+  modelId: string,
+  opts: { firstPartyResponses?: boolean } = {},
+): boolean {
+  // First-party OpenAI Responses models (GPT-5.4+) enable reasoning effort by
+  // default. This is a property of the first-party Responses route, not of the
+  // model id: gateways, Chat overrides, and user-declared providers keep the
+  // generic hint-based behavior.
+  if (opts.firstPartyResponses && provider === "openai" && openaiUsesResponses(modelId)) return true;
   const providerHints = REASONING_MODEL_HINTS[provider];
   const globalHints = REASONING_MODEL_HINTS["*"];
   for (const hints of [providerHints, globalHints]) {
@@ -236,22 +253,23 @@ function buildModel(
 ): RuntimeModel {
   const normalizedId = normalizeModelIdForProvider(config.provider, modelId);
   const pc = getProviderConfig(config.provider);
-  const baseUrl = config.base_url ?? pc.baseUrl;
+  const baseUrl = baseUrlIsSet(config.base_url) ? config.base_url : pc.baseUrl;
   const apiKey = resolveApiKey(config.provider, pc.envKey, pc.envKeyAliases);
   const userModel = getUserDeclaredModel(config.provider, normalizedId);
+  const firstPartyResponses = shouldUseOpenAIResponses({
+    provider: config.provider, model: normalizedId, baseUrl,
+    baseUrlOverride: baseUrlIsSet(config.base_url),
+  });
 
   const model: RuntimeModel = {
     id: normalizedId,
     name: normalizedId,
     provider: pc.provider,
-    api: shouldUseOpenAIResponses({
-      provider: config.provider, model: normalizedId, baseUrl,
-      baseUrlOverride: config.base_url !== undefined,
-    }) ? "openai-responses" : userModel?.api ?? pc.api,
+    api: firstPartyResponses ? "openai-responses" : userModel?.api ?? pc.api,
     baseUrl,
-    ...(config.base_url !== undefined ? { baseUrlOverride: true } : {}),
+    ...(baseUrlIsSet(config.base_url) ? { baseUrlOverride: true } : {}),
     input: ["text"],
-    reasoning: userModel?.reasoning ?? inferReasoningModel(config.provider, normalizedId),
+    reasoning: userModel?.reasoning ?? inferReasoningModel(config.provider, normalizedId, { firstPartyResponses }),
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow:
       userModel?.context_window ??
@@ -323,19 +341,27 @@ export function getReasoningEffort(
   modelId: string,
   provider: string,
   preferred?: string | null,
+  opts: { firstPartyResponses?: boolean } = {},
 ): string | undefined {
   const needsReasoning =
-    !!model.reasoning || inferReasoningModel(provider, modelId);
+    !!model.reasoning || inferReasoningModel(provider, modelId, opts);
   if (!needsReasoning) return undefined;
 
   const preferredLevel =
     preferred != null && preferred !== ""
       ? parseReasoningEffort(preferred)
       : null;
-  let requested = preferredLevel ?? DEFAULT_REASONING_LEVEL;
-  if (requested === "off" && inferReasoningModel(provider, modelId)) {
-    requested = "minimal";
+  let requested: string = preferredLevel ?? DEFAULT_REASONING_LEVEL;
+  if (requested === "off") {
+    if (opts.firstPartyResponses && provider === "openai" && openaiUsesResponses(modelId)) {
+      // First-party Responses rejects "minimal" (and omits reasoning entirely
+      // for many models); "off" maps to the supported "none" level.
+      requested = "none";
+    } else if (inferReasoningModel(provider, modelId, opts)) {
+      requested = "minimal";
+    } else {
+      return undefined;
+    }
   }
-  if (requested === "off") return undefined;
   return requested;
 }

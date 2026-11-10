@@ -184,9 +184,12 @@ that Responses accepts it.
 
 **Older models remain on Chat Completions exactly as before:** GPT-3.5, GPT-4,
 GPT-4o, GPT-4.1, o-series, and GPT-5 through GPT-5.3. Their Responses support has
-not been verified for this routing change. Unknown ids (including future major
-versions outside GPT-6) also stay on Chat Completions. Model listing and context
-window lookup are unchanged; `/models` presence is not endpoint-capability data.
+not been verified for this routing change. Non-text-generation variants whose id
+suffix contains `audio`, `realtime`, `transcribe`, `tts`, `image`, `embedding`,
+`moderation`, `search`, or `chat-latest` also stay on Chat Completions. Unknown
+ids (including future major versions outside GPT-6) stay on Chat Completions.
+Model listing and context window lookup are unchanged; `/models` presence is not
+endpoint-capability data.
 
 Any explicit `llm.base_url` (even the built-in URL), explicit `endpointUrl`, or
 user-declared provider disables this automatic routing. OpenRouter, Umans,
@@ -205,9 +208,10 @@ reasoning levels `minimal`, `low`, `medium`, `high`, and `xhigh` map unchanged t
 `reasoning.effort`: the upstream
 [OpenAI SDK type](https://github.com/openai/openai-node/blob/master/src/resources/shared.ts)
 also includes `none`, `max`, and `null`. This SDK-wide union does **not** guarantee
-that each model accepts every level. As with other inferred reasoning models,
-PRAANA resolves `/reasoning off` to `minimal`; a stream request with no effort
-omits `reasoning`.
+that each model accepts every level. On the first-party Responses route, PRAANA
+resolves `/reasoning off` to `none` (the supported wire level); on other routes it
+keeps the historical `minimal` mapping for inferred reasoning models. A stream
+request with no effort omits `reasoning`.
 
 Input/output/total usage and `input_tokens_details.cached_tokens` are retained
 when reported. Session accounting still consumes input/output totals. Existing
@@ -219,8 +223,10 @@ apply: incomplete or failed responses do not authorize tool execution.
 
 If Responses returns HTTP **404** with `error.code = "model_not_found"` or wording
 that a model is **not supported**, PRAANA tries Chat Completions once, before
-emitting any event, and remembers that model for the process. It never switches
-protocol after an event or after abort, and never switches on an SSE error.
+emitting any event, and remembers that model for that credential for one hour.
+A different API key or a later attempt after the hour is not pinned; it retries
+Responses. It never switches protocol after an event or after abort, and never
+switches on an SSE error.
 The SDK verifies the error envelope but not the exact endpoint-rejection wording;
 this conservative 404 heuristic is **unverified live**. Arbitrary 400s (including
 invalid reasoning levels), authentication failures, and generic endpoint 404s are

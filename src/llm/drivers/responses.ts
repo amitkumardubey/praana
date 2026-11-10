@@ -212,6 +212,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
     let emitted = false;
     const codex = req.provider === "openai-codex";
     let terminalReceived = false;
+    let refusalTextSeen = false;
     const openFunctionCalls = new Set<number | string>();
     const functionCallIndexById = new Map<string, number | string>();
     const bufferedArgs = new Map<string, string>();
@@ -320,6 +321,14 @@ export class OpenAIResponsesDriver implements LlmDriver {
           finishReason = "length";
           return "length";
         };
+        const isContentFiltered = (): boolean => {
+          const details = (parsed.response as { incomplete_details?: { reason?: string } } | undefined)?.incomplete_details;
+          return details?.reason === "content_filter";
+        };
+        const contentFilterMessage = (p: Record<string, unknown>): string => {
+          const details = (p.response as { incomplete_details?: { message?: string } } | undefined)?.incomplete_details;
+          return details?.message || "The model's response was blocked by the provider's content filter";
+        };
         let toolCutoff = false;
         if (codex && type === "response.incomplete") {
           const outcome = applyCodexIncomplete();
@@ -334,9 +343,27 @@ export class OpenAIResponsesDriver implements LlmDriver {
         }
         if (toolCutoff) return fail(toolCutoffMessage);
 
-        if (type === "response.output_text.delta" || type === "response.reasoning_text.delta") {
+        if (type === "response.output_text.delta" || type === "response.reasoning_text.delta" ||
+            type === "response.refusal.delta" || type === "response.refusal.done") {
+          // Codex keeps its historical behavior: refusals are not surfaced.
+          if (codex && (type === "response.refusal.delta" || type === "response.refusal.done")) {
+            return { events };
+          }
+          if (type === "response.refusal.done") {
+            // Done carries the full refusal text; use it only when no deltas
+            // already delivered it, so combined delta+done streams do not repeat.
+            const refusal = String(parsed.refusal ?? "");
+            if (refusal && !refusalTextSeen) {
+              refusalTextSeen = true;
+              emitted = true;
+              accumulatedContent += refusal;
+              events.push({ type: "text_delta", delta: refusal });
+            }
+            return { events };
+          }
           const delta = String(parsed.delta ?? "");
           if (delta) {
+            if (type === "response.refusal.delta") refusalTextSeen = true;
             emitted = true;
             if (type === "response.reasoning_text.delta") events.push({ type: "thinking_delta", delta });
             else {
@@ -483,6 +510,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
         }
 
         if (!codex && type === "response.done" && (parsed.response as { status?: string } | undefined)?.status === "incomplete") {
+          if (isContentFiltered()) return fail(contentFilterMessage(parsed), responsesErrorStatus(parsed));
           finishReason = "length";
         }
 
@@ -506,6 +534,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
               if (outcome === "cutoff") return fail(toolCutoffMessage);
             }
           } else if (status === "incomplete") {
+            if (isContentFiltered()) return fail(contentFilterMessage(parsed), responsesErrorStatus(parsed));
             finishReason = "length";
           }
         }
@@ -513,6 +542,7 @@ export class OpenAIResponsesDriver implements LlmDriver {
         if (type === "response.incomplete") {
           terminalReceived = true;
           if (codex) return { events, awaitTrailer: true };
+          if (isContentFiltered()) return fail(contentFilterMessage(parsed), responsesErrorStatus(parsed));
           finishReason = "length";
         }
 
