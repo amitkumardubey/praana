@@ -182,7 +182,7 @@ export async function refreshUpgradeCheck(opts: RefreshUpdateCheckOptions = {}):
   const current = opts.currentVersion ?? "0.0.0";
   const timeoutMs = opts.timeoutMs ?? UPGRADE_CHECK_TIMEOUT_MS;
   const [npm, github] = await Promise.allSettled([
-    refreshUpdateCheck({ ...opts, timeoutMs, ignoreSkip: true, forceRefresh: true }),
+    fetchNpmLatest(opts.fetchImpl ?? fetch, `praana/${current}`, timeoutMs),
     fetchGithubLatest(opts.fetchImpl ?? fetch, `praana/${current}`, timeoutMs),
   ]);
 
@@ -193,18 +193,20 @@ export async function refreshUpgradeCheck(opts: RefreshUpdateCheckOptions = {}):
   }
 
   // npm counts only when it freshly fetched a version; a stale cache is not
-  // trusted as the source of truth for an explicit upgrade.
+  // trusted as the source of truth for an explicit upgrade. Unlike the
+  // background check, this never writes the shared cache: the installer may
+  // deliver a different version than npm's latest, and a read-only home
+  // should not reject an otherwise good npm answer.
   const npmFresh =
-    npm.status === "fulfilled" && npm.value && !npm.value.fromCache
-      ? stableVersion(npm.value.latest)
-      : null;
+    npm.status === "fulfilled" && npm.value ? stableVersion(npm.value) : null;
   if (npmFresh) {
     return toResult(current, npmFresh, false);
   }
 
   // Both sources failed: fall back to a cached value, if any.
-  if (npm.status === "fulfilled" && npm.value?.fromCache) {
-    return npm.value;
+  const cached = readUpdateCheckCache();
+  if (cached) {
+    return toResult(current, cached.latestVersion, true);
   }
   return null;
 }

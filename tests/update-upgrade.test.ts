@@ -13,8 +13,8 @@ describe("runUpgrade", () => {
   it("refuses to claim up to date when the check was offline", async () => {
     const result = await runUpgrade({ kind: "standalone", currentVersion: "v0.18.1", latestVersion: "0.18.1", checkOffline: true,
       runInstaller: async () => { throw new Error("must not run"); } });
-    expect(result.lines.join("\n")).toContain("Could not check for a newer version (offline); using the last known: v0.18.1");
-    expect(result.lines.join("\n")).toContain("Could not verify that you are up to date.");
+    expect(result.lines.join("\n")).toContain("Could not check for a newer version; using the last known: v0.18.1");
+    expect(result.lines.join("\n")).toContain("Could not verify that you are up to date. Re-run later, or use --force to reinstall.");
     expect(result.exitCode).toBe(1);
     expect(result.ranInstaller).toBe(false);
   });
@@ -22,7 +22,7 @@ describe("runUpgrade", () => {
   it("proceeds with the installer when the cached latest is newer", async () => {
     const result = await runUpgrade({ kind: "standalone", currentVersion: "v0.18.0", latestVersion: "0.18.1", checkOffline: true,
       runInstaller: async () => ({ ok: true, output: "" }), versionOf: () => "PRAANA v0.18.1" });
-    expect(result.lines.join("\n")).toContain("Could not check for a newer version (offline); using the last known: v0.18.1");
+    expect(result.lines.join("\n")).toContain("Could not check for a newer version; using the last known: v0.18.1");
     expect(result.ranInstaller).toBe(true);
     expect(result.exitCode).toBe(0);
   });
@@ -54,6 +54,29 @@ describe("runUpgrade", () => {
       runInstaller: async () => ({ ok: true, output: "" }), versionOf: () => "PRAANA v0.18.1" });
     expect(result.lines.join("\n")).not.toContain("hash -r");
     expect(result.lines.join("\n")).not.toContain("rehash");
+  });
+
+  it("warns when the installed version differs from the target", async () => {
+    const result = await runUpgrade({ kind: "standalone", currentVersion: "v0.18.0", latestVersion: "0.18.1",
+      runInstaller: async () => ({ ok: true, output: "" }), versionOf: () => "PRAANA v0.18.0" });
+    expect(result.exitCode).toBe(0);
+    const text = result.lines.join("\n");
+    expect(text).toContain("Installed version differs from the expected v0.18.1; the GitHub release may not be published yet. Re-run later.");
+    expect(text.indexOf("Installed version differs")).toBeLessThan(text.indexOf("Restart praana"));
+  });
+
+  it("does not warn when the installed version matches the target", async () => {
+    const result = await runUpgrade({ kind: "standalone", currentVersion: "v0.18.0", latestVersion: "0.18.1",
+      runInstaller: async () => ({ ok: true, output: "" }), versionOf: () => "PRAANA v0.18.1" });
+    expect(result.exitCode).toBe(0);
+    expect(result.lines.join("\n")).not.toContain("Installed version differs");
+  });
+
+  it("does not warn when no version is reported", async () => {
+    const result = await runUpgrade({ kind: "standalone", currentVersion: "v0.18.0", latestVersion: "0.18.1",
+      runInstaller: async () => ({ ok: true, output: "" }), versionOf: () => null });
+    expect(result.exitCode).toBe(0);
+    expect(result.lines.join("\n")).not.toContain("Installed version differs");
   });
 
   it("refuses to overwrite a source checkout", async () => {

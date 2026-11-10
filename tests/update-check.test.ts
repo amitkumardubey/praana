@@ -128,6 +128,7 @@ describe("refreshUpdateCheck", () => {
     const result = await refreshUpgradeCheck({ currentVersion: "0.18.1", env: {}, fetchImpl: async (url) =>
       new Response(JSON.stringify(String(url).includes("github.com") ? { tag_name: "v0.18.1" } : { version: "0.18.2" })) });
     expect(result?.latest).toBe("0.18.1");
+    expect(existsSync(getUpdateCheckPath())).toBe(false);
     const upgrade = await runUpgrade({ kind: "standalone", currentVersion: "0.18.1", latestVersion: result?.latest,
       runInstaller: async () => { throw new Error("must not run"); }, versionOf: () => "PRAANA v0.18.1" });
     expect(upgrade.exitCode).toBe(0);
@@ -149,24 +150,23 @@ describe("refreshUpdateCheck", () => {
     expect(result?.latest).toBe("0.18.1");
   });
 
-  it("keeps a valid GitHub answer when the npm leg throws", async () => {
+  it("uses npm when GitHub is unreachable and the home dir is unwritable", async () => {
     const homeDir = join(root, APP_HOME_DIR);
     rmSync(homeDir, { recursive: true, force: true });
     writeFileSync(homeDir, "blocker");
-    const result = await refreshUpgradeCheck({ currentVersion: "0.18.1", env: {}, fetchImpl: async (url) =>
-      new Response(JSON.stringify(String(url).includes("github.com") ? { tag_name: "v0.18.2" } : { version: "0.18.1" })) });
-    expect(result?.latest).toBe("0.18.2");
-    const upgrade = await runUpgrade({ kind: "standalone", currentVersion: "v0.18.1", latestVersion: result?.latest,
-      runInstaller: async () => ({ ok: true, output: "" }), versionOf: () => "PRAANA v0.18.2" });
-    expect(upgrade.ranInstaller).toBe(true);
-    expect(upgrade.exitCode).toBe(0);
+    const result = await refreshUpgradeCheck({ currentVersion: "0.18.1", env: {}, fetchImpl: async (url) => {
+      if (String(url).includes("github.com")) throw new Error("network down");
+      return new Response(JSON.stringify({ version: "0.18.1" }));
+    } });
+    expect(result?.latest).toBe("0.18.1");
+    expect(result?.fromCache).toBe(false);
   });
 
   it("uses the longer timeout for an explicit upgrade check", async () => {
     const delays: number[] = [];
     const originalSetTimeout = globalThis.setTimeout;
     (globalThis as { setTimeout: typeof setTimeout }).setTimeout = ((fn: TimerHandler, ms?: number, ...args: unknown[]) => {
-      delays.push(ms ?? 0);
+      if (ms === UPDATE_CHECK_TIMEOUT_MS || ms === UPGRADE_CHECK_TIMEOUT_MS) delays.push(ms);
       return originalSetTimeout(fn, ms, ...args);
     }) as typeof setTimeout;
     try {
@@ -175,14 +175,15 @@ describe("refreshUpdateCheck", () => {
     } finally {
       globalThis.setTimeout = originalSetTimeout;
     }
-    expect(delays.some((d) => d === UPGRADE_CHECK_TIMEOUT_MS)).toBe(true);
+    expect(delays.filter((d) => d === UPGRADE_CHECK_TIMEOUT_MS)).toHaveLength(2);
+    expect(delays.filter((d) => d === UPDATE_CHECK_TIMEOUT_MS)).toHaveLength(0);
   });
 
   it("keeps the short timeout for background checks", async () => {
     const delays: number[] = [];
     const originalSetTimeout = globalThis.setTimeout;
     (globalThis as { setTimeout: typeof setTimeout }).setTimeout = ((fn: TimerHandler, ms?: number, ...args: unknown[]) => {
-      delays.push(ms ?? 0);
+      if (ms === UPDATE_CHECK_TIMEOUT_MS || ms === UPGRADE_CHECK_TIMEOUT_MS) delays.push(ms);
       return originalSetTimeout(fn, ms, ...args);
     }) as typeof setTimeout;
     try {
@@ -191,7 +192,8 @@ describe("refreshUpdateCheck", () => {
     } finally {
       globalThis.setTimeout = originalSetTimeout;
     }
-    expect(delays.some((d) => d === UPDATE_CHECK_TIMEOUT_MS)).toBe(true);
+    expect(delays.filter((d) => d === UPDATE_CHECK_TIMEOUT_MS)).toHaveLength(1);
+    expect(delays.filter((d) => d === UPGRADE_CHECK_TIMEOUT_MS)).toHaveLength(0);
   });
 
   it("asks GitHub's API for the JSON representation", async () => {

@@ -142,10 +142,10 @@ export async function runUpgrade(opts: RunUpgradeOptions = {}): Promise<UpgradeR
 
   const current = opts.currentVersion ?? APP_VERSION;
   if (opts.checkOffline && !opts.latestVersion && !opts.force) {
-    return { lines: ["Could not check for a newer version; npm and GitHub are unavailable."], exitCode: 1, ranInstaller: false };
+    return { lines: ["Could not check for a newer version; GitHub and npm are unavailable."], exitCode: 1, ranInstaller: false };
   }
   const checkLines = opts.checkOffline && opts.latestVersion
-    ? [`Could not check for a newer version (offline); using the last known: ${normalizeVersionLabel(opts.latestVersion)}`]
+    ? [`Could not check for a newer version; using the last known: ${normalizeVersionLabel(opts.latestVersion)}`]
     : opts.checkOffline && opts.force
       ? ["Could not check for a newer version; continuing because --force was given."]
       : [];
@@ -158,7 +158,7 @@ export async function runUpgrade(opts: RunUpgradeOptions = {}): Promise<UpgradeR
       return {
         lines: [
           ...checkLines,
-          "Could not verify that you are up to date. Re-run when online, or use --force to reinstall.",
+          "Could not verify that you are up to date. Re-run later, or use --force to reinstall.",
         ],
         exitCode: 1,
         ranInstaller: false,
@@ -204,6 +204,15 @@ export async function runUpgrade(opts: RunUpgradeOptions = {}): Promise<UpgradeR
   const lines: string[] = [...checkLines];
   if (installed.output.trim()) lines.push(installed.output.trim());
   if (versionLine) lines.push(versionLine);
+  if (
+    versionLine &&
+    opts.latestVersion &&
+    !versionLine.includes(normalizeVersionLabel(opts.latestVersion))
+  ) {
+    lines.push(
+      `Installed version differs from the expected ${normalizeVersionLabel(opts.latestVersion)}; the GitHub release may not be published yet. Re-run later.`,
+    );
+  }
   lines.push("Restart praana to use the new binary.");
   if (platform !== "win32") {
     lines.push("If your shell still shows the old version, run `hash -r` (bash) or `rehash` (zsh).");
