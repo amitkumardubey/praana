@@ -28,7 +28,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubus
 
 Installs `praana` (or `praana.exe` on Windows), `praana-natives.node`, and `praana-natives.json` into `~/.local/bin` / `%USERPROFILE%\.local\bin`. Keep these files in the same directory — search, tree-sitter `code_*`, and native embeddings load the sidecar next to the binary. The scripts on `main` always download the **latest GitHub Release**, which can lag `main` by one version.
 
-Upgrade later with `praana upgrade` (alias `praana update`) — it re-runs the installer into the current prefix (or `~/.local/bin` if you originally installed via bun/npm). Interactive sessions toast when a newer npm version exists; `/settings set auto_update on` (off by default) applies that upgrade in the background and asks you to restart.
+Upgrade later with `praana upgrade` (alias `praana update`) — it checks GitHub first for the latest release, with npm as the fallback, and re-runs the installer into the current prefix (or `~/.local/bin` if you originally installed via bun/npm); if your shell still shows the old version, run `hash -r` (bash) or `rehash` (zsh). Interactive sessions toast when a newer npm version exists; `/settings set auto_update on` (off by default) applies that upgrade in the background and asks you to restart.
 
 ### Install with Bun
 
@@ -164,6 +164,94 @@ Set any of the three keys to `0` (or use a non-positive value) to fall back to t
 | OpenAI Codex | ChatGPT subscription sign-in with `/login openai-codex`: browser (default) or device code |
 
 Provider resolution order: explicit config → credential store (`~/.praana/credentials.json`) → environment-detected key → interactive setup.
+
+### First-party OpenAI API routing
+
+With provider `openai`, no configured `llm.base_url`, and the built-in
+`https://api.openai.com/v1` endpoint, PRAANA uses **Responses** (`/v1/responses`)
+for bare model ids in these families:
+
+- `gpt-5.4` and later **5.x** minor versions, including hyphenated variants and
+  dated ids (for example `gpt-5.4-mini`, `gpt-5.6-sol`).
+- `gpt-6` and its dotted/hyphenated variants (for example `gpt-6-luna`,
+  `gpt-6.1-terra`).
+
+This is a **routing floor, not a supported-model list**. It addresses OpenAI's
+[documented Chat Completions limit](https://developers.openai.com/api/docs/guides/migrate-to-responses):
+starting with GPT-5.4, tool calling is not supported with `reasoning_effort` other
+than `none`. It does not establish that every id matching the floor exists or
+that Responses accepts it.
+
+**Older models remain on Chat Completions exactly as before:** GPT-3.5, GPT-4,
+GPT-4o, GPT-4.1, o-series, and GPT-5 through GPT-5.3. Their Responses support has
+not been verified for this routing change. Non-text-generation variants whose id
+suffix contains `audio`, `realtime`, `transcribe`, `tts`, `image`, `embedding`,
+`moderation`, `search`, or `chat-latest` also stay on Chat Completions. Unknown
+ids (including future major versions outside GPT-6) stay on Chat Completions.
+Model listing and context window lookup are unchanged; `/models` presence is not
+endpoint-capability data.
+
+Any explicit `llm.base_url` (even the built-in URL), explicit `endpointUrl`, or
+user-declared provider disables this automatic routing. OpenRouter, Umans,
+Poolside, Ollama, and other OpenAI-compatible providers are not migrated. A
+user-declared provider's explicitly chosen `api` still wins. The separate
+`openai-codex` subscription route is unchanged.
+
+The first-party Responses request sends the system prompt as `instructions`,
+flat function tool definitions, tool results as `function_call_output`, text/image
+input parts, and `max_output_tokens`. It sends `store: false`, so OpenAI does not
+retain requests and responses through the Responses API's default storage. Reasoning
+items are not carried across turns or tool steps; supporting encrypted reasoning
+content is a follow-up. It does not add Codex headers or default Codex instructions.
+Unset temperature is omitted. PRAANA's enabled
+reasoning levels `minimal`, `low`, `medium`, `high`, and `xhigh` map unchanged to
+`reasoning.effort`: the upstream
+[OpenAI SDK type](https://github.com/openai/openai-node/blob/master/src/resources/shared.ts)
+also includes `none`, `max`, and `null`. This SDK-wide union does **not** guarantee
+that each model accepts every level. On the first-party Responses route, PRAANA
+resolves `/reasoning off` to `none` (the supported wire level); on other routes it
+keeps the historical `minimal` mapping for inferred reasoning models. A stream
+request with no effort omits `reasoning`.
+
+Input/output/total usage and `input_tokens_details.cached_tokens` are retained
+when reported. Session accounting still consumes input/output totals. Existing
+headless-report limitations are unchanged: `n_cache_tokens` remains `0`, unknown
+model prices produce `cost_usd: null`, and `reasoning_effort_wire` records the last
+effort passed to the stream, not later Chat driver corrections (including fallback
+to `none` with tools). The existing strict/lenient stream-end rules below still
+apply: incomplete or failed responses do not authorize tool execution.
+
+If Responses returns HTTP **404** with `error.code = "model_not_found"` or wording
+that a model is **not supported**, PRAANA tries Chat Completions once, before
+emitting any event, and remembers that model for that credential for one hour.
+A different API key or a later attempt after the hour is not pinned; it retries
+Responses. It never switches protocol after an event or after abort, and never
+switches on an SSE error.
+The SDK verifies the error envelope but not the exact endpoint-rejection wording;
+this conservative 404 heuristic is **unverified live**. Arbitrary 400s (including
+invalid reasoning levels), authentication failures, and generic endpoint 404s are
+surfaced rather than guessed to be model incompatibility. Use the explicit Chat
+override below if needed. The existing Chat Completions reasoning/tools workaround
+is retained for both fallback and override.
+
+### Force OpenAI Chat Completions
+
+If a first-party model rejects Responses, force Chat Completions with the existing
+user-provider override (no new `[llm]` key). Keep `llm.provider = "openai"` and your
+chosen `llm.model`; add this provider table:
+
+```toml
+[providers.openai]
+api = "openai-completions"
+base_url = "https://api.openai.com/v1"
+env_key = "OPENAI_API_KEY"
+```
+
+This disables automatic Responses routing for **all** models under `openai` and
+retains first-party `max_completion_tokens` handling and the existing
+`reasoning_effort: "none"` tools workaround. Remove the table to restore automatic
+routing. User-declared providers are lenient under `stream_end_check = "auto"`;
+set `[llm] stream_end_check = "strict"` to keep strict first-party stream checks.
 
 ### LLM fallback
 
@@ -472,9 +560,15 @@ The footer abbreviations, also listed by `/help`:
 
 **Project context:** loads `AGENTS.md` / `CLAUDE.md` and an optional stack fingerprint on session start.
 
-**Tools:** structured `search_code` and `find_files` (native addon) plus git tools (`git_status`, `git_diff`, `git_commit`), shell, file read/write/edit, and memory tools. Prefer the git tools over `shell git …` for agent decisions; `git_commit` is blocked in plan mode.
+**Tools:** structured `search_code` and `find_files` (native addon) plus git tools (`git_status`, `git_diff`, `git_commit`), shell, file read/write/edit, `web_fetch`, and memory tools. Prefer the git tools over `shell git …` for agent decisions; `git_commit` is blocked in plan mode. `web_fetch` is read-only and stays available in plan mode.
 
-**Session safety:** plan mode gates mutating tools behind your approval; destructive or outward actions (`rm`, force-push, package installs, writes outside the project) ask for confirmation, and headless runs refuse them unless allowed in `[risk].allow`; known secret patterns are redacted from tool results and the event log; a loop breaker blocks a third identical mutating tool call, or a third attempt after two errors on the same file or command; a repeat-read interceptor warns or blocks re-reading unchanged files; `praana resume` with no id continues your most recent session for the current project.
+**Session safety:** plan mode gates mutating tools behind your approval; destructive or outward actions (`rm`, force-push, package installs, writes outside the project) ask for confirmation, and headless runs refuse them unless allowed in `[risk].allow`. In the TUI that question opens the same small overlay as the step pause and answers **y** = yes, **n** / **Enter** / **Esc** = no, **Ctrl+C** = abort the turn; on the plain terminal it stays a readline `[y/N]` line. `web_fetch` asks the first time each host is fetched in a session (the same keys answer it), then remembers that host, and a headless run refuses the host unless it matches `[tools.web].allow_domains` or `[risk].allow` includes `web_fetch_host`; a redirect is checked again on every hop, and a redirect to a different host stops for that same confirmation instead of following an open redirect; private and local addresses are always refused; known secret patterns, including URL query values named `token`, `key`, `secret`, `password`, `sig`, `auth`, `api_key`, `apikey`, `client_secret`, `access_token`, or an AWS `X-Amz-` signed parameter (and any name ending in `_token`, `_secret`, `_password`, `_signature`), are redacted from tool results and the event log, including when a control character splits the name; a loop breaker blocks a third identical mutating tool call, or a third attempt after two errors on the same file or command (reads, including `web_fetch`, are not gated); a repeat-read interceptor warns or blocks re-reading unchanged files; `praana resume` with no id continues your most recent session for the current project.
+
+### web_fetch
+
+`web_fetch(url, max_chars?, focus?)` GETs a public http(s) URL and returns readable text. HTML becomes markdown (scripts, styles, nav, footers, and cookie banners are dropped). Plain text and markdown are kept. JSON is rendered compact and bounded at `max_chars`, so a deeply nested response cannot expand into a much larger document. PDF and other binary types are refused. The page text is untrusted data: the tool result starts with a banner naming the host, and instructions inside the page must not be followed. Control characters other than newline and tab, and terminal escape sequences, are stripped from the text, focus excerpts, and error text before the result is returned. `focus` is capped (1000 characters, 20 distinct terms) so a large or repetitive focus cannot stall the page. A bot-wall marker blocks the page only when a challenge status, the `cf-mitigated` header, or a prominent title/heading corroborates it, so an article that merely embeds a captcha widget or mentions a vendor is still returned as content.
+
+`[tools.web]` keys (defaults in parentheses): `enabled` (true), `allow_domains` ([]), `deny_domains` ([]), `timeout_ms` (15000, at most 2147483647), `max_chars` (20000, hard cap 100000). A domain rule matches the exact hostname or a subdomain (`example.com` matches `a.example.com` and does not match `notexample.com`). A leading `*.` is accepted and means the same suffix. Rules are stored and compared as punycode, the same conversion the URL parser applies, so a Unicode name such as `münchen.de` matches `xn--mnchen-3ya.de`. An entry that cannot be normalised disables `web_fetch` and is named in a warning, so a typo cannot silently drop a deny rule and weaken the policy. Deny wins. An empty `allow_domains` is not an allowlist. A non-empty list rejects every other host. Redirects are checked again on every hop. A redirect that stays on the same host is followed. A redirect to a different host is followed only when that host passes the domain rules and is already confirmed in this session, or is covered by `allow_domains` or a headless `web_fetch_host` entry in `[risk].allow`. Otherwise the fetch stops before contacting the new host and returns that URL so a later `web_fetch` can confirm it. A batch of fetches to the same new host asks once. The result banner and final URL name the host that was actually contacted. The download itself stops at 2 MiB, and the DNS lookup shares the `timeout_ms` deadline and is cancelled with the turn; each redirect hop gets a fresh window for its own lookup and download, and the turn abort still cancels in-flight work. Bot-wall and empty script shells come back as blocked, not as page text. Private, loopback, link-local, and the IANA special-purpose ranges that are not globally reachable (including 198.18.0.0/15, the TEST-NET ranges, and the IPv6 documentation and benchmarking ranges) are always refused, both as a literal address and as a DNS answer.
 
 ## Known limitations
 

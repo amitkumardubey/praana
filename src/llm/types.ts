@@ -106,10 +106,12 @@ export interface StreamRequest {
   messages: ConversationMessage[];
   tools?: ToolDefinition[];
   signal?: AbortSignal;
-  reasoningEffort?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+  reasoningEffort?: "off" | "none" | "minimal" | "low" | "medium" | "high" | "xhigh";
   temperature?: number;
   maxTokens?: number;
   baseUrl?: string;
+  /** True when llm.base_url was explicitly configured, even to the built-in URL. */
+  baseUrlOverride?: boolean;
   headers?: Record<string, string>;
   compat?: ProviderWireCompat;
   region?: string;

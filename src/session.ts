@@ -31,6 +31,7 @@ import { loadConfig } from "./config.js";
 import { createConfirmLock } from "./risk/confirm-lock.js";
 import { promptYesNo } from "./risk/prompt.js";
 import type { RiskClass, RiskConfirmResult } from "./risk/classes.js";
+import { DEFAULT_WEB_CONFIG, decideWebHost, normalizeHost } from "./tools/web/policy.js";
 import { SessionNotFoundError } from "./session-errors.js";
 export { SessionNotFoundError } from "./session-errors.js";
 import {
@@ -161,6 +162,15 @@ export class Session {
   headless = false;
   /** When true, mutating tools are blocked until the user approves the plan. */
   planMode = false;
+  /** Hosts the user already confirmed for web_fetch in this process. */
+  private webFetchHosts = new Set<string>();
+  /** In-flight confirmations per host, so a concurrent batch prompts once. */
+  private webFetchInflight = new Map<string, Promise<RiskConfirmResult>>();
+  /**
+   * UI-supplied risk confirmation (the TUI overlay). When unset, the classic
+   * readline prompt on stdin/stderr is used.
+   */
+  private confirmHandler: ((prompt: string) => Promise<boolean>) | null = null;
   /** Internal turn-loop hook dispatcher (issue #574). */
   hooks: HookRegistry;
   /** Mutating-tool loop breaker (issue #578). */
@@ -595,6 +605,53 @@ export class Session {
     return this.planMode;
   }
 
+  webFetchPolicy(host: string): "disabled" | "deny" | "allow" | "confirm" {
+    const web = this.config.tools?.web ?? DEFAULT_WEB_CONFIG;
+    if (!web.enabled) return "disabled";
+    return decideWebHost(host, web);
+  }
+
+  webFetchHostRemembered(host: string): boolean {
+    return this.webFetchHosts.has(normalizeHost(host));
+  }
+
+  rememberWebFetchHost(host: string): void {
+    const name = normalizeHost(host);
+    if (name) this.webFetchHosts.add(name);
+  }
+
+  /**
+   * Install the UI's risk confirmation (the TUI overlay) or pass `null` to go
+   * back to the classic readline prompt. Headless sessions never prompt.
+   */
+  setConfirmHandler(handler: ((prompt: string) => Promise<boolean>) | null): void {
+    this.confirmHandler = handler;
+  }
+
+  /**
+   * Confirm a web_fetch host, sharing one prompt per host. `turn.ts` runs tool
+   * calls concurrently, so several fetches to the same new host would each
+   * pass the "not remembered yet" check and prompt in turn. The first caller
+   * creates the prompt; later callers await the same result.
+   */
+  confirmWebFetchHost(host: string, prompt: string): Promise<RiskConfirmResult> {
+    const name = normalizeHost(host);
+    if (name && this.webFetchHosts.has(name)) return Promise.resolve({ allowed: true });
+    const pending = name ? this.webFetchInflight.get(name) : undefined;
+    if (pending) return pending;
+    const confirmation = this.confirmRisk("web_fetch_host", prompt).then((result) => {
+      if (result.allowed && name) this.webFetchHosts.add(name);
+      return result;
+    });
+    if (name) {
+      this.webFetchInflight.set(name, confirmation);
+      void confirmation.finally(() => {
+        this.webFetchInflight.delete(name);
+      });
+    }
+    return confirmation;
+  }
+
   async confirmRisk(classId: RiskClass, prompt: string): Promise<RiskConfirmResult> {
     const allow = this.config.risk?.allow ?? [];
     if (this.headless) {
@@ -604,9 +661,16 @@ export class Session {
     }
     return this.confirmLock(async () => {
       try {
-        const yes = await promptYesNo(prompt);
+        const handler = this.confirmHandler;
+        const yes = handler ? await handler(prompt) : await promptYesNo(prompt);
         return yes ? { allowed: true } : { allowed: false, reason: "declined" };
-      } catch {
+      } catch (err) {
+        this.getLogger()
+          .child("tool")
+          .warn("Risk confirmation failed; declining", {
+            details: { class: classId },
+            cause: err as Error,
+          });
         return { allowed: false, reason: "declined" };
       }
     });

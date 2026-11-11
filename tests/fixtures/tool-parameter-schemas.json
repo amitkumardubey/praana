@@ -816,6 +816,29 @@
     ],
     "type": "object"
   },
+  "classic:web_fetch": {
+    "additionalProperties": false,
+    "properties": {
+      "focus": {
+        "description": "Return the sections most relevant to this text",
+        "type": "string"
+      },
+      "max_chars": {
+        "description": "Maximum characters of page text to return (default 20000)",
+        "maximum": 100000,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "url": {
+        "description": "http or https URL to fetch",
+        "type": "string"
+      }
+    },
+    "required": [
+      "url"
+    ],
+    "type": "object"
+  },
   "classic:write_file": {
     "additionalProperties": false,
     "properties": {
@@ -1792,6 +1815,29 @@
     },
     "required": [
       "id"
+    ],
+    "type": "object"
+  },
+  "engine:web_fetch": {
+    "additionalProperties": false,
+    "properties": {
+      "focus": {
+        "description": "Return the sections most relevant to this text",
+        "type": "string"
+      },
+      "max_chars": {
+        "description": "Maximum characters of page text to return (default 20000)",
+        "maximum": 100000,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "url": {
+        "description": "http or https URL to fetch",
+        "type": "string"
+      }
+    },
+    "required": [
+      "url"
     ],
     "type": "object"
   },

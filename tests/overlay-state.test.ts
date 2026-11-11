@@ -61,6 +61,50 @@ describe("createOverlayUi", () => {
     ]);
   }
 
+  it("defaults a confirm to step mode and keeps the mode with a queued entry", async () => {
+    const ui = createOverlayUi();
+    const first = ui.showConfirm("continue?");
+    expect(ui.confirmPrompt()?.mode).toBe("step");
+    const queued = ui.showConfirm("Fetch example.com? [y/N]", undefined, { mode: "yesno" });
+    expect(ui.confirmPrompt()?.mode).toBe("step");
+    ui.resolveConfirm(true);
+    expect(await first).toBe(true);
+    expect(ui.confirmPrompt()?.mode).toBe("yesno");
+    expect(ui.confirmPrompt()?.message).toBe("Fetch example.com? [y/N]");
+    ui.resolveConfirm(true);
+    expect(await queued).toBe(true);
+    expect(ui.kind()).toBe("none");
+    ui.dispose();
+  });
+
+  it("settles a yesno confirm true on yes and false on no", async () => {
+    const ui = createOverlayUi();
+    const yes = ui.showConfirm("ok? [y/N]", undefined, { mode: "yesno" });
+    expect(ui.confirmPrompt()?.mode).toBe("yesno");
+    ui.resolveConfirm(true);
+    expect(await yes).toBe(true);
+    const no = ui.showConfirm("ok? [y/N]", undefined, { mode: "yesno" });
+    ui.resolveConfirm(false);
+    expect(await no).toBe(false);
+    ui.dispose();
+  });
+
+  it("settles a queued yesno confirm false when its signal aborts", async () => {
+    const ui = createOverlayUi();
+    const first = ui.showConfirm("continue?");
+    const abort = new AbortController();
+    const risk = ui.showConfirm("ok? [y/N]", abort.signal, { mode: "yesno" });
+    abort.abort();
+    expect(await risk).toBe(false);
+    // The open step confirm is untouched and the queue is empty.
+    expect(ui.kind()).toBe("confirm");
+    expect(ui.confirmPrompt()?.message).toBe("continue?");
+    ui.resolveConfirm(true);
+    expect(await first).toBe(true);
+    expect(ui.kind()).toBe("none");
+    ui.dispose();
+  });
+
   it("keeps a step-pause confirm in front of other overlays until it is answered", async () => {
     const ui = createOverlayUi();
     const pending = ui.showConfirm("continue?");

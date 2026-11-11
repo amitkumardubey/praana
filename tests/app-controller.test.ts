@@ -36,6 +36,7 @@ mock.module("../src/session.js", () => ({
       setModelOverride: mock(),
       setProviderOverride: mock(),
       setIncognito: mock(async () => {}),
+      setConfirmHandler: mock(),
       getActiveModelId: () => "test/model",
       getActiveModelLabel: () => "openrouter/test/model",
       getEffectiveProvider: () => "openrouter",
@@ -104,6 +105,54 @@ const baseParsed: CliArgs = {
   memoryDedupeMode: false,
 };
 
+/** Minimal session stub for the tests that assert on what the controller binds. */
+function stubSession(id: string): Record<string, unknown> {
+  return {
+    id,
+    cwd: "/tmp",
+    debug: false,
+    config: baseConfig,
+    getModelOverride: () => null,
+    getProviderOverride: () => null,
+    setModelOverride: mock(),
+    setProviderOverride: mock(),
+    setIncognito: mock(async () => {}),
+    setConfirmHandler: mock(),
+    getActiveModelId: () => "test/model",
+    getActiveModelLabel: () => "openrouter/test/model",
+    getEffectiveProvider: () => "openrouter",
+    getContextWindowTokens: () => 128_000,
+    refreshModelContextWindow: mock(async () => 128_000),
+    getMemoryStats: () => ({ total: 0, active: 0, soft: 0, hard: 0, byKind: {} }),
+    getRepoRoot: () => "/tmp",
+    getGitBranch: () => null,
+    memoryEnabled: false,
+    isIncognito: () => false,
+    isPlanMode: () => false,
+    digest: null,
+    agentsContext: null,
+    skills: [],
+    skillRuntime: null,
+    getLastCompileMetrics: () => null,
+    getLastWeightedTokens: () => 0,
+    getLastPressureMode: () => "normal" as const,
+    getLastRawPressureRatio: () => 0,
+    getDisplayContextSnapshot: () => null,
+    isContextEngineEnabled: () => false,
+    getStartedAt: () => Date.now(),
+    getUptimeMs: () => 0,
+    getTurnCount: () => 0,
+    getInputTokens: () => 0,
+    getOutputTokens: () => 0,
+    getPersistentMemoryEntryCount: () => 0,
+    getMemoryDbPath: () => null,
+    stateGraph: { list: () => [] },
+    eventLog: { readLast: () => [] },
+    end: mock(async () => ({ memory: "skipped" as const })),
+    getTranscriptEvents: () => [],
+  };
+}
+
 describe("AppController", () => {
   const originalPraanaHome = process.env.PRAANA_HOME;
   let praanaHome: string;
@@ -148,6 +197,52 @@ describe("AppController", () => {
     expect(info.bannerLines.some((l) => l.includes("sess-1"))).toBe(true);
     const status = controller.getStatusBarInput();
     expect(status.model).toBe("openrouter/test/model");
+  });
+
+  it("binds the risk confirm handler to every session it creates", async () => {
+    const controller = new AppController({
+      cwd: "/tmp",
+      config: baseConfig,
+      parsed: baseParsed,
+    });
+    const handler = async () => true;
+    controller.setConfirmHandler(handler);
+
+    // start() binds the session it creates.
+    await controller.start();
+    const created = controller.session.setConfirmHandler as ReturnType<typeof mock>;
+    expect(created).toHaveBeenCalledWith(handler);
+
+    // startNewSession() binds the fresh session it swaps in.
+    const tmpConfigPath = join(tmpdir(), `praana-test-confirm-${Date.now()}.json`);
+    writeFileSync(tmpConfigPath, JSON.stringify({ llm: { model: "reloaded/model" } }), "utf-8");
+    controller.parsed.configPath = tmpConfigPath;
+    const create = Session.create as Mock<typeof Session.create>;
+    create.mockResolvedValueOnce(stubSession("sess-new") as any);
+    await controller.startNewSession();
+    expect(controller.session.id).toBe("sess-new");
+    expect(
+      controller.session.setConfirmHandler as ReturnType<typeof mock>,
+    ).toHaveBeenCalledWith(handler);
+    rmSync(tmpConfigPath, { force: true });
+
+    // The rollback path (/new threw) binds the session it swaps in too.
+    create
+      .mockRejectedValueOnce(new Error("boom"))
+      .mockResolvedValueOnce(stubSession("sess-rollback") as any);
+    await expect(controller.startNewSession()).rejects.toThrow("boom");
+    expect(controller.session.id).toBe("sess-rollback");
+    expect(
+      controller.session.setConfirmHandler as ReturnType<typeof mock>,
+    ).toHaveBeenCalledWith(handler);
+
+    // A live session picks the handler up immediately, and null clears it.
+    const live = controller.session.setConfirmHandler as ReturnType<typeof mock>;
+    live.mockClear();
+    controller.setConfirmHandler(handler);
+    expect(live).toHaveBeenCalledWith(handler);
+    controller.setConfirmHandler(null);
+    expect(live).toHaveBeenLastCalledWith(null);
   });
 
   it("delegates slash commands with structured results", async () => {
@@ -240,6 +335,7 @@ describe("AppController", () => {
       setModelOverride: mock(),
       setProviderOverride: mock(),
       setIncognito: mock(async () => {}),
+      setConfirmHandler: mock(),
       getActiveModelId: () => "reloaded/model",
       getActiveModelLabel: () => "openrouter/reloaded/model",
       getEffectiveProvider: () => "openrouter",
@@ -515,6 +611,7 @@ describe("AppController", () => {
       setModelOverride: mock(),
       setProviderOverride: mock(),
       setIncognito: mock(async () => {}),
+      setConfirmHandler: mock(),
       getActiveModelId: () => "test/model",
       getActiveModelLabel: () => "openrouter/test/model",
       getEffectiveProvider: () => "openrouter",
@@ -560,11 +657,17 @@ describe("AppController", () => {
       config: { ...baseConfig, session: { log_dir: logDir } },
       parsed: { ...baseParsed, resumeMode: true, sessionId: null },
     });
+    // Set before start(): the resume branch must still bind it.
+    const handler = async () => true;
+    controller.setConfirmHandler(handler);
 
     const info = await controller.start();
     expect(resume).toHaveBeenCalledWith(sessionId, cwd, expect.any(Object), expect.any(Object));
     expect(info.isResume).toBe(true);
     expect(info.session.id).toBe(sessionId);
+    expect(
+      info.session.setConfirmHandler as ReturnType<typeof mock>,
+    ).toHaveBeenCalledWith(handler);
 
     rmSync(logDir, { recursive: true, force: true });
   });
@@ -631,6 +734,7 @@ describe("AppController", () => {
       setModelOverride: mock(),
       setProviderOverride: mock(),
       setIncognito: mock(async () => {}),
+      setConfirmHandler: mock(),
       getActiveModelId: () => "test/model",
       getActiveModelLabel: () => "openrouter/test/model",
       getEffectiveProvider: () => "openrouter",
@@ -731,6 +835,7 @@ describe("AppController", () => {
       setModelOverride: mock(),
       setProviderOverride: mock(),
       setIncognito,
+      setConfirmHandler: mock(),
       getActiveModelId: () => "test/model",
       getActiveModelLabel: () => "openrouter/test/model",
       getEffectiveProvider: () => "openrouter",
@@ -803,6 +908,7 @@ describe("AppController", () => {
         providerOverride = p;
       },
       setIncognito: mock(async () => {}),
+      setConfirmHandler: mock(),
       getActiveModelId: () => modelOverride ?? "test/model",
       getActiveModelLabel: () =>
         `${providerOverride ?? "openrouter"}/${modelOverride ?? "test/model"}`,

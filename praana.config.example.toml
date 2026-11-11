@@ -56,6 +56,15 @@ model = "deepseek/deepseek-v4-flash:free"
 
 # Optional: Custom API base URL (e.g., for self-hosted or proxy)
 # base_url = "https://my-proxy.example.com/v1"
+# Any explicit llm.base_url keeps OpenAI on Chat Completions, even the built-in URL.
+# To force Chat Completions when a first-party model rejects Responses, instead
+# add this provider table (llm.provider stays "openai"). Remove it to restore auto.
+# User-declared providers default to lenient stream ends; set llm.stream_end_check
+# to "strict" if you want strict first-party checks with this override.
+# [providers.openai]
+# api = "openai-completions"
+# base_url = "https://api.openai.com/v1"
+# env_key = "OPENAI_API_KEY"
 
 # API keys are read from env vars:
 #   openrouter    → OPENROUTER_API_KEY
@@ -267,6 +276,34 @@ w_relevance = 0.3
 compact_at = 0.70
 # Emergency: drop all turn digests, keep checkpoint + verbatim last 2 turns
 emergency_at = 0.85
+
+[tools]
+# Second and later read of an unchanged file returns the artifact card (false)
+# or hard-fails (true).
+block_repeat_reads = false
+
+[tools.web]
+# Fetch a public http(s) URL. On by default. Private and local addresses are
+# always refused. The first fetch of a host in a session asks for confirmation;
+# later fetches of that same host do not. A headless run (praana run) refuses
+# unless the host matches allow_domains or [risk].allow includes "web_fetch_host".
+enabled = true
+# Dot-boundary suffix match: "example.com" matches that host and any subdomain.
+# A leading "*." is accepted and means the same thing. Deny wins over allow.
+# An empty allow_domains is not an allowlist (the session confirmation applies).
+# A non-empty allow_domains rejects every host that matches neither list.
+# An entry that is not a hostname disables web_fetch (and warns) rather than
+# being dropped, so a typo cannot silently weaken the policy.
+allow_domains = []
+deny_domains = []
+# At most 2147483647 (the timer limit).
+timeout_ms = 15000
+max_chars = 20000
+
+[risk]
+# Headless-only class ids that skip the confirmation prompt.
+# "web_fetch_host" permits fetching hosts that are not on allow_domains.
+allow = []
 
 [ui]
 # pi-tui terminal shell. The TUI uses native scrollback; there is no alternate
