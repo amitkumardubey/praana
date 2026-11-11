@@ -195,7 +195,7 @@ const SHARED_TOOL_DESCRIPTIONS = [
   "recall(query, mode?, kinds?) — Search Cognitive Memory",
   "remember(content, kind?, certainty?, scope?) — Store in Cognitive Memory (kinds: fact, preference, decision, pattern, mistake, constraint)",
   "forget_memory(id) — Retract a Cognitive Memory entry (tombstone)",
-  "shell(command, timeout?) — Execute a shell command",
+  "shell(command, timeout?) — Execute a shell command (not for fetching URLs: use web_fetch, which enforces the address guard)",
   "read_file(path, offset?, limit?) — Read a file",
   "write_file(path, content) — Write or overwrite a file",
   "edit_file(path, oldText, newText) — Replace text in a file",

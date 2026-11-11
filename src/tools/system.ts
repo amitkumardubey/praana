@@ -356,7 +356,7 @@ export function createSystemTools(ctx: SystemToolContext) {
   return {
     shell: defineTool({
       description:
-        "Execute a shell command in the working directory. Returns stdout, stderr, and exit code.",
+        "Execute a shell command in the working directory. Returns stdout, stderr, and exit code. Do not use it to fetch web pages (curl/wget); use web_fetch.",
       parameters: z.object({
         command: z.string().describe("Shell command to execute"),
         timeout: z
