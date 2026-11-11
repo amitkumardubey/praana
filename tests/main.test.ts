@@ -7,6 +7,10 @@ import { providerEnvKeyNames } from "./helpers/provider-env-keys.js";
 
 const PROVIDER_ENV_KEYS = providerEnvKeyNames();
 
+// Each case cold-starts `bun src/main.ts` in a subprocess (2-4 s alone, longer under
+// full-suite load), which brushes against bun:test's 5 s default.
+const SUBPROCESS_TEST_TIMEOUT_MS = 60_000;
+
 describe("main entrypoint guards", () => {
   let root: string;
   let originalHome: string | undefined;
@@ -62,7 +66,7 @@ describe("main entrypoint guards", () => {
 
     expect(result.status).toBe(1);
     expect(stderr).toContain("interactive terminal");
-  });
+  }, SUBPROCESS_TEST_TIMEOUT_MS);
 
   it("exits cleanly when a model is not configured", () => {
     const configPath = join(root, "config.toml");
@@ -78,7 +82,7 @@ describe("main entrypoint guards", () => {
     expect(result.status).toBe(1);
     expect(stderr).toContain("No model is configured");
     expect(stderr).not.toContain("interactive terminal");
-  });
+  }, SUBPROCESS_TEST_TIMEOUT_MS);
 
   it("auto-selects a single env provider and skips the no-key exit path", () => {
     // No config file — true first run. Exactly one key-requiring provider available.
@@ -106,5 +110,5 @@ describe("main entrypoint guards", () => {
     // Still non-TTY, so session start fails later — but not on the missing-key path.
     expect(result.status).toBe(1);
     expect(stderr).toContain("interactive terminal");
-  });
+  }, SUBPROCESS_TEST_TIMEOUT_MS);
 });
