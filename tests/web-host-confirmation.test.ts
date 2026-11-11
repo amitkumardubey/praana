@@ -14,12 +14,16 @@ import { Session } from "../src/session.js";
 describe("web_fetch host confirmation is shared per host", () => {
   const dirs: string[] = [];
 
-  function makeSession(): { session: Session; prompts: string[] } {
+  function newSession(): Session {
     const dir = mkdtempSync(join(tmpdir(), "praana-web-host-"));
     dirs.push(dir);
     const config = loadConfig();
     config.session.log_dir = join(dir, "sessions");
-    const session = Session.createNew("test-session", dir, config);
+    return Session.createNew("test-session", dir, config);
+  }
+
+  function makeSession(): { session: Session; prompts: string[] } {
+    const session = newSession();
     const prompts: string[] = [];
     session.confirmRisk = async (_classId, prompt) => {
       prompts.push(prompt);
@@ -27,6 +31,18 @@ describe("web_fetch host confirmation is shared per host", () => {
       await new Promise((resolve) => setTimeout(resolve, 10));
       return { allowed: true };
     };
+    return { session, prompts };
+  }
+
+  /** Same sharing, but driven through the UI handler rather than a stub. */
+  function makeHandlerSession(answer = true): { session: Session; prompts: string[] } {
+    const session = newSession();
+    const prompts: string[] = [];
+    session.setConfirmHandler(async (message) => {
+      prompts.push(message);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return answer;
+    });
     return { session, prompts };
   }
 
@@ -75,6 +91,32 @@ describe("web_fetch host confirmation is shared per host", () => {
     ]);
     expect(a.allowed).toBe(false);
     expect(b.allowed).toBe(false);
+    expect(prompts).toHaveLength(1);
+    expect(session.webFetchHostRemembered("example.com")).toBe(false);
+  });
+
+  it("shares one handler prompt and remembers an allowed host", async () => {
+    const { session, prompts } = makeHandlerSession();
+    const results = await Promise.all([
+      session.confirmWebFetchHost("example.com", "Fetch example.com? [y/N]"),
+      session.confirmWebFetchHost("example.com", "Fetch example.com? [y/N]"),
+    ]);
+    expect(results).toEqual([{ allowed: true }, { allowed: true }]);
+    expect(prompts).toEqual(["Fetch example.com? [y/N]"]);
+    expect(session.webFetchHostRemembered("example.com")).toBe(true);
+    // Remembered: no second prompt for the same host.
+    expect(await session.confirmWebFetchHost("example.com", "again")).toEqual({ allowed: true });
+    expect(prompts).toHaveLength(1);
+  });
+
+  it("a handler decline is shared and does not remember the host", async () => {
+    const { session, prompts } = makeHandlerSession(false);
+    const [a, b] = await Promise.all([
+      session.confirmWebFetchHost("example.com", "x"),
+      session.confirmWebFetchHost("example.com", "x"),
+    ]);
+    expect(a).toEqual({ allowed: false, reason: "declined" });
+    expect(b).toEqual({ allowed: false, reason: "declined" });
     expect(prompts).toHaveLength(1);
     expect(session.webFetchHostRemembered("example.com")).toBe(false);
   });

@@ -237,6 +237,8 @@ export async function runTui(
   // interrupt a running turn even when a non-modal overlay (palette/model) is
   // open without a selection.
   let turnRunning = false;
+  /** Aborts when the live turn is interrupted; settles a risk confirm false. */
+  let turnAbort: AbortController | null = null;
   let ready = false;
   let agentsTruncationToastShown = false;
   let attachSinkImpl: ((started: StartupInfo) => void) | null = null;
@@ -522,6 +524,32 @@ export async function runTui(
     }
   };
 
+  /**
+   * Interactive risk confirmation (destructive shell, package installs, writes
+   * outside the project, an unseen web_fetch host): the same overlay as the
+   * step pause, in yes/no mode. A readline prompt here fought OpenTUI for the
+   * same stdin while the terminal was in raw mode with mouse tracking on.
+   * Ctrl+C is left for the global handler, which aborts the turn and settles
+   * this false.
+   */
+  const askRiskFromOverlay = async (message: string, signal?: AbortSignal): Promise<boolean> => {
+    const own = signal ?? turnAbort?.signal;
+    if (own?.aborted) return false;
+    ui.spinner.stop();
+    // showConfirm closes itself when the signal aborts, so an interrupted turn
+    // cannot leave the question or its key intercept on screen.
+    const pending = overlay.showConfirm(message, own, { mode: "yesno" });
+    renderer.requestRender();
+    try {
+      const yes = await pending;
+      focusPromptAfterConfirm(overlay.kind(), focusPrompt);
+      if (yes && !own?.aborted && turnRunning) ui.spinner.start("working…");
+      return yes && !own?.aborted;
+    } finally {
+      renderer.requestRender();
+    }
+  };
+
   const handleLogoutComplete = (result: LogoutWizardResult) => {
     dismissOverlay();
     if (result.needsLogin) {
@@ -631,6 +659,8 @@ export async function runTui(
       const started = await controller.startNewSession();
       config = controller.config;
       session = controller.session;
+      // The new session starts without the UI handler; bind it like attachSink.
+      session.setConfirmHandler(askRiskFromOverlay);
 
       projection.apply({ type: "transcript_cleared" });
       transcript.clear();
@@ -760,12 +790,14 @@ export async function runTui(
     ui.spinner.start("thinking…");
     turnStartedAt = Date.now();
     turnRunning = true;
+    turnAbort = new AbortController();
 
     try {
       await waitForSubmittedFrame(renderer);
       await controller.runUserTurn(input, openTuiSink);
     } finally {
       turnRunning = false;
+      turnAbort = null;
       ui.spinner.stop();
       openTuiSink.appendTurnFooter(Date.now() - turnStartedAt);
       refreshChrome();
@@ -829,6 +861,9 @@ export async function runTui(
               (prompt?.getText().length ?? 0) === 0,
             );
             if (action === "abort_turn") {
+              // Settle a pending risk confirm as declined, so its overlay cannot
+              // outlive the turn it belongs to.
+              turnAbort?.abort();
               ui.spinner.stop();
               openTuiSink?.onFallback("⚡ turn aborted");
               renderer.requestRender();
@@ -882,6 +917,9 @@ export async function runTui(
             session = controller.session;
             config = controller.config;
             const live = controller.session;
+            // Sessions are replaced on /new, so bind the overlay handler to the
+            // session this attach is for rather than to `session` at call time.
+            live.setConfirmHandler(askRiskFromOverlay);
             const modelId = controller.currentModelOrDefault();
             const ctxWindow =
               live.getContextWindowTokens(modelId) || DEFAULT_CONTEXT_WINDOW;

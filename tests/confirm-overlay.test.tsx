@@ -9,7 +9,7 @@ import { render } from "@opentui/solid";
 import { createComponent } from "solid-js";
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui";
 import { KeymapProvider, useBindings } from "@opentui/keymap/solid";
-import { classifyStepPauseKey, ConfirmOverlay, CONFIRM_ARM_MS } from "../src/ui/tui/overlays/confirm.js";
+import { classifyStepPauseKey, classifyYesNoKey, ConfirmOverlay, CONFIRM_ARM_MS, formatConfirmQuestion } from "../src/ui/tui/overlays/confirm.js";
 import { createOverlayUi } from "../src/ui/tui/overlays/state.js";
 import { focusPromptAfterConfirm } from "../src/ui/tui/run.tsx";
 
@@ -32,10 +32,12 @@ function PauseHarness(props: {
 
 async function mount(
   armMs: number,
-  hooks?: { onCtrlC?: () => void; onEnter?: () => void; signal?: AbortSignal },
+  hooks?: { onCtrlC?: () => void; onEnter?: () => void; signal?: AbortSignal; mode?: "step" | "yesno"; message?: string },
 ) {
   const overlay = createOverlayUi();
-  const pending = overlay.showConfirm("Continue?", hooks?.signal);
+  const pending = overlay.showConfirm(hooks?.message ?? "Continue?", hooks?.signal, {
+    mode: hooks?.mode ?? "step",
+  });
   const setup = await createTestRenderer({ width: 80, height: 24 });
   const keymap = createDefaultOpenTuiKeymap(setup.renderer);
   const onCtrlC = hooks?.onCtrlC ?? (() => {});
@@ -215,5 +217,95 @@ describe("ConfirmOverlay arm delay", () => {
     setup.mockInput.pressEscape();
     expect(await pending).toBe(false);
     setup.renderer.destroy();
+  });
+});
+
+describe("classifyYesNoKey", () => {
+  it("ignores every key during the arm window", () => {
+    for (const key of ["y", "Y", "n", "enter", "escape", "x"]) {
+      expect(classifyYesNoKey(key, false, false)).toBe("ignore");
+    }
+  });
+
+  it("accepts y and Y once armed", () => {
+    expect(classifyYesNoKey("y", false, true)).toBe("yes");
+    expect(classifyYesNoKey("Y", false, true)).toBe("yes");
+  });
+
+  it("declines on n, Enter, and Esc once armed", () => {
+    expect(classifyYesNoKey("n", false, true)).toBe("no");
+    expect(classifyYesNoKey("N", false, true)).toBe("no");
+    expect(classifyYesNoKey("enter", false, true)).toBe("no");
+    expect(classifyYesNoKey("return", false, true)).toBe("no");
+    expect(classifyYesNoKey("escape", false, true)).toBe("no");
+    expect(classifyYesNoKey("esc", false, true)).toBe("no");
+  });
+
+  it("swallows other keys without answering", () => {
+    for (const key of ["x", "space", "tab", "up", "1"]) {
+      expect(classifyYesNoKey(key, false, true)).toBe("ignore");
+    }
+  });
+
+  it("passes Ctrl+C through inside and outside the arm window", () => {
+    expect(classifyYesNoKey("c", true, true)).toBe("passthrough");
+    expect(classifyYesNoKey("c", true, false)).toBe("passthrough");
+    // Ctrl+C keeps its abort meaning even though `c` alone does nothing.
+    expect(classifyYesNoKey("c", false, true)).toBe("ignore");
+  });
+
+  it("drops the terminal-only [y/N] suffix for display", () => {
+    expect(formatConfirmQuestion("Fetch https://bun.sh/docs? [y/N]", "yesno")).toBe(
+      "Fetch https://bun.sh/docs?",
+    );
+    expect(formatConfirmQuestion("shell: rm -rf tmp", "yesno")).toBe("shell: rm -rf tmp");
+    expect(formatConfirmQuestion("Used 5 steps this turn. Continue?", "step")).toBe(
+      "Used 5 steps this turn. Continue?",
+    );
+  });
+});
+
+describe("ConfirmOverlay yes/no mode", () => {
+  it("shows the risk question without [y/N] and the yes/no hint", async () => {
+    const { setup, overlay } = await mount(0, {
+      mode: "yesno",
+      message: "Fetch https://bun.sh/docs? [y/N]",
+    });
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("Fetch https://bun.sh/docs?");
+    expect(frame).not.toContain("[y/N]");
+    expect(frame).toContain("y = yes");
+    expect(frame).toContain("n / Enter / Esc = no");
+    expect(frame).toContain("Ctrl+C = abort");
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+
+  it("accepts on y once armed", async () => {
+    const { setup, pending } = await mount(0, { mode: "yesno", message: "ok? [y/N]" });
+    setup.mockInput.pressKey("y");
+    expect(await pending).toBe(true);
+    setup.renderer.destroy();
+  });
+
+  it("declines on Enter and Esc once armed", async () => {
+    const enter = await mount(0, { mode: "yesno" });
+    enter.setup.mockInput.pressEnter();
+    expect(await enter.pending).toBe(false);
+    enter.setup.renderer.destroy();
+
+    const esc = await mount(0, { mode: "yesno" });
+    esc.setup.mockInput.pressEscape();
+    expect(await esc.pending).toBe(false);
+    esc.setup.renderer.destroy();
+  });
+
+  it("ignores the answer keys while the arm window is open", async () => {
+    const { setup, pending, overlay } = await mount(60_000, { mode: "yesno" });
+    setup.mockInput.pressKey("y");
+    setup.mockInput.pressEnter();
+    expect(await stillPending(pending)).toBe(true);
+    setup.renderer.destroy();
+    overlay.dispose();
   });
 });
