@@ -34,6 +34,7 @@ describe("compile-classic", () => {
     expect(frame).not.toContain("Working Memory Status");
     expect(frame).not.toContain("## Available Tools");
     expect(frame).toContain("## Tool Use");
+    expect(frame).toMatch(/use web_fetch[^\n]*curl/i);
   });
 
   it("includes project stack separately from agents project context", () => {

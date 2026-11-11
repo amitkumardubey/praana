@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { buildClassicSystemFrame } from "../src/compile-classic.js";
 import { buildSystemFrame } from "../src/compiler.js";
+import { describeTools } from "../src/tools/index.js";
+import { createSystemTools } from "../src/tools/system.js";
 import { webFetch } from "../src/tools/web/fetch.js";
 import { createWebFetchTool } from "../src/tools/web/tool.js";
 import type { GuardTransport, HostLookup } from "../src/tools/web/ssrf.js";
@@ -39,6 +41,15 @@ describe("untrusted web content", () => {
     const description = tool.description.toLowerCase();
     expect(description).toContain("untrusted");
     expect(description).toContain("never follow");
+  });
+
+  it("directs URL fetching away from shell in tool descriptions", () => {
+    const shell = createSystemTools({ cwd: "/proj", skills: [], skillRuntime: null }).shell;
+    expect(shell.description).toMatch(/curl[^\n]*use web_fetch/i);
+    for (const classicMode of [true, false]) {
+      const description = describeTools({ classicMode }).find((entry) => entry.startsWith("shell("));
+      expect(description).toMatch(/use web_fetch[^\n]*address guard/i);
+    }
   });
 
   it("tells the system prompt that web_fetch text is untrusted", () => {

@@ -330,6 +330,7 @@ describe('Compiler', () => {
     expect(prompt).toContain('## Tool Use');
     expect(prompt).toContain('Use the provided tools');
     expect(prompt).toContain('execute concurrently');
+    expect(prompt).toMatch(/use web_fetch[^\n]*curl/i);
   });
 
   it('excludes current user input from the system prompt (lives in messages)', () => {
