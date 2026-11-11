@@ -55,11 +55,32 @@ export class AppController {
 
   private readonly turnController = new TurnController();
   private interruptHandling = false;
+  /**
+   * UI risk confirmation (the TUI overlay), re-applied to every session this
+   * controller creates. `null` leaves the classic readline prompt in place.
+   */
+  private confirmHandler: ((prompt: string) => Promise<boolean>) | null = null;
 
   constructor(opts: { cwd?: string; config: PraanaConfig; parsed: CliArgs }) {
     this.cwd = opts.cwd ?? resolve(process.cwd());
     this.config = opts.config;
     this.parsed = opts.parsed;
+  }
+
+  /**
+   * Install the UI risk confirmation (or `null` to fall back to the readline
+   * prompt). The handler is stored and bound to the current session, and is
+   * re-applied to every session this controller creates afterwards, so a
+   * resumed, /new, or rolled-back session cannot lose it.
+   */
+  setConfirmHandler(handler: ((prompt: string) => Promise<boolean>) | null): void {
+    this.confirmHandler = handler;
+    if (this.session) this.session.setConfirmHandler(handler);
+  }
+
+  /** Bind the stored handler to a freshly assigned `this.session`. */
+  private applyConfirmHandler(): void {
+    if (this.session) this.session.setConfirmHandler(this.confirmHandler);
   }
 
   async start(): Promise<StartupInfo> {
@@ -82,6 +103,7 @@ export class AppController {
           captureNotice,
           suppressLoggerStderr: true,
         });
+        this.applyConfirmHandler();
         didResume = true;
       } else {
         startupNotices.push(`No session found for this directory: ${this.cwd}`);
@@ -91,6 +113,7 @@ export class AppController {
           captureNotice,
           suppressLoggerStderr: true,
         });
+        this.applyConfirmHandler();
       }
       if (didResume) {
         const staleTasks = this.session.getStaleTasks?.() ?? [];
@@ -110,6 +133,7 @@ export class AppController {
         captureNotice,
         suppressLoggerStderr: true,
       });
+      this.applyConfirmHandler();
       this.session.debug = debug;
     }
 
@@ -365,6 +389,7 @@ export class AppController {
           }
         },
       });
+      this.applyConfirmHandler();
       this.session.debug = this.parsed.debug;
       this.sessionEnded = false;
       const settingsNotices = await this.applyPersistedSettings({ applyModel: true });
@@ -401,6 +426,7 @@ export class AppController {
         incognito: this.parsed.incognito,
         captureNotice: () => {},
       });
+      this.applyConfirmHandler();
       this.session.debug = this.parsed.debug;
       this.sessionEnded = false;
       await this.applyPersistedSettings({ applyModel: true });

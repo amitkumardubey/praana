@@ -6,7 +6,7 @@
  * readline prompt; with no handler the classic `promptYesNo` path is kept.
  * The headless branch never prompts.
  */
-import { afterAll, describe, expect, it, spyOn } from "bun:test";
+import { afterAll, describe, expect, it, mock, spyOn } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,7 @@ import { loadConfig } from "../src/config.js";
 import { createConfirmLock } from "../src/risk/confirm-lock.js";
 import * as prompt from "../src/risk/prompt.js";
 import { Session } from "../src/session.js";
+import type { PraanaLogger } from "../src/logger.js";
 
 const dirs: string[] = [];
 
@@ -65,6 +66,29 @@ describe("Session.confirmRisk", () => {
       allowed: false,
       reason: "declined",
     });
+  });
+
+  it("logs a handler failure with the risk class before declining", async () => {
+    const session = makeSession();
+    session.setConfirmHandler(async () => {
+      throw new Error("overlay closed");
+    });
+    // The session logger is built lazily, so intercept the one entry point.
+    const warn = mock(() => {});
+    const logger = { child: () => ({ warn }) } as unknown as PraanaLogger;
+    spyOn(session, "getLogger").mockReturnValue(logger);
+    expect(await session.confirmRisk("web_fetch_host", "Fetch example.com? [y/N]")).toEqual({
+      allowed: false,
+      reason: "declined",
+    });
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [message, opts] = warn.mock.calls[0] as [
+      string,
+      { details?: { class?: string }; cause?: Error },
+    ];
+    expect(message).toContain("Risk confirmation failed");
+    expect(opts.details?.class).toBe("web_fetch_host");
+    expect(opts.cause?.message).toBe("overlay closed");
   });
 
   it("serialises concurrent confirmations through the lock", async () => {

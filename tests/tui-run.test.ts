@@ -81,6 +81,40 @@ describe("step-pause confirm focus", () => {
   });
 });
 
+describe("risk confirm wiring", () => {
+  const src = readFileSync(new URL("../src/ui/tui/run.tsx", import.meta.url), "utf8");
+
+  it("binds the overlay handler once, through the controller", () => {
+    // The controller re-applies it to every session it creates or resumes, so
+    // per-attach and post-/new bindings would be dead weight and easy to miss.
+    expect(src.match(/setConfirmHandler\(/g)).toHaveLength(1);
+    expect(src).toContain("controller.setConfirmHandler(askRiskFromOverlay)");
+  });
+
+  it("restarts the spinner after either answer", () => {
+    const ask = src.slice(
+      src.indexOf("const askRiskFromOverlay"),
+      src.indexOf("const handleLogoutComplete"),
+    );
+    // A declined confirmation is a tool result, not the end of the turn, so the
+    // spinner has to come back or the UI looks hung until the next event.
+    expect(ask).toContain('if (turnRunning && !own?.aborted) ui.spinner.start("working…")');
+    expect(ask).toContain("return yes && !own?.aborted");
+  });
+
+  it("settles a confirm still open when the turn ends", () => {
+    const finallyBlock = src.slice(
+      src.indexOf("turnRunning = false;"),
+      src.indexOf("openTuiSink.appendTurnFooter"),
+    );
+    expect(finallyBlock).toContain("turnAbort?.abort()");
+    // Abort before dropping the reference, so the overlay cannot outlive the turn.
+    expect(finallyBlock.indexOf("turnAbort?.abort()")).toBeLessThan(
+      finallyBlock.indexOf("turnAbort = null"),
+    );
+  });
+});
+
 describe("runTui Solid shell primitives", () => {
   it("creates disposable shell, overlay, and transcript stores", () => {
     const ui = createShellUi();

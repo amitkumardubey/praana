@@ -532,8 +532,8 @@ export async function runTui(
    * Ctrl+C is left for the global handler, which aborts the turn and settles
    * this false.
    */
-  const askRiskFromOverlay = async (message: string, signal?: AbortSignal): Promise<boolean> => {
-    const own = signal ?? turnAbort?.signal;
+  const askRiskFromOverlay = async (message: string): Promise<boolean> => {
+    const own = turnAbort?.signal;
     if (own?.aborted) return false;
     ui.spinner.stop();
     // showConfirm closes itself when the signal aborts, so an interrupted turn
@@ -543,12 +543,19 @@ export async function runTui(
     try {
       const yes = await pending;
       focusPromptAfterConfirm(overlay.kind(), focusPrompt);
-      if (yes && !own?.aborted && turnRunning) ui.spinner.start("working…");
+      // Either answer returns to the model: a "no" is a declined tool result
+      // and the turn keeps going, so the spinner has to come back or the UI
+      // looks hung until the next event.
+      if (turnRunning && !own?.aborted) ui.spinner.start("working…");
       return yes && !own?.aborted;
     } finally {
       renderer.requestRender();
     }
   };
+
+  // One binding for every session this controller creates or resumes: runTui
+  // replaces its session on /new, setup, and rollback.
+  controller.setConfirmHandler(askRiskFromOverlay);
 
   const handleLogoutComplete = (result: LogoutWizardResult) => {
     dismissOverlay();
@@ -659,8 +666,6 @@ export async function runTui(
       const started = await controller.startNewSession();
       config = controller.config;
       session = controller.session;
-      // The new session starts without the UI handler; bind it like attachSink.
-      session.setConfirmHandler(askRiskFromOverlay);
 
       projection.apply({ type: "transcript_cleared" });
       transcript.clear();
@@ -797,6 +802,9 @@ export async function runTui(
       await controller.runUserTurn(input, openTuiSink);
     } finally {
       turnRunning = false;
+      // Settle a confirm still open when the turn ends for any reason (provider
+      // error, abort, finish), so its overlay cannot outlive the turn.
+      turnAbort?.abort();
       turnAbort = null;
       ui.spinner.stop();
       openTuiSink.appendTurnFooter(Date.now() - turnStartedAt);
@@ -917,9 +925,6 @@ export async function runTui(
             session = controller.session;
             config = controller.config;
             const live = controller.session;
-            // Sessions are replaced on /new, so bind the overlay handler to the
-            // session this attach is for rather than to `session` at call time.
-            live.setConfirmHandler(askRiskFromOverlay);
             const modelId = controller.currentModelOrDefault();
             const ctxWindow =
               live.getContextWindowTokens(modelId) || DEFAULT_CONTEXT_WINDOW;

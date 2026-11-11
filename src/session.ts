@@ -170,7 +170,7 @@ export class Session {
    * UI-supplied risk confirmation (the TUI overlay). When unset, the classic
    * readline prompt on stdin/stderr is used.
    */
-  private confirmHandler: ((prompt: string, signal?: AbortSignal) => Promise<boolean>) | null = null;
+  private confirmHandler: ((prompt: string) => Promise<boolean>) | null = null;
   /** Internal turn-loop hook dispatcher (issue #574). */
   hooks: HookRegistry;
   /** Mutating-tool loop breaker (issue #578). */
@@ -624,9 +624,7 @@ export class Session {
    * Install the UI's risk confirmation (the TUI overlay) or pass `null` to go
    * back to the classic readline prompt. Headless sessions never prompt.
    */
-  setConfirmHandler(
-    handler: ((prompt: string, signal?: AbortSignal) => Promise<boolean>) | null,
-  ): void {
+  setConfirmHandler(handler: ((prompt: string) => Promise<boolean>) | null): void {
     this.confirmHandler = handler;
   }
 
@@ -666,7 +664,13 @@ export class Session {
         const handler = this.confirmHandler;
         const yes = handler ? await handler(prompt) : await promptYesNo(prompt);
         return yes ? { allowed: true } : { allowed: false, reason: "declined" };
-      } catch {
+      } catch (err) {
+        this.getLogger()
+          .child("tool")
+          .warn("Risk confirmation failed; declining", {
+            details: { class: classId },
+            cause: err as Error,
+          });
         return { allowed: false, reason: "declined" };
       }
     });
