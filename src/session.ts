@@ -166,6 +166,11 @@ export class Session {
   private webFetchHosts = new Set<string>();
   /** In-flight confirmations per host, so a concurrent batch prompts once. */
   private webFetchInflight = new Map<string, Promise<RiskConfirmResult>>();
+  /**
+   * UI-supplied risk confirmation (the TUI overlay). When unset, the classic
+   * readline prompt on stdin/stderr is used.
+   */
+  private confirmHandler: ((prompt: string) => Promise<boolean>) | null = null;
   /** Internal turn-loop hook dispatcher (issue #574). */
   hooks: HookRegistry;
   /** Mutating-tool loop breaker (issue #578). */
@@ -616,6 +621,14 @@ export class Session {
   }
 
   /**
+   * Install the UI's risk confirmation (the TUI overlay) or pass `null` to go
+   * back to the classic readline prompt. Headless sessions never prompt.
+   */
+  setConfirmHandler(handler: ((prompt: string) => Promise<boolean>) | null): void {
+    this.confirmHandler = handler;
+  }
+
+  /**
    * Confirm a web_fetch host, sharing one prompt per host. `turn.ts` runs tool
    * calls concurrently, so several fetches to the same new host would each
    * pass the "not remembered yet" check and prompt in turn. The first caller
@@ -648,9 +661,16 @@ export class Session {
     }
     return this.confirmLock(async () => {
       try {
-        const yes = await promptYesNo(prompt);
+        const handler = this.confirmHandler;
+        const yes = handler ? await handler(prompt) : await promptYesNo(prompt);
         return yes ? { allowed: true } : { allowed: false, reason: "declined" };
-      } catch {
+      } catch (err) {
+        this.getLogger()
+          .child("tool")
+          .warn("Risk confirmation failed; declining", {
+            details: { class: classId },
+            cause: err as Error,
+          });
         return { allowed: false, reason: "declined" };
       }
     });

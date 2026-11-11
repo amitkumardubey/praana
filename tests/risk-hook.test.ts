@@ -1,7 +1,12 @@
-import { describe, expect, it } from "bun:test";
+import { afterAll, describe, expect, it } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { loadConfig } from "../src/config.js";
 import { createBuiltinHookRegistry } from "../src/hooks/index.js";
 import { createRiskPreToolCallHandler } from "../src/hooks/handlers/risk.js";
 import type { HookSessionLike } from "../src/hooks/types.js";
+import { Session } from "../src/session.js";
 
 function session(
   cwd: string,
@@ -140,6 +145,54 @@ describe("risk hook registration", () => {
     expect(confirmCalls).toBe(1);
     if (out.action === "block") {
       expect(out.error).toContain("User declined rm");
+    }
+  });
+});
+
+describe("risk hook with a UI confirm handler", () => {
+  const dirs: string[] = [];
+
+  function makeSession(): Session {
+    const dir = mkdtempSync(join(tmpdir(), "praana-risk-hook-"));
+    dirs.push(dir);
+    const config = loadConfig();
+    config.session.log_dir = join(dir, "sessions");
+    return Session.createNew("test-session", dir, config);
+  }
+
+  afterAll(() => {
+    for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("asks the overlay handler and allows the shell call on yes", async () => {
+    const live = makeSession();
+    const asked: string[] = [];
+    live.setConfirmHandler(async (message) => {
+      asked.push(message);
+      return true;
+    });
+    const pre = createRiskPreToolCallHandler(live.cwd);
+    const out = await pre({
+      toolName: "shell",
+      args: { command: "rm -rf tmp" },
+      session: live,
+    });
+    expect(out).toBeUndefined();
+    expect(asked).toEqual(["rm: rm -rf tmp"]);
+  });
+
+  it("blocks the shell call when the overlay answers no", async () => {
+    const live = makeSession();
+    live.setConfirmHandler(async () => false);
+    const pre = createRiskPreToolCallHandler(live.cwd);
+    const out = await pre({
+      toolName: "shell",
+      args: { command: "rm -rf tmp" },
+      session: live,
+    });
+    expect(out?.action).toBe("block");
+    if (out && out.action === "block") {
+      expect(out.error).toBe("User declined rm: rm -rf tmp");
     }
   });
 });

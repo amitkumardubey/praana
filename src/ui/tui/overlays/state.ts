@@ -14,11 +14,23 @@ export type OverlayKind =
   | "consent"
   | "confirm";
 
-/** Minimal confirm prompt used by the per-turn step pause. */
+/**
+ * `step` is the per-turn step pause (Enter continues, Esc stops). `yesno` asks
+ * a risk question: y accepts, n / Enter / Esc decline.
+ */
+export type ConfirmMode = "step" | "yesno";
+
+/** Minimal confirm prompt used by the per-turn step pause and risk confirmations. */
 export interface ConfirmPromptState {
   message: string;
+  mode: ConfirmMode;
   /** Changes for every confirm that is shown, so Enter's arm delay resets. */
   id: number;
+}
+
+export interface ShowConfirmOptions {
+  /** Defaults to `step`. */
+  mode?: ConfirmMode;
 }
 
 /**
@@ -51,14 +63,16 @@ export interface OverlayUi {
   showSetup(): void;
   showConsent(): void;
   /**
-   * Open a small confirm overlay; resolves true on Enter, false on Esc
-   * or when `signal` aborts. Ctrl+C is not answered here: it aborts the
-   * turn signal, which settles this promise false and skips the wrap-up.
-   * If an interactive overlay or confirm is already open, this waits until
-   * that one closes, then shows. A passive slash panel is cleared instead.
-   * Aborting `signal` while waiting resolves false and drops just this request.
+   * Open a small confirm overlay; in `step` mode resolves true on Enter and
+   * false on Esc, in `yesno` mode true on `y` and false on `n` / Enter / Esc.
+   * `signal` aborting settles it false either way. Ctrl+C is not answered
+   * here: it aborts the turn signal, which settles this promise false and
+   * skips the wrap-up. If an interactive overlay or confirm is already open,
+   * this waits until that one closes, then shows. A passive slash panel is
+   * cleared instead. Aborting `signal` while waiting resolves false and drops
+   * just this request.
    */
-  showConfirm(message: string, signal?: AbortSignal): Promise<boolean>;
+  showConfirm(message: string, signal?: AbortSignal, opts?: ShowConfirmOptions): Promise<boolean>;
   resolveConfirm(cont: boolean): void;
   dismiss(): void;
   dispose(): void;
@@ -81,6 +95,7 @@ export function createOverlayUi(): OverlayUi {
     type QueuedConfirm = {
       type: "confirm";
       message: string;
+      mode: ConfirmMode;
       signal?: AbortSignal;
       resolve: (value: boolean) => void;
       onAbort: () => void;
@@ -135,7 +150,7 @@ export function createOverlayUi(): OverlayUi {
           settleOnce(next, next.signal, next.onAbort, next.resolve, false);
           continue;
         }
-        openConfirm(next.message, next.signal, next.resolve, next);
+        openConfirm(next.message, next.mode, next.signal, next.resolve, next);
         return;
       }
       if (kind() === "confirm") setKind("none");
@@ -143,6 +158,7 @@ export function createOverlayUi(): OverlayUi {
 
     const openConfirm = (
       message: string,
+      mode: ConfirmMode,
       signal: AbortSignal | undefined,
       resolve: (value: boolean) => void,
       entry?: QueuedConfirm,
@@ -158,15 +174,20 @@ export function createOverlayUi(): OverlayUi {
       onAbort = () => finish(false);
       if (signal) signal.addEventListener("abort", onAbort, { once: true });
       confirmResolver = finish;
-      setConfirmPrompt({ message, id: ++nextConfirmId });
+      setConfirmPrompt({ message, mode, id: ++nextConfirmId });
       setKind("confirm");
     };
 
-    const enqueueConfirm = (message: string, signal?: AbortSignal): Promise<boolean> => {
+    const enqueueConfirm = (
+      message: string,
+      mode: ConfirmMode,
+      signal?: AbortSignal,
+    ): Promise<boolean> => {
       return new Promise((resolve) => {
         const entry: QueuedConfirm = {
           type: "confirm",
           message,
+          mode,
           signal,
           resolve,
           onAbort: () => {},
@@ -183,8 +204,13 @@ export function createOverlayUi(): OverlayUi {
       });
     };
 
-    const showConfirm = (message: string, signal?: AbortSignal): Promise<boolean> => {
+    const showConfirm = (
+      message: string,
+      signal?: AbortSignal,
+      opts?: ShowConfirmOptions,
+    ): Promise<boolean> => {
       if (signal?.aborted) return Promise.resolve(false);
+      const mode = opts?.mode ?? "step";
       // A slash panel closes on any key. Leave it up and the pause looks hung,
       // because the spinner is already stopped. Clear it and ask immediately.
       // Interactive overlays (palette, model, login, logout, setup, consent) still defer.
@@ -193,11 +219,11 @@ export function createOverlayUi(): OverlayUi {
         setKind("none");
         // Work queued behind the panel stays queued. Opening through the
         // blocked path would promote that work and hide this confirm.
-        return new Promise((resolve) => openConfirm(message, signal, resolve));
+        return new Promise((resolve) => openConfirm(message, mode, signal, resolve));
       }
       const blocked = confirmResolver !== null || kind() !== "none" || queue.length > 0;
-      if (!blocked) return new Promise((resolve) => openConfirm(message, signal, resolve));
-      const pending = enqueueConfirm(message, signal);
+      if (!blocked) return new Promise((resolve) => openConfirm(message, mode, signal, resolve));
+      const pending = enqueueConfirm(message, mode, signal);
       if (!confirmResolver && kind() === "none") promote();
       return pending;
     };
