@@ -14,7 +14,7 @@ import { join } from "node:path";
 import { loadConfig } from "../src/config.js";
 import * as prompt from "../src/risk/prompt.js";
 import { Session } from "../src/session.js";
-import { ACTION_PREVIEW_MAX_LINES } from "../src/confirm/action.js";
+import { ACTION_PREVIEW_MAX_LINES, actionRefusalError } from "../src/confirm/action.js";
 
 const dirs: string[] = [];
 
@@ -28,6 +28,12 @@ function makeSession(): Session {
 
 afterAll(() => {
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true });
+});
+
+describe("actionRefusalError", () => {
+  it("rejects an allowed decision rather than returning an empty error", () => {
+    expect(() => actionRefusalError("edit", { allowed: true })).toThrow();
+  });
 });
 
 describe("Session.confirmAction", () => {

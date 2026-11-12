@@ -135,7 +135,7 @@ export function actionRefusalError(
   decision: ActionConfirmResult | null,
 ): string {
   if (decision === null) return UNPROMPTABLE[kind];
-  if (decision.allowed) return "";
+  if (decision.allowed) throw new Error("Cannot refuse an allowed action");
   if (decision.reason === "declined") return CANCELLED[kind];
   return HEADLESS[kind];
 }
