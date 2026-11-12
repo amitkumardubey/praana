@@ -91,6 +91,7 @@ export function createFileMemoryStore(options: StoreOptions) {
     return { memories, skipped, filenames };
   }
 
+  // Strip digits and generic affixes, or require 0.6 Jaccard overlap of word tokens.
   function similar(a: MemoryInput, b: Memory): boolean {
     const normalize = (s: string) => s.replace(/\d+/g, "").replace(/(?:^|-)(?:the|a|an|note|memory)(?=-|$)/g, "").replace(/-+/g, "-").replace(/^-|-$/g, "");
     if (normalize(a.name) && normalize(a.name) === normalize(b.name)) return true;
@@ -117,7 +118,8 @@ export function createFileMemoryStore(options: StoreOptions) {
         if (matches.length) return { ok: false, error: "Similar memory exists; update it instead", similar: matches };
       }
       if (existing.filenames.some((file) => file.toLowerCase() === targetName.toLowerCase() && file !== targetName)) return { ok: false, error: "Case-insensitive filename collision" };
-      const dir = (await directory(input.scope, true))!;
+      const dir = await directory(input.scope, true);
+      if (!dir) throw new Error("Memory directory unavailable");
       const target = join(dir, targetName);
       // Refuse to replace a symlink, including a dangling one.
       try { if ((await fs.lstat(target)).isSymbolicLink()) return { ok: false, error: "Symlink memory file refused" }; } catch (error) { if (!missing(error)) throw error; }
@@ -160,8 +162,9 @@ export function createFileMemoryStore(options: StoreOptions) {
         if (dir && await readFile(dir, input.name)) found.push(dir);
       }
       if (found.length > 1) return { ok: false, error: "Memory exists in both project and global scopes; specify scope" };
-      if (!found.length) return { ok: false, error: "Memory not found" };
-      await fs.unlink(join(found[0]!, `${input.name}.md`));
+      const dir = found[0];
+      if (!dir) return { ok: false, error: "Memory not found" };
+      await fs.unlink(join(dir, `${input.name}.md`));
       return { ok: true };
     } catch (error) { return errorResult(error); }
   }
@@ -178,7 +181,7 @@ export function createFileMemoryStore(options: StoreOptions) {
           result.push({ ...memory, scope, age, stale: age > 90 });
         }
       }
-      result.sort ( (a, b) => b.updated.localeCompare(a.updated) || a.name.localeCompare(b.name) || a.scope.localeCompare(b.scope));
+      result.sort((a, b) => b.updated.localeCompare(a.updated) || a.name.localeCompare(b.name) || a.scope.localeCompare(b.scope));
       return { ok: true, entries: result, skipped };
     } catch (error) { return { ...errorResult(error), entries: [], skipped: 0 }; }
   }

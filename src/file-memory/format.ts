@@ -1,4 +1,4 @@
-import { dump, load } from "js-yaml";
+import { dump, JSON_SCHEMA, load } from "js-yaml";
 
 export type MemoryType = "user" | "feedback" | "project" | "reference";
 export interface Memory {
@@ -20,7 +20,7 @@ export function validName(name: unknown): name is string {
 
 export function validatePolicy(input: MemoryInput): string | null {
   if (!input.description.trim() || input.description.length > 300 || /[\r\n]/.test(input.description)) return "Description must be one line and at most 300 characters";
-  if ((input.type === "feedback" || input.type === "project") && (!/^\*\*Why:\*\*\s*\S/m.test(input.body) || !/^\*\*How to apply:\*\*\s*\S/m.test(input.body))) return "Add **Why:** and **How to apply:** lines";
+  if ((input.type === "feedback" || input.type === "project") && (!/^\*\*Why:\*\*[ \t]*\S/m.test(input.body) || !/^\*\*How to apply:\*\*[ \t]*\S/m.test(input.body))) return "Add **Why:** and **How to apply:** lines";
   return null;
 }
 
@@ -42,10 +42,10 @@ export function parseMemory(text: string): Memory | null {
   const end = text.indexOf("\n---\n", 4);
   if (end < 0 || Buffer.byteLength(text.slice(0, end), "utf8") > 8192) return null;
   try {
-    const value: unknown = load(text.slice(4, end), { schema: undefined });
+    const value: unknown = load(text.slice(4, end), { schema: JSON_SCHEMA });
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const data = value as Record<string, unknown>;
-    if (!validName(data.name) || typeof data.description !== "string" || !data.description.trim() || typeof data.type !== "string" || !types.has(data.type) || typeof data.updated !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(data.updated) || !Number.isFinite(Date.parse(data.updated))) return null;
+    if (!validName(data.name) || typeof data.description !== "string" || !data.description.trim() || typeof data.type !== "string" || !types.has(data.type) || typeof data.updated !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(data.updated) || !Number.isFinite(Date.parse(data.updated)) || new Date(data.updated).toISOString().slice(0, 10) !== data.updated) return null;
     return { name: data.name, description: data.description, type: data.type as MemoryType, updated: data.updated, body: text.slice(end + 5) };
   } catch {
     return null;
@@ -53,5 +53,5 @@ export function parseMemory(text: string): Memory | null {
 }
 
 export function sanitizeDescription(text: string): string {
-  return Array.from(text.replace(/[\u0000-\u001f\u007f-\u009f]/g, " ").replace(/[-\[\]`#\\]/g, "\\$&")).slice(0, 300).join("");
+  return Array.from(text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ").replace(/[-\[\]`#\\]/g, "\\$&")).slice(0, 300).join("");
 }
