@@ -9,7 +9,7 @@ import { render } from "@opentui/solid";
 import { createComponent } from "solid-js";
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui";
 import { KeymapProvider, useBindings } from "@opentui/keymap/solid";
-import { classifyStepPauseKey, classifyYesNoKey, ConfirmOverlay, CONFIRM_ARM_MS, formatConfirmQuestion } from "../src/ui/tui/overlays/confirm.js";
+import { classifyStepPauseKey, classifyYesNoKey, ConfirmOverlay, capConfirmPreview, CONFIRM_ARM_MS, confirmPreviewRows, formatConfirmQuestion, splitConfirmMessage } from "../src/ui/tui/overlays/confirm.js";
 import { createOverlayUi } from "../src/ui/tui/overlays/state.js";
 import { focusPromptAfterConfirm } from "../src/ui/tui/run.tsx";
 
@@ -305,6 +305,55 @@ describe("ConfirmOverlay yes/no mode", () => {
     setup.mockInput.pressKey("y");
     setup.mockInput.pressEnter();
     expect(await stillPending(pending)).toBe(true);
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+});
+
+describe("action confirmation preview (#748)", () => {
+  it("splits a preview from its question and leaves a plain message whole", () => {
+    expect(splitConfirmMessage("Apply edit? [y/N]")).toEqual({
+      preview: [],
+      question: "Apply edit? [y/N]",
+    });
+    expect(splitConfirmMessage("--- a.txt:1 (before)\n- old\n\nApply edit? [y/N]")).toEqual({
+      preview: ["--- a.txt:1 (before)", "- old"],
+      question: "Apply edit? [y/N]",
+    });
+  });
+
+  it("caps a preview below the row budget and counts the dropped rows", () => {
+    const preview = Array.from({ length: 30 }, (_, i) => `- line ${i}`);
+    expect(capConfirmPreview(preview, 30)).toHaveLength(30);
+    const capped = capConfirmPreview(preview, 10);
+    expect(capped).toHaveLength(10);
+    expect(capped[9]).toBe("... 21 more lines");
+    expect(capConfirmPreview(preview, 0)).toEqual([]);
+  });
+
+  it("reserves rows for the hint and the question", () => {
+    // 24 rows: frame is 18, minus 4 chrome rows, minus the hint and question.
+    expect(confirmPreviewRows(24, 1)).toBe(11);
+    expect(confirmPreviewRows(24, 2)).toBe(10);
+    // A tiny terminal still leaves the question room; the preview shrinks.
+    expect(confirmPreviewRows(14, 1)).toBeLessThan(confirmPreviewRows(24, 1));
+  });
+
+  it("keeps the question and hint visible under a long preview", async () => {
+    const preview = ["--- a.txt:2 (before)"];
+    for (let i = 0; i < 36; i++) preview.push(`- old line ${i}`);
+    preview.push("+++ a.txt:2 (after)", "+ new");
+    const { setup, overlay } = await mount(0, {
+      mode: "yesno",
+      message: `${preview.join("\n")}\n\nApply edit? [y/N]`,
+    });
+    const frame = setup.captureCharFrame();
+    // The question is pinned above the preview, so it cannot be pushed off.
+    expect(frame).toContain("Apply edit?");
+    expect(frame).not.toContain("[y/N]");
+    expect(frame).toContain("y = yes");
+    expect(frame).toContain("more lines");
+    expect(frame).toContain("--- a.txt:2 (before)");
     setup.renderer.destroy();
     overlay.dispose();
   });

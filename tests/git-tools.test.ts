@@ -2,7 +2,6 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync, rmSync, existsSync } from "node:fs";
 import { join } from "node:path";
-import { Readable } from "node:stream";
 import {
   createGitTools,
   parseGitLog,
@@ -253,26 +252,19 @@ describe.skipIf(!hasGit)("git tools integration", () => {
 
   it("cancel after confirm does not leave newly staged paths", async () => {
     writeFileSync(join(testDir, "readme.md"), "hello\ncancel-me\n");
-    const originalStdin = process.stdin;
-    Object.defineProperty(process, "stdin", {
-      value: Readable.from(["n\n"]),
-      configurable: true,
-    });
-    try {
-      const result = await runGitCommit(
-        testDir,
-        { message: "feat: should cancel", paths: ["readme.md"] },
-        { editConfirm: true },
-      );
-      expect(result.ok).toBe(false);
-      if (result.ok) return;
-      expect(result.error).toMatch(/cancelled/i);
-    } finally {
-      Object.defineProperty(process, "stdin", {
-        value: originalStdin,
-        configurable: true,
-      });
-    }
+    // #748: the confirmation is the session callback, not a stdin readline
+    // prompt, so the refusal is a resolved decision rather than faked input.
+    const result = await runGitCommit(
+      testDir,
+      { message: "feat: should cancel", paths: ["readme.md"] },
+      {
+        editConfirm: true,
+        confirmAction: async () => ({ allowed: false, reason: "declined" }),
+      },
+    );
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toMatch(/cancelled/i);
 
     const status = await runGitStatus(testDir);
     expect(status.ok).toBe(true);
