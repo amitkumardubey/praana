@@ -38,15 +38,19 @@ export function serializeMemory(memory: Memory): string {
 }
 
 export function parseMemory(text: string): Memory | null {
+  text = text.replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
   if (!text.startsWith("---\n")) return null;
-  const end = text.indexOf("\n---\n", 4);
+  const fence = /\n---(?:\n|$)/g;
+  fence.lastIndex = 4;
+  const closing = fence.exec(text);
+  const end = closing?.index ?? -1;
   if (end < 0 || Buffer.byteLength(text.slice(0, end), "utf8") > 8192) return null;
   try {
     const value: unknown = load(text.slice(4, end), { schema: JSON_SCHEMA });
     if (!value || typeof value !== "object" || Array.isArray(value)) return null;
     const data = value as Record<string, unknown>;
     if (!validName(data.name) || typeof data.description !== "string" || !data.description.trim() || typeof data.type !== "string" || !types.has(data.type) || typeof data.updated !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(data.updated) || !Number.isFinite(Date.parse(data.updated)) || new Date(data.updated).toISOString().slice(0, 10) !== data.updated) return null;
-    return { name: data.name, description: data.description, type: data.type as MemoryType, updated: data.updated, body: text.slice(end + 5) };
+    return { name: data.name, description: data.description, type: data.type as MemoryType, updated: data.updated, body: text.slice(end + closing![0].length) };
   } catch {
     return null;
   }

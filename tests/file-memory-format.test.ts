@@ -10,6 +10,14 @@ describe("file memory format", () => {
     expect(parseMemory(`---\n${"x".repeat(9000)}\n---\nbody`)).toBeNull();
     expect(parseMemory("---\nname: example\ndescription: note\ntype: user\nupdated: 2026-02-30\n---\nbody")).toBeNull();
   });
+  test("reads BOM, CRLF and closing fences at EOF", () => {
+    const text = serializeMemory(entry);
+    for (const variant of [text.replace(/\n/g, "\r\n"), `\uFEFF${text}`, `\uFEFF${text.replace(/\n/g, "\r\n")}`]) {
+      expect(parseMemory(variant)).toEqual(entry);
+    }
+    expect(parseMemory(serializeMemory({ ...entry, body: "" }).trimEnd())).toEqual({ ...entry, body: "" });
+    expect(parseMemory(serializeMemory({ ...entry, body: "" }))).toEqual({ ...entry, body: "" });
+  });
   test("validates names, descriptions, byte limits and policy", () => {
     for (const name of ["../x", "a/b", ".hidden", "/abs", "Upper", "a".repeat(65), "memory", "con", "com9", "lpt1", "nul", "aux", "prn"]) {
       expect(validateMemory({ ...entry, name })).not.toBeNull();

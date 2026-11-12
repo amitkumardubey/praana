@@ -1,9 +1,10 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { createFileMemoryStore } from "../src/file-memory/store.js";
 
-const scratch = process.env.TMPDIR!;
+const scratch = tmpdir();
 const homes: string[] = [];
 async function setup(extra: Record<string, unknown> = {}) {
   const home = await fs.mkdtemp(join(scratch, "home-"));
@@ -23,6 +24,38 @@ describe("file memory store", () => {
     expect((await store.write({ ...input, name: "different", body: "sk-abcdefghijklmnopqrstuvwxyz123456" })).ok).toBe(false);
     await fs.writeFile(join(dir, "Foo.md"), "manual");
     expect((await store.write({ ...input, name: "foo", description: "unrelated description" })).ok).toBe(false);
+  });
+  test("removes skipped regular files but refuses symlinks and directories", async () => {
+    const { store, dir } = await setup();
+    await store.write(input);
+    for (const [name, text] of [["bad", "broken"], ["huge", "x".repeat(65537)], ["edited", "---\nname: another\n---"]]) {
+      await fs.writeFile(join(dir, `${name}.md`), text!);
+      expect((await store.remove({ name: name! })).ok).toBe(true);
+      expect(await fs.exists(join(dir, `${name}.md`))).toBe(false);
+    }
+    await fs.symlink(join(dir, "coffee.md"), join(dir, "link.md"));
+    await fs.mkdir(join(dir, "folder.md"));
+    expect((await store.remove({ name: "link" })).ok).toBe(false);
+    expect((await store.remove({ name: "folder" })).ok).toBe(false);
+    await store.write({ ...input, scope: "project" });
+    await fs.writeFile(join(dir, "coffee.md"), "broken");
+    expect((await store.remove({ name: "coffee" })).ok).toBe(false);
+    expect((await store.remove({ name: "coffee", scope: "global" })).ok).toBe(true);
+  });
+  test("updates do not read other memory files", async () => {
+    const { home, store } = await setup();
+    await store.write(input);
+    let reads = 0;
+    const seam = new Proxy(fs, { get(target, key) {
+      if (key === "open") return async (...args: Parameters<typeof fs.open>) => {
+        if (String(args[0]).endsWith("coffee.md")) reads++;
+        return fs.open(...args);
+      };
+      return Reflect.get(target, key);
+    } });
+    const updater = createFileMemoryStore({ home, cwd: home, fs: seam, findRoot: (cwd) => cwd });
+    expect((await updater.write({ ...input, body: "updated" })).ok).toBe(true);
+    expect(reads).toBe(0);
   });
   test("incognito prevents mutation", async () => {
     const { store } = await setup({ incognito: true });

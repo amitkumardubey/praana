@@ -110,14 +110,19 @@ export function createFileMemoryStore(options: StoreOptions) {
       let redacted: typeof input;
       try { redacted = redactSecretsStrict(input); } catch { return { ok: false, error: "Secret scan failed" }; }
       if (JSON.stringify(redacted) !== JSON.stringify(input)) return { ok: false, error: "Secret-shaped content refused" };
-      const existing = await entries(input.scope);
+      const existingDir = await directory(input.scope, false);
+      let filenames: string[] = [];
+      if (existingDir) {
+        try { filenames = await fs.readdir(existingDir); } catch (error) { if (!missing(error)) throw error; }
+      }
       const targetName = `${input.name}.md`;
-      const exists = existing.filenames.includes(targetName);
+      const exists = filenames.includes(targetName);
       if (!exists) {
+        const existing = await entries(input.scope);
         const matches = existing.memories.filter((entry) => similar(input, entry)).map(({ name, description }) => ({ name, description }));
         if (matches.length) return { ok: false, error: "Similar memory exists; update it instead", similar: matches };
       }
-      if (existing.filenames.some((file) => file.toLowerCase() === targetName.toLowerCase() && file !== targetName)) return { ok: false, error: "Case-insensitive filename collision" };
+      if (filenames.some((file) => file.toLowerCase() === targetName.toLowerCase() && file !== targetName)) return { ok: false, error: "Case-insensitive filename collision" };
       const dir = await directory(input.scope, true);
       if (!dir) throw new Error("Memory directory unavailable");
       const target = join(dir, targetName);
@@ -159,7 +164,17 @@ export function createFileMemoryStore(options: StoreOptions) {
       const found: string[] = [];
       for (const scope of input.scope ? [input.scope] : scopes) {
         const dir = await directory(scope, false);
-        if (dir && await readFile(dir, input.name)) found.push(dir);
+        if (!dir) continue;
+        let handle: nodeFs.FileHandle | undefined;
+        try {
+          const path = join(dir, `${input.name}.md`);
+          const stat = await fs.lstat(path);
+          if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Only regular, non-symlink memory files can be removed");
+          handle = await fs.open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+          if (!(await handle.stat()).isFile()) throw new Error("Only regular memory files can be removed");
+          found.push(dir);
+        } catch (error) { if (!missing(error)) throw error; }
+        finally { if (handle) await handle.close(); }
       }
       if (found.length > 1) return { ok: false, error: "Memory exists in both project and global scopes; specify scope" };
       const dir = found[0];
