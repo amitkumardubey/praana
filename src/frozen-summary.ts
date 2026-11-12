@@ -156,7 +156,7 @@ export interface FrozenState {
   boundaryEventId: string | null;
   summary: string | null;
   stubSet: { eventId: string; stubText: string }[];
-  summaryRequest: { instruction: string; usage: ProviderUsage | null } | null;
+  summaryRequest: { cutDescription: string; capTokens: number; instructionSha256: string; usage: ProviderUsage | null } | null;
   /** Reserved exact prefix bytes, accepted on replay but not emitted here. */
   prefix?: { systemFrame: string; snapshot: string };
 }
@@ -225,8 +225,9 @@ function assertCommit(value: unknown, index: number): asserts value is Compactio
     commitError("invalid_commit", index, "duplicate stub event ids");
   }
   const request = value.summaryRequest;
-  if (request !== null && !(plainObject(request) && onlyKeys(request, ["instruction", "usage"]) &&
-      typeof request.instruction === "string" && validUsage(request.usage))) {
+  if (request !== null && !(plainObject(request) && onlyKeys(request, ["cutDescription", "capTokens", "instructionSha256", "usage"]) &&
+      typeof request.cutDescription === "string" && tokenCount(request.capTokens) &&
+      typeof request.instructionSha256 === "string" && /^[a-f0-9]{64}$/.test(request.instructionSha256) && validUsage(request.usage))) {
     commitError("invalid_commit", index, "invalid summary request");
   }
   if ("prefix" in value && !(plainObject(value.prefix) && onlyKeys(value.prefix, ["systemFrame", "snapshot"]) &&
@@ -241,7 +242,9 @@ function copyState(value: FrozenState): FrozenState {
     boundaryEventId: value.boundaryEventId, summary: value.summary,
     stubSet: value.stubSet.map((stub) => ({ ...stub })),
     summaryRequest: value.summaryRequest === null ? null : {
-      instruction: value.summaryRequest.instruction,
+      cutDescription: value.summaryRequest.cutDescription,
+      capTokens: value.summaryRequest.capTokens,
+      instructionSha256: value.summaryRequest.instructionSha256,
       usage: value.summaryRequest.usage === null ? null : { ...value.summaryRequest.usage },
     },
     ...(value.prefix !== undefined ? { prefix: { ...value.prefix } } : {}),

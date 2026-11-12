@@ -1,6 +1,7 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { fsyncSync, mkdtempSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { EventLog, eventsAfterResetBoundary, findLastResetBoundaryIndex, findLastResetBoundaryTurn, type EventLogOptions } from "../src/event-log.js";
 import { maybeAutoCompactClassic } from "../src/auto-compact.js";
@@ -41,6 +42,8 @@ Ship the parser.
 - [error] Missing export
 - [question] Which edge cases?
 `;
+
+const requestData = { cutDescription: "through event z", capTokens: 4096, instructionSha256: createHash("sha256").update("instruction\n").digest("hex") };
 
 // Load inside each test so missing functionality produces individual red tests.
 const api = () => import("../src/frozen-summary.js");
@@ -186,9 +189,27 @@ function reset(id: string): Event {
 test("builds one kernel commit event and reads its exact summary, stubs and request bytes", async () => {
   const { buildCommitEvent, readCommits, SESSION_START_EPOCH } = await api();
   expect(SESSION_START_EPOCH).toBe("session_start");
-  const commit = data({ stubSet: [{ eventId: "a", stubText: "stub\n雪" }], summaryRequest: { instruction: "instruction\n", usage: { input: 10, output: 2, totalTokens: 12, cacheReadTokens: 3, cacheWriteTokens: 1 } } });
+  const commit = data({ stubSet: [{ eventId: "a", stubText: "stub\n雪" }], summaryRequest: { ...requestData, usage: { input: 10, output: 2, totalTokens: 12, cacheReadTokens: 3, cacheWriteTokens: 1 } } });
   expect(buildCommitEvent(commit)).toEqual({ kind: "compaction_commit", actor: "kernel", payload: commit });
   expect(readCommits([canonical("z"), recorded(commit)])).toEqual([commit]);
+});
+
+test("commit request stores cut, cap and instruction hash without instruction inputs", async () => {
+  const { buildSummaryInstruction, buildCommitEvent, readCommits, appendCommit, restoreFrozenStateFromLog } = await api();
+  const state = new StateGraph().create("note", { text: "private state text" });
+  const options = { cutDescription: "through event z", capTokens: 256, previousSummary: "private previous summary", stateObjects: [state] };
+  const instruction = buildSummaryInstruction(options);
+  const request = { cutDescription: options.cutDescription, capTokens: options.capTokens, instructionSha256: createHash("sha256").update(instruction).digest("hex"), usage: null };
+  const commit = data({ summaryRequest: request });
+  expect(buildCommitEvent(commit).payload.summaryRequest).toEqual(request);
+  expect(readCommits([recorded(commit)])[0].summaryRequest).toEqual(request);
+  const { log } = openLog();
+  log.append(canonical("z"));
+  expect(appendCommit(log, commit)).toEqual({ status: "committed" });
+  expect(restoreFrozenStateFromLog(log)).toMatchObject({ ok: true, state: { summaryRequest: request } });
+  const stored = readFileSync(log.getLogPath(), "utf8");
+  for (const text of [instruction, "private state text", "private previous summary"]) expect(stored).not.toContain(text);
+  expect(Object.keys((readCommits(log.readAll({ includeInternal: true }))[0].summaryRequest)!)).toEqual(["cutDescription", "capTokens", "instructionSha256", "usage"]);
 });
 
 test("restores a valid empty state without commits", async () => {
@@ -215,10 +236,15 @@ const malformed: [string, unknown, string][] = [
   ["invalid stub text", { ...data(), stubSet: [{ eventId: "a", stubText: 7 }] }, "invalid_commit"],
   ["duplicate stubs", data({ stubSet: [{ eventId: "a", stubText: "x" }, { eventId: "a", stubText: "y" }] }), "invalid_commit"],
   ["sparse stubs", data({ stubSet: new Array(1) }), "invalid_commit"],
-  ["invalid usage", { ...data(), summaryRequest: { instruction: "x", usage: { input: -1, output: 1, totalTokens: 0 } } }, "invalid_commit"],
-  ["non-finite usage", { ...data(), summaryRequest: { instruction: "x", usage: { input: 1, output: NaN, totalTokens: 1 } } }, "invalid_commit"],
-  ["unknown usage field", { ...data(), summaryRequest: { instruction: "x", usage: { input: 1, output: 1, totalTokens: 2, extra: 1 } } }, "invalid_commit"],
-  ["missing instruction", { ...data(), summaryRequest: { usage: null } }, "invalid_commit"],
+  ["invalid usage", { ...data(), summaryRequest: { ...requestData, usage: { input: -1, output: 1, totalTokens: 0 } } }, "invalid_commit"],
+  ["non-finite usage", { ...data(), summaryRequest: { ...requestData, usage: { input: 1, output: NaN, totalTokens: 1 } } }, "invalid_commit"],
+  ["unknown usage field", { ...data(), summaryRequest: { ...requestData, usage: { input: 1, output: 1, totalTokens: 2, extra: 1 } } }, "invalid_commit"],
+  ["legacy instruction", { ...data(), summaryRequest: { instruction: "private input", usage: null } }, "invalid_commit"],
+  ["missing request metadata", { ...data(), summaryRequest: { usage: null } }, "invalid_commit"],
+  ["invalid cut description", { ...data(), summaryRequest: { ...requestData, cutDescription: 7, usage: null } }, "invalid_commit"],
+  ["invalid request cap", { ...data(), summaryRequest: { ...requestData, capTokens: -1, usage: null } }, "invalid_commit"],
+  ["fractional request cap", { ...data(), summaryRequest: { ...requestData, capTokens: 1.5, usage: null } }, "invalid_commit"],
+  ["invalid instruction hash", { ...data(), summaryRequest: { ...requestData, instructionSha256: "not a digest", usage: null } }, "invalid_commit"],
   ["undefined prefix", { ...data(), prefix: undefined }, "invalid_commit"],
   ["invalid prefix", { ...data(), prefix: { systemFrame: "bytes", snapshot: 1 } }, "invalid_commit"],
   ["extra prefix field", { ...data(), prefix: { systemFrame: "bytes", snapshot: "bytes", extra: true } }, "invalid_commit"],
