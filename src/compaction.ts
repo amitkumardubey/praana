@@ -1,5 +1,6 @@
-import { CanonicalValidator, emitCanonicalTranscript, readFullSessionCanonicalRecords, type CanonicalRecord } from "./canonical-transcript.js";
-import { eventsAfterResetBoundary } from "./event-log.js";
+import { CanonicalTranscriptError, CanonicalValidator, emitCanonicalTranscript, readFullSessionCanonicalRecords, type CanonicalRecord } from "./canonical-transcript.js";
+import { eventsAfterResetBoundary, findLastResetBoundaryIndex } from "./event-log.js";
+import { renderSummaryMessage, SESSION_START_EPOCH, type FrozenState } from "./frozen-summary.js";
 import type { ConversationMessage, ToolDefinition } from "./llm/types.js";
 import { estimateTokens } from "./token-estimate.js";
 import type { Event } from "./types.js";
@@ -62,8 +63,7 @@ function currentEntries(events: readonly Event[]): CanonicalEntry[] {
   });
 }
 
-/** Current-epoch units in log order. Invalid sequences throw CanonicalTranscriptError. */
-export function buildTurns(events: readonly Event[]): CompactionTurn[] {
+function turnView(events: readonly Event[]): { turns: CompactionTurn[]; pending: boolean } {
   const turns: CompactionTurn[] = [];
   const validator = new CanonicalValidator();
   for (const { eventId, record } of currentEntries(events)) {
@@ -82,5 +82,66 @@ export function buildTurns(events: readonly Event[]): CompactionTurn[] {
     turn.messages = emitCanonicalTranscript(turn.records).slice(0, emittedCount);
     turn.estimatedTokens = turn.messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
   }
-  return turns;
+  return { turns, pending: validator.repairs().length > 0 };
+}
+
+/** Current-epoch units in log order. Invalid sequences throw CanonicalTranscriptError. */
+export function buildTurns(events: readonly Event[]): CompactionTurn[] {
+  return turnView(events).turns;
+}
+
+export type MaterializationErrorCode = "pending_batch" | "invalid_state";
+
+export class MaterializationError extends Error {
+  constructor(public readonly code: MaterializationErrorCode, detail: string) {
+    super(`Cannot materialize history: ${detail}`);
+    this.name = "MaterializationError";
+  }
+}
+
+export type MaterializationResult =
+  | { ok: true; messages: ConversationMessage[] }
+  | { ok: false; error: MaterializationError | CanonicalTranscriptError };
+
+/**
+ * Pure replay of restored state and raw events (readAll({ includeInternal: true })).
+ * Only completed turns may be folded. Pending terminal batches are not repaired:
+ * invented results would change already-materialized bytes when real results arrive.
+ */
+export function materializeHistory(state: FrozenState, events: readonly Event[]): MaterializationResult {
+  try {
+    const resetIndex = findLastResetBoundaryIndex([...events]);
+    const resetEpoch = resetIndex < 0 ? SESSION_START_EPOCH : events[resetIndex].event_id;
+    if (state.resetEpoch !== resetEpoch) throw new MaterializationError("invalid_state", "frozen state belongs to another reset epoch");
+    if ((state.summary === null) !== (state.boundaryEventId === null)) {
+      throw new MaterializationError("invalid_state", "summary and boundary must both be present or both be null");
+    }
+    const { turns, pending } = turnView(events);
+    if (pending) throw new MaterializationError("pending_batch", "the terminal tool batch has unrecorded results");
+    const cut = state.boundaryEventId === null ? -1 : turns.findIndex((turn) => turn.completed && turn.eventIds.at(-1) === state.boundaryEventId);
+    if (state.boundaryEventId !== null && cut < 0) {
+      throw new MaterializationError("invalid_state", "boundary must end a completed turn in the current epoch");
+    }
+    const results = new Set(turns.flatMap((turn) => turn.records.flatMap((record, index) => record.kind === "tool_result" ? [turn.eventIds[index]] : [])));
+    const stubs = new Map<string, string>();
+    for (const stub of state.stubSet) {
+      if (!results.has(stub.eventId) || stubs.has(stub.eventId)) {
+        throw new MaterializationError("invalid_state", "stub ids must be unique current-epoch canonical tool results");
+      }
+      stubs.set(stub.eventId, stub.stubText);
+    }
+    const tail = turns.slice(cut + 1).flatMap((turn) => turn.records.map((record, index): CanonicalRecord => {
+      const eventId = turn.eventIds[index];
+      return record.kind === "tool_result" && stubs.has(eventId)
+        ? { ...record, message: { ...record.message, text: stubs.get(eventId)! } }
+        : record;
+    }));
+    return { ok: true, messages: [
+      ...(state.summary === null ? [] : [renderSummaryMessage(state.summary)]),
+      ...emitCanonicalTranscript(tail),
+    ] };
+  } catch (error) {
+    if (error instanceof MaterializationError || error instanceof CanonicalTranscriptError) return { ok: false, error };
+    throw error;
+  }
 }
