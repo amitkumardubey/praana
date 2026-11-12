@@ -52,6 +52,7 @@ export type EventKind =
   | "tool_call"
   | "tool_result"
   | "context_action"
+  | "canonical_message"
   | "ui_transcript"
   | "system_note";
 

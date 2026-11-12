@@ -1,0 +1,289 @@
+import type { AssistantBlock, ConversationMessage } from "./llm/types.js";
+import type { Event } from "./types.js";
+
+export const CANONICAL_TRANSCRIPT_VERSION = 1;
+export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
+export type JsonObject = { [key: string]: JsonValue };
+export interface CanonicalToolCall {
+  id: string;
+  name: string;
+  args: JsonObject;
+  rawArgs?: string;
+}
+interface RecordBase<K extends string, M> {
+  formatVersion: typeof CANONICAL_TRANSCRIPT_VERSION;
+  kind: K;
+  turnId: number;
+  message: M;
+}
+/** One assistant step, including its complete parallel call batch. Arguments are caller-sanitized. */
+export type CanonicalAssistantRecord = RecordBase<"assistant", {
+  text: string;
+  thinking?: string;
+  thinkingSignature?: string;
+  blocks?: AssistantBlock[];
+  toolCalls?: CanonicalToolCall[];
+}>;
+export type CanonicalToolResultRecord = RecordBase<"tool_result", {
+  callId: string;
+  toolName: string;
+  isError: boolean;
+  text: string;
+}>;
+export type CanonicalRecord =
+  | RecordBase<"user_input" | "wrap_up", { text: string }>
+  | CanonicalAssistantRecord
+  | CanonicalToolResultRecord
+  | RecordBase<"notice" | "snapshot" | "summary", JsonObject>;
+
+export type CanonicalTranscriptErrorCode =
+  | "invalid_record" | "unsupported_version" | "invalid_turn" | "invalid_blocks"
+  | "orphan_result" | "duplicate_result" | "duplicate_call_id"
+  | "interrupted_batch" | "tool_name_mismatch";
+
+export class CanonicalTranscriptError extends Error {
+  constructor(public readonly code: CanonicalTranscriptErrorCode, public readonly recordIndex: number, detail: string) {
+    super(`Canonical transcript record ${recordIndex}: ${detail}`);
+    this.name = "CanonicalTranscriptError";
+  }
+}
+
+export const INTERRUPTED_TOOL_RESULT = Object.freeze({
+  text: "Tool execution was interrupted before a result was recorded.",
+  isError: true,
+} as const);
+
+function fail(code: CanonicalTranscriptErrorCode, index: number, detail: string): never {
+  throw new CanonicalTranscriptError(code, index, detail);
+}
+
+function object(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" &&
+    (Object.getPrototypeOf(value) === Object.prototype || Object.getPrototypeOf(value) === null);
+}
+
+/** Reject lossy JSON values, custom objects and cycles rather than silently rewriting them. */
+function isJson(value: unknown, ancestors = new Set<object>()): boolean {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return true;
+  if (typeof value === "number") return Number.isFinite(value);
+  if (typeof value !== "object" || ancestors.has(value)) return false;
+  if (!Array.isArray(value) && !object(value)) return false;
+  if (Object.getOwnPropertySymbols(value).length) return false;
+  ancestors.add(value);
+  const valid = Array.isArray(value)
+    ? Object.keys(value).length === value.length && Array.from(value).every((item) => isJson(item, ancestors))
+    : Object.values(value).every((item) => isJson(item, ancestors));
+  ancestors.delete(value);
+  return valid;
+}
+
+function onlyKeys(value: Record<string, unknown>, keys: string[]): boolean {
+  return Object.keys(value).every((key) => keys.includes(key));
+}
+
+function optionalString(value: Record<string, unknown>, key: string): boolean {
+  return !(key in value) || typeof value[key] === "string";
+}
+
+function nonempty(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isToolCall(value: unknown): boolean {
+  return object(value) && onlyKeys(value, ["id", "name", "args", "rawArgs"]) &&
+    nonempty(value.id) && nonempty(value.name) && object(value.args) && optionalString(value, "rawArgs");
+}
+
+function isBlock(value: unknown): boolean {
+  if (!object(value)) return false;
+  switch (value.type) {
+    case "thinking":
+      return onlyKeys(value, ["type", "thinking", "signature"]) &&
+        typeof value.thinking === "string" && typeof value.signature === "string";
+    case "redacted_thinking":
+      return onlyKeys(value, ["type", "data"]) && typeof value.data === "string";
+    case "text":
+      return onlyKeys(value, ["type", "text"]) && typeof value.text === "string";
+    case "tool_use":
+      return onlyKeys(value, ["type", "id"]) && nonempty(value.id);
+    default:
+      return false;
+  }
+}
+
+function assertRecord(value: unknown, index: number): asserts value is CanonicalRecord {
+  if (!object(value)) fail("invalid_record", index, "expected a record object");
+  if (value.formatVersion !== CANONICAL_TRANSCRIPT_VERSION) {
+    fail("unsupported_version", index, "unsupported format version");
+  }
+  if (!isJson(value) || !onlyKeys(value, ["formatVersion", "kind", "turnId", "message"]) ||
+      !Number.isSafeInteger(value.turnId) || (value.turnId as number) < 1 || !object(value.message)) {
+    fail("invalid_record", index, "expected JSON-only payload and positive safe-integer turn id");
+  }
+  const message = value.message;
+  let valid: boolean;
+  switch (value.kind) {
+    case "user_input":
+    case "wrap_up":
+      valid = onlyKeys(message, ["text"]) && typeof message.text === "string";
+      break;
+    case "tool_result":
+      valid = onlyKeys(message, ["callId", "toolName", "isError", "text"]) &&
+        nonempty(message.callId) && nonempty(message.toolName) &&
+        typeof message.isError === "boolean" && typeof message.text === "string";
+      break;
+    case "assistant": {
+      valid = onlyKeys(message, ["text", "thinking", "thinkingSignature", "blocks", "toolCalls"]) &&
+        typeof message.text === "string" && optionalString(message, "thinking") && optionalString(message, "thinkingSignature") &&
+        (!("toolCalls" in message) || (Array.isArray(message.toolCalls) && message.toolCalls.every(isToolCall))) &&
+        (!("blocks" in message) || (Array.isArray(message.blocks) && message.blocks.every(isBlock)));
+      if (valid && Array.isArray(message.blocks)) {
+        const calls = (message.toolCalls ?? []) as CanonicalToolCall[];
+        const ids = new Set(calls.map((call) => call.id));
+        const references = new Set<string>();
+        for (const block of message.blocks as AssistantBlock[]) {
+          if (block.type !== "tool_use") continue;
+          if (!ids.has(block.id) || references.has(block.id)) {
+            fail("invalid_blocks", index, "tool blocks must reference each call exactly once");
+          }
+          references.add(block.id);
+        }
+        if (references.size !== ids.size) fail("invalid_blocks", index, "ordered blocks omit tool calls");
+      }
+      break;
+    }
+    case "notice":
+    case "snapshot":
+    case "summary":
+      valid = true;
+      break;
+    default:
+      valid = false;
+  }
+  if (!valid) fail("invalid_record", index, "invalid kind or message payload");
+}
+
+/** Current reset epoch only. No generic event reader or event-log dependency is involved. */
+export function readCanonicalRecords(events: readonly Event[]): CanonicalRecord[] {
+  let start = 0;
+  for (let index = events.length - 1; index >= 0; index--) {
+    if (events[index].kind === "system_note" && events[index].payload.type === "reset_boundary") {
+      start = index + 1;
+      break;
+    }
+  }
+  const records: CanonicalRecord[] = [];
+  for (let index = start; index < events.length; index++) {
+    if (events[index].kind !== "canonical_message") continue;
+    const record = events[index].payload;
+    assertRecord(record, records.length);
+    records.push(record);
+  }
+  return records;
+}
+
+/** One-based session sequence. Pass the full session's records, not just the visible epoch. */
+export function nextCanonicalTurnId(records: readonly CanonicalRecord[]): number {
+  let last = 0;
+  for (const [index, record] of records.entries()) {
+    assertRecord(record, index);
+    if (record.kind !== "user_input") continue;
+    if (record.turnId <= last) fail("invalid_turn", index, "user_input turn ids must increase");
+    last = record.turnId;
+  }
+  if (last === Number.MAX_SAFE_INTEGER) fail("invalid_turn", records.length, "turn id sequence exhausted");
+  return last + 1;
+}
+
+function emitResult(record: CanonicalToolResultRecord): ConversationMessage {
+  const message = record.message;
+  return { role: "tool_result", toolCallId: message.callId, toolName: message.toolName, isError: message.isError, result: message.text };
+}
+
+function scan(records: readonly CanonicalRecord[]): {
+  messages: ConversationMessage[];
+  repairs: CanonicalToolResultRecord[];
+} {
+  const messages: ConversationMessage[] = [];
+  const calls = new Set<string>();
+  const results = new Set<string>();
+  const pending = new Map<string, { call: CanonicalToolCall; turnId: number }>();
+  let turnId: number | undefined;
+  for (const [index, record] of records.entries()) {
+    assertRecord(record, index);
+    if (record.kind === "tool_result") {
+      const { callId, toolName } = record.message;
+      if (!calls.has(callId)) fail("orphan_result", index, `no earlier call ${callId}`);
+      if (results.has(callId)) fail("duplicate_result", index, `result already recorded for ${callId}`);
+      const batch = pending.get(callId);
+      if (!batch) fail("orphan_result", index, `no pending batch for ${callId}`);
+      if (record.turnId !== batch.turnId) fail("invalid_turn", index, "result must use its batch's turn id");
+      if (toolName !== batch.call.name) fail("tool_name_mismatch", index, `result tool does not match ${callId}`);
+      results.add(callId);
+      pending.delete(callId);
+      messages.push(emitResult(record));
+      continue;
+    }
+    if (pending.size) fail("interrupted_batch", index, "only results may follow an incomplete assistant batch");
+    if (record.kind === "user_input") {
+      if (turnId !== undefined && record.turnId <= turnId) fail("invalid_turn", index, "user_input turn ids must increase");
+      turnId = record.turnId;
+    } else if (turnId === undefined || record.turnId !== turnId) {
+      fail("invalid_turn", index, "record must belong to the current user_input turn");
+    }
+    switch (record.kind) {
+      case "user_input":
+      case "wrap_up":
+        // Wrap-up is logical history; its flattened projection remains a live-request concern.
+        messages.push({ role: "user", content: record.message.text });
+        break;
+      case "assistant": {
+        const message = record.message;
+        for (const call of message.toolCalls ?? []) {
+          if (calls.has(call.id)) fail("duplicate_call_id", index, `call id already used: ${call.id}`);
+          calls.add(call.id);
+          pending.set(call.id, { call, turnId: record.turnId });
+        }
+        messages.push({
+          role: "assistant", content: message.text,
+          ...(message.thinking !== undefined ? { thinking: message.thinking } : {}),
+          ...(message.thinkingSignature !== undefined ? { thinkingSignature: message.thinkingSignature } : {}),
+          ...(message.blocks !== undefined ? { blocks: structuredClone(message.blocks) } : {}),
+          ...(message.toolCalls !== undefined ? { toolCalls: structuredClone(message.toolCalls) } : {}),
+        });
+        break;
+      }
+      // Reserved records have no conversation-message semantics yet.
+      case "notice":
+      case "snapshot":
+      case "summary":
+        break;
+    }
+  }
+  // Map insertion order is the original call order, minus already recorded results.
+  const repairs: CanonicalToolResultRecord[] = Array.from(pending.values(), ({ call, turnId }) => ({
+    formatVersion: CANONICAL_TRANSCRIPT_VERSION, kind: "tool_result", turnId,
+    message: { callId: call.id, toolName: call.name, ...INTERRUPTED_TOOL_RESULT },
+  }));
+  return { messages, repairs };
+}
+
+/** Strict replay. The sole tolerated gap is an incomplete batch at the very end. */
+export function emitCanonicalTranscript(records: readonly CanonicalRecord[]): ConversationMessage[] {
+  const { messages, repairs } = scan(records);
+  return [...messages, ...repairs.map(emitResult)];
+}
+
+/**
+ * Append only missing terminal results, sequentially. The callback owns persistence;
+ * pass its updated durable record list on retry. Failures propagate, including a
+ * failure after an append was persisted. No input mutation or tool execution occurs.
+ */
+export async function repairCanonicalTranscript(
+  records: readonly CanonicalRecord[],
+  append: (record: CanonicalToolResultRecord) => void | Promise<void>,
+): Promise<number> {
+  const { repairs } = scan(records);
+  for (const record of repairs) await append(record);
+  return repairs.length;
+}
