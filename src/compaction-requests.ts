@@ -19,6 +19,7 @@ export function buildSameModelSummaryRequest(
 
 export interface SummaryResult {
   text: string;
+  finishReason: "stop" | "length" | "tool_use" | "other";
   usage: ProviderUsage | null;
   toolCalls: readonly ToolCall[];
 }
@@ -163,12 +164,14 @@ export function planBatchSummaries(
 
 export interface SummaryAttemptFailure {
   status: "failed";
-  reason: "tool_calls" | "invalid_summary" | "repair_exceeds_capacity" | "invalid_attempts";
+  reason: "tool_calls" | "truncated" | "invalid_finish" | "invalid_summary" | "repair_exceeds_capacity" | "invalid_attempts";
   failures?: SummaryFailure[];
 }
 
 function checkResult(result: SummaryResult, capTokens: number): SummaryAttemptFailure | undefined {
-  if (summaryResponseHasToolCalls(result)) return { status: "failed", reason: "tool_calls" };
+  if (summaryResponseHasToolCalls(result) || result.finishReason === "tool_use") return { status: "failed", reason: "tool_calls" };
+  if (result.finishReason === "length") return { status: "failed", reason: "truncated" };
+  if (result.finishReason !== "stop") return { status: "failed", reason: "invalid_finish" };
   const check = checkSummary(result.text, { capTokens });
   return check.ok ? undefined : { status: "failed", reason: "invalid_summary", failures: check.failures };
 }
@@ -188,11 +191,13 @@ export function buildSummaryRepairRequest(
   validateSummaryCap(options.capTokens);
   const failure = checkResult(result, options.capTokens);
   if (!failure) return { status: "not_needed" };
-  if (failure.reason === "tool_calls" || options.attempt !== 0) return failure;
+  if (failure.reason === "tool_calls" || failure.reason === "invalid_finish" || options.attempt !== 0) return failure;
   const empty = !result.text.trim();
   const repair = buildSameModelSummaryRequest({ ...request, messages: [
     ...request.messages, ...(empty ? [] : [{ role: "assistant" as const, content: result.text }]),
-  ] }, buildRepairInstruction(failure.failures!) + (empty ? "\nThe previous attempt was empty." : ""));
+  ] }, buildRepairInstruction(failure.failures ?? []) +
+    (failure.reason === "truncated" ? "\nThe previous output was cut off. Rewrite it to fit the output cap." : "") +
+    (empty ? "\nThe previous attempt was empty." : ""));
   const measured = requestFill(repair, repair.messages, options.contextWindowTokens, options);
   if (!measured.ok) return measured.error;
   if (!measured.fill.fits) return { status: "failed", reason: "repair_exceeds_capacity" };
@@ -232,7 +237,7 @@ export function nextBatchSummaryRequest(plan: BatchSummaryPlan, attempts: readon
       if (attempt.repair) return { status: "failed", reason: "invalid_attempts", batchIndex: index };
       previousSummary = attempt.result.text;
     } else {
-      if (failure.reason === "tool_calls") return { ...failure, batchIndex: index };
+      if (failure.reason === "tool_calls" || failure.reason === "invalid_finish") return { ...failure, batchIndex: index };
       if (attempt.repair) {
         // A supplied repair is valid only if that repair request could be admitted.
         const repair = buildSummaryRepairRequest(request, attempt.result, { ...plan.options, attempt: 0 });

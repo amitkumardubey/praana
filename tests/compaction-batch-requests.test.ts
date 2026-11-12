@@ -10,7 +10,7 @@ import type { Event } from "../src/types.js";
 
 const api = () => import("../src/compaction-requests.js");
 const summary = (text = "Continue work.") => SUMMARY_HEADINGS.map((heading, i) => `### ${heading}\n${i === 0 ? text : ""}`).join("\n\n");
-const response = (text = summary()): SummaryResult => ({ text, usage: null, toolCalls: [] });
+const response = (text = summary()): SummaryResult => ({ text, usage: null, toolCalls: [], finishReason: "stop" });
 const options = { contextWindowTokens: 3000, effectiveMaxTokens: 512, capTokens: 128, previousSummary: summary("Original work.") };
 function live(): StreamRequest {
   return { model: "same-model", provider: "custom", systemPrompt: "large live prefix ".repeat(5000),
@@ -267,6 +267,38 @@ test("tool calls make primary and repair summaries failed attempts even with oth
   for (const attempts of [[{ result: tool }], [{ result: response("bad"), repair: tool }]]) {
     expect(nextBatchSummaryRequest(planned, attempts)).toMatchObject({ status: "failed", reason: "tool_calls", batchIndex: 0 });
   }
+});
+
+test("complete-looking truncated summaries require one repair and never publish truncated output", async () => {
+  const { buildSummaryRepairRequest, nextBatchSummaryRequest } = await api();
+  const planned = await plan(foldedTurns(1, 10));
+  const truncated: SummaryResult = { ...response(), finishReason: "length" };
+  expect(checkSummary(truncated.text, options).ok).toBe(true);
+  const repair = nextBatchSummaryRequest(planned, [{ result: truncated }]);
+  expect(repair).toMatchObject({ status: "request", attempt: 1, batchIndex: 0 });
+  expect(repair).not.toHaveProperty("summary");
+  if (repair.status !== "request") throw new Error("Expected repair");
+  expect(repair.request.messages.at(-1)).toMatchObject({ content: expect.stringContaining("previous output was cut off") });
+  expect(buildSummaryRepairRequest(repair.request, truncated, { ...options, attempt: 1 })).toMatchObject({ status: "failed", reason: "truncated" });
+  const failed = nextBatchSummaryRequest(planned, [{ result: truncated, repair: truncated }]);
+  expect(failed).toMatchObject({ status: "failed", reason: "truncated" });
+  expect(failed).not.toHaveProperty("summary");
+  expect(nextBatchSummaryRequest(planned, [{ result: truncated, repair: response() }])).toMatchObject({ status: "complete" });
+});
+
+test("tool-use finish reasons fail even without a parsed tool call", async () => {
+  const { buildSummaryRepairRequest, nextBatchSummaryRequest } = await api();
+  const tool: SummaryResult = { ...response(), finishReason: "tool_use" };
+  expect(buildSummaryRepairRequest(live(), tool, { ...options, attempt: 0 })).toMatchObject({ status: "failed", reason: "tool_calls" });
+  const planned = await plan(foldedTurns(1, 10));
+  expect(nextBatchSummaryRequest(planned, [{ result: tool }])).toMatchObject({ status: "failed", reason: "tool_calls" });
+  expect(nextBatchSummaryRequest(planned, [{ result: response("bad"), repair: tool }])).toMatchObject({ status: "failed", reason: "tool_calls" });
+});
+
+test("non-success summary finish reasons cannot publish a summary", async () => {
+  const { nextBatchSummaryRequest } = await api();
+  const planned = await plan(foldedTurns(1, 10));
+  expect(nextBatchSummaryRequest(planned, [{ result: { ...response(), finishReason: "other" } }])).toMatchObject({ status: "failed", reason: "invalid_finish" });
 });
 
 test("oversized repair input and over-cap repaired output fail atomically", async () => {
