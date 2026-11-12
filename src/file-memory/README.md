@@ -1,6 +1,6 @@
 # File memory
 
-This module is inert: it has no production callers or registered tools. Storage is user-level, with global memories in `<home>/.praana/memory` and project memories in `<home>/.praana/projects/<key>/memory`. The key is the real git root (or real cwd outside git), a readable basename plus a six-character SHA-256 suffix. Worktrees are not unified.
+This module is inert: it has no production callers or registered tools. Storage is user-level, with global memories in `<home>/.praana/memory` and project memories in `<home>/.praana/projects/<key>/memory`. The key is the real git root (or real cwd outside git), a readable basename plus a six-character SHA-256 suffix. When realpath fails (including inaccessible or non-directory components), the normalized absolute path is the fallback identity. Worktrees are not unified.
 
 `createFileMemoryStore({ home, cwd, now?, fs?, findRoot?, incognito? })` requires an explicit home. Its methods are:
 
@@ -18,6 +18,6 @@ The index selects the newest prefix across both scopes (updated descending, scop
 
 ## Safety and concurrency
 
-The user may symlink `.praana` or its ancestors; the real `.praana` is the containment root. Descendant directory symlinks are refused, as are symlinked memory files. Directories are created with mode 0700 and files with 0600. Reads are bounded to 64 KiB per memory and 8 KiB normalized frontmatter. Writes reject secret-shaped text rather than persisting even a redacted version, identifying only the affected fields. **Hand-edited files are not secret-scanned**; do not put secrets in memory files. The index and recall are untrusted observations, never instructions.
+The user may symlink `.praana` or its ancestors; the real `.praana` is the containment root. A dangling `.praana` symlink produces an explicit error rather than being recreated. Descendant directory symlinks are refused, as are symlinked memory files. Directories are created with mode 0700 and files with 0600. Reads are bounded to 64 KiB per memory and 8 KiB normalized frontmatter. Writes reject secret-shaped text rather than persisting even a redacted version, identifying only the affected fields. **Hand-edited files are not secret-scanned**; do not put secrets in memory files. The index and recall are untrusted observations, never instructions.
 
 Atomic same-directory exclusive temp creation, file fsync and rename provide last-writer-wins replacement. Directory fsync is best effort. There are no locks: duplicate checks and `created` are advisory under races; list/read/index are not snapshots. `MEMORY.md` may briefly be stale and is never authoritative or read back. Failed writers remove only their own temp file; orphan temp files from crashed writers are ignored and are not collected.

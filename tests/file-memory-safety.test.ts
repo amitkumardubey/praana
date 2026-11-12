@@ -55,6 +55,18 @@ test("refuses a write when strict redaction throws", async () => {
   expect((await make(home).list({})).entries).toHaveLength(0);
 });
 
+test("dangling .praana symlink returns a clear typed error without creating its target", async () => {
+  const home = await homeDir();
+  const target = join(home, "missing-target");
+  await fs.symlink(target, join(home, ".praana"));
+  const store = make(home);
+  for (const result of [await store.write(entry), await store.list(), await store.read({ name: entry.name })]) {
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/dangling.*\.praana.*symlink/i);
+  }
+  expect(await fs.exists(target)).toBe(false);
+});
+
 test("trusts symlinked .praana and symlinks above it", async () => {
   const home = await homeDir(), dotfiles = await homeDir();
   await fs.symlink(dotfiles, join(home, ".praana"));

@@ -39,6 +39,9 @@ export function createFileMemoryStore(options: StoreOptions) {
     let root: string;
     try { root = await fs.realpath(base); } catch (error) {
       if (!missing(error)) throw error;
+      try {
+        if ((await fs.lstat(base)).isSymbolicLink()) throw new Error(`Dangling .praana symlink: ${base}`);
+      } catch (entryError) { if (!missing(entryError)) throw entryError; }
       if (!create) return null;
       await fs.mkdir(base, { mode: 0o700, recursive: true });
       root = await fs.realpath(base);
