@@ -1109,7 +1109,7 @@ export function createGitTools(ctx: GitToolsContext) {
 
     git_commit: defineTool({
       description:
-        "Create a git commit with guardrails. Provide message (required); optionally stage specific paths or all tracked modifications. Blocked in plan mode. Prefer conventional commit messages (feat:/fix:/…). Optional TTY confirmation when edit.confirm=true (default false). Does not push.",
+        "Create a git commit with guardrails. Provide message (required); optionally stage specific paths or all tracked modifications. Blocked in plan mode. Prefer conventional commit messages (feat:/fix:/…). When edit.confirm=true (default false), confirmation goes through the session's TUI overlay or terminal prompt; a headless session refuses the action. Does not push.",
       parameters: gitCommitSchema,
       execute: async (raw: unknown) => {
         const parsed = gitCommitSchema.safeParse(raw);

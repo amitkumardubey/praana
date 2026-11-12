@@ -98,7 +98,7 @@ export function confirmFrameMaxHeight(termHeight: number, hasPreview: boolean): 
 
 /**
  * Preview rows that fit for a terminal height, keeping the question, the blank
- * separator, and the hint on screen. Also used to size the session-side cap.
+ * separator, and the hint on screen.
  * `hasPreview` selects the frame a preview-carrying prompt gets.
  */
 export function confirmPreviewRows(
@@ -113,7 +113,7 @@ export function confirmPreviewRows(
 }
 
 /**
- * Cap the preview to the rows left in the frame. The last kept row becomes a
+ * Cap the preview to the rows left in the frame, retaining both ends and a
  * count so the reader knows the preview was elided rather than truncated.
  * This is the one cap: the caller supplies rows from the real frame height.
  */

@@ -181,6 +181,11 @@ idle_soft_after_turns = 20
 # Turns of inactivity before active/soft → hard tier demotion
 idle_hard_after_turns = 50
 
+[edit]
+# Ask for confirmation before edit_file and git_commit (default false).
+# With confirm = true a headless run (praana run) cannot ask, so edit_file and git_commit are refused with a clear error.
+confirm = false
+
 [session]
 # Directory where session event logs are stored
 log_dir = "~/.praana/sessions"

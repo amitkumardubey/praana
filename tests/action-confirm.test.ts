@@ -351,6 +351,13 @@ describe("edit_file confirmation", () => {
 });
 
 describe("git_commit confirmation", () => {
+  it("describes session confirmation and headless refusal", () => {
+    const description = createGitTools({ cwd: process.cwd() }).git_commit.description ?? "";
+    expect(description).toContain("session");
+    expect(description).toContain("headless");
+    expect(description).toContain("refuses");
+  });
+
   it("asks the installed handler, never readline, and commits on yes", async () => {
     if (!hasGit) return;
     const session = makeSession();

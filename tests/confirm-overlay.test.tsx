@@ -367,8 +367,8 @@ describe("action confirmation preview (#748)", () => {
 
   it("keeps the question and hint visible under a long preview", async () => {
     const preview = ["--- a.txt:2 (before)"];
-    for (let i = 0; i < 36; i++) preview.push(`- old line ${i}`);
-    preview.push("+++ a.txt:2 (after)", "+ new");
+    for (let i = 0; i < 40; i++) preview.push(`- old line ${i}`);
+    preview.push("+++ a.txt:2 (after)", ...Array.from({ length: 5 }, (_, i) => `+ new ${i}`));
     const { setup, overlay } = await mount(0, {
       mode: "yesno",
       message: "Apply edit? [y/N]",
@@ -382,7 +382,7 @@ describe("action confirmation preview (#748)", () => {
     expect(frame).toContain("more lines");
     expect(frame).toContain("--- a.txt:2 (before)");
     expect(frame).toContain("+++ a.txt:2 (after)");
-    expect(frame).toContain("+ new");
+    for (let i = 0; i < 5; i++) expect(frame).toContain(`+ new ${i}`);
     setup.renderer.destroy();
     overlay.dispose();
   });
@@ -500,6 +500,7 @@ describe("action preview on a short terminal (#748)", () => {
       mode: "yesno", preview: SHORT_PREVIEW, width: 80, height: 10,
     });
     setup.mockInput.pressKey("y");
+    setup.mockInput.pressEnter();
     expect(await stillPending(pending)).toBe(true);
     setup.mockInput.pressKey("n");
     expect(await settledSoon(pending)).toEqual({ settled: true, value: false });
