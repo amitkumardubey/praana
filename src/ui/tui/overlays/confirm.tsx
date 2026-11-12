@@ -196,6 +196,7 @@ export function ConfirmOverlay(props: ConfirmOverlayProps) {
           : classifyStepPauseKey(e.name, !!e.ctrl, armed);
       if (action === "passthrough") return;
       ctx.consume({ preventDefault: true, stopPropagation: true });
+      if (previewHidden() && (action === "yes" || action === "continue" || e.name === "enter" || e.name === "return")) return;
       if (action === "yes" || action === "continue") props.overlay.resolveConfirm(true);
       else if (action === "no" || action === "stop") props.overlay.resolveConfirm(false);
     });
@@ -231,7 +232,7 @@ export function ConfirmOverlay(props: ConfirmOverlayProps) {
           </text>
         )}
       </For>
-      <text><span style={TUI_STYLE.muted}>{confirmHint(prompt()?.mode ?? "step")}</span></text>
+      <text><span style={TUI_STYLE.muted}>{previewHidden() ? "enlarge the terminal to approve · n declines" : confirmHint(prompt()?.mode ?? "step")}</span></text>
     </OverlayFrame>
   );
 }

@@ -462,6 +462,32 @@ describe("action preview on a short terminal (#748)", () => {
     overlay.dispose();
   });
 
+  it("blocks approval while hidden and allows it after resizing", async () => {
+    const { setup, pending, overlay } = await mount(0, {
+      mode: "yesno", preview: SHORT_PREVIEW, width: 80, height: 10,
+    });
+    setup.mockInput.pressKey("y");
+    expect(await stillPending(pending)).toBe(true);
+    setup.renderer.resize(80, 24);
+    await setup.renderOnce();
+    setup.mockInput.pressKey("y");
+    expect(await settledSoon(pending)).toEqual({ settled: true, value: true });
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+
+  it("allows declining while the preview is hidden", async () => {
+    const { setup, pending, overlay } = await mount(0, {
+      mode: "yesno", preview: SHORT_PREVIEW, width: 80, height: 10,
+    });
+    setup.mockInput.pressKey("y");
+    expect(await stillPending(pending)).toBe(true);
+    setup.mockInput.pressKey("n");
+    expect(await settledSoon(pending)).toEqual({ settled: true, value: false });
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+
   it("says the preview does not fit at 80x10 instead of asking blind", async () => {
     const { setup, overlay } = await mount(0, {
       mode: "yesno",
@@ -475,7 +501,7 @@ describe("action preview on a short terminal (#748)", () => {
     // the question and the hint: an approval prompt must not hide the change.
     expect(frame).toContain("preview does not fit: enlarge the terminal to review");
     expect(frame).toContain("Apply edit?");
-    expect(frame).toContain("y = yes");
+    expect(frame).toContain("enlarge the terminal to approve");
     expect(frame).not.toContain("--- a.txt:2 (before)");
     setup.renderer.destroy();
     overlay.dispose();
@@ -488,7 +514,7 @@ describe("action preview on a short terminal (#748)", () => {
     const frame = setup.captureCharFrame();
     expect(frame).toContain("preview does not fit");
     expect(frame).toContain("Apply edit?");
-    expect(frame).toContain("y = yes");
+    expect(frame).toContain("enlarge the terminal to approve");
     expect(frame).not.toContain("UNIQUE PREVIEW");
     setup.renderer.destroy();
     overlay.dispose();
