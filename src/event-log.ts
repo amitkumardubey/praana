@@ -134,7 +134,19 @@ export class EventLog {
   }
 
   private syncCache(): void {
-    const stats = statSync(this.logPath);
+    let stats: ReturnType<typeof statSync>;
+    try {
+      stats = statSync(this.logPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      this.eventCache = [];
+      this.lastMtimeMs = 0;
+      this.lastSize = 0;
+      this.corruptionCount = 0;
+      this.corruptionLast = null;
+      this.endsWithNewline = true;
+      return;
+    }
 
     if (
       this.eventCache !== null &&
@@ -151,6 +163,7 @@ export class EventLog {
     const lines = content.split("\n");
     if (lines[lines.length - 1] === "") lines.pop();
     for (const [index, line] of lines.entries()) {
+      if (!line.trim()) continue;
       try {
         const value: unknown = JSON.parse(line);
         if (!value || typeof value !== "object" || Array.isArray(value) ||
@@ -219,13 +232,17 @@ export class EventLog {
       }
       (this.options.fsync ?? fsyncSync)(this.fd);
 
-      // Record the real file stats so the next read does not need to re-sync.
-      const stats = statSync(this.logPath);
       this.eventCache!.push(fullEvent);
       this.endsWithNewline = true;
-      this.lastMtimeMs = stats.mtimeMs;
-      this.lastSize = stats.size;
       this.eventCount++;
+      // The write is already durable; a failed stat must not turn it into a failed append.
+      try {
+        const stats = statSync(this.logPath);
+        this.lastMtimeMs = stats.mtimeMs;
+        this.lastSize = stats.size;
+      } catch {
+        this.lastSize = -1; // Force the next read to reload.
+      }
     } catch (error) {
       this.eventCache = null;
       throw error;

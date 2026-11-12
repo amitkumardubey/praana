@@ -1,5 +1,6 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { fsyncSync, mkdtempSync, readFileSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
+import { fsyncSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
+import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventLog } from "../src/event-log.js";
@@ -13,6 +14,62 @@ describe("event log corruption and partial writes", () => {
   let log: EventLog;
   beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "eventlog-corrupt-")); });
   afterEach(() => { log?.close(); rmSync(dir, { recursive: true, force: true }); });
+
+  it("treats a removed log as empty without changing the open descriptor", () => {
+    log = new EventLog("s", dir);
+    append(log, "a");
+    unlinkSync(log.getLogPath());
+    expect(log.readAll()).toEqual([]);
+    expect(() => append(log, "b")).not.toThrow();
+    expect(log.readAll()).toEqual([]);
+  });
+
+  it("propagates permission errors from stat", () => {
+    log = new EventLog("s", dir);
+    const denied = Object.assign(new Error("permission denied"), { code: "EACCES" });
+    const stat = spyOn(fs, "statSync").mockImplementation(() => { throw denied; });
+    try {
+      expect(() => log.readAll()).toThrow("permission denied");
+    } finally { stat.mockRestore(); }
+  });
+
+  it("propagates a read failure when the log path is a directory", () => {
+    log = new EventLog("s", dir);
+    unlinkSync(log.getLogPath());
+    mkdirSync(log.getLogPath());
+    expect(() => log.readAll()).toThrow();
+  });
+
+  it("ignores blank and whitespace-only lines without warnings", () => {
+    const warnings: unknown[] = [];
+    log = new EventLog("s", dir, { onCorruptLine: info => warnings.push(info) });
+    writeFileSync(log.getLogPath(), `${line("a")}\n\n  \t\n${line("b")}\n`);
+    expect(log.readAll().map(e => e.event_id)).toEqual(["a", "b"]);
+    expect(log.corruptLineCount).toBe(0);
+    expect(warnings).toEqual([]);
+    writeFileSync(log.getLogPath(), "\n");
+    expect(log.readAll()).toEqual([]);
+    expect(log.corruptLineCount).toBe(0);
+    expect(warnings).toEqual([]);
+  });
+
+  it("succeeds when the post-fsync stat fails and reloads the event exactly once", () => {
+    let synced = false;
+    const realStat = fs.statSync;
+    const stat = spyOn(fs, "statSync").mockImplementation((...args: Parameters<typeof fs.statSync>) => {
+      if (synced) { synced = false; throw new Error("post-write stat failed"); }
+      return realStat(...args);
+    });
+    const read = spyOn(fs, "readFileSync");
+    try {
+      log = new EventLog("s", dir, { fsync: fd => { fsyncSync(fd); synced = true; } });
+      expect(() => append(log, "a")).not.toThrow();
+      read.mockClear();
+      expect(log.readAll().map(e => e.event_id)).toEqual(["a"]);
+      expect(read).toHaveBeenCalled();
+      expect(JSON.parse(readFileSync(log.getLogPath(), "utf8")).event_id).toBe("a");
+    } finally { read.mockRestore(); stat.mockRestore(); }
+  });
 
   it("keeps valid events before a torn tail and separates the next append", () => {
     log = new EventLog("s", dir);
