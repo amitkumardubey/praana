@@ -29,10 +29,15 @@ const inside = (parent: string, child: string) => { const p = relative(parent, c
 export function createFileMemoryStore(options: StoreOptions) {
   const fs = options.fs ?? nodeFs;
   const home = resolve(options.home);
-  const dirs = memoryDirectories(home, projectKey(options.cwd, options.findRoot));
+  let dirs: Record<MemoryScope, string> | undefined;
+  let rootError: ResultError | undefined;
+  try { dirs = memoryDirectories(home, projectKey(options.cwd, options.findRoot)); }
+  catch (error) { rootError = errorResult(error); }
   const now = options.now ?? (() => new Date());
 
   async function directory(scope: MemoryScope, create: boolean): Promise<string | null> {
+    if (rootError) throw new Error(rootError.error);
+    if (!dirs) throw new Error("Project root unavailable");
     if (!scopes.includes(scope)) throw new Error("Invalid scope");
     // The user controls .praana and its ancestors; only descendants are untrusted.
     const base = join(home, ".praana");
@@ -144,6 +149,7 @@ export function createFileMemoryStore(options: StoreOptions) {
   }
 
   async function write(input: MemoryInput & { scope: MemoryScope }): Promise<{ ok: true; name: string; scope: MemoryScope; created: boolean } | ResultError> {
+    if (rootError) return rootError;
     if (options.incognito) return { ok: false, error: "Incognito mode prevents writes" };
     try {
       const allowed = new Set(["scope", "type", "name", "description", "body"]);
@@ -178,6 +184,7 @@ export function createFileMemoryStore(options: StoreOptions) {
   }
 
   async function read(input: { scope?: MemoryScope; name: string }): Promise<{ ok: true; memory: Memory & { scope: MemoryScope } } | ResultError> {
+    if (rootError) return rootError;
     if (!validName(input.name)) return { ok: false, error: "Invalid memory name" };
     try {
       for (const scope of input.scope ? [input.scope] : scopes) {
@@ -190,6 +197,7 @@ export function createFileMemoryStore(options: StoreOptions) {
   }
 
   async function remove(input: { scope?: MemoryScope; name: string }): Promise<{ ok: true } | ResultError> {
+    if (rootError) return rootError;
     if (options.incognito) return { ok: false, error: "Incognito mode prevents removal" };
     if (!validName(input.name)) return { ok: false, error: "Invalid memory name" };
     try {
@@ -222,6 +230,7 @@ export function createFileMemoryStore(options: StoreOptions) {
   }
 
   async function list(input: { scope?: MemoryScope } = {}): Promise<{ ok: true; entries: ListEntry[]; skipped: number } | ({ entries: ListEntry[]; skipped: number } & ResultError)> {
+    if (rootError) return { ...rootError, entries: [], skipped: 0 };
     try {
       const result: ListEntry[] = [];
       let skipped = 0;
@@ -237,12 +246,13 @@ export function createFileMemoryStore(options: StoreOptions) {
       return { ok: true, entries: result, skipped };
     } catch (error) { return { ...errorResult(error), entries: [], skipped: 0 }; }
   }
-  async function buildMemoryIndex(input: { scope?: MemoryScope } = {}): Promise<MemoryIndex> {
+  async function buildMemoryIndex(input: { scope?: MemoryScope } = {}): Promise<MemoryIndex & ({ ok: true } | ResultError)> {
     const data = await list(input);
-    if (!data.ok) throw new Error(data.error);
-    return renderMemoryIndex({ entries: data.entries.map((entry) => ({ ...entry, file: `${entry.scope}/${entry.name}.md` })) });
+    if (!data.ok) return { ...data, text: "", truncated: false, shown: 0, total: 0 };
+    return { ok: true, ...renderMemoryIndex({ entries: data.entries.map((entry) => ({ ...entry, file: `${entry.scope}/${entry.name}.md` })) }) };
   }
   async function recall(input: { query?: string; name?: string }): Promise<{ ok: true; memory: ScopedMemory } | { ok: true; matches: RecallMatch[] } | ResultError> {
+    if (rootError) return rootError;
     if ((input.query !== undefined) === (input.name !== undefined)) return { ok: false, error: "Provide exactly one of query or name" };
     if (input.name !== undefined) return read({ name: input.name });
     if (typeof input.query !== "string") return { ok: false, error: "Query must be a string" };
@@ -262,6 +272,7 @@ export function createFileMemoryStore(options: StoreOptions) {
   async function refreshIndexFile(scope: MemoryScope): Promise<{ ok: true } | ResultError> {
     try {
       const index = await buildMemoryIndex({ scope });
+      if (!index.ok) return errorResult(new Error(index.error));
       const dir = await directory(scope, true);
       if (!dir) throw new Error("Memory directory unavailable");
       await atomicReplace(dir, "MEMORY.md", index.text);
