@@ -53,13 +53,14 @@ export type EventKind =
   | "tool_result"
   | "context_action"
   | "canonical_message"
+  | "compaction_commit"
   | "ui_transcript"
   | "system_note";
 
 export type EventActor = "user" | "agent" | "kernel" | "tool";
 
 export interface Event {
-  event_id: string; // ULID, monotonic within session
+  event_id: string; // ULID by default; log position, not id order, determines sequence.
   session_id: string;
   timestamp: number; // unix ms
   kind: EventKind;

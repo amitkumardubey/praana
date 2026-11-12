@@ -1,4 +1,4 @@
-import type { Event, EventKind, StateObject } from "./types.js";
+import type { Event, StateObject } from "./types.js";
 import type { ProviderUsage } from "./llm/types.js";
 import { isResetBoundaryEvent, type EventLog } from "./event-log.js";
 import { estimateTokens } from "./token-estimate.js";
@@ -133,7 +133,7 @@ export function buildRepairInstruction(failures: readonly SummaryFailure[]): str
 
 export const COMPACTION_COMMIT_VERSION = 1;
 export const SESSION_START_EPOCH = "session_start";
-const COMPACTION_COMMIT_KIND = "compaction_commit" as EventKind;
+const COMPACTION_COMMIT_KIND = "compaction_commit";
 
 export interface FrozenState {
   resetEpoch: string;
@@ -238,7 +238,9 @@ function emptyState(resetEpoch: string): FrozenState {
 }
 
 /** Validate shape here; epoch, generation and references require replay of raw events. */
-export function buildCommitEvent(commit: Omit<CompactionCommit, "prefix">) {
+export function buildCommitEvent(commit: Omit<CompactionCommit, "prefix">): {
+  kind: "compaction_commit"; actor: "kernel"; payload: Record<string, unknown>;
+} {
   assertCommit(commit, -1);
   if ("prefix" in commit) commitError("invalid_commit", -1, "reserved prefix cannot be written here");
   return { kind: COMPACTION_COMMIT_KIND, actor: "kernel" as const, payload: { formatVersion: COMPACTION_COMMIT_VERSION, ...copyState(commit) } };

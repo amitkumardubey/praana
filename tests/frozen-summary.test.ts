@@ -1,8 +1,18 @@
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { fsyncSync, mkdtempSync, readFileSync, rmSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EventLog, type EventLogOptions } from "../src/event-log.js";
+import { EventLog, eventsAfterResetBoundary, findLastResetBoundaryIndex, findLastResetBoundaryTurn, type EventLogOptions } from "../src/event-log.js";
+import { maybeAutoCompactClassic } from "../src/auto-compact.js";
+import { executeSlashCommand } from "../src/slash-commands.js";
+import { formatRecentConversationLines } from "../src/app-banner.js";
+import { computeMemoryStats } from "../src/turn.js";
+import { Session } from "../src/session.js";
+import { StateGraph } from "../src/state-graph.js";
+import { loadConfig } from "../src/config.js";
+import { CanonicalWriter, readFullSessionCanonicalRecords } from "../src/canonical-transcript.js";
+import { findReplayStartIndex, loadStateGraphCheckpoint } from "../src/state-graph-checkpoint.js";
+import { createMemoryTools } from "../src/tools/memory.js";
 import type { Event } from "../src/types.js";
 import type { CompactionCommit } from "../src/frozen-summary.js";
 import { estimateTokens } from "../src/token-estimate.js";
@@ -122,6 +132,7 @@ test("frozen summary has no checkpoint or memory imports", async () => {
 const roots: string[] = [];
 const logs: EventLog[] = [];
 afterEach(() => {
+  mock.restore();
   for (const log of logs.splice(0)) log.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -141,8 +152,9 @@ function canonical(id: string, kind: "user_input" | "tool_result" = "user_input"
 function data(overrides: Partial<CompactionCommit> = {}): CompactionCommit {
   return { formatVersion: 1, resetEpoch: "session_start", generation: 1, boundaryEventId: "z", summary: markdown, stubSet: [], summaryRequest: null, ...overrides };
 }
+const commitKind: Event["kind"] = "compaction_commit";
 function recorded(payload: unknown, id = "commit"): Event {
-  return { event_id: id, session_id: "s", timestamp: 1, kind: "compaction_commit" as Event["kind"], actor: "kernel", payload: payload as Record<string, unknown> };
+  return { event_id: id, session_id: "s", timestamp: 1, kind: commitKind, actor: "kernel", payload: payload as Record<string, unknown> };
 }
 function reset(id: string): Event {
   return { event_id: id, session_id: "s", timestamp: 1, kind: "system_note", actor: "kernel", payload: { type: "reset_boundary", command: "/clear" } };
@@ -342,4 +354,151 @@ test("failed fsync is uncertain even when the commit is durable; reopen restores
   expect(reopened.corruptLineCount).toBe(0);
   expect(readCommits(reopened.readAll({ includeCanonical: true }))).toHaveLength(1);
   expect(restoreFrozenState(reopened.readAll({ includeCanonical: true }))).toMatchObject({ ok: true, state: { generation: 1, summary: markdown } });
+});
+
+function commitNoise(log: EventLog, count: number) {
+  for (let i = 0; i < count; i++) log.append(recorded(data({ summary: "needle" }), `commit-${i}`));
+}
+function visible(log: EventLog, id: string, kind: "user_message" | "agent_message" | "system_note" = "user_message", payload: Record<string, unknown> = { text: "needle" }) {
+  log.append({ event_id: id, kind, actor: "kernel", timestamp: 123, payload });
+}
+
+test("commit isolation filters search before its limit, even explicit kinds and raw tool fallback", async () => {
+  const { log } = openLog();
+  commitNoise(log, 3);
+  visible(log, "legitimate");
+  expect(log.search("needle", { limit: 1 }).map(m => m.event.event_id)).toEqual(["legitimate"]);
+  expect(log.search("needle", { kinds: [commitKind] })).toEqual([]);
+  expect(log.search("needle", { afterResetBoundary: true, limit: 1 }).map(m => m.event.event_id)).toEqual(["legitimate"]);
+  const tools = createMemoryTools({ eventLog: log, stateGraph: new StateGraph(), includeWorkingMemoryTools: false });
+  const result = await tools.search_session_log.execute({ query: "needle", limit: 1 });
+  expect(result).toMatchObject({ matchCount: 1, matches: [{ kind: "user_message" }] });
+  expect(JSON.stringify(result)).not.toContain("compaction_commit");
+});
+
+test("all generic bounded reads and getLastEvent exclude both internal kinds; raw access preserves both", () => {
+  const { log } = openLog();
+  visible(log, "legitimate");
+  log.append(canonical("canonical"));
+  commitNoise(log, 10);
+  for (const events of [log.readLast(1), log.readLastUncompressed(1), log.readLastUncompressedAfterResetBoundary(1), log.readAll(), log.readAllUncompressed(), log.readAllAfterResetBoundary(), log.readAllUncompressedAfterResetBoundary()]) {
+    expect(events.map(e => e.event_id)).toEqual(["legitimate"]);
+  }
+  expect(log.getLastEvent()?.event_id).toBe("legitimate");
+  expect(log.replayContextActions()).toEqual([]);
+  const raw = log.readAll({ includeInternal: true });
+  expect(raw).toHaveLength(12);
+  expect(raw).toEqual(log.readAll({ includeCanonical: true }));
+  expect(readFullSessionCanonicalRecords(raw)).toHaveLength(1);
+  expect(log.getLastEvent({ includeInternal: true })?.event_id).toBe("commit-9");
+  expect(log.getLastEvent({ includeCanonical: true })?.event_id).toBe("commit-9");
+  raw.length = 0;
+  expect(log.readAll({ includeInternal: true })).toHaveLength(12);
+});
+
+test("getLastEvent returns null for an internal-only log but raw anchors remain available", () => {
+  const { log } = openLog();
+  log.append(canonical("canonical"));
+  commitNoise(log, 2);
+  expect(log.getLastEvent()).toBeNull();
+  expect(log.readAll()).toEqual([]);
+  expect(log.getLastEvent({ includeInternal: true })?.event_id).toBe("commit-1");
+});
+
+test("auto-compact selection keeps identical ids, counts and content in a commit-filled log", async () => {
+  const { log } = openLog();
+  const config = loadConfig();
+  config.compiler = { ...config.compiler, auto_compact_at: 0.75, auto_compact_clear_at: 0.55, compact_chunk_fraction: 0.5, reserved_output_tokens: 0 };
+  const compressed = spyOn(log, "markEventsAsCompressed");
+  const compressTurns = mock(async () => 2);
+  const session = { config, eventLog: log, memoryEnabled: true, memoryStore: { compressTurns }, isCompactionArmed: () => false, setCompactionArmed() {}, getContextWindowTokens: () => 10000, debug: false } as unknown as Session;
+  commitNoise(log, 20);
+  for (let i = 0; i < 6; i++) visible(log, `legacy-${i}`, i % 2 ? "agent_message" : "user_message", { text: `message ${i}` });
+  const result = await maybeAutoCompactClassic(session, 8000, "test/model");
+  expect(result).toMatchObject({ compacted: true, eventsCompacted: 3, factsStored: 2 });
+  expect(compressed).toHaveBeenCalledWith(["legacy-0", "legacy-1", "legacy-2"]);
+  expect(compressTurns.mock.calls[0][0]).toEqual([
+    { type: "user_message", timestamp: 123, content: "message 0" },
+    { type: "agent_message", timestamp: 123, content: "message 1" },
+    { type: "user_message", timestamp: 123, content: "message 2" },
+  ]);
+});
+
+test("events command retains its twenty visible entries despite trailing commits", async () => {
+  const { log } = openLog();
+  for (let i = 0; i < 20; i++) visible(log, `legacy-${i}`, "user_message", { text: `message ${i}` });
+  const handlers = { setModel() {}, setThinking() {}, getThinking: () => false };
+  const baseline = await executeSlashCommand("/events", { eventLog: log } as Session, handlers);
+  commitNoise(log, 20);
+  expect(await executeSlashCommand("/events", { eventLog: log } as Session, handlers)).toEqual(baseline);
+  expect(JSON.stringify(baseline)).toContain("message 0");
+});
+
+test("recent banner is not starved by trailing internal commits", () => {
+  const { log } = openLog();
+  visible(log, "legitimate", "user_message", { text: "visible conversation" });
+  const session = { eventLog: log } as Session;
+  const baseline = formatRecentConversationLines(session, 1);
+  commitNoise(log, 30);
+  expect(formatRecentConversationLines(session, 1)).toEqual(baseline);
+  expect(baseline.join("\n")).toContain("visible conversation");
+});
+
+test("memory statistics retain legitimate recalls outside a commit-filled fifty-event window", () => {
+  const { log } = openLog();
+  visible(log, "recall", "system_note", { type: "memory_recall", hits: 7 });
+  const session = { eventLog: log, getMemoryStats: () => ({ active: 0, total: 0 }), digest: null } as unknown as Session;
+  const baseline = computeMemoryStats(session, 0);
+  commitNoise(log, 50);
+  expect(computeMemoryStats(session, 0)).toEqual(baseline);
+  expect(baseline).toMatchObject({ recallCalls: 1, recallHits: 7 });
+});
+
+test("checkpoint anchors resolve a hidden commit id and resume replays the following action", async () => {
+  const { appendCommit } = await api();
+  const { log, root } = openLog();
+  log.close();
+  const config = loadConfig();
+  config.session.log_dir = root;
+  config.memory.enabled = false;
+  config.memory.summarizer = "disabled";
+  config.context_engine!.enabled = false;
+  config.native = { ...config.native!, enabled: false };
+  config.skills.enabled = false;
+  config.project_detection!.enabled = false;
+  const session = Session.createNew("s", root, config);
+  logs.push(session.eventLog);
+  const task = session.stateGraph.create("task", { title: "checkpoint task" });
+  await new CanonicalWriter(session.eventLog, error => { throw error; }).startTurn("input");
+  const boundary = session.eventLog.getLastEvent({ includeCanonical: true })!.event_id;
+  expect(appendCommit(session.eventLog, data({ boundaryEventId: boundary }))).toEqual({ status: "committed" });
+  expect(session.eventLog.readAll()).toHaveLength(0);
+  session.incrementTurn();
+  session.persistStateGraphCheckpoint();
+  const checkpoint = loadStateGraphCheckpoint(join(root, "s"))!;
+  const raw = session.eventLog.readAll({ includeInternal: true });
+  expect(checkpoint.last_event_id).toBe(raw[1].event_id);
+  expect(raw[1].kind).toBe("compaction_commit");
+  expect(findReplayStartIndex(raw, checkpoint.last_event_id)).toBe(2);
+  session.eventLog.append({ kind: "context_action", actor: "kernel", payload: { action: "update", id: task.id, statePayload: { title: "after anchor" }, updated: Date.now() } });
+  session.eventLog.close();
+  const resumed = await Session.resume(session.id, root, config, { suppressLoggerStderr: true });
+  logs.push(resumed.eventLog);
+  expect(resumed.stateGraph.get(task.id)?.payload.title).toBe("after anchor");
+  expect(resumed.getTurnCount()).toBe(1);
+});
+
+test("reset boundary indices and turn counts stay correct in raw and generic views with commits", () => {
+  const { log } = openLog();
+  visible(log, "old");
+  commitNoise(log, 3);
+  log.logResetBoundary("/clear");
+  visible(log, "new");
+  const generic = log.readAll();
+  expect(generic.map(e => e.kind)).toEqual(["user_message", "system_note", "user_message"]);
+  for (const events of [generic, log.readAll({ includeInternal: true })]) {
+    expect(findLastResetBoundaryTurn(events)).toBe(0);
+    expect(events[findLastResetBoundaryIndex(events)].payload.type).toBe("reset_boundary");
+    expect(eventsAfterResetBoundary(events).map(e => e.event_id)).toEqual(["new"]);
+  }
 });
