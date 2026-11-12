@@ -172,12 +172,17 @@ function assertRecord(value: unknown, index: number): asserts value is Canonical
  * Pass raw events from EventLog.readAll({ includeInternal: true }); the default
  * read filters internal events and would silently return an empty transcript.
  */
-export function readCanonicalRecords(events: readonly Event[]): CanonicalRecord[] {
+export function readCanonicalEntries(events: readonly Event[]): { eventId: string; record: CanonicalRecord }[] {
+  const canonical = eventsAfterResetBoundary([...events]).filter(event => event.kind === "canonical_message");
   let seenInput = false;
-  return readFullSessionCanonicalRecords(eventsAfterResetBoundary([...events])).filter((record) => {
+  return readFullSessionCanonicalRecords(canonical).flatMap((record, index) => {
     if (record.kind === "user_input") seenInput = true;
-    return seenInput || record.kind !== "tool_result";
+    return !seenInput && record.kind === "tool_result" ? [] : [{ eventId: canonical[index].event_id, record }];
   });
+}
+
+export function readCanonicalRecords(events: readonly Event[]): CanonicalRecord[] {
+  return readCanonicalEntries(events).map(entry => entry.record);
 }
 
 /**

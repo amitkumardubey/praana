@@ -62,6 +62,15 @@ test("turns use only the latest reset epoch and hide stranded pre-input results"
   expect(buildTurns([...events, reset("clear-a")])).toEqual([]);
 });
 
+test("canonical entries preserve event ids while sharing current-epoch record filtering", async () => {
+  const { readCanonicalEntries, readCanonicalRecords } = await import("../src/canonical-transcript.js");
+  const fresh = [input("new", 8), assistant("answer", 8, "fresh")];
+  const events = [input("old"), reset("clear"), result("stranded", 1, "lost"), ...fresh];
+  expect(readCanonicalEntries(events)).toEqual(fresh.map(e => ({ eventId: e.event_id, record: e.payload })));
+  expect(readCanonicalEntries(events).map(entry => entry.record)).toEqual(readCanonicalRecords(events));
+  expect(readCanonicalEntries([...events, reset("empty")])).toEqual([]);
+});
+
 test("turn view ignores generic events but keeps non-emitting canonical records in the cut unit", async () => {
   const { buildTurns } = await api();
   const events = [input("i"), { ...reset("generic"), payload: { type: "other" } },

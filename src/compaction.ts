@@ -1,5 +1,5 @@
-import { CanonicalTranscriptError, CanonicalValidator, emitCanonicalTranscript, readFullSessionCanonicalRecords, type CanonicalRecord } from "./canonical-transcript.js";
-import { eventsAfterResetBoundary, findLastResetBoundaryIndex } from "./event-log.js";
+import { CanonicalTranscriptError, CanonicalValidator, emitCanonicalTranscript, readCanonicalEntries, type CanonicalRecord } from "./canonical-transcript.js";
+import { findLastResetBoundaryIndex } from "./event-log.js";
 import { renderSummaryMessage, SESSION_START_EPOCH, type FrozenState } from "./frozen-summary.js";
 import type { ConversationMessage, ToolDefinition } from "./llm/types.js";
 import { estimateTokens } from "./token-estimate.js";
@@ -90,25 +90,9 @@ export interface CompactionTurn {
   estimatedTokens: number;
 }
 
-interface CanonicalEntry {
-  eventId: string;
-  record: CanonicalRecord;
-}
-
-function currentEntries(events: readonly Event[]): CanonicalEntry[] {
-  const canonical = eventsAfterResetBoundary([...events]).filter((event) => event.kind === "canonical_message");
-  const records = readFullSessionCanonicalRecords(canonical);
-  let seenInput = false;
-  return records.flatMap((record, index) => {
-    if (record.kind === "user_input") seenInput = true;
-    // Match canonical replay: a reset can strand results before the first new input.
-    return !seenInput && record.kind === "tool_result" ? [] : [{ eventId: canonical[index].event_id, record }];
-  });
-}
-
 function groupTurns(events: readonly Event[]): CompactionTurn[] {
   const turns: CompactionTurn[] = [];
-  for (const { eventId, record } of currentEntries(events)) {
+  for (const { eventId, record } of readCanonicalEntries(events)) {
     if (record.kind === "user_input") {
       if (turns.length) turns[turns.length - 1].completed = true;
       turns.push({ turnId: record.turnId, completed: false, eventIds: [], records: [], messages: [], estimatedTokens: 0 });
