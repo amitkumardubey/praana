@@ -106,7 +106,7 @@ function currentEntries(events: readonly Event[]): CanonicalEntry[] {
   });
 }
 
-function turnView(events: readonly Event[]): { turns: CompactionTurn[]; pending: boolean } {
+function turnView(events: readonly Event[], options: { estimate?: boolean } = {}): { turns: CompactionTurn[]; pending: boolean } {
   const turns: CompactionTurn[] = [];
   const validator = new CanonicalValidator();
   for (const { eventId, record } of currentEntries(events)) {
@@ -123,14 +123,14 @@ function turnView(events: readonly Event[]): { turns: CompactionTurn[]; pending:
     const emittedCount = turn.records.filter((record) => ["user_input", "wrap_up", "assistant", "tool_result"].includes(record.kind)).length;
     // The strict emitter repairs a terminal pending batch; estimates cover recorded bytes only.
     turn.messages = emitCanonicalTranscript(turn.records).slice(0, emittedCount);
-    turn.estimatedTokens = turn.messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
+    if (options.estimate !== false) turn.estimatedTokens = turn.messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
   }
   return { turns, pending: validator.repairs().length > 0 };
 }
 
 /** Current-epoch units in log order. Invalid sequences throw CanonicalTranscriptError. */
-export function buildTurns(events: readonly Event[]): CompactionTurn[] {
-  return turnView(events).turns;
+export function buildTurns(events: readonly Event[], options: { estimate?: boolean } = {}): CompactionTurn[] {
+  return turnView(events, options).turns;
 }
 
 export type MaterializationErrorCode = "pending_batch" | "invalid_state";
@@ -159,7 +159,7 @@ export function materializeHistory(state: FrozenState, events: readonly Event[])
     if ((state.summary === null) !== (state.boundaryEventId === null)) {
       throw new MaterializationError("invalid_state", "summary and boundary must both be present or both be null");
     }
-    const { turns, pending } = turnView(events);
+    const { turns, pending } = turnView(events, { estimate: false });
     if (pending) throw new MaterializationError("pending_batch", "the terminal tool batch has unrecorded results");
     const cut = state.boundaryEventId === null ? -1 : turns.findIndex((turn) => turn.completed && turn.eventIds.at(-1) === state.boundaryEventId);
     if (state.boundaryEventId !== null && cut < 0) {

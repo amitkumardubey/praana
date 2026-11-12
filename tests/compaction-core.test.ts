@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import * as tokenEstimator from "../src/token-estimate.js";
 import { CanonicalTranscriptError, emitCanonicalTranscript, type CanonicalRecord } from "../src/canonical-transcript.js";
 import type { ConversationMessage } from "../src/llm/types.js";
 import { buildCommitEvent, restoreFrozenState, SESSION_START_EPOCH, type FrozenState } from "../src/frozen-summary.js";
@@ -176,6 +177,24 @@ function frozen(overrides: Partial<FrozenState> = {}): FrozenState {
 }
 const summary = "### Active request\nPreserve exact bytes.\n\n### Plan\n- Test 雪\n\n### Constraints\n\n### Decisions\n\n### Files in play\n\n### Completed\n\n### Open threads\n";
 const summaryRequest = { cutDescription: "through r", capTokens: 1024, instructionSha256: "a".repeat(64), usage: null };
+
+test("materialisation and unestimated grouping never invoke the token estimator", async () => {
+  const { buildTurns, materializeHistory } = await api();
+  const estimate = spyOn(tokenEstimator, "estimateTokens");
+  try {
+    const events = complexTurn();
+    const normal = buildTurns(events);
+    expect(estimate.mock.calls.length).toBeGreaterThan(0);
+    estimate.mockClear();
+    expect(materializeHistory(frozen(), events).ok).toBe(true);
+    expect(estimate).toHaveBeenCalledTimes(0);
+    const grouped = buildTurns(events, { estimate: false });
+    expect(estimate).toHaveBeenCalledTimes(0);
+    expect(grouped).toEqual(normal.map(turn => ({ ...turn, estimatedTokens: 0 })));
+  } finally {
+    estimate.mockRestore();
+  }
+});
 
 test("materialisation without a rewrite equals strict canonical replay, including empty history", async () => {
   const { materializeHistory } = await api();
