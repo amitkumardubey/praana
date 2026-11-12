@@ -127,6 +127,8 @@ export function capConfirmPreview(preview: readonly string[], rows: number): str
   return [...preview.slice(0, head), `... ${preview.length - keep} more lines`, ...(tail ? preview.slice(-tail) : [])];
 }
 
+const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
 /**
  * Truncate preview rows to the frame's inner width. The row budget is one
  * terminal row per preview line, so a long diff line, commit subject, or
@@ -134,8 +136,6 @@ export function capConfirmPreview(preview: readonly string[], rows: number): str
  * out of the frame. Tabs are expanded first: the terminal advances them to a
  * stop, which would otherwise widen the row past what was measured.
  */
-const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
-
 export function fitPreviewRows(
   preview: readonly string[],
   innerWidth: number,
@@ -153,6 +153,16 @@ export function fitPreviewRows(
     }
     return `${fitted}…`;
   });
+}
+
+/** Cap before fitting so hidden rows never incur width processing. */
+export function visiblePreviewRows(
+  preview: readonly string[],
+  rows: number,
+  innerWidth: number,
+  fit: typeof fitPreviewRows = fitPreviewRows,
+): string[] {
+  return fit(capConfirmPreview(preview, rows), innerWidth);
 }
 
 /** Expand a tab to the next 4-column stop, matching nothing in particular but keeping width predictable. */
@@ -219,7 +229,7 @@ export function ConfirmOverlay(props: ConfirmOverlayProps) {
   const previewHidden = () => hasPreview() && previewRows() < CONFIRM_MIN_PREVIEW_ROWS;
   const innerWidth = () => overlayFrameInnerWidth(dimensions().width, CONFIRM_FRAME_WIDTH);
   const previewLines = () =>
-    previewHidden() ? [] : fitPreviewRows(capConfirmPreview(preview(), previewRows()), innerWidth());
+    previewHidden() ? [] : visiblePreviewRows(preview(), previewRows(), innerWidth());
   const maxHeight = () => confirmFrameMaxHeight(dimensions().height, hasPreview());
 
   return (
