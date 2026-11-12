@@ -6,6 +6,7 @@ import { Session, isAgentsTruncationNotice, type SessionEndStatus } from "./sess
 import { findLatestSessionForCwd, resolveSessionId } from "./event-log.js";
 import { runTurn } from "./turn.js";
 import { TurnController, TurnAbortedError } from "./turn-control.js";
+import type { ConfirmHandler } from "./confirm/action.js";
 import { buildStatusBarInput, type StatusBarInput } from "./status-bar.js";
 import { executeSlashCommand, type SlashCommandResult } from "./slash-commands.js";
 import { createDefaultTurnSink, type TurnUiSink } from "./ui-events.js";
@@ -59,7 +60,7 @@ export class AppController {
    * UI risk confirmation (the TUI overlay), re-applied to every session this
    * controller creates. `null` leaves the classic readline prompt in place.
    */
-  private confirmHandler: ((prompt: string) => Promise<boolean>) | null = null;
+  private confirmHandler: ConfirmHandler | null = null;
 
   constructor(opts: { cwd?: string; config: PraanaConfig; parsed: CliArgs }) {
     this.cwd = opts.cwd ?? resolve(process.cwd());
@@ -73,7 +74,7 @@ export class AppController {
    * re-applied to every session this controller creates afterwards, so a
    * resumed, /new, or rolled-back session cannot lose it.
    */
-  setConfirmHandler(handler: ((prompt: string) => Promise<boolean>) | null): void {
+  setConfirmHandler(handler: ConfirmHandler | null): void {
     this.confirmHandler = handler;
     if (this.session) this.session.setConfirmHandler(handler);
   }

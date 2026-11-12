@@ -4,12 +4,13 @@
  * global handler can abort the turn.
  */
 import { describe, expect, it } from "bun:test";
+import * as confirm from "../src/ui/tui/overlays/confirm.js";
 import { createTestRenderer } from "@opentui/core/testing";
 import { render } from "@opentui/solid";
 import { createComponent } from "solid-js";
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui";
 import { KeymapProvider, useBindings } from "@opentui/keymap/solid";
-import { classifyStepPauseKey, classifyYesNoKey, ConfirmOverlay, CONFIRM_ARM_MS, formatConfirmQuestion } from "../src/ui/tui/overlays/confirm.js";
+import { classifyStepPauseKey, classifyYesNoKey, ConfirmOverlay, capConfirmPreview, CONFIRM_ARM_MS, confirmPreviewRows, formatConfirmQuestion } from "../src/ui/tui/overlays/confirm.js";
 import { createOverlayUi } from "../src/ui/tui/overlays/state.js";
 import { focusPromptAfterConfirm } from "../src/ui/tui/run.tsx";
 
@@ -32,13 +33,26 @@ function PauseHarness(props: {
 
 async function mount(
   armMs: number,
-  hooks?: { onCtrlC?: () => void; onEnter?: () => void; signal?: AbortSignal; mode?: "step" | "yesno"; message?: string },
+  hooks?: {
+    onCtrlC?: () => void;
+    onEnter?: () => void;
+    signal?: AbortSignal;
+    mode?: "step" | "yesno";
+    message?: string;
+    preview?: readonly string[];
+    width?: number;
+    height?: number;
+  },
 ) {
   const overlay = createOverlayUi();
   const pending = overlay.showConfirm(hooks?.message ?? "Continue?", hooks?.signal, {
     mode: hooks?.mode ?? "step",
+    preview: hooks?.preview,
   });
-  const setup = await createTestRenderer({ width: 80, height: 24 });
+  const setup = await createTestRenderer({
+    width: hooks?.width ?? 80,
+    height: hooks?.height ?? 24,
+  });
   const keymap = createDefaultOpenTuiKeymap(setup.renderer);
   const onCtrlC = hooks?.onCtrlC ?? (() => {});
   const onEnter = hooks?.onEnter ?? (() => {});
@@ -305,6 +319,300 @@ describe("ConfirmOverlay yes/no mode", () => {
     setup.mockInput.pressKey("y");
     setup.mockInput.pressEnter();
     expect(await stillPending(pending)).toBe(true);
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+});
+
+describe("action confirmation preview (#748)", () => {
+  it("renders every line of a risk prompt that contains a blank line", async () => {
+    // Risk prompts are `${class}: ${detail}` and a shell detail can be a
+    // heredoc. Splitting such a prompt at its last blank line turned the head
+    // of the command into a row-capped "preview", so the user approved a
+    // destructive command without seeing all of it.
+    const message = [
+      "shell: cat <<EOF > notes.txt",
+      "first line",
+      "",
+      "last line",
+      "EOF",
+    ].join("\n");
+    const { setup, overlay } = await mount(0, { mode: "yesno", message });
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("shell: cat <<EOF > notes.txt");
+    expect(frame).toContain("first line");
+    expect(frame).toContain("last line");
+    expect(frame).toContain("EOF");
+    expect(frame).not.toContain("more lines");
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+
+  it("caps a structured preview below the row budget and counts the dropped rows", () => {
+    const preview = Array.from({ length: 30 }, (_, i) => `- line ${i}`);
+    expect(capConfirmPreview(preview, 30)).toHaveLength(30);
+    const capped = capConfirmPreview(preview, 10);
+    expect(capped).toHaveLength(10);
+    expect(capped[5]).toBe("... 21 more lines");
+    expect(capped.at(-1)).toBe("- line 29");
+    expect(capConfirmPreview(preview, 0)).toEqual([]);
+  });
+
+  it("reserves rows for the hint and the question", () => {
+    // 24 rows: frame is 18, minus 4 chrome rows, minus the hint and question.
+    expect(confirmPreviewRows(24, 1)).toBe(11);
+    expect(confirmPreviewRows(24, 2)).toBe(10);
+    // A tiny terminal still leaves the question room; the preview shrinks.
+    expect(confirmPreviewRows(14, 1)).toBeLessThan(confirmPreviewRows(24, 1));
+  });
+
+  it("keeps the question and hint visible under a long preview", async () => {
+    const preview = ["--- a.txt:2 (before)"];
+    for (let i = 0; i < 40; i++) preview.push(`- old line ${i}`);
+    preview.push("+++ a.txt:2 (after)", ...Array.from({ length: 5 }, (_, i) => `+ new ${i}`));
+    const { setup, overlay } = await mount(0, {
+      mode: "yesno",
+      message: "Apply edit? [y/N]",
+      preview,
+    });
+    const frame = setup.captureCharFrame();
+    // The question is pinned above the preview, so it cannot be pushed off.
+    expect(frame).toContain("Apply edit?");
+    expect(frame).not.toContain("[y/N]");
+    expect(frame).toContain("y = yes");
+    expect(frame).toContain("more lines");
+    expect(frame).toContain("--- a.txt:2 (before)");
+    expect(frame).toContain("+++ a.txt:2 (after)");
+    for (let i = 0; i < 5; i++) expect(frame).toContain(`+ new ${i}`);
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+
+  it("fits only retained preview rows", () => {
+    const preview = Array.from({ length: 20 }, (_, i) => `line-${i}`);
+    const fitted: string[][] = [];
+    expect(typeof confirm.visiblePreviewRows).toBe("function");
+    const result = confirm.visiblePreviewRows(preview, 5, 8, (rows, width) => {
+      fitted.push([...rows]);
+      return confirm.fitPreviewRows(rows, width);
+    });
+    expect(fitted).toEqual([["line-0", "line-1", "... 16 more lines", "line-18", "line-19"]]);
+    expect(result).toEqual(["line-0", "line-1", "... 16 …", "line-18", "line-19"]);
+  });
+
+  it("shows the elided count once for a 200-line preview", async () => {
+    const preview = Array.from({ length: 200 }, (_, i) => `- line ${i}`);
+    const { setup, overlay } = await mount(0, {
+      mode: "yesno",
+      message: "Apply edit? [y/N]",
+      preview,
+    });
+    const frame = setup.captureCharFrame();
+    expect(frame.match(/more lines/g)).toHaveLength(1);
+    expect(frame).toContain("Apply edit?");
+    expect(frame).toContain("y = yes");
+    // The one cap keeps rows - 1 lines and spends the last row on the count of
+    // exactly what is missing.
+    const rows = confirmPreviewRows(24, 1, true);
+    expect(frame).toContain(`... ${200 - (rows - 1)} more lines`);
+    expect(frame).toContain("- line 0");
+    expect(frame).toContain("- line 199");
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+});
+
+/** Inner text of each screen row that sits between the frame borders. */
+function innerRows(frame: string): string[] {
+  return frame
+    .split("\n")
+    .filter((line) => line.includes("│"))
+    // Exclude the one-column padding on either side of the frame.
+    .map((line) => line.slice(line.indexOf("│") + 2, line.lastIndexOf("│") - 1));
+}
+
+const SHORT_PREVIEW = [
+  "--- a.txt:2 (before)",
+  "- old line one",
+  "- old line two",
+  "+++ a.txt:2 (after)",
+  "+ new line one",
+  "+ new line two",
+  "+ new line three",
+];
+
+describe("action preview on a short terminal (#748)", () => {
+  it("shows several preview rows at 80x24", async () => {
+    const { setup, overlay } = await mount(0, {
+      mode: "yesno",
+      message: "Apply edit? [y/N]",
+      preview: SHORT_PREVIEW,
+      width: 80,
+      height: 24,
+    });
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("Apply edit?");
+    expect(frame).toContain("y = yes");
+    // A preview-carrying prompt may use height - 2 rows, so 24 rows fit well
+    // past the three-row floor.
+    expect(confirmPreviewRows(24, 1, true)).toBeGreaterThanOrEqual(3);
+    for (const line of SHORT_PREVIEW) expect(frame).toContain(line);
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+
+  it("still shows at least three preview rows at 80x14", async () => {
+    const { setup, overlay } = await mount(0, {
+      mode: "yesno",
+      message: "Apply edit? [y/N]",
+      preview: SHORT_PREVIEW,
+      width: 80,
+      height: 14,
+    });
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("Apply edit?");
+    expect(frame).toContain("y = yes");
+    expect(frame).not.toContain("preview does not fit");
+    const shown = innerRows(frame).filter((row) => SHORT_PREVIEW.includes(row.trim()));
+    expect(shown.length).toBeGreaterThanOrEqual(3);
+    expect(frame).toContain("more lines");
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+
+  it("blocks approval while hidden and allows it after resizing", async () => {
+    const { setup, pending, overlay } = await mount(0, {
+      mode: "yesno", preview: SHORT_PREVIEW, width: 80, height: 10,
+    });
+    setup.mockInput.pressKey("y");
+    expect(await stillPending(pending)).toBe(true);
+    setup.renderer.resize(80, 24);
+    await setup.renderOnce();
+    setup.mockInput.pressKey("y");
+    expect(await settledSoon(pending)).toEqual({ settled: true, value: true });
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+
+  it("allows declining while the preview is hidden", async () => {
+    const { setup, pending, overlay } = await mount(0, {
+      mode: "yesno", preview: SHORT_PREVIEW, width: 80, height: 10,
+    });
+    setup.mockInput.pressKey("y");
+    setup.mockInput.pressEnter();
+    expect(await settledSoon(pending)).toEqual({ settled: true, value: false });
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+
+  it("says the preview does not fit at 80x10 instead of asking blind", async () => {
+    const { setup, overlay } = await mount(0, {
+      mode: "yesno",
+      message: "Apply edit? [y/N]",
+      preview: SHORT_PREVIEW,
+      width: 80,
+      height: 10,
+    });
+    const frame = setup.captureCharFrame();
+    // Two rows of room left cannot hold three preview rows, so say so and keep
+    // the question and the hint: an approval prompt must not hide the change.
+    expect(frame).toContain("preview does not fit: enlarge the terminal to review");
+    expect(frame).toContain("Apply edit?");
+    expect(frame).toContain("enlarge the terminal to approve");
+    expect(frame).not.toContain("--- a.txt:2 (before)");
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+
+  it("does not render even a single preview row when there is no room", async () => {
+    const { setup, overlay } = await mount(0, {
+      mode: "yesno", message: "Apply edit? [y/N]", preview: ["UNIQUE PREVIEW"], width: 80, height: 10,
+    });
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("preview does not fit");
+    expect(frame).toContain("Apply edit?");
+    expect(frame).toContain("enlarge the terminal to approve");
+    expect(frame).not.toContain("UNIQUE PREVIEW");
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+
+  it("leaves a risk prompt on the shorter frame it always had", async () => {
+    // No preview, so no extra rows and no "does not fit" note even at 80x10.
+    const { setup, overlay } = await mount(0, {
+      mode: "yesno",
+      message: "shell: rm -rf build",
+      width: 80,
+      height: 10,
+    });
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("shell: rm -rf build");
+    expect(frame).toContain("y = yes");
+    expect(frame).not.toContain("preview does not fit");
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+});
+
+describe("action preview line width (#748)", () => {
+  it("truncates a long preview line to the frame's inner width", async () => {
+    const long = `- ${"x".repeat(200)}`;
+    const { setup, overlay } = await mount(0, {
+      mode: "yesno",
+      message: "Apply edit? [y/N]",
+      preview: [long, "+ short"],
+      width: 80,
+      height: 24,
+    });
+    const frame = setup.captureCharFrame();
+    const inner = innerRows(frame);
+    // 64-column frame, 4 chrome columns: 60 columns of text.
+    const width = 60;
+    const row = inner.find((line) => line.trimStart().startsWith("- xxx"));
+    expect(row).toBeDefined();
+    expect(row?.trimEnd()).toHaveLength(width);
+    expect(row?.trimEnd().endsWith("\u2026")).toBe(true);
+    // One terminal row per preview line: the hint and question stay on screen.
+    expect(frame).toContain("Apply edit?");
+    expect(frame).toContain("y = yes");
+    expect(frame).toContain("+ short");
+    for (const line of inner) expect(line.length).toBeLessThanOrEqual(width);
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+
+  it("fits wide Unicode characters in one preview row", async () => {
+    const { setup, overlay } = await mount(0, {
+      mode: "yesno", message: "Apply edit? [y/N]", preview: [`- ${"界".repeat(50)}`, "+ short"],
+      width: 80, height: 24,
+    });
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("…");
+    expect(frame).toContain("+ short");
+    expect(frame).toContain("y = yes");
+    const rows = innerRows(frame).filter((line) => line.includes("界"));
+    expect(rows).toHaveLength(1);
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+
+  it("expands tabs before measuring so a tabbed line cannot wrap", async () => {
+    const preview = [`- \t${"y".repeat(200)}`];
+    const { setup, overlay } = await mount(0, {
+      mode: "yesno",
+      message: "Apply edit? [y/N]",
+      preview,
+      width: 80,
+      height: 24,
+    });
+    const frame = setup.captureCharFrame();
+    expect(frame).not.toContain("\t");
+    const inner = innerRows(frame);
+    for (const line of inner) expect(line.length).toBeLessThanOrEqual(60);
+    expect(frame).toContain("Apply edit?");
+    expect(frame).toContain("y = yes");
+    // The tab is spaces, so the row still starts with the diff marker.
+    expect(inner.some((line) => /^- +y+/.test(line.trimEnd()))).toBe(true);
     setup.renderer.destroy();
     overlay.dispose();
   });

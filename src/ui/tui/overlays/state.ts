@@ -24,6 +24,11 @@ export type ConfirmMode = "step" | "yesno";
 export interface ConfirmPromptState {
   message: string;
   mode: ConfirmMode;
+  /**
+   * Action preview rows rendered under the question (`edit_file`,
+   * `git_commit`), already plain text. Empty for step and risk prompts.
+   */
+  preview: readonly string[];
   /** Changes for every confirm that is shown, so Enter's arm delay resets. */
   id: number;
 }
@@ -31,6 +36,12 @@ export interface ConfirmPromptState {
 export interface ShowConfirmOptions {
   /** Defaults to `step`. */
   mode?: ConfirmMode;
+  /**
+   * Plain-text rows rendered under the question. Carried separately from
+   * `message` on purpose: a risk detail can contain blank lines, so a split
+   * guessed from the text would truncate the command being approved.
+   */
+  preview?: readonly string[];
 }
 
 /**
@@ -96,6 +107,7 @@ export function createOverlayUi(): OverlayUi {
       type: "confirm";
       message: string;
       mode: ConfirmMode;
+      preview: readonly string[];
       signal?: AbortSignal;
       resolve: (value: boolean) => void;
       onAbort: () => void;
@@ -150,7 +162,7 @@ export function createOverlayUi(): OverlayUi {
           settleOnce(next, next.signal, next.onAbort, next.resolve, false);
           continue;
         }
-        openConfirm(next.message, next.mode, next.signal, next.resolve, next);
+        openConfirm(next.message, next.mode, next.preview, next.signal, next.resolve, next);
         return;
       }
       if (kind() === "confirm") setKind("none");
@@ -159,6 +171,7 @@ export function createOverlayUi(): OverlayUi {
     const openConfirm = (
       message: string,
       mode: ConfirmMode,
+      preview: readonly string[],
       signal: AbortSignal | undefined,
       resolve: (value: boolean) => void,
       entry?: QueuedConfirm,
@@ -174,13 +187,14 @@ export function createOverlayUi(): OverlayUi {
       onAbort = () => finish(false);
       if (signal) signal.addEventListener("abort", onAbort, { once: true });
       confirmResolver = finish;
-      setConfirmPrompt({ message, mode, id: ++nextConfirmId });
+      setConfirmPrompt({ message, mode, preview, id: ++nextConfirmId });
       setKind("confirm");
     };
 
     const enqueueConfirm = (
       message: string,
       mode: ConfirmMode,
+      preview: readonly string[],
       signal?: AbortSignal,
     ): Promise<boolean> => {
       return new Promise((resolve) => {
@@ -188,6 +202,7 @@ export function createOverlayUi(): OverlayUi {
           type: "confirm",
           message,
           mode,
+          preview,
           signal,
           resolve,
           onAbort: () => {},
@@ -211,6 +226,7 @@ export function createOverlayUi(): OverlayUi {
     ): Promise<boolean> => {
       if (signal?.aborted) return Promise.resolve(false);
       const mode = opts?.mode ?? "step";
+      const preview = opts?.preview ?? [];
       // A slash panel closes on any key. Leave it up and the pause looks hung,
       // because the spinner is already stopped. Clear it and ask immediately.
       // Interactive overlays (palette, model, login, logout, setup, consent) still defer.
@@ -219,11 +235,13 @@ export function createOverlayUi(): OverlayUi {
         setKind("none");
         // Work queued behind the panel stays queued. Opening through the
         // blocked path would promote that work and hide this confirm.
-        return new Promise((resolve) => openConfirm(message, mode, signal, resolve));
+        return new Promise((resolve) => openConfirm(message, mode, preview, signal, resolve));
       }
       const blocked = confirmResolver !== null || kind() !== "none" || queue.length > 0;
-      if (!blocked) return new Promise((resolve) => openConfirm(message, mode, signal, resolve));
-      const pending = enqueueConfirm(message, mode, signal);
+      if (!blocked) {
+        return new Promise((resolve) => openConfirm(message, mode, preview, signal, resolve));
+      }
+      const pending = enqueueConfirm(message, mode, preview, signal);
       if (!confirmResolver && kind() === "none") promote();
       return pending;
     };

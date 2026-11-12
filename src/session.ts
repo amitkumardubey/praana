@@ -30,6 +30,11 @@ import { loadConfig } from "./config.js";
 import { createConfirmLock } from "./risk/confirm-lock.js";
 import { promptYesNo } from "./risk/prompt.js";
 import type { RiskClass, RiskConfirmResult } from "./risk/classes.js";
+import type { ActionConfirmResult, ActionConfirmRequest, ConfirmHandler } from "./confirm/action.js";
+import {
+  actionPreviewLines,
+  writeActionConfirmPreview,
+} from "./confirm/action.js";
 import { DEFAULT_WEB_CONFIG, decideWebHost, normalizeHost } from "./tools/web/policy.js";
 import { SessionNotFoundError } from "./session-errors.js";
 export { SessionNotFoundError } from "./session-errors.js";
@@ -168,9 +173,11 @@ export class Session {
   private webFetchInflight = new Map<string, Promise<RiskConfirmResult>>();
   /**
    * UI-supplied risk confirmation (the TUI overlay). When unset, the classic
-   * readline prompt on stdin/stderr is used.
+   * readline prompt on stdin/stderr is used. The optional second argument
+   * carries structured data the overlay renders — an action preview — so it is
+   * never guessed out of the prompt text.
    */
-  private confirmHandler: ((prompt: string) => Promise<boolean>) | null = null;
+  private confirmHandler: ConfirmHandler | null = null;
   /** Internal turn-loop hook dispatcher (issue #574). */
   hooks: HookRegistry;
   /** Mutating-tool loop breaker (issue #578). */
@@ -628,7 +635,7 @@ export class Session {
    * Install the UI's risk confirmation (the TUI overlay) or pass `null` to go
    * back to the classic readline prompt. Headless sessions never prompt.
    */
-  setConfirmHandler(handler: ((prompt: string) => Promise<boolean>) | null): void {
+  setConfirmHandler(handler: ConfirmHandler | null): void {
     this.confirmHandler = handler;
   }
 
@@ -663,18 +670,78 @@ export class Session {
         ? { allowed: true }
         : { allowed: false, reason: "headless" };
     }
+    return this.askInteractive(prompt, "Risk confirmation failed; declining", {
+      details: { class: classId },
+    });
+  }
+
+  /**
+   * Confirm an action that is not a risk class: `edit_file` and `git_commit`
+   * when `edit.confirm` is on (#748). Shares the risk path's lock, UI handler,
+   * and classic fallback, so a TUI session asks in the overlay instead of
+   * fighting OpenTUI for stdin — the readline prompt closed as declined before
+   * the answer arrived and leaked mouse reports and chat input into the tools.
+   *
+   * The two paths ask differently. The UI handler gets the question plus the
+   * preview as structured data (`options.preview`), because the overlay lays
+   * out the rows itself. The classic terminal path prints the coloured preview
+   * and then asks the short question, exactly as the tools did before. There is
+   * no `[risk].allow` escape: a headless run cannot ask, so it refuses instead
+   * of blocking or guessing.
+   */
+  async confirmAction(request: ActionConfirmRequest): Promise<ActionConfirmResult> {
+    if (this.headless) return { allowed: false, reason: "headless" };
+    return this.askInteractive(
+      request.question,
+      "Action confirmation failed; declining",
+      {
+        preview: () => actionPreviewLines(request),
+        classicPreview: () => writeActionConfirmPreview(request),
+      },
+    );
+  }
+
+  /**
+   * One serialised interactive question: the UI handler when the TUI installed
+   * one, else the classic readline prompt. The two paths differ on purpose.
+   * `preview` supplies the structured preview the overlay renders beside the
+   * question. `classicPreview` prints the tool's coloured preview to stderr and
+   * the short `prompt` is then asked, which is exactly what the tools did
+   * before, so the preview is never shown twice. A handler failure is a decline
+   * — never an implicit yes — and is logged.
+   */
+  private askInteractive(
+    prompt: string,
+    failureNote: string,
+    options?: {
+      details?: Record<string, unknown>;
+      /** Structured preview lines the overlay renders under the question. */
+      preview?: () => readonly string[];
+      /** Classic-only coloured preview, printed before the question. */
+      classicPreview?: () => void;
+    },
+  ): Promise<RiskConfirmResult | ActionConfirmResult> {
     return this.confirmLock(async () => {
       try {
         const handler = this.confirmHandler;
-        const yes = handler ? await handler(prompt) : await promptYesNo(prompt);
+        if (handler) {
+          const preview = options?.preview?.();
+          const yes = await handler(
+            prompt,
+            preview === undefined ? undefined : { preview },
+          );
+          return yes ? { allowed: true } : { allowed: false, reason: "declined" };
+        }
+        options?.classicPreview?.();
+        const yes = await promptYesNo(prompt);
         return yes ? { allowed: true } : { allowed: false, reason: "declined" };
       } catch (err) {
-        this.getLogger()
-          .child("tool")
-          .warn("Risk confirmation failed; declining", {
-            details: { class: classId },
-            cause: err as Error,
-          });
+        const details = options?.details;
+        const logOpts: { details?: Record<string, unknown>; cause: Error } = {
+          cause: err as Error,
+        };
+        if (details) logOpts.details = details;
+        this.getLogger().child("tool").warn(failureNote, logOpts);
         return { allowed: false, reason: "declined" };
       }
     });
