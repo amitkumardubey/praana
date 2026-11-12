@@ -14,7 +14,7 @@ This module is inert: it has no production callers or registered tools. Storage 
 
 `MEMORY_POLICY`, exported by `index.ts` and `store.ts`, describes which durable observations to save and which transient or derivable information not to save.
 
-The index selects the newest prefix across both scopes (updated descending, scope, name), then groups global before project. Caps are 200 lines and 25,600 UTF-8 bytes, including separators and the exact overflow line, excluding the fixed untrusted-data preface. Overflow capacity is reserved before selection. Ages render as `0d`, `3d`, etc. Links use only validated `<slug>.md` basenames. Backslashes and Markdown brackets are escaped together so hand-edited links cannot become live links. Descriptions and recall snippets are truncated to 300 code points before Markdown escaping; controls/newlines become spaces.
+The index selects the newest prefix across both scopes (updated descending, scope, name), then groups global before project. Caps are 200 lines and 25,600 UTF-8 bytes, including separators and the exact overflow line, excluding the fixed untrusted-data preface. Overflow capacity is reserved before selection. Ages render as `0d`, `3d`, etc. Links use only validated `<slug>.md` basenames. Backslashes and Markdown brackets are escaped together so hand-edited links cannot become live links. Descriptions are truncated to 300 code points before Markdown escaping; controls/newlines become spaces. Recall snippets use a window of at most 300 code points centred on the first matching body token, falling back to a matching description token, or the body's start for name-only matches.
 
 ## Safety and concurrency
 

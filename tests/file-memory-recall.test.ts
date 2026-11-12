@@ -106,6 +106,28 @@ test("query and corpus match NFC and NFD accents in both directions", async () =
   }
 });
 
+test.each(["body", "description"] as const)("snippet centres a 300-code-point window on a late %s match", async (field) => {
+  const { store, put } = await setup();
+  await put("late", { [field]: "😀".repeat(899) + " needle " + "z".repeat(900) });
+  const result = await store.recall({ query: "needle" });
+  if (!result.ok || !("matches" in result)) throw new Error("Expected matches");
+  const snippet = result.matches[0]!.snippet;
+  expect(snippet).toContain("needle");
+  expect(Array.from(snippet)).toHaveLength(300);
+  expect(Array.from(snippet.slice(0, snippet.indexOf("needle"))).length).toBeGreaterThan(100);
+  expect(Array.from(snippet.slice(0, snippet.indexOf("needle"))).length).toBeLessThan(160);
+});
+
+test("name-only matches use the body start; body matches take precedence over description", async () => {
+  const { store, put } = await setup();
+  await put("needle", { body: "start " + "x".repeat(400) });
+  await put("both", { description: "needle description", body: "😀".repeat(900) + " needle body" });
+  const result = await store.recall({ query: "needle" });
+  if (!result.ok || !("matches" in result)) throw new Error("Expected matches");
+  expect(result.matches.find((match) => match.name === "needle")!.snippet).toStartWith("start ");
+  expect(result.matches.find((match) => match.name === "both")!.snippet).toContain("needle body");
+});
+
 test("query tokenizes multiple words case-insensitively and supports Unicode", async () => {
   const { store, put } = await setup();
   await put("cafe", { body: "CAFÉ orbit" });

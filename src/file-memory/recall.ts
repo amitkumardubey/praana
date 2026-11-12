@@ -9,6 +9,18 @@ export interface RecallMatch {
   snippet: string;
 }
 
+function matchingWindow(text: string, tokens: readonly string[]): string | null {
+  const normalized = text.normalize("NFC");
+  for (const match of normalized.matchAll(/[\p{L}\p{M}\p{N}]+/gu)) {
+    if (!searchTokens(match[0]).some((token) => tokens.includes(token))) continue;
+    const points = Array.from(normalized);
+    const centre = Array.from(normalized.slice(0, match.index)).length + Math.floor(Array.from(match[0]).length / 2);
+    const start = Math.max(0, Math.min(centre - 150, points.length - 300));
+    return points.slice(start, start + 300).join("");
+  }
+  return null;
+}
+
 /** Each distinct matching query token scores 9 in name, 3 in description, 1 in body.
  * Repeated query/corpus tokens do not inflate scores. Scope is the final tie-break. */
 export function rankMemories(memories: readonly ScopedMemory[], query: string): RecallMatch[] {
@@ -20,5 +32,5 @@ export function rankMemories(memories: readonly ScopedMemory[], query: string): 
   }).filter(({ score }) => score > 0)
     .sort((a, b) => b.score - a.score || b.memory.updated.localeCompare(a.memory.updated) || a.memory.name.localeCompare(b.memory.name) || a.memory.scope.localeCompare(b.memory.scope))
     .slice(0, 5)
-    .map(({ memory }) => ({ name: memory.name, scope: memory.scope, description: sanitizeDescription(memory.description), snippet: sanitizeDescription(memory.body) }));
+    .map(({ memory }) => ({ name: memory.name, scope: memory.scope, description: sanitizeDescription(memory.description), snippet: sanitizeDescription(matchingWindow(memory.body, tokens) ?? matchingWindow(memory.description, tokens) ?? memory.body) }));
 }
