@@ -177,6 +177,22 @@ describe("edit_file confirmation", () => {
     expect(preview).not.toMatch(/\u001b\[/);
   });
 
+  it("sanitizes control characters in the preview sent to the overlay", async () => {
+    const session = makeSession();
+    const cwd = makeWorkDir();
+    writeFileSync(join(cwd, "control.txt"), "old\r\u001b[31m");
+    let preview: readonly string[] = [];
+    session.setConfirmHandler(async (_prompt, options) => {
+      preview = options?.preview ?? [];
+      return false;
+    });
+    await systemToolsWith(session, cwd).edit_file.execute({
+      path: "control.txt", oldText: "old\r\u001b[31m", newText: "new\u009b",
+    });
+    expect(preview.join("\n")).not.toMatch(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/);
+    expect(preview.join("\n")).toContain("old··[31m");
+  });
+
   it("passes the whole preview for the overlay to cap", async () => {
     const session = makeSession();
     const cwd = makeWorkDir();

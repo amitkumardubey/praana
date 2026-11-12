@@ -106,7 +106,10 @@ const UNPROMPTABLE = {
  * bounded here, and the bound keeps its own count line.
  */
 export function actionPreviewLines(request: ActionConfirmRequest): string[] {
-  const lines = request.preview.flatMap((line) => line.text.split("\n"));
+  // Replace terminal controls visibly; newline has already separated the rows.
+  const lines = request.preview.flatMap((line) =>
+    line.text.split("\n").map((row) => row.replace(/[\u0000-\u001f\u007f-\u009f]/g, "·")),
+  );
   if (lines.length <= ACTION_PREVIEW_MAX_LINES) return lines;
   const keep = ACTION_PREVIEW_MAX_LINES - 1;
   return [...lines.slice(0, keep), `... ${lines.length - keep} more lines`];
