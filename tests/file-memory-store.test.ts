@@ -3,6 +3,7 @@ import * as fs from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createFileMemoryStore } from "../src/file-memory/store.js";
+import { memoryDirectories, projectKey } from "../src/file-memory/paths.js";
 
 const scratch = tmpdir();
 const homes: string[] = [];
@@ -41,6 +42,33 @@ describe("file memory store", () => {
     await fs.writeFile(join(dir, "coffee.md"), "broken");
     expect((await store.remove({ name: "coffee" })).ok).toBe(false);
     expect((await store.remove({ name: "coffee", scope: "global" })).ok).toBe(true);
+  });
+  test.each([
+    ["project", "symlink"], ["global", "symlink"], ["project", "directory"], ["global", "directory"],
+  ] as const)("removes the real file when %s contains a stray %s", async (badScope, kind) => {
+    const { home, store } = await setup();
+    const dirs = memoryDirectories(home, projectKey(home, (cwd) => cwd));
+    for (const scope of ["global", "project"] as const) expect((await store.write({ ...input, scope })).ok).toBe(true);
+    const stray = join(dirs[badScope], "coffee.md");
+    await fs.unlink(stray);
+    if (kind === "symlink") await fs.symlink(join(home, "missing"), stray);
+    else await fs.mkdir(stray);
+    expect(await store.remove({ name: "coffee" })).toMatchObject({ ok: true });
+    const goodScope = badScope === "project" ? "global" : "project";
+    expect(await fs.exists(join(dirs[goodScope], "coffee.md"))).toBe(false);
+    const stat = await fs.lstat(stray);
+    expect(kind === "symlink" ? stat.isSymbolicLink() : stat.isDirectory()).toBe(true);
+    const onlyStray = await store.remove({ name: "coffee" });
+    expect(onlyStray.ok).toBe(false);
+    if (!onlyStray.ok) expect(onlyStray.error).toMatch(/regular.*non-symlink/);
+  });
+  test("two non-removable entries give a clear error, never ambiguity", async () => {
+    const { home, store } = await setup();
+    const dirs = memoryDirectories(home, projectKey(home, (cwd) => cwd));
+    for (const dir of Object.values(dirs)) { await fs.mkdir(dir, { recursive: true }); await fs.mkdir(join(dir, "coffee.md")); }
+    const result = await store.remove({ name: "coffee" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/regular.*non-symlink/);
   });
   test("updates skip similarity reads before committing; derived refresh may read headers", async () => {
     const { home, store } = await setup();

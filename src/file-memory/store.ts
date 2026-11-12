@@ -191,6 +191,7 @@ export function createFileMemoryStore(options: StoreOptions) {
     if (!validName(input.name)) return { ok: false, error: "Invalid memory name" };
     try {
       const found: Array<{ dir: string; scope: MemoryScope }> = [];
+      const skipped: MemoryScope[] = [];
       for (const scope of input.scope ? [input.scope] : scopes) {
         const dir = await directory(scope, false);
         if (!dir) continue;
@@ -198,16 +199,19 @@ export function createFileMemoryStore(options: StoreOptions) {
         try {
           const path = join(dir, `${input.name}.md`);
           const stat = await fs.lstat(path);
-          if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Only regular, non-symlink memory files can be removed");
+          if (!stat.isFile() || stat.isSymbolicLink()) { skipped.push(scope); continue; }
           handle = await fs.open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-          if (!(await handle.stat()).isFile()) throw new Error("Only regular memory files can be removed");
+          if (!(await handle.stat()).isFile()) { skipped.push(scope); continue; }
           found.push({ dir, scope });
-        } catch (error) { if (!missing(error)) throw error; }
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "ELOOP") skipped.push(scope);
+          else if (!missing(error)) throw error;
+        }
         finally { if (handle) await handle.close(); }
       }
       if (found.length > 1) return { ok: false, error: "Memory exists in both project and global scopes; specify scope" };
       const match = found[0];
-      if (!match) return { ok: false, error: "Memory not found" };
+      if (!match) return { ok: false, error: skipped.length ? `Only regular, non-symlink memory files can be removed; skipped ${skipped.join(", ")} scopes` : "Memory not found" };
       await fs.unlink(join(match.dir, `${input.name}.md`));
       await refreshIndexFile(match.scope);
       return { ok: true };
