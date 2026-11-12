@@ -25,6 +25,7 @@ import { Session } from "../src/session.js";
 import { createSystemTools } from "../src/tools/system.js";
 import { createGitTools, runGitCommit, runGitStatus } from "../src/tools/git.js";
 import { actionPreviewLines, writeActionConfirmPreview, type ActionConfirmRequest } from "../src/confirm/action.js";
+import { capConfirmPreview, confirmPreviewRows } from "../src/ui/tui/overlays/confirm.js";
 import { createOverlayUi } from "../src/ui/tui/overlays/state.js";
 import { setUiWriters } from "../src/ui.js";
 import { readFileSync as readSource } from "node:fs";
@@ -125,6 +126,14 @@ afterEach(() => {
 });
 
 describe("action preview sanitization", () => {
+  it("keeps both ends at the hard preview bound", () => {
+    const preview = Array.from({ length: 500 }, (_, i) => ({ text: `line ${i}`, tone: "plain" as const }));
+    const lines = actionPreviewLines({ question: "?", preview });
+    expect(lines).toHaveLength(400);
+    expect(lines[0]).toBe("line 0");
+    expect(lines.at(-1)).toBe("line 499");
+    expect(lines.filter((line) => line.includes("more lines"))).toHaveLength(1);
+  });
   it("preserves tabs and CRLF while replacing unsafe controls only in the overlay", () => {
     const request: ActionConfirmRequest = { question: "?", preview: [{ text: "\tindent\r\nplain\r\n\u001b[31m\u202Eevil\u200b\u2028\ufeff", tone: "plain" }] };
     const lines = actionPreviewLines(request);
@@ -221,10 +230,14 @@ describe("edit_file confirmation", () => {
       oldText: oldLines.join("\n"),
       newText: newLines.join("\n"),
     });
-    // Both sides are separately bounded, preserving the after header.
-    expect(preview).toHaveLength(28);
-    expect(preview.filter((line) => line.includes("48 more lines"))).toHaveLength(2);
-    expect(preview.some((line) => line.includes("+++ big.txt"))).toBe(true);
+    expect(preview).toHaveLength(122);
+    expect(preview).toContain("- old 59");
+    expect(preview).toContain("+ new 59");
+    expect(preview.filter((line) => line.includes("more lines"))).toHaveLength(0);
+    const tall = capConfirmPreview(preview, confirmPreviewRows(60, 1, true));
+    expect(tall).toContain("- old 0");
+    expect(tall).toContain("+ new 59");
+    expect(tall.filter((line) => line.includes("more lines"))).toHaveLength(1);
   });
 
   it("keeps the classic edit preview complete", async () => {
@@ -408,7 +421,7 @@ describe("git_commit confirmation", () => {
     expect(preview).not.toMatch(/\u001b\[/);
   });
 
-  it("bounds commit message and stat sections independently", async () => {
+  it("keeps the commit stat summary through the overlay cap", async () => {
     if (!hasGit) return;
     const session = makeSession();
     const cwd = setupRepo();
@@ -417,9 +430,9 @@ describe("git_commit confirmation", () => {
     let preview: readonly string[] = [];
     session.setConfirmHandler(async (_message, options) => { preview = options?.preview ?? []; return false; });
     await gitToolsWith(session, cwd).git_commit.execute({ message: Array.from({ length: 30 }, (_, i) => `message ${i}`).join("\n") });
-    expect(preview).toContain("... 18 more lines");
-    expect(preview.some((line) => line.includes("file-0.txt"))).toBe(true);
-    expect(preview.filter((line) => line.includes("more lines"))).toHaveLength(2);
+    const visible = capConfirmPreview(preview, confirmPreviewRows(24, 1, true));
+    expect(visible.some((line) => line.includes("20 files changed"))).toBe(true);
+    expect(visible.filter((line) => line.includes("more lines"))).toHaveLength(1);
   });
 
   it("returns the cancelled error and leaves the index and HEAD untouched on no", async () => {

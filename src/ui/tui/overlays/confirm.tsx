@@ -115,7 +115,8 @@ export function confirmPreviewRows(
 /**
  * Cap the preview to the rows left in the frame, retaining both ends and a
  * count so the reader knows the preview was elided rather than truncated.
- * This is the one cap: the caller supplies rows from the real frame height.
+ * The caller supplies rows from the real frame height; exceptionally large
+ * inputs may already have been bounded before reaching the overlay.
  */
 export function capConfirmPreview(preview: readonly string[], rows: number): string[] {
   if (rows <= 0) return [];

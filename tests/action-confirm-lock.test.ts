@@ -119,7 +119,8 @@ describe("Session.confirmAction", () => {
       preview: lines.map((text) => ({ text, tone: "remove" as const })),
     });
     expect(preview).toHaveLength(ACTION_PREVIEW_MAX_LINES);
-    expect(preview?.[ACTION_PREVIEW_MAX_LINES - 1]).toContain("more lines");
+    expect(preview?.at(-1)).toBe("- line 4999");
+    expect(preview?.filter((line) => line.includes("more lines"))).toHaveLength(1);
   });
 
   it("treats a handler that answers no as declined", async () => {

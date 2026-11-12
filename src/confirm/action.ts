@@ -30,8 +30,6 @@ export interface ActionConfirmRequest {
   question: string;
   /** Plain-text preview lines (header, changes, message/stat), no ANSI. */
   preview: readonly PreviewLine[];
-  /** Optional separately bounded preview for the overlay only. */
-  overlayPreview?: readonly PreviewLine[];
 }
 
 /**
@@ -73,8 +71,7 @@ export type ConfirmHandler = (
 /**
  * Hard bound on preview lines kept in overlay text. The overlay caps to the
  * rows it actually has; this only stops a pathological diff from being copied
- * into the overlay state. It is also the last line the reader sees when the
- * bound bites, so the count travels with it.
+ * into the overlay state. When it bites, it retains both ends and a count.
  */
 export const ACTION_PREVIEW_MAX_LINES = 400;
 
@@ -101,27 +98,22 @@ const UNPROMPTABLE = {
   commit: "Commit not created: confirmation required but no confirmation handler is installed",
 } satisfies Record<ActionKind, string>;
 
-/** Bound one overlay section without changing the classic terminal preview. */
-export function boundPreviewSection(lines: readonly PreviewLine[]): PreviewLine[] {
-  const rows = lines.flatMap((line) => line.text.split("\n").map((text) => ({ text, tone: line.tone })));
-  if (rows.length <= 12) return rows;
-  return [...rows.slice(0, 12), { text: `... ${rows.length - 12} more lines`, tone: "dim" }];
-}
-
 /**
  * Plain preview lines for the UI handler: one row per line, multi-line blocks
  * split, no ANSI. The session passes the full preview so the overlay makes the
- * one row-budget cap from the real frame height; only a pathological diff is
- * bounded here, and the bound keeps its own count line.
+ * row-budget cap from the real frame height; a separate hard limit here
+ * bounds pathological diffs while retaining both ends and a count.
  */
 export function actionPreviewLines(request: ActionConfirmRequest): string[] {
   // Replace terminal controls visibly; newline has already separated the rows.
-  const lines = (request.overlayPreview ?? request.preview).flatMap((line) =>
+  const lines = request.preview.flatMap((line) =>
     line.text.split("\n").map((row) => row.replace(/\r$/, "").replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]/g, "·")),
   );
   if (lines.length <= ACTION_PREVIEW_MAX_LINES) return lines;
   const keep = ACTION_PREVIEW_MAX_LINES - 1;
-  return [...lines.slice(0, keep), `... ${lines.length - keep} more lines`];
+  const head = Math.ceil(keep / 2);
+  const tail = Math.floor(keep / 2);
+  return [...lines.slice(0, head), `... ${lines.length - keep} more lines`, ...lines.slice(-tail)];
 }
 
 /** Classic terminal preview: today's coloured stderr output, before the question. */
