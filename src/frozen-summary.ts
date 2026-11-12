@@ -156,7 +156,7 @@ export interface FrozenState {
   boundaryEventId: string | null;
   summary: string | null;
   stubSet: { eventId: string; stubText: string }[];
-  summaryRequest: { cutDescription: string; capTokens: number; instructionSha256: string; usage: ProviderUsage | null } | null;
+  summaryRequest: { cutDescription: string; capTokens: number; instructionSha256: string; usage: Partial<ProviderUsage> | null } | null;
   /** Reserved exact prefix bytes, accepted on replay but not emitted here. */
   prefix?: { systemFrame: string; snapshot: string };
 }
@@ -198,12 +198,15 @@ function tokenCount(value: unknown): boolean {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
 }
 
-function validUsage(value: unknown): boolean {
-  return value === null || (plainObject(value) &&
-    onlyKeys(value, ["input", "output", "totalTokens", "cacheReadTokens", "cacheWriteTokens"]) &&
-    tokenCount(value.input) && tokenCount(value.output) && tokenCount(value.totalTokens) &&
-    (!("cacheReadTokens" in value) || tokenCount(value.cacheReadTokens)) &&
-    (!("cacheWriteTokens" in value) || tokenCount(value.cacheWriteTokens)));
+function normalizeUsage(value: unknown): Partial<ProviderUsage> | null {
+  if (value === null || typeof value !== "object" ||
+      (Object.getPrototypeOf(value) !== Object.prototype && Object.getPrototypeOf(value) !== null)) return null;
+  const usage: Partial<ProviderUsage> = {};
+  for (const key of ["input", "output", "totalTokens", "cacheReadTokens", "cacheWriteTokens"] as const) {
+    const count = (value as Record<string, unknown>)[key];
+    if (typeof count === "number" && Number.isFinite(count) && count >= 0) usage[key] = Math.floor(count);
+  }
+  return Object.keys(usage).length ? usage : null;
 }
 
 function assertCommit(value: unknown, index: number): asserts value is CompactionCommit {
@@ -227,7 +230,7 @@ function assertCommit(value: unknown, index: number): asserts value is Compactio
   const request = value.summaryRequest;
   if (request !== null && !(plainObject(request) && onlyKeys(request, ["cutDescription", "capTokens", "instructionSha256", "usage"]) &&
       typeof request.cutDescription === "string" && tokenCount(request.capTokens) &&
-      typeof request.instructionSha256 === "string" && /^[a-f0-9]{64}$/.test(request.instructionSha256) && validUsage(request.usage))) {
+      typeof request.instructionSha256 === "string" && /^[a-f0-9]{64}$/.test(request.instructionSha256))) {
     commitError("invalid_commit", index, "invalid summary request");
   }
   if ("prefix" in value && !(plainObject(value.prefix) && onlyKeys(value.prefix, ["systemFrame", "snapshot"]) &&
@@ -245,7 +248,7 @@ function copyState(value: FrozenState): FrozenState {
       cutDescription: value.summaryRequest.cutDescription,
       capTokens: value.summaryRequest.capTokens,
       instructionSha256: value.summaryRequest.instructionSha256,
-      usage: value.summaryRequest.usage === null ? null : { ...value.summaryRequest.usage },
+      usage: normalizeUsage(value.summaryRequest.usage),
     },
     ...(value.prefix !== undefined ? { prefix: { ...value.prefix } } : {}),
   };

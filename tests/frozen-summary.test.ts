@@ -212,6 +212,40 @@ test("commit request stores cut, cap and instruction hash without instruction in
   expect(Object.keys((readCommits(log.readAll({ includeInternal: true }))[0].summaryRequest)!)).toEqual(["cutDescription", "capTokens", "instructionSha256", "usage"]);
 });
 
+const usageCases: [string, unknown, unknown][] = [
+  ["extra key", { input: 1, output: 2, totalTokens: 3, extra: 99 }, { input: 1, output: 2, totalTokens: 3 }],
+  ["explicit undefined", { input: 1, cacheReadTokens: undefined }, { input: 1 }],
+  ["fractional", { input: 1.9, output: 2.8, totalTokens: 4.7, cacheReadTokens: 0.9, cacheWriteTokens: 3.2 }, { input: 1, output: 2, totalTokens: 4, cacheReadTokens: 0, cacheWriteTokens: 3 }],
+  ["negative", { input: -1, output: 0, cacheReadTokens: -0.5 }, { output: 0 }],
+  ["NaN and infinity", { input: NaN, output: Infinity, totalTokens: -Infinity }, null],
+  ["future optional field", { input: 4, reasoningTokens: 20 }, { input: 4 }],
+  ["empty", {}, null],
+  ["undefined", undefined, null],
+  ["non-object", "usage", null],
+  ["array", [1, 2], null],
+  ["non-plain object", new Date(0), null],
+  ["null prototype", Object.assign(Object.create(null), { cacheWriteTokens: 2.9 }), { cacheWriteTokens: 2 }],
+  ["symbol extra key", { input: 5, [Symbol("future")]: 2 }, { input: 5 }],
+  ["invalid fields", { input: "1", output: null, totalTokens: false }, null],
+  ["large finite count", { input: 1e100 }, { input: 1e100 }],
+];
+for (const [name, usage, expected] of usageCases) {
+  test(`usage is informational during build, read, replay and append: ${name}`, async () => {
+    const { buildCommitEvent, readCommits, restoreFrozenState, appendCommit, restoreFrozenStateFromLog } = await api();
+    const commit = data({ summaryRequest: { ...requestData, usage } as CompactionCommit["summaryRequest"] });
+    expect((buildCommitEvent(commit).payload.summaryRequest as { usage: unknown }).usage).toEqual(expected);
+    expect(readCommits([recorded(commit)])[0].summaryRequest?.usage).toEqual(expected);
+    expect(restoreFrozenState([canonical("z"), recorded(commit)])).toMatchObject({ ok: true, state: { summaryRequest: { usage: expected } } });
+    const { root, log } = openLog();
+    log.append(canonical("z"));
+    expect(appendCommit(log, commit)).toEqual({ status: "committed" });
+    log.close();
+    const reopened = new EventLog("s", root);
+    logs.push(reopened);
+    expect(restoreFrozenStateFromLog(reopened)).toMatchObject({ ok: true, state: { summaryRequest: { usage: expected } } });
+  });
+}
+
 test("restores a valid empty state without commits", async () => {
   const { restoreFrozenState } = await api();
   expect(restoreFrozenState([])).toEqual({ ok: true, state: { resetEpoch: "session_start", generation: 0, boundaryEventId: null, summary: null, stubSet: [], summaryRequest: null } });
@@ -236,9 +270,6 @@ const malformed: [string, unknown, string][] = [
   ["invalid stub text", { ...data(), stubSet: [{ eventId: "a", stubText: 7 }] }, "invalid_commit"],
   ["duplicate stubs", data({ stubSet: [{ eventId: "a", stubText: "x" }, { eventId: "a", stubText: "y" }] }), "invalid_commit"],
   ["sparse stubs", data({ stubSet: new Array(1) }), "invalid_commit"],
-  ["invalid usage", { ...data(), summaryRequest: { ...requestData, usage: { input: -1, output: 1, totalTokens: 0 } } }, "invalid_commit"],
-  ["non-finite usage", { ...data(), summaryRequest: { ...requestData, usage: { input: 1, output: NaN, totalTokens: 1 } } }, "invalid_commit"],
-  ["unknown usage field", { ...data(), summaryRequest: { ...requestData, usage: { input: 1, output: 1, totalTokens: 2, extra: 1 } } }, "invalid_commit"],
   ["legacy instruction", { ...data(), summaryRequest: { instruction: "private input", usage: null } }, "invalid_commit"],
   ["missing request metadata", { ...data(), summaryRequest: { usage: null } }, "invalid_commit"],
   ["invalid cut description", { ...data(), summaryRequest: { ...requestData, cutDescription: 7, usage: null } }, "invalid_commit"],
