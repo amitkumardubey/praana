@@ -213,16 +213,14 @@ export class AnthropicDriver implements LlmDriver {
               index: currentBlockIndex,
               id: block.id,
               name: block.name,
-              argsDelta: block.input && Object.keys(block.input).length > 0 ? JSON.stringify(block.input) : undefined,
             });
             if (res.started) {
               blocks.set(currentBlockIndex, { type: "tool_use", id: res.started.id });
               emittedDelta = true;
               events.push({ type: "tool_call_start", id: res.started.id, name: res.started.name });
             }
-            if (res.delta) {
-              events.push({ type: "tool_call_delta", id: res.delta.id, argsDelta: res.delta.argsDelta });
-            }
+          } else {
+            blocksComplete = false;
           }
         } else if (type === "content_block_delta") {
           const delta = parsed.delta;
@@ -397,7 +395,9 @@ export class AnthropicDriver implements LlmDriver {
       } else if (msg.role === "assistant") {
         const contentParts: Array<Record<string, unknown>> = [];
 
-        if (msg.blocks !== undefined) {
+        const blockToolIds = new Set(msg.blocks?.filter((block) => block.type === "tool_use").map((block) => block.id));
+        const blocksCoverCalls = msg.toolCalls?.every((call) => blockToolIds.has(call.id)) ?? true;
+        if (msg.blocks !== undefined && blocksCoverCalls) {
           const calls = new Map(msg.toolCalls?.map((call) => [call.id, call]));
           for (const block of msg.blocks) {
             if (block.type === "tool_use") {
@@ -405,7 +405,9 @@ export class AnthropicDriver implements LlmDriver {
               if (call) {
                 contentParts.push({ type: "tool_use", id: call.id, name: call.name, input: call.args });
               }
-            } else if (block.type !== "text" || block.text !== "") {
+            } else if (block.type === "thinking" && (typeof block.signature !== "string" || !block.signature)) {
+              continue;
+            } else if (block.type !== "text" || block.text.trim() !== "") {
               contentParts.push({ ...block });
             }
           }

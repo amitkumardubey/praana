@@ -91,6 +91,58 @@ describe("Anthropic ordered assistant blocks", () => {
     ]);
   });
 
+  test("omits unsigned thinking but retains signed empty thinking and neighbours", async () => {
+    for (const signature of ["", undefined, 42]) {
+      const blocks = [
+        { type: "text", text: "before" },
+        { type: "thinking", thinking: "unsigned", signature },
+        { type: "thinking", thinking: "", signature: "signed" },
+        { type: "text", text: "after" },
+      ] as AssistantMessage["blocks"];
+      const message: AssistantMessage = { role: "assistant", content: "beforeafter", blocks };
+      const original = structuredClone(blocks);
+      const body = JSON.parse(await wireBody(new AnthropicDriver(), { ...request(), messages: [message] }));
+      expect(body.messages[0].content).toEqual([blocks![0], blocks![2], blocks![3]]);
+      expect(message.blocks).toEqual(original);
+    }
+  });
+
+  test("omits whitespace text between signed thinking and tool use", async () => {
+    const message: AssistantMessage = {
+      role: "assistant", content: "\n", toolCalls: [{ id: "call", name: "read_file", args: {} }],
+      blocks: [{ type: "thinking", thinking: "thought", signature: "sig" }, { type: "text", text: "\n" }, { type: "tool_use", id: "call" }],
+    };
+    const original = structuredClone(message.blocks);
+    const body = JSON.parse(await wireBody(new AnthropicDriver(), { ...request(), messages: [message] }));
+    expect(body.messages[0].content).toEqual([
+      { type: "thinking", thinking: "thought", signature: "sig" },
+      { type: "tool_use", id: "call", name: "read_file", input: {} },
+    ]);
+    expect(message.blocks).toEqual(original);
+  });
+
+  test("falls back when an unknown server block occurs", async () => {
+    globalThis.fetch = (async () => new Response(anthropicSse([
+      { type: "content_block_start", index: 0, content_block: { type: "text", text: "visible" } },
+      { type: "content_block_start", index: 1, content_block: { type: "server_tool_use", id: "server", name: "search" } },
+      terminal("end_turn"),
+    ]))) as unknown as typeof fetch;
+    const message = doneMessage(await collect(request()));
+    expect(message.blocks).toBeUndefined();
+    const body = JSON.parse(await wireBody(new AnthropicDriver(), { ...request(), messages: [message] }));
+    expect(body.messages[0].content).toEqual([{ type: "text", text: "visible" }]);
+  });
+
+  test("falls back for calls missing block references but skips blocks missing calls", async () => {
+    const call = { id: "call", name: "read_file", args: { path: "a" } };
+    const message: AssistantMessage = { role: "assistant", content: "legacy", toolCalls: [call], blocks: [{ type: "text", text: "ordered" }] };
+    const body = JSON.parse(await wireBody(new AnthropicDriver(), { ...request(), messages: [message] }));
+    expect(body.messages[0].content).toEqual([{ type: "text", text: "legacy" }, { type: "tool_use", id: "call", name: "read_file", input: { path: "a" } }]);
+    const reverse: AssistantMessage = { ...message, blocks: [{ type: "text", text: "ordered" }, { type: "tool_use", id: "missing" }, { type: "tool_use", id: "call" }] };
+    const reverseBody = JSON.parse(await wireBody(new AnthropicDriver(), { ...request(), messages: [reverse] }));
+    expect(reverseBody.messages[0].content).toEqual([{ type: "text", text: "ordered" }, { type: "tool_use", id: "call", name: "read_file", input: { path: "a" } }]);
+  });
+
   test("falls back to legacy string for an empty ordered list", async () => {
     for (const content of ["", "legacy text"]) {
       const message: AssistantMessage = { role: "assistant", content, blocks: [] };
@@ -158,13 +210,15 @@ describe("Anthropic ordered assistant blocks", () => {
     ]);
   });
 
-  test("keeps tool input delivered in the block start without copying it into blocks", async () => {
+  test("ignores non-empty start input when tool arguments also arrive in deltas", async () => {
     globalThis.fetch = (async () => new Response(anthropicSse([
       { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "start", name: "read_file", input: { path: "start.ts" } } },
+      { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"path":"start.ts"}' } },
       terminal("tool_use"),
     ]))) as unknown as typeof fetch;
     const message = doneMessage(await collect(request()));
     expect(message.blocks).toEqual([{ type: "tool_use", id: "start" }]);
+    expect(message.toolCalls?.[0]?.rawArgs).toBe('{"path":"start.ts"}');
     expect(message.toolCalls?.[0]?.args).toEqual({ path: "start.ts" });
   });
 

@@ -192,6 +192,7 @@ export function assistantTextAfterTimeout(message: unknown): AssistantMessage | 
     content?: unknown;
     thinking?: unknown;
     thinkingSignature?: unknown;
+    blocks?: unknown;
   };
   let text = "";
   if (typeof record.content === "string") {
@@ -210,6 +211,9 @@ export function assistantTextAfterTimeout(message: unknown): AssistantMessage | 
   if (typeof record.thinking === "string" && record.thinking) kept.thinking = record.thinking;
   if (typeof record.thinkingSignature === "string" && record.thinkingSignature) {
     kept.thinkingSignature = record.thinkingSignature;
+  }
+  if (Array.isArray(record.blocks)) {
+    kept.blocks = record.blocks.filter((block) => !isToolUsePart(block)) as AssistantMessage["blocks"];
   }
   return kept;
 }
@@ -560,6 +564,27 @@ function isToolUsePart(part: unknown): boolean {
   if (!part || typeof part !== "object") return false;
   const type = (part as { type?: unknown }).type;
   return type === "tool_use" || type === "toolUse" || type === "toolCall";
+}
+
+/** Drop tool calls the wrap-up was told not to make, so they are not stored or run. */
+export function withoutWrapUpToolCalls(message: any): any {
+  if (!message || typeof message !== "object") return message;
+  const hadCalls = Array.isArray(message.toolCalls) && message.toolCalls.length > 0;
+  let content = message.content;
+  let strippedContent = false;
+  if (Array.isArray(content)) {
+    const next = content.filter((part: unknown) => !isToolUsePart(part));
+    strippedContent = next.length !== content.length;
+    content = next;
+  }
+  const blocks = Array.isArray(message.blocks)
+    ? message.blocks.filter((block: unknown) => !isToolUsePart(block))
+    : undefined;
+  const strippedBlocks = blocks !== undefined && blocks.length !== message.blocks.length;
+  if (!hadCalls && !strippedContent && !strippedBlocks) return message;
+  const nextMessage = { ...message, content, ...(blocks !== undefined ? { blocks } : {}) };
+  delete nextMessage.toolCalls;
+  return nextMessage;
 }
 
 /** Keep the call's name and id, and cap its arguments the same way as results. */
@@ -1283,23 +1308,6 @@ export async function runTurn(
         timestamp: Date.now(),
       });
     }
-  }
-
-  /** Drop tool calls the wrap-up was told not to make, so they are not stored or run. */
-  function withoutWrapUpToolCalls(message: any): any {
-    if (!message || typeof message !== "object") return message;
-    const hadCalls = Array.isArray(message.toolCalls) && message.toolCalls.length > 0;
-    let content = message.content;
-    let strippedContent = false;
-    if (Array.isArray(content)) {
-      const next = content.filter((part: unknown) => !isToolUsePart(part));
-      strippedContent = next.length !== content.length;
-      content = next;
-    }
-    if (!hadCalls && !strippedContent) return message;
-    const nextMessage = { ...message, content };
-    delete nextMessage.toolCalls;
-    return nextMessage;
   }
 
   function logWrapUpFailure(reason: string, error: string | undefined): void {
