@@ -228,6 +228,7 @@ function assertCommit(value: unknown, index: number): asserts value is Compactio
     commitError("invalid_commit", index, "duplicate stub event ids");
   }
   const request = value.summaryRequest;
+  if (value.summary === null && request !== null) commitError("invalid_commit", index, "a null summary requires a null request");
   if (request !== null && !(plainObject(request) && onlyKeys(request, ["cutDescription", "capTokens", "instructionSha256", "usage"]) &&
       typeof request.cutDescription === "string" && tokenCount(request.capTokens) &&
       typeof request.instructionSha256 === "string" && /^[a-f0-9]{64}$/.test(request.instructionSha256))) {
@@ -315,6 +316,9 @@ export function restoreFrozenState(events: readonly Event[]): FrozenRestoreResul
           if (!target || target.payload.kind !== "tool_result") commitError("invalid_stub", index, `stub ${stub.eventId} must reference an earlier canonical tool result in this epoch`);
         }
         if (sameRewrite(state, commit)) commitError("unchanged_commit", index, "a no-op must not increment generation");
+        if ((commit.summary !== state.summary) !== (commit.summaryRequest !== null)) {
+          commitError("invalid_commit", index, "a new summary requires a request; an unchanged summary requires a null request");
+        }
         state = copyState(commit);
         boundaryIndex = nextBoundaryIndex;
       }

@@ -176,7 +176,8 @@ function canonical(id: string, kind: "user_input" | "tool_result" = "user_input"
   } };
 }
 function data(overrides: Partial<CompactionCommit> = {}): CompactionCommit {
-  return { formatVersion: 1, resetEpoch: "session_start", generation: 1, boundaryEventId: "z", summary: markdown, stubSet: [], summaryRequest: null, ...overrides };
+  const summary = overrides.summary === undefined ? markdown : overrides.summary;
+  return { formatVersion: 1, resetEpoch: "session_start", generation: 1, boundaryEventId: "z", summary, stubSet: [], summaryRequest: summary === null ? null : { ...requestData, usage: null }, ...overrides };
 }
 const commitKind: Event["kind"] = "compaction_commit";
 function recorded(payload: unknown, id = "commit"): Event {
@@ -328,9 +329,67 @@ for (const [name, events, code] of invalidSequences) {
   });
 }
 
+test("request pairing rejects a null summary with request metadata in builder and validator", async () => {
+  const { buildCommitEvent, readCommits, restoreFrozenState, FrozenSummaryError } = await api();
+  const commit = data({ summary: null, boundaryEventId: null, stubSet: [{ eventId: "a", stubText: "stub" }], summaryRequest: { ...requestData, usage: null } });
+  expect(() => buildCommitEvent(commit)).toThrow(FrozenSummaryError);
+  expect(() => readCommits([recorded(commit)])).toThrow(FrozenSummaryError);
+  expect(restoreFrozenState([canonical("a", "tool_result"), recorded(commit)])).toMatchObject({ ok: false, error: { code: "invalid_commit" } });
+});
+
+test("request pairing requires metadata for every new summary rewrite", async () => {
+  const { restoreFrozenState } = await api();
+  const initial = data({ summaryRequest: { ...requestData, usage: null } });
+  expect(restoreFrozenState([canonical("z"), recorded(data({ summaryRequest: null }))])).toMatchObject({ ok: false, error: { code: "invalid_commit" } });
+  expect(restoreFrozenState([canonical("z"), recorded(initial), recorded(data({ generation: 2, summary: markdown + "\n", summaryRequest: null }))])).toMatchObject({ ok: false, error: { code: "invalid_commit" } });
+});
+
+test("request pairing forbids metadata for stubs-only commits with an unchanged summary", async () => {
+  const { restoreFrozenState } = await api();
+  const initial = data({ summaryRequest: { ...requestData, usage: null } });
+  const second = data({ generation: 2, stubSet: [{ eventId: "a", stubText: "stub" }], summaryRequest: { ...requestData, usage: null } });
+  expect(restoreFrozenState([canonical("z"), canonical("a", "tool_result"), recorded(initial), recorded(second)])).toMatchObject({ ok: false, error: { code: "invalid_commit" } });
+});
+
+test("request pairing rejects invalid appends without writing and accepts paired rewrites and stubs", async () => {
+  const { appendCommit, restoreFrozenStateFromLog } = await api();
+  const { log } = openLog();
+  log.append(canonical("z"));
+  log.append(canonical("a", "tool_result"));
+  const initial = data({ summaryRequest: { ...requestData, usage: null } });
+  expect(appendCommit(log, initial)).toEqual({ status: "committed" });
+  const before = readFileSync(log.getLogPath(), "utf8");
+  const prior = restoreFrozenStateFromLog(log);
+  const stubs = [{ eventId: "a", stubText: "stub" }];
+  for (const candidate of [
+    data({ generation: 2, summary: markdown + "\n", summaryRequest: null }),
+    data({ generation: 2, stubSet: stubs, summaryRequest: { ...requestData, usage: null } }),
+  ]) {
+    expect(appendCommit(log, candidate)).toMatchObject({ status: "rejected", error: { code: "invalid_commit" } });
+    expect(readFileSync(log.getLogPath(), "utf8")).toBe(before);
+    expect(restoreFrozenStateFromLog(log)).toEqual(prior);
+  }
+  expect(appendCommit(log, data({ generation: 2, stubSet: stubs, summaryRequest: null }))).toEqual({ status: "committed" });
+  expect(appendCommit(log, data({ generation: 3, summary: markdown + "\n", stubSet: stubs, summaryRequest: { ...requestData, usage: null } }))).toEqual({ status: "committed" });
+  expect(restoreFrozenStateFromLog(log)).toMatchObject({ ok: true, state: { generation: 3, summary: markdown + "\n", summaryRequest: { ...requestData, usage: null } } });
+});
+
+test("changing only request metadata remains an unchanged commit", async () => {
+  const { restoreFrozenState, appendCommit } = await api();
+  const initial = data({ summaryRequest: { ...requestData, usage: null } });
+  const next = data({ generation: 2, summaryRequest: { ...requestData, capTokens: 256, usage: { input: 1 } } });
+  expect(restoreFrozenState([canonical("z"), recorded(initial), recorded(next)])).toMatchObject({ ok: false, error: { code: "unchanged_commit" } });
+  const { log } = openLog();
+  log.append(canonical("z"));
+  expect(appendCommit(log, initial)).toEqual({ status: "committed" });
+  const before = readFileSync(log.getLogPath(), "utf8");
+  expect(appendCommit(log, next)).toMatchObject({ status: "rejected", error: { code: "unchanged_commit" } });
+  expect(readFileSync(log.getLogPath(), "utf8")).toBe(before);
+});
+
 test("stubs-only commits keep the summary and boundary, replacing the whole stub set", async () => {
   const { restoreFrozenState } = await api();
-  const second = data({ generation: 2, stubSet: [{ eventId: "a", stubText: "fixed bytes" }] });
+  const second = data({ generation: 2, stubSet: [{ eventId: "a", stubText: "fixed bytes" }], summaryRequest: null });
   expect(restoreFrozenState([canonical("z"), canonical("a", "tool_result"), recorded(data()), recorded(second)])).toMatchObject({ ok: true, state: { generation: 2, summary: markdown, boundaryEventId: "z", stubSet: second.stubSet } });
 });
 
