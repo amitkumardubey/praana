@@ -169,8 +169,8 @@ function assertRecord(value: unknown, index: number): asserts value is Canonical
 
 /**
  * Current reset epoch for replay. Results stranded before its first input are hidden.
- * Pass raw events from EventLog.readAll({ includeCanonical: true }); the default
- * read filters canonical events and would silently return an empty transcript.
+ * Pass raw events from EventLog.readAll({ includeInternal: true }); the default
+ * read filters internal events and would silently return an empty transcript.
  */
 export function readCanonicalRecords(events: readonly Event[]): CanonicalRecord[] {
   let seenInput = false;
@@ -182,8 +182,8 @@ export function readCanonicalRecords(events: readonly Event[]): CanonicalRecord[
 
 /**
  * All epochs, with schema validation. Use for session-wide turn-id allocation.
- * Pass raw events from EventLog.readAll({ includeCanonical: true }); the default
- * read filters canonical events and would silently return an empty transcript.
+ * Pass raw events from EventLog.readAll({ includeInternal: true }); the default
+ * read filters internal events and would silently return an empty transcript.
  */
 export function readFullSessionCanonicalRecords(events: readonly Event[]): CanonicalRecord[] {
   const records: CanonicalRecord[] = [];
@@ -344,7 +344,7 @@ export class CanonicalWriter {
     try {
       if (!this.validator) {
         const validator = new CanonicalValidator();
-        for (const event of this.log.readAll({ includeCanonical: true })) {
+        for (const event of this.log.readAll({ includeInternal: true })) {
           if (event.kind === "canonical_message") validator.accept(event.payload);
         }
         this.validator = validator;

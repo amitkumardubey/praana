@@ -359,7 +359,7 @@ test("append helper writes exactly one event, without canonical instruction or r
     expect(appendCommit(log, data())).toEqual({ status: "committed" });
     expect(append).toHaveBeenCalledTimes(1);
   } finally { append.mockRestore(); }
-  const events = log.readAll({ includeCanonical: true });
+  const events = log.readAll({ includeInternal: true });
   expect(events.map(e => e.kind)).toEqual(["canonical_message", "compaction_commit"]);
   expect(readFileSync(log.getLogPath(), "utf8").trimEnd().split("\n")).toHaveLength(2);
   expect(restoreFrozenState(events)).toMatchObject({ ok: true, state: { generation: 1 } });
@@ -384,18 +384,18 @@ test("torn commit append is uncertain; reopen restores the prior commit and sepa
   const second = data({ generation: 2, summary: markdown + "\n" });
   expect(appendCommit(log, second)).toEqual({ status: "commit_uncertain", error: failure });
   expect(writes).toBe(2);
-  expect(restoreFrozenState(log.readAll({ includeCanonical: true }))).toMatchObject({ ok: true, state: { generation: 1 } });
+  expect(restoreFrozenState(log.readAll({ includeInternal: true }))).toMatchObject({ ok: true, state: { generation: 1 } });
   log.close();
   const reopened = new EventLog("s", root, { onCorruptLine: () => {} });
   logs.push(reopened);
   expect(reopened.corruptLineCount).toBe(1);
-  expect(restoreFrozenState(reopened.readAll({ includeCanonical: true }))).toMatchObject({ ok: true, state: { generation: 1 } });
+  expect(restoreFrozenState(reopened.readAll({ includeInternal: true }))).toMatchObject({ ok: true, state: { generation: 1 } });
   expect(appendCommit(reopened, second)).toEqual({ status: "committed" });
   reopened.close();
   const again = new EventLog("s", root, { onCorruptLine: () => {} });
   logs.push(again);
   expect(again.corruptLineCount).toBe(1);
-  expect(restoreFrozenState(again.readAll({ includeCanonical: true }))).toMatchObject({ ok: true, state: { generation: 2, summary: second.summary } });
+  expect(restoreFrozenState(again.readAll({ includeInternal: true }))).toMatchObject({ ok: true, state: { generation: 2, summary: second.summary } });
 });
 
 test("failed fsync is uncertain even when the commit is durable; reopen restores it exactly once", async () => {
@@ -411,13 +411,13 @@ test("failed fsync is uncertain even when the commit is durable; reopen restores
   failSync = true;
   expect(appendCommit(log, data())).toEqual({ status: "commit_uncertain", error: failure });
   expect(syncs).toBe(1);
-  expect(restoreFrozenState(log.readAll({ includeCanonical: true }))).toMatchObject({ ok: true, state: { generation: 1 } });
+  expect(restoreFrozenState(log.readAll({ includeInternal: true }))).toMatchObject({ ok: true, state: { generation: 1 } });
   log.close();
   const reopened = new EventLog("s", root);
   logs.push(reopened);
   expect(reopened.corruptLineCount).toBe(0);
-  expect(readCommits(reopened.readAll({ includeCanonical: true }))).toHaveLength(1);
-  expect(restoreFrozenState(reopened.readAll({ includeCanonical: true }))).toMatchObject({ ok: true, state: { generation: 1, summary: markdown } });
+  expect(readCommits(reopened.readAll({ includeInternal: true }))).toHaveLength(1);
+  expect(restoreFrozenState(reopened.readAll({ includeInternal: true }))).toMatchObject({ ok: true, state: { generation: 1, summary: markdown } });
 });
 
 function commitNoise(log: EventLog, count: number) {
@@ -452,10 +452,8 @@ test("all generic bounded reads and getLastEvent exclude both internal kinds; ra
   expect(log.replayContextActions()).toEqual([]);
   const raw = log.readAll({ includeInternal: true });
   expect(raw).toHaveLength(12);
-  expect(raw).toEqual(log.readAll({ includeCanonical: true }));
   expect(readFullSessionCanonicalRecords(raw)).toHaveLength(1);
   expect(log.getLastEvent({ includeInternal: true })?.event_id).toBe("commit-9");
-  expect(log.getLastEvent({ includeCanonical: true })?.event_id).toBe("commit-9");
   raw.length = 0;
   expect(log.readAll({ includeInternal: true })).toHaveLength(12);
 });
@@ -534,7 +532,7 @@ test("checkpoint anchors resolve a hidden commit id and resume replays the follo
   logs.push(session.eventLog);
   const task = session.stateGraph.create("task", { title: "checkpoint task" });
   await new CanonicalWriter(session.eventLog, error => { throw error; }).startTurn("input");
-  const boundary = session.eventLog.getLastEvent({ includeCanonical: true })!.event_id;
+  const boundary = session.eventLog.getLastEvent({ includeInternal: true })!.event_id;
   expect(appendCommit(session.eventLog, data({ boundaryEventId: boundary }))).toEqual({ status: "committed" });
   expect(session.eventLog.readAll()).toHaveLength(0);
   session.incrementTurn();

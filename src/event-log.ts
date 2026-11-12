@@ -24,8 +24,6 @@ import {
 /** Unfiltered access is reserved for internal readers and event-id anchors. */
 export interface EventReadOptions {
   includeInternal?: boolean;
-  /** Compatibility alias for raw access to all internal kinds. */
-  includeCanonical?: boolean;
 }
 
 const INTERNAL_EVENT_KINDS: ReadonlySet<EventKind> = new Set(["canonical_message", "compaction_commit"]);
@@ -258,7 +256,7 @@ export class EventLog {
   }
 
   readAll(options: EventReadOptions = {}): Event[] {
-    return this.internalRead(options.includeInternal || options.includeCanonical);
+    return this.internalRead(options.includeInternal);
   }
 
   /** Last visible event without allocating a copy; anchors may opt into the raw tail. */
@@ -266,7 +264,7 @@ export class EventLog {
     this.syncCache();
     for (let i = (this.eventCache?.length ?? 0) - 1; i >= 0; i--) {
       const event = this.eventCache![i];
-      if (options.includeInternal || options.includeCanonical || !INTERNAL_EVENT_KINDS.has(event.kind)) return event;
+      if (options.includeInternal || !INTERNAL_EVENT_KINDS.has(event.kind)) return event;
     }
     return null;
   }
