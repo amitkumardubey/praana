@@ -15,6 +15,7 @@ import {
 import { join, resolve } from "node:path";
 import { ulid } from "ulid";
 import type { Event, EventActor, EventKind } from "./types.js";
+import { getAppLogger } from "./logger.js";
 import {
   AmbiguousSessionPrefixError,
   SessionNotFoundError,
@@ -84,6 +85,17 @@ export function migrateLegacyEventLog(sessionDir: string): void {
   unlinkSync(legacyPath);
 }
 
+export interface CorruptLine {
+  lineNumber: number;
+  error: string;
+}
+
+export interface EventLogOptions {
+  onCorruptLine?: (line: CorruptLine) => void;
+  write?: (fd: number, buffer: Buffer, offset: number, length: number) => number;
+  fsync?: (fd: number) => void;
+}
+
 export class EventLog {
   private fd: number;
   private logPath: string;
@@ -95,8 +107,12 @@ export class EventLog {
   private eventCache: Event[] | null = null;
   private lastMtimeMs = 0;
   private lastSize = 0;
+  private endsWithNewline = true;
+  private corruptionReported = false;
+  private corruptionCount = 0;
+  private corruptionLast: CorruptLine | null = null;
 
-  constructor(sessionId: string, logDir: string) {
+  constructor(sessionId: string, logDir: string, private options: EventLogOptions = {}) {
     this.sessionId = sessionId;
     const sessionDir = join(logDir, sessionId);
     mkdirSync(sessionDir, { recursive: true });
@@ -107,16 +123,18 @@ export class EventLog {
     this.loadCompressionCheckpoint();
   }
 
+  get corruptLineCount(): number {
+    this.syncCache();
+    return this.corruptionCount;
+  }
+
+  get lastCorruptLine(): CorruptLine | null {
+    this.syncCache();
+    return this.corruptionLast;
+  }
+
   private syncCache(): void {
-    let stats;
-    try {
-      stats = statSync(this.logPath);
-    } catch {
-      this.eventCache = [];
-      this.lastMtimeMs = 0;
-      this.lastSize = 0;
-      return;
-    }
+    const stats = statSync(this.logPath);
 
     if (
       this.eventCache !== null &&
@@ -126,17 +144,37 @@ export class EventLog {
       return;
     }
 
-    try {
-      const content = readFileSync(this.logPath, "utf-8");
-      this.eventCache = content
-        .trim()
-        .split("\n")
-        .filter(Boolean)
-        .map((line) => JSON.parse(line) as Event);
-    } catch {
-      this.eventCache = [];
+    const content = readFileSync(this.logPath, "utf-8");
+    const events: Event[] = [];
+    let count = 0;
+    let last: CorruptLine | null = null;
+    const lines = content.split("\n");
+    if (lines[lines.length - 1] === "") lines.pop();
+    for (const [index, line] of lines.entries()) {
+      try {
+        const value: unknown = JSON.parse(line);
+        if (!value || typeof value !== "object" || Array.isArray(value) ||
+            typeof (value as Event).event_id !== "string" ||
+            typeof (value as Event).kind !== "string" ||
+            !(value as Event).payload || typeof (value as Event).payload !== "object" ||
+            Array.isArray((value as Event).payload)) {
+          throw new Error("Missing or invalid event_id, kind, or payload");
+        }
+        events.push(value as Event);
+      } catch (error) {
+        count++;
+        last = { lineNumber: index + 1, error: error instanceof Error ? error.message : String(error) };
+        if (!this.corruptionReported) {
+          this.corruptionReported = true;
+          if (this.options.onCorruptLine) this.options.onCorruptLine(last);
+          else getAppLogger().warn("Skipping corrupt event log line", { details: { path: this.logPath, ...last } });
+        }
+      }
     }
-
+    this.eventCache = events;
+    this.corruptionCount = count;
+    this.corruptionLast = last;
+    this.endsWithNewline = content.length === 0 || content.endsWith("\n");
     this.lastMtimeMs = stats.mtimeMs;
     this.lastSize = stats.size;
   }
@@ -159,14 +197,9 @@ export class EventLog {
     event_id?: string;
     timestamp?: number;
   }): void {
-    // Hydrate the cache from disk BEFORE writing, so the new event is not
-    // double-counted. If syncCache() ran after writeSync it would read the file
-    // (which already contains the new line) and then the push below would add it
-    // a second time. Calling it first also prevents silently losing prior events
-    // when append() is invoked before any read on a non-empty log file.
-    if (this.eventCache === null) {
-      this.syncCache();
-    }
+    // Refresh before writing so external changes and the tail state are known,
+    // and the event can be added to the cache exactly once after it is durable.
+    this.syncCache();
 
     const fullEvent: Event = {
       event_id: event.event_id ?? ulid(),
@@ -176,17 +209,27 @@ export class EventLog {
       actor: event.actor,
       payload: event.payload,
     };
-    const line = JSON.stringify(fullEvent) + "\n";
-    writeSync(this.fd, line, undefined, "utf-8");
-    fsyncSync(this.fd);
+    const line = Buffer.from((this.endsWithNewline ? "" : "\n") + JSON.stringify(fullEvent) + "\n", "utf-8");
+    try {
+      let offset = 0;
+      while (offset < line.length) {
+        const written = (this.options.write ?? writeSync)(this.fd, line, offset, line.length - offset);
+        if (written <= 0 || written > line.length - offset) throw new Error("Invalid event log write length");
+        offset += written;
+      }
+      (this.options.fsync ?? fsyncSync)(this.fd);
 
-    this.eventCache!.push(fullEvent);
-
-    // Record the real file stats so the next read does not need to re-sync.
-    const stats = statSync(this.logPath);
-    this.lastMtimeMs = stats.mtimeMs;
-    this.lastSize = stats.size;
-    this.eventCount++;
+      // Record the real file stats so the next read does not need to re-sync.
+      const stats = statSync(this.logPath);
+      this.eventCache!.push(fullEvent);
+      this.endsWithNewline = true;
+      this.lastMtimeMs = stats.mtimeMs;
+      this.lastSize = stats.size;
+      this.eventCount++;
+    } catch (error) {
+      this.eventCache = null;
+      throw error;
+    }
   }
 
   readLast(n: number): Event[] {
