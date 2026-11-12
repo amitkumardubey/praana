@@ -20,14 +20,23 @@ export interface ParsedSummary {
   open_threads: { kind: "error" | "question"; text: string }[];
 }
 
-function summarySections(markdown: string): Map<string, string> {
+function summarySections(markdown: string, duplicates?: Set<string>): Map<string, string> {
   const sections = new Map<string, string>();
   let heading: string | undefined;
+  let fence: { char: string; length: number } | undefined;
   for (const line of markdown.replace(/\r\n/g, "\n").split("\n")) {
-    const match = /^###\s+(.+?)\s*#*\s*$/.exec(line);
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (marker) {
+      if (!fence) fence = { char: marker[1][0], length: marker[1].length };
+      else if (marker[1][0] === fence.char && marker[1].length >= fence.length && !marker[2].trim()) fence = undefined;
+      if (heading) sections.set(heading, sections.get(heading)! + line + "\n");
+      continue;
+    }
+    const match = !fence && /^###\s+(.+?)\s*#*\s*$/.exec(line);
     if (match) {
       heading = match[1].toLowerCase();
-      if (!sections.has(heading)) sections.set(heading, "");
+      if (sections.has(heading)) { duplicates?.add(heading); heading = undefined; }
+      else sections.set(heading, "");
     } else if (heading) {
       sections.set(heading, sections.get(heading)! + line + "\n");
     }
@@ -37,10 +46,13 @@ function summarySections(markdown: string): Map<string, string> {
 
 function bullets(section: string): string[] {
   const items: string[] = [];
+  let indent = 0;
   for (const line of section.split("\n")) {
-    const match = /^\s*[-*+]\s+(.+)$/.exec(line);
-    if (match) items.push(match[1].trim());
-    else if (/^\s+\S/.test(line) && items.length) items[items.length - 1] += "\n" + line.trim();
+    const match = /^(\s*)(?:[-*+]|\d+[.)])\s+(.+)$/.exec(line);
+    if (match && (!items.length || match[1].length <= indent)) {
+      indent = match[1].length;
+      items.push(match[2].trim());
+    } else if (/^\s+\S/.test(line) && items.length) items[items.length - 1] += "\n" + line.trim();
   }
   return items;
 }
@@ -70,7 +82,7 @@ export function renderSummaryMessage(markdown: string): { role: "user"; content:
 }
 
 export type SummaryFailure =
-  | { kind: "missing_heading"; heading: SummaryHeading; message: string }
+  | { kind: "missing_heading" | "duplicate_heading"; heading: SummaryHeading; message: string }
   | { kind: "empty_active_request" | "over_cap"; message: string };
 
 export interface SummaryCheck {
@@ -81,10 +93,12 @@ export interface SummaryCheck {
 
 /** Deliberately lenient: parsed list structure is not an acceptance condition. */
 export function checkSummary(markdown: string, options: { capTokens: number }): SummaryCheck {
-  const sections = summarySections(markdown);
+  const duplicates = new Set<string>();
+  const sections = summarySections(markdown, duplicates);
   const failures: SummaryFailure[] = [];
   for (const heading of SUMMARY_HEADINGS) {
     if (!sections.has(heading.toLowerCase())) failures.push({ kind: "missing_heading", heading, message: `Missing heading: ### ${heading}` });
+    if (duplicates.has(heading.toLowerCase())) failures.push({ kind: "duplicate_heading", heading, message: `Duplicate heading: ### ${heading}` });
   }
   if (!sections.get("active request")?.trim()) failures.push({ kind: "empty_active_request", message: "Active request must be non-empty." });
   const estimatedTokens = estimateTokens(markdown);
@@ -92,8 +106,9 @@ export function checkSummary(markdown: string, options: { capTokens: number }): 
   return { ok: failures.length === 0, failures, estimatedTokens };
 }
 
+/** A cap below the minimum valid summary makes compaction impossible; callers report capacity rather than retrying. */
 export function summaryCapTokens(usableContext: number): number {
-  return Math.min(4096, Math.floor(usableContext / 8));
+  return Number.isFinite(usableContext) && usableContext > 0 ? Math.min(4096, Math.floor(usableContext / 8)) : 0;
 }
 
 export interface SummaryInstructionOptions {
@@ -246,7 +261,7 @@ export function buildCommitEvent(commit: Omit<CompactionCommit, "prefix">): {
   return { kind: COMPACTION_COMMIT_KIND, actor: "kernel" as const, payload: { formatVersion: COMPACTION_COMMIT_VERSION, ...copyState(commit) } };
 }
 
-/** Read all epochs with strict payload validation. Pass readAll({ includeCanonical: true }). */
+/** Read all epochs with strict payload validation. Plain readAll() hides internal kinds; pass readAll({ includeInternal: true }). */
 export function readCommits(events: readonly Event[]): CompactionCommit[] {
   const commits: CompactionCommit[] = [];
   for (const [index, event] of events.entries()) {
@@ -267,7 +282,7 @@ function sameRewrite(left: FrozenState, right: FrozenState): boolean {
 
 export type FrozenRestoreResult = { ok: true; state: FrozenState } | { ok: false; error: FrozenSummaryError };
 
-/** State is determined by log order, including resets; malformed commits are never skipped. */
+/** State is determined by log order, including resets; malformed commits are never skipped. Plain readAll() hides internal kinds; use restoreFrozenStateFromLog for logs. */
 export function restoreFrozenState(events: readonly Event[]): FrozenRestoreResult {
   let state = emptyState(SESSION_START_EPOCH);
   let boundaryIndex = -1;
@@ -305,11 +320,25 @@ export function restoreFrozenState(events: readonly Event[]): FrozenRestoreResul
   }
 }
 
-export type CommitAppendResult = { status: "committed" } | { status: "commit_uncertain"; error: unknown };
+/** Restore from raw log events; plain readAll() hides internal kinds. */
+export function restoreFrozenStateFromLog(log: Pick<EventLog, "readAll">): FrozenRestoreResult {
+  return restoreFrozenState(log.readAll({ includeInternal: true }));
+}
+
+export type CommitAppendResult = { status: "committed" } | { status: "rejected"; error: FrozenSummaryError } | { status: "commit_uncertain"; error: unknown };
 
 /** Never retry an uncertain append: reload raw events and restore before deciding what to do next. */
-export function appendCommit(log: Pick<EventLog, "append">, commit: Omit<CompactionCommit, "prefix">): CommitAppendResult {
-  const event = buildCommitEvent(commit);
+export function appendCommit(log: Pick<EventLog, "append" | "readAll">, commit: Omit<CompactionCommit, "prefix">): CommitAppendResult {
+  let event: ReturnType<typeof buildCommitEvent>;
+  try {
+    event = buildCommitEvent(commit);
+    const events = log.readAll({ includeInternal: true });
+    const candidate: Event = { ...event, event_id: "", session_id: "", timestamp: 0 };
+    const result = restoreFrozenState([...events, candidate]);
+    if (!result.ok) return { status: "rejected", error: result.error };
+  } catch (error) {
+    return { status: "rejected", error: error instanceof FrozenSummaryError ? error : new FrozenSummaryError("invalid_commit", -1, `cannot validate commit: ${String(error)}`) };
+  }
   try {
     log.append(event);
     return { status: "committed" };

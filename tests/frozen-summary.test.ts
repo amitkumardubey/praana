@@ -75,6 +75,24 @@ test("parsing is a lenient view, not a schema validator", async () => {
   expect(view.open_threads).toEqual([{ kind: "question", text: "Unlabelled question" }]);
 });
 
+test("numbered items and nested bullets form top-level list items", async () => {
+  const { parseSummary } = await api();
+  expect(parseSummary("### Plan\n1. first\n  - nested\n2) second\n    1. detail\n").plans).toEqual([{ text: "first\n- nested" }, { text: "second\n1. detail" }]);
+});
+
+test("fenced headings are ignored and duplicate required headings fail", async () => {
+  const { checkSummary, parseSummary } = await api();
+  for (const fence of ["```", "~~~"]) {
+    const text = markdown.replace("Ship the parser.", `Ship the parser.\n${fence}\n### Plan\nnot a section\n${fence}`);
+    expect(checkSummary(text, { capTokens: 4096 }).ok).toBe(true);
+    expect(parseSummary(text).active_request).toContain("### Plan");
+    expect(checkSummary(markdown.replace("### Plan\n", `${fence}\n### Plan\n${fence}\n`), { capTokens: 4096 }).failures).toContainEqual(expect.objectContaining({ kind: "missing_heading", heading: "Plan" }));
+  }
+  expect(checkSummary(markdown + "\n### Plan\n- duplicate", { capTokens: 4096 }).failures).toContainEqual(expect.objectContaining({ kind: "duplicate_heading", heading: "Plan" }));
+  const reordered = headings.slice().reverse().map(h => `### ${h}\n${h === "Active request" ? "work" : ""}`).join("\n");
+  expect(checkSummary(reordered, { capTokens: 4096 }).ok).toBe(true);
+});
+
 for (const heading of headings) {
   test(`check rejects a missing ${heading} heading`, async () => {
     const { checkSummary } = await api();
@@ -98,6 +116,11 @@ test("caps at one eighth of a small usable window, rounded down, and never above
   expect(summaryCapTokens(2048)).toBe(256);
   expect(summaryCapTokens(1031)).toBe(128);
   expect(summaryCapTokens(100000)).toBe(4096);
+});
+
+test("invalid usable windows have zero summary capacity", async () => {
+  const { summaryCapTokens } = await api();
+  for (const value of [NaN, Infinity, -Infinity, -1, 0]) expect(summaryCapTokens(value)).toBe(0);
 });
 
 test("instruction rewrites the entire schema from previous summary and folded turns, never the tail", async () => {
@@ -284,6 +307,47 @@ test("clear hides old state, restarts generation, and does not resurrect a pre-c
 test("corrupt commits are not silently skipped even before a later reset", async () => {
   const { restoreFrozenState } = await api();
   expect(restoreFrozenState([recorded({}), reset("reset")])).toMatchObject({ ok: false, error: { code: "unsupported_version" } });
+});
+
+test("restore from log reads internal commit events", async () => {
+  const { appendCommit, restoreFrozenStateFromLog } = await api();
+  const { log } = openLog();
+  log.append(canonical("z"));
+  expect(appendCommit(log, data())).toEqual({ status: "committed" });
+  expect(restoreFrozenStateFromLog(log)).toMatchObject({ ok: true, state: { generation: 1, summary: markdown } });
+});
+
+test("append rejects unreplayable commits without changing the log", async () => {
+  const { appendCommit, restoreFrozenState } = await api();
+  const { log } = openLog();
+  log.append(canonical("z"));
+  expect(appendCommit(log, data())).toEqual({ status: "committed" });
+  const before = log.readAll({ includeInternal: true });
+  const prior = restoreFrozenState(before);
+  for (const candidate of [
+    data({ generation: 3 }),
+    data({ generation: 2, resetEpoch: "stale" }),
+    data({ generation: 2 }),
+    data({ generation: 2, summary: "new", stubSet: [{ eventId: "missing", stubText: "stub" }] }),
+  ]) {
+    expect(appendCommit(log, candidate)).toMatchObject({ status: "rejected" });
+    expect(log.readAll({ includeInternal: true })).toEqual(before);
+    expect(restoreFrozenState(log.readAll({ includeInternal: true }))).toEqual(prior);
+  }
+  log.append(reset("reset"));
+  const afterReset = log.readAll({ includeInternal: true });
+  expect(appendCommit(log, data({ resetEpoch: "reset" }))).toMatchObject({ status: "rejected", error: { code: "invalid_boundary" } });
+  expect(log.readAll({ includeInternal: true })).toEqual(afterReset);
+});
+
+test("append rejects invalid input and read errors without writing", async () => {
+  const { appendCommit } = await api();
+  const { log } = openLog();
+  expect(appendCommit(log, data({ generation: 0 }))).toMatchObject({ status: "rejected" });
+  const append = spyOn(log, "append");
+  spyOn(log, "readAll").mockImplementation(() => { throw new Error("read failed"); });
+  expect(appendCommit(log, data())).toMatchObject({ status: "rejected", error: { message: expect.stringContaining("read failed") } });
+  expect(append).not.toHaveBeenCalled();
 });
 
 test("append helper writes exactly one event, without canonical instruction or response records", async () => {
