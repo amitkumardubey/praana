@@ -75,8 +75,8 @@ export type ConfirmHandler = (
  */
 export const ACTION_PREVIEW_MAX_LINES = 400;
 
-/** Unsafe terminal controls, invisible formatting and bidi controls; tabs and newlines are handled separately. */
-const UNSAFE_PREVIEW_CHARACTERS = /[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u00ad\u061c\u180e\u200b-\u200f\u2028-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/g;
+/** Unicode controls, format and default-ignorable characters, plus line separators; tabs and newlines are handled separately. */
+const UNSAFE_PREVIEW_CHARACTERS = /(?!\t)[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\u2028\u2029]/gu;
 
 const TONE_STYLE = {
   dim: (line: string) => chalk.dim(line),

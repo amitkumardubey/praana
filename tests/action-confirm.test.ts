@@ -137,13 +137,22 @@ describe("action preview sanitization", () => {
   it("replaces each unsafe invisible and bidi character", () => {
     const ranges = [[0x00, 0x08], [0x0b, 0x1f], [0x7f, 0x9f], [0x00ad, 0x00ad],
       [0x061c, 0x061c], [0x180e, 0x180e], [0x200b, 0x200f], [0x2028, 0x202e],
-      [0x2060, 0x2064], [0x2066, 0x2069], [0xfeff, 0xfeff]];
+      [0x2060, 0x2064], [0x2066, 0x2069], [0xfeff, 0xfeff],
+      [0xe0000, 0xe007f], [0x115f, 0x1160], [0x3164, 0x3164], [0xffa0, 0xffa0],
+      [0x034f, 0x034f], [0x17b4, 0x17b5], [0xfff9, 0xfffb],
+      [0x0001, 0x0001], [0x0600, 0x0600], [0xfe0f, 0xfe0f]];
     for (const [start, end] of ranges) {
       for (let code = start!; code <= end!; code++) {
         const text = `a${String.fromCodePoint(code)}b`;
         expect(actionPreviewLines({ question: "?", preview: [{ text, tone: "plain" }] })).toEqual(["a·b"]);
       }
     }
+  });
+
+  it("preserves ordinary Unicode text but visibly replaces the ZWJ in emoji", () => {
+    const text = "Café, 東京! 😀 👩‍💻 (ok?)";
+    expect(actionPreviewLines({ question: "?", preview: [{ text, tone: "plain" }] }))
+      .toEqual(["Café, 東京! 😀 👩·💻 (ok?)"]);
   });
 
   it("distinguishes CRLF from LF in edit rows", () => {
