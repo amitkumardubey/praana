@@ -20,6 +20,7 @@ import {
 } from "./event-log.js";
 import { detectActivityLogNote } from "./tools/memory.js";
 import { StateGraph } from "./state-graph.js";
+import { CANONICAL_TRANSCRIPT_VERSION } from "./canonical-transcript.js";
 import {
   deleteStateGraphCheckpoint,
   findReplayStartIndex,
@@ -262,6 +263,7 @@ export class Session {
       started_at: startedAt,
       cwd,
       agent: APP_AGENT_ID,
+      canonical_transcript: { version: CANONICAL_TRANSCRIPT_VERSION },
     });
 
     return session;
