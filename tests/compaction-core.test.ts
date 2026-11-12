@@ -462,7 +462,9 @@ test("fill rejects invalid windows and output caps as typed capacity errors with
   for (const rejected of cases) {
     expect(rejected).toMatchObject({ ok: false, error: { status: "capacity_error", kind: "invalid_capacity" } });
     if (rejected.ok) throw new Error("invalid capacity admitted");
-    expect(rejected.error.message).toMatch(/\/clear|larger-context model/);
+    expect(rejected.error.message).toMatch(/configuration|model catalog/);
+    expect(rejected.error.message).toMatch(/context window|output cap/);
+    expect(rejected.error.message).not.toMatch(/\/clear|larger-context/);
   }
 });
 

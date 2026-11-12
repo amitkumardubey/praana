@@ -223,7 +223,10 @@ export interface CapacityErrorOutcome {
 export type RequestFillResult = { ok: true; fill: RequestFill } | { ok: false; error: CapacityErrorOutcome };
 
 function capacityError(kind: CapacityErrorKind, detail: string): RequestFillResult {
-  return { ok: false, error: { status: "capacity_error", kind, message: `${detail} Use /clear or a larger-context model before continuing.` } };
+  const guidance = kind === "invalid_capacity"
+    ? "Correct the configuration or model catalog entry before continuing."
+    : "Use /clear or a larger-context model before continuing.";
+  return { ok: false, error: { status: "capacity_error", kind, message: `${detail} ${guidance}` } };
 }
 
 /**
