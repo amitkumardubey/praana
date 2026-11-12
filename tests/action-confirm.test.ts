@@ -150,13 +150,15 @@ describe("edit_file confirmation", () => {
     }
   });
 
-  it("puts the diff preview in the text passed to the handler", async () => {
+  it("puts the diff preview in the structured preview passed to the handler", async () => {
     const session = makeSession();
     const cwd = makeWorkDir();
     writeFileSync(join(cwd, "preview.txt"), "line1\nline2\nHello World\n");
     const prompts: string[] = [];
-    session.setConfirmHandler(async (message) => {
+    const previews: string[] = [];
+    session.setConfirmHandler(async (message, options) => {
       prompts.push(message);
+      previews.push((options?.preview ?? []).join("\n"));
       return true;
     });
     await systemToolsWith(session, cwd).edit_file.execute({
@@ -164,24 +166,26 @@ describe("edit_file confirmation", () => {
       oldText: "World",
       newText: "PRAANA",
     });
-    const message = prompts[0] ?? "";
-    expect(message).toContain("preview.txt:3");
-    expect(message).toContain("- World");
-    expect(message).toContain("+ PRAANA");
-    // Plain text: the overlay renders the message itself, so chalk ANSI
+    // The question is only the question; the preview travels beside it.
+    expect(prompts[0]).toBe("Apply edit? [y/N]");
+    const preview = previews[0] ?? "";
+    expect(preview).toContain("preview.txt:3");
+    expect(preview).toContain("- World");
+    expect(preview).toContain("+ PRAANA");
+    // Plain text: the overlay renders the preview itself, so chalk ANSI
     // escapes must not reach it.
-    expect(message).not.toMatch(/\u001b\[/);
+    expect(preview).not.toMatch(/\u001b\[/);
   });
 
-  it("caps the preview and reports the dropped lines", async () => {
+  it("passes the whole preview for the overlay to cap", async () => {
     const session = makeSession();
     const cwd = makeWorkDir();
     const oldLines = Array.from({ length: 60 }, (_, i) => `old ${i}`);
     const newLines = Array.from({ length: 60 }, (_, i) => `new ${i}`);
     writeFileSync(join(cwd, "big.txt"), `${oldLines.join("\n")}\n`);
-    const prompts: string[] = [];
-    session.setConfirmHandler(async (message) => {
-      prompts.push(message);
+    let preview: readonly string[] = [];
+    session.setConfirmHandler(async (_message, options) => {
+      preview = options?.preview ?? [];
       return false;
     });
     await systemToolsWith(session, cwd).edit_file.execute({
@@ -189,9 +193,9 @@ describe("edit_file confirmation", () => {
       oldText: oldLines.join("\n"),
       newText: newLines.join("\n"),
     });
-    const message = prompts[0] ?? "";
-    expect(message).toContain("more lines");
-    expect(message.split("\n").length).toBeLessThanOrEqual(48);
+    // 1 header + 60 removed + 1 footer header + 60 added.
+    expect(preview).toHaveLength(122);
+    expect(preview.some((line) => line.includes("more lines"))).toBe(false);
   });
 
   it("returns the cancelled error and leaves the bytes untouched on no", async () => {
@@ -291,8 +295,8 @@ describe("git_commit confirmation", () => {
     const cwd = setupRepo();
     writeFileSync(join(cwd, "readme.md"), "hello again\n");
     const prompts: string[] = [];
-    session.setConfirmHandler(async (message) => {
-      prompts.push(message);
+    session.setConfirmHandler(async (message, options) => {
+      prompts.push([message, ...(options?.preview ?? [])].join("\n"));
       return true;
     });
     const createInterface = spyOn(readline, "createInterface");
@@ -312,24 +316,27 @@ describe("git_commit confirmation", () => {
     }
   });
 
-  it("puts the commit stat preview in the text passed to the handler", async () => {
+  it("puts the commit stat preview in the structured preview passed to the handler", async () => {
     if (!hasGit) return;
     const session = makeSession();
     const cwd = setupRepo();
     writeFileSync(join(cwd, "readme.md"), "hello again\nmore\n");
     const prompts: string[] = [];
-    session.setConfirmHandler(async (message) => {
+    const previews: string[] = [];
+    session.setConfirmHandler(async (message, options) => {
       prompts.push(message);
+      previews.push((options?.preview ?? []).join("\n"));
       return false;
     });
     await gitToolsWith(session, cwd).git_commit.execute({
       message: "fix: staged preview",
       paths: ["readme.md"],
     });
-    const message = prompts[0] ?? "";
-    expect(message).toContain("fix: staged preview");
-    expect(message).toContain("readme.md");
-    expect(message).not.toMatch(/\u001b\[/);
+    expect(prompts[0]).toBe("Create commit? [y/N]");
+    const preview = previews[0] ?? "";
+    expect(preview).toContain("fix: staged preview");
+    expect(preview).toContain("readme.md");
+    expect(preview).not.toMatch(/\u001b\[/);
   });
 
   it("returns the cancelled error and leaves the index and HEAD untouched on no", async () => {

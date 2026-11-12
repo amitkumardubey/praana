@@ -2,11 +2,12 @@
  * Confirmations for whole tool actions (`edit_file`, `git_commit`) rather than
  * risk classes (#748).
  *
- * Both tools preview what they are about to do before asking. The TUI renders
- * the question in the overlay, so the preview has to travel inside the prompt
- * text the handler receives: plain strings, no ANSI, capped so a large diff
- * cannot push the question out of the overlay. The classic terminal path keeps
- * the coloured stderr preview it always had and then asks the question.
+ * Both tools preview what they are about to do before asking. The preview
+ * travels to the UI as structured data next to the question — never joined
+ * into the prompt text — so the overlay can budget rows for it and the
+ * question is always exactly the question. Plain strings, no ANSI: OpenTUI
+ * renders them. The classic terminal path keeps the coloured stderr preview
+ * it always had and then asks the question.
  */
 import chalk from "chalk";
 import { writeUiStderr } from "../ui.js";
@@ -46,8 +47,34 @@ export type ActionConfirmResult =
  */
 export type ActionConfirmHandler = (request: ActionConfirmRequest) => Promise<ActionConfirmResult>;
 
-/** Preview lines kept in the overlay text before the rest is summarised. */
-export const ACTION_PREVIEW_MAX_LINES = 40;
+/**
+ * Extra data the confirm handler takes beside the question. `preview` is the
+ * action preview (see `ActionConfirmRequest`), rendered by the UI next to the
+ * question rather than inside it. Risk prompts pass no options at all.
+ */
+export interface ConfirmHandlerOptions {
+  readonly preview?: readonly string[];
+}
+
+/**
+ * The installed UI confirmation: a question, plus the structured preview when
+ * the caller has one. A prompt that carries a preview must not encode it in
+ * the message text — a risk detail can contain blank lines (a heredoc), and
+ * guessing the split from the string truncated the command the user was
+ * approving.
+ */
+export type ConfirmHandler = (
+  prompt: string,
+  options?: ConfirmHandlerOptions,
+) => Promise<boolean>;
+
+/**
+ * Hard bound on preview lines kept in overlay text. The overlay caps to the
+ * rows it actually has; this only stops a pathological diff from being copied
+ * into the overlay state. It is also the last line the reader sees when the
+ * bound bites, so the count travels with it.
+ */
+export const ACTION_PREVIEW_MAX_LINES = 400;
 
 const TONE_STYLE = {
   dim: (line: string) => chalk.dim(line),
@@ -73,31 +100,16 @@ const UNPROMPTABLE = {
 } satisfies Record<ActionKind, string>;
 
 /**
- * Cap the preview for the overlay, which has a fixed height. The last kept
- * line becomes a count, so the question below it stays visible and the reader
- * knows text was elided.
+ * Plain preview lines for the UI handler: one row per line, multi-line blocks
+ * split, no ANSI. The session passes the full preview so the overlay makes the
+ * one row-budget cap from the real frame height; only a pathological diff is
+ * bounded here, and the bound keeps its own count line.
  */
-export function capPreviewLines(
-  lines: readonly string[],
-  maxLines: number = ACTION_PREVIEW_MAX_LINES,
-): string[] {
-  if (lines.length <= maxLines) return [...lines];
-  const keep = Math.max(0, maxLines - 1);
-  const dropped = lines.length - keep;
-  return [...lines.slice(0, keep), `... ${dropped} more lines`];
-}
-
-/** Plain prompt text for the UI handler: capped preview, blank line, question. */
-export function formatActionConfirmPrompt(
-  request: ActionConfirmRequest,
-  maxLines: number = ACTION_PREVIEW_MAX_LINES,
-): string {
-  const preview = capPreviewLines(
-    request.preview.flatMap((line) => line.text.split("\n")),
-    maxLines,
-  );
-  if (preview.length === 0) return request.question;
-  return `${preview.join("\n")}\n\n${request.question}`;
+export function actionPreviewLines(request: ActionConfirmRequest): string[] {
+  const lines = request.preview.flatMap((line) => line.text.split("\n"));
+  if (lines.length <= ACTION_PREVIEW_MAX_LINES) return lines;
+  const keep = ACTION_PREVIEW_MAX_LINES - 1;
+  return [...lines.slice(0, keep), `... ${lines.length - keep} more lines`];
 }
 
 /** Classic terminal preview: today's coloured stderr output, before the question. */

@@ -14,11 +14,15 @@
  * re-binds when the prompt changes, so a second confirm arms its keys again
  * even when this component stays mounted.
  */
-import { createEffect, onCleanup } from "solid-js";
+import { createEffect, For, onCleanup, Show } from "solid-js";
 import { useTerminalDimensions } from "@opentui/solid";
 import { useKeymap } from "@opentui/keymap/solid";
-import { OverlayFrame, overlayFrameMaxHeight, OVERLAY_FRAME_CHROME_ROWS } from "./frame.js";
-import { TUI_STYLE } from "../theme.js";
+import {
+  OverlayFrame,
+  overlayFrameInnerWidth,
+  OVERLAY_FRAME_CHROME_ROWS,
+} from "./frame.js";
+import { TUI_STYLE, truncatePlainText } from "../theme.js";
 import type { ConfirmMode, OverlayUi } from "./state.js";
 
 /** How long a freshly opened confirm ignores its answer keys. */
@@ -73,41 +77,45 @@ export function formatConfirmQuestion(message: string, mode: ConfirmMode): strin
   return message.replace(/\s*\[y\/N\]\s*$/i, "");
 }
 
+/** Columns the confirm frame asks for; the frame clamps it to the terminal. */
+export const CONFIRM_FRAME_WIDTH = 64;
+
 /** Rows the hint line occupies; it is never elided. */
 export const CONFIRM_HINT_ROWS = 1;
+
+/** Preview rows a preview-carrying prompt gets when the terminal has them. */
+export const CONFIRM_MIN_PREVIEW_ROWS = 3;
+
+/**
+ * Frame height for a confirm. A prompt that carries a preview may use two more
+ * rows than the usual cap so a short terminal still has room to show the thing
+ * being approved. Risk and step prompts keep the frame they always had.
+ */
+export function confirmFrameMaxHeight(termHeight: number, hasPreview: boolean): number {
+  const height = Math.max(8, termHeight || 24);
+  return hasPreview ? Math.max(8, height - 2) : Math.max(8, height - 6);
+}
 
 /**
  * Preview rows that fit for a terminal height, keeping the question, the blank
  * separator, and the hint on screen. Also used to size the session-side cap.
+ * `hasPreview` selects the frame a preview-carrying prompt gets.
  */
-export function confirmPreviewRows(termHeight: number, questionLines = 1, messageRows?: number): number {
-  const frame = overlayFrameMaxHeight(termHeight, messageRows);
+export function confirmPreviewRows(
+  termHeight: number,
+  questionLines = 1,
+  hasPreview = false,
+): number {
+  const frame = confirmFrameMaxHeight(termHeight, hasPreview);
   const inner = frame - OVERLAY_FRAME_CHROME_ROWS;
   // One blank row separates the question from the preview.
   return Math.max(0, inner - CONFIRM_HINT_ROWS - questionLines - 1);
 }
 
 /**
- * Split a prompt that carries a preview from its question. `edit_file` and
- * `git_commit` (#748) send `preview lines`, a blank line, then the question,
- * because the session handler is a plain string shared with risk prompts. The
- * overlay pins the question so a long diff cannot push it out of the frame.
- * A message without that separator is all question, so risk prompts are
- * unchanged.
- */
-export function splitConfirmMessage(message: string): { preview: string[]; question: string } {
-  const at = message.lastIndexOf("\n\n");
-  if (at === -1) return { preview: [], question: message };
-  const question = message.slice(at + 2);
-  if (question.trim().length === 0) return { preview: [], question: message };
-  const preview = message.slice(0, at).split("\n");
-  while (preview.length > 0 && preview[preview.length - 1] === "") preview.pop();
-  return { preview, question };
-}
-
-/**
  * Cap the preview to the rows left in the frame. The last kept row becomes a
  * count so the reader knows the preview was elided rather than truncated.
+ * This is the one cap: the caller supplies rows from the real frame height.
  */
 export function capConfirmPreview(preview: readonly string[], rows: number): string[] {
   if (rows <= 0) return [];
@@ -115,6 +123,35 @@ export function capConfirmPreview(preview: readonly string[], rows: number): str
   const keep = Math.max(0, rows - 1);
   return [...preview.slice(0, keep), `... ${preview.length - keep} more lines`];
 }
+
+/**
+ * Truncate preview rows to the frame's inner width. The row budget is one
+ * terminal row per preview line, so a long diff line, commit subject, or
+ * `--stat` path that wraps would spend two rows and push the question and hint
+ * out of the frame. Tabs are expanded first: the terminal advances them to a
+ * stop, which would otherwise widen the row past what was measured.
+ */
+export function fitPreviewRows(
+  preview: readonly string[],
+  innerWidth: number,
+): string[] {
+  return preview.map((line) => truncatePlainText(expandTabs(line), innerWidth));
+}
+
+/** Expand a tab to the next 4-column stop, matching nothing in particular but keeping width predictable. */
+function expandTabs(line: string): string {
+  if (!line.includes("\t")) return line;
+  const TAB_WIDTH = 4;
+  let out = "";
+  for (const ch of line) {
+    out += ch === "\t" ? " ".repeat(TAB_WIDTH - (out.length % TAB_WIDTH)) : ch;
+  }
+  return out;
+}
+
+/** Shown instead of a preview the terminal is too short to display. */
+export const CONFIRM_PREVIEW_NO_ROOM =
+  "(preview does not fit: enlarge the terminal to review)";
 
 function confirmHint(mode: ConfirmMode): string {
   return mode === "yesno" ? CONFIRM_YESNO_HINT : CONFIRM_HINT;
@@ -146,23 +183,34 @@ export function ConfirmOverlay(props: ConfirmOverlayProps) {
   });
 
   const prompt = () => props.overlay.confirmPrompt();
-  const parsed = () => splitConfirmMessage(prompt()?.message ?? "");
-  const previewRows = () =>
-    confirmPreviewRows(
-      dimensions().height,
-      parsed().question.split("\n").length,
-    );
-  const previewLines = () => capConfirmPreview(parsed().preview, previewRows());
-  const question = () => formatConfirmQuestion(parsed().question, prompt()?.mode ?? "step");
+  const question = () => formatConfirmQuestion(prompt()?.message ?? "", prompt()?.mode ?? "step");
+  const preview = () => prompt()?.preview ?? [];
+  const hasPreview = () => preview().length > 0;
+  const questionLines = () => question().split("\n").length;
+  const previewRows = () => confirmPreviewRows(dimensions().height, questionLines(), hasPreview());
+  // A prompt that carries a preview must not be approved blind. When the frame
+  // cannot fit the three rows below, say so instead of showing nothing.
+  const previewHidden = () => hasPreview() && previewRows() < CONFIRM_MIN_PREVIEW_ROWS;
+  const innerWidth = () => overlayFrameInnerWidth(dimensions().width, CONFIRM_FRAME_WIDTH);
+  const previewLines = () =>
+    capConfirmPreview(fitPreviewRows(preview(), innerWidth()), previewRows());
+  const maxHeight = () => confirmFrameMaxHeight(dimensions().height, hasPreview());
 
   return (
-    <OverlayFrame width={64}>
-      <text>{question()}</text>
-      {previewLines().map((line) => (
+    <OverlayFrame width={CONFIRM_FRAME_WIDTH} maxHeight={maxHeight()}>
+      <Show when={previewHidden()}>
         <text>
-          <span style={TUI_STYLE.muted}>{line.length === 0 ? " " : line}</span>
+          <span style={TUI_STYLE.warning}>{CONFIRM_PREVIEW_NO_ROOM}</span>
         </text>
-      ))}
+      </Show>
+      <text>{question()}</text>
+      <For each={previewLines()}>
+        {(line) => (
+          <text>
+            <span style={TUI_STYLE.muted}>{line.length === 0 ? " " : line}</span>
+          </text>
+        )}
+      </For>
       <text><span style={TUI_STYLE.muted}>{confirmHint(prompt()?.mode ?? "step")}</span></text>
     </OverlayFrame>
   );

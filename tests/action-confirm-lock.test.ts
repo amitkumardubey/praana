@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { loadConfig } from "../src/config.js";
 import * as prompt from "../src/risk/prompt.js";
 import { Session } from "../src/session.js";
+import { ACTION_PREVIEW_MAX_LINES } from "../src/confirm/action.js";
 
 const dirs: string[] = [];
 
@@ -42,6 +43,77 @@ describe("Session.confirmAction", () => {
     expect(seen).toEqual(["Apply edit?"]);
     expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
+  });
+
+  it("passes the question as the prompt and the preview as structured data", async () => {
+    const session = makeSession();
+    const seen: Array<{ prompt: string; preview?: readonly string[] }> = [];
+    session.setConfirmHandler(async (promptText, options) => {
+      seen.push({ prompt: promptText, preview: options?.preview });
+      return true;
+    });
+    await session.confirmAction({
+      question: "Apply edit? [y/N]",
+      preview: [
+        { text: "--- a.txt:1 (before)", tone: "dim" },
+        { text: "- old", tone: "remove" },
+        // A multi-line block splits into one preview line per row.
+        { text: " a.txt | 2 +-\n 1 file changed", tone: "plain" },
+      ],
+    });
+    expect(seen).toEqual([
+      {
+        prompt: "Apply edit? [y/N]",
+        preview: ["--- a.txt:1 (before)", "- old", " a.txt | 2 +-", " 1 file changed"],
+      },
+    ]);
+  });
+
+  it("leaves a risk prompt whole, blank lines included", async () => {
+    const session = makeSession();
+    const seen: Array<{ prompt: string; preview?: readonly string[] }> = [];
+    session.setConfirmHandler(async (promptText, options) => {
+      seen.push({ prompt: promptText, preview: options?.preview });
+      return true;
+    });
+    const message = "shell: cat <<EOF > notes.txt\nfirst\n\nlast\nEOF";
+    await session.confirmRisk("shell", message);
+    expect(seen).toEqual([{ prompt: message, preview: undefined }]);
+  });
+
+  it("passes a long preview uncapped for the overlay to budget", async () => {
+    const session = makeSession();
+    let preview: readonly string[] | undefined;
+    session.setConfirmHandler(async (_prompt, options) => {
+      preview = options?.preview;
+      return false;
+    });
+    const lines = Array.from({ length: 200 }, (_, i) => `- line ${i}`);
+    await session.confirmAction({
+      question: "Apply edit? [y/N]",
+      preview: lines.map((text) => ({ text, tone: "remove" as const })),
+    });
+    // A fixed 40-line cap here was the second cap: the overlay then counted the
+    // rows the session had already dropped, so the "... N more lines" figure
+    // was wrong. The session keeps the full preview and the overlay does the one
+    // row-budget cap.
+    expect(preview).toEqual(lines);
+  });
+
+  it("still bounds a pathologically large preview", async () => {
+    const session = makeSession();
+    let preview: readonly string[] | undefined;
+    session.setConfirmHandler(async (_prompt, options) => {
+      preview = options?.preview;
+      return false;
+    });
+    const lines = Array.from({ length: 5000 }, (_, i) => `- line ${i}`);
+    await session.confirmAction({
+      question: "Apply edit? [y/N]",
+      preview: lines.map((text) => ({ text, tone: "remove" as const })),
+    });
+    expect(preview).toHaveLength(ACTION_PREVIEW_MAX_LINES);
+    expect(preview?.[ACTION_PREVIEW_MAX_LINES - 1]).toContain("more lines");
   });
 
   it("treats a handler that answers no as declined", async () => {

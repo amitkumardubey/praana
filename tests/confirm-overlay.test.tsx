@@ -9,7 +9,7 @@ import { render } from "@opentui/solid";
 import { createComponent } from "solid-js";
 import { createDefaultOpenTuiKeymap } from "@opentui/keymap/opentui";
 import { KeymapProvider, useBindings } from "@opentui/keymap/solid";
-import { classifyStepPauseKey, classifyYesNoKey, ConfirmOverlay, capConfirmPreview, CONFIRM_ARM_MS, confirmPreviewRows, formatConfirmQuestion, splitConfirmMessage } from "../src/ui/tui/overlays/confirm.js";
+import { classifyStepPauseKey, classifyYesNoKey, ConfirmOverlay, capConfirmPreview, CONFIRM_ARM_MS, confirmPreviewRows, formatConfirmQuestion } from "../src/ui/tui/overlays/confirm.js";
 import { createOverlayUi } from "../src/ui/tui/overlays/state.js";
 import { focusPromptAfterConfirm } from "../src/ui/tui/run.tsx";
 
@@ -32,13 +32,26 @@ function PauseHarness(props: {
 
 async function mount(
   armMs: number,
-  hooks?: { onCtrlC?: () => void; onEnter?: () => void; signal?: AbortSignal; mode?: "step" | "yesno"; message?: string },
+  hooks?: {
+    onCtrlC?: () => void;
+    onEnter?: () => void;
+    signal?: AbortSignal;
+    mode?: "step" | "yesno";
+    message?: string;
+    preview?: readonly string[];
+    width?: number;
+    height?: number;
+  },
 ) {
   const overlay = createOverlayUi();
   const pending = overlay.showConfirm(hooks?.message ?? "Continue?", hooks?.signal, {
     mode: hooks?.mode ?? "step",
+    preview: hooks?.preview,
   });
-  const setup = await createTestRenderer({ width: 80, height: 24 });
+  const setup = await createTestRenderer({
+    width: hooks?.width ?? 80,
+    height: hooks?.height ?? 24,
+  });
   const keymap = createDefaultOpenTuiKeymap(setup.renderer);
   const onCtrlC = hooks?.onCtrlC ?? (() => {});
   const onEnter = hooks?.onEnter ?? (() => {});
@@ -311,18 +324,30 @@ describe("ConfirmOverlay yes/no mode", () => {
 });
 
 describe("action confirmation preview (#748)", () => {
-  it("splits a preview from its question and leaves a plain message whole", () => {
-    expect(splitConfirmMessage("Apply edit? [y/N]")).toEqual({
-      preview: [],
-      question: "Apply edit? [y/N]",
-    });
-    expect(splitConfirmMessage("--- a.txt:1 (before)\n- old\n\nApply edit? [y/N]")).toEqual({
-      preview: ["--- a.txt:1 (before)", "- old"],
-      question: "Apply edit? [y/N]",
-    });
+  it("renders every line of a risk prompt that contains a blank line", async () => {
+    // Risk prompts are `${class}: ${detail}` and a shell detail can be a
+    // heredoc. Splitting such a prompt at its last blank line turned the head
+    // of the command into a row-capped "preview", so the user approved a
+    // destructive command without seeing all of it.
+    const message = [
+      "shell: cat <<EOF > notes.txt",
+      "first line",
+      "",
+      "last line",
+      "EOF",
+    ].join("\n");
+    const { setup, overlay } = await mount(0, { mode: "yesno", message });
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("shell: cat <<EOF > notes.txt");
+    expect(frame).toContain("first line");
+    expect(frame).toContain("last line");
+    expect(frame).toContain("EOF");
+    expect(frame).not.toContain("more lines");
+    setup.renderer.destroy();
+    overlay.dispose();
   });
 
-  it("caps a preview below the row budget and counts the dropped rows", () => {
+  it("caps a structured preview below the row budget and counts the dropped rows", () => {
     const preview = Array.from({ length: 30 }, (_, i) => `- line ${i}`);
     expect(capConfirmPreview(preview, 30)).toHaveLength(30);
     const capped = capConfirmPreview(preview, 10);
@@ -345,7 +370,8 @@ describe("action confirmation preview (#748)", () => {
     preview.push("+++ a.txt:2 (after)", "+ new");
     const { setup, overlay } = await mount(0, {
       mode: "yesno",
-      message: `${preview.join("\n")}\n\nApply edit? [y/N]`,
+      message: "Apply edit? [y/N]",
+      preview,
     });
     const frame = setup.captureCharFrame();
     // The question is pinned above the preview, so it cannot be pushed off.
@@ -354,6 +380,25 @@ describe("action confirmation preview (#748)", () => {
     expect(frame).toContain("y = yes");
     expect(frame).toContain("more lines");
     expect(frame).toContain("--- a.txt:2 (before)");
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+
+  it("shows the elided count once for a 200-line preview", async () => {
+    const preview = Array.from({ length: 200 }, (_, i) => `- line ${i}`);
+    const { setup, overlay } = await mount(0, {
+      mode: "yesno",
+      message: "Apply edit? [y/N]",
+      preview,
+    });
+    const frame = setup.captureCharFrame();
+    expect(frame.match(/more lines/g)).toHaveLength(1);
+    expect(frame).toContain("Apply edit?");
+    expect(frame).toContain("y = yes");
+    // The one cap keeps rows - 1 lines and spends the last row on the count of
+    // exactly what is missing.
+    const rows = confirmPreviewRows(24, 1, true);
+    expect(frame).toContain(`... ${200 - (rows - 1)} more lines`);
     setup.renderer.destroy();
     overlay.dispose();
   });

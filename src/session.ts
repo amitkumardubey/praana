@@ -29,9 +29,9 @@ import { loadConfig } from "./config.js";
 import { createConfirmLock } from "./risk/confirm-lock.js";
 import { promptYesNo } from "./risk/prompt.js";
 import type { RiskClass, RiskConfirmResult } from "./risk/classes.js";
-import type { ActionConfirmResult, ActionConfirmRequest } from "./confirm/action.js";
+import type { ActionConfirmResult, ActionConfirmRequest, ConfirmHandler } from "./confirm/action.js";
 import {
-  formatActionConfirmPrompt,
+  actionPreviewLines,
   writeActionConfirmPreview,
 } from "./confirm/action.js";
 import { DEFAULT_WEB_CONFIG, decideWebHost, normalizeHost } from "./tools/web/policy.js";
@@ -171,9 +171,11 @@ export class Session {
   private webFetchInflight = new Map<string, Promise<RiskConfirmResult>>();
   /**
    * UI-supplied risk confirmation (the TUI overlay). When unset, the classic
-   * readline prompt on stdin/stderr is used.
+   * readline prompt on stdin/stderr is used. The optional second argument
+   * carries structured data the overlay renders — an action preview — so it is
+   * never guessed out of the prompt text.
    */
-  private confirmHandler: ((prompt: string) => Promise<boolean>) | null = null;
+  private confirmHandler: ConfirmHandler | null = null;
   /** Internal turn-loop hook dispatcher (issue #574). */
   hooks: HookRegistry;
   /** Mutating-tool loop breaker (issue #578). */
@@ -627,7 +629,7 @@ export class Session {
    * Install the UI's risk confirmation (the TUI overlay) or pass `null` to go
    * back to the classic readline prompt. Headless sessions never prompt.
    */
-  setConfirmHandler(handler: ((prompt: string) => Promise<boolean>) | null): void {
+  setConfirmHandler(handler: ConfirmHandler | null): void {
     this.confirmHandler = handler;
   }
 
@@ -674,12 +676,12 @@ export class Session {
    * fighting OpenTUI for stdin — the readline prompt closed as declined before
    * the answer arrived and leaked mouse reports and chat input into the tools.
    *
-   * The two paths ask differently. The UI handler gets the preview inside the
-   * prompt text, because the overlay renders the message itself. The classic
-   * terminal path instead prints the coloured preview and then asks the short
-   * question, exactly as the tools did before. There is no `[risk].allow`
-   * escape: a headless run cannot ask, so it refuses instead of blocking or
-   * guessing.
+   * The two paths ask differently. The UI handler gets the question plus the
+   * preview as structured data (`options.preview`), because the overlay lays
+   * out the rows itself. The classic terminal path prints the coloured preview
+   * and then asks the short question, exactly as the tools did before. There is
+   * no `[risk].allow` escape: a headless run cannot ask, so it refuses instead
+   * of blocking or guessing.
    */
   async confirmAction(request: ActionConfirmRequest): Promise<ActionConfirmResult> {
     if (this.headless) return { allowed: false, reason: "headless" };
@@ -687,7 +689,7 @@ export class Session {
       request.question,
       "Action confirmation failed; declining",
       {
-        overlayPrompt: () => formatActionConfirmPrompt(request),
+        preview: () => actionPreviewLines(request),
         classicPreview: () => writeActionConfirmPreview(request),
       },
     );
@@ -696,8 +698,8 @@ export class Session {
   /**
    * One serialised interactive question: the UI handler when the TUI installed
    * one, else the classic readline prompt. The two paths differ on purpose.
-   * `overlayPrompt` supplies the text the overlay renders (preview plus
-   * question). `classicPreview` prints the tool's coloured preview to stderr and
+   * `preview` supplies the structured preview the overlay renders beside the
+   * question. `classicPreview` prints the tool's coloured preview to stderr and
    * the short `prompt` is then asked, which is exactly what the tools did
    * before, so the preview is never shown twice. A handler failure is a decline
    * — never an implicit yes — and is logged.
@@ -707,8 +709,8 @@ export class Session {
     failureNote: string,
     options?: {
       details?: Record<string, unknown>;
-      /** Text the overlay renders, preview included. */
-      overlayPrompt?: () => string;
+      /** Structured preview lines the overlay renders under the question. */
+      preview?: () => readonly string[];
       /** Classic-only coloured preview, printed before the question. */
       classicPreview?: () => void;
     },
@@ -717,7 +719,11 @@ export class Session {
       try {
         const handler = this.confirmHandler;
         if (handler) {
-          const yes = await handler(options?.overlayPrompt?.() ?? prompt);
+          const preview = options?.preview?.();
+          const yes = await handler(
+            prompt,
+            preview === undefined ? undefined : { preview },
+          );
           return yes ? { allowed: true } : { allowed: false, reason: "declined" };
         }
         options?.classicPreview?.();
