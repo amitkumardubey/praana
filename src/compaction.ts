@@ -106,31 +106,37 @@ function currentEntries(events: readonly Event[]): CanonicalEntry[] {
   });
 }
 
-function turnView(events: readonly Event[], options: { estimate?: boolean } = {}): { turns: CompactionTurn[]; pending: boolean } {
+function groupTurns(events: readonly Event[]): CompactionTurn[] {
   const turns: CompactionTurn[] = [];
-  const validator = new CanonicalValidator();
   for (const { eventId, record } of currentEntries(events)) {
-    validator.accept(record);
     if (record.kind === "user_input") {
       if (turns.length) turns[turns.length - 1].completed = true;
       turns.push({ turnId: record.turnId, completed: false, eventIds: [], records: [], messages: [], estimatedTokens: 0 });
     }
     const turn = turns[turns.length - 1];
+    if (!turn) throw new CanonicalTranscriptError("invalid_turn", 0, "record must follow a user_input");
     turn.eventIds.push(eventId);
     turn.records.push(record);
   }
+  return turns;
+}
+
+function turnView(events: readonly Event[], options: { estimate?: boolean } = {}): CompactionTurn[] {
+  const turns = groupTurns(events);
+  const validator = new CanonicalValidator();
   for (const turn of turns) {
+    for (const record of turn.records) validator.accept(record);
     const emittedCount = turn.records.filter((record) => ["user_input", "wrap_up", "assistant", "tool_result"].includes(record.kind)).length;
     // The strict emitter repairs a terminal pending batch; estimates cover recorded bytes only.
     turn.messages = emitCanonicalTranscript(turn.records).slice(0, emittedCount);
     if (options.estimate !== false) turn.estimatedTokens = turn.messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
   }
-  return { turns, pending: validator.repairs().length > 0 };
+  return turns;
 }
 
 /** Current-epoch units in log order. Invalid sequences throw CanonicalTranscriptError. */
 export function buildTurns(events: readonly Event[], options: { estimate?: boolean } = {}): CompactionTurn[] {
-  return turnView(events, options).turns;
+  return turnView(events, options);
 }
 
 export type MaterializationErrorCode = "pending_batch" | "invalid_state";
@@ -159,12 +165,17 @@ export function materializeHistory(state: FrozenState, events: readonly Event[])
     if ((state.summary === null) !== (state.boundaryEventId === null)) {
       throw new MaterializationError("invalid_state", "summary and boundary must both be present or both be null");
     }
-    const { turns, pending } = turnView(events, { estimate: false });
-    if (pending) throw new MaterializationError("pending_batch", "the terminal tool batch has unrecorded results");
+    // A committed prefix is no longer replayed; only its turn boundaries matter.
+    const turns = groupTurns(events);
     const cut = state.boundaryEventId === null ? -1 : turns.findIndex((turn) => turn.completed && turn.eventIds.at(-1) === state.boundaryEventId);
     if (state.boundaryEventId !== null && cut < 0) {
       throw new MaterializationError("invalid_state", "boundary must end a completed turn in the current epoch");
     }
+    const validator = new CanonicalValidator();
+    for (const turn of turns.slice(cut + 1)) {
+      for (const record of turn.records) validator.accept(record);
+    }
+    if (validator.repairs().length) throw new MaterializationError("pending_batch", "the terminal tool batch has unrecorded results");
     const results = new Set(turns.flatMap((turn) => turn.records.flatMap((record, index) => record.kind === "tool_result" ? [turn.eventIds[index]] : [])));
     const stubs = new Map<string, string>();
     for (const stub of state.stubSet) {

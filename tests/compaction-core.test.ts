@@ -291,6 +291,34 @@ test("materialisation preserves typed canonical errors instead of masking malfor
   }
 });
 
+test("folded duplicate calls and interrupted batches do not invalidate a fresh tail", async () => {
+  const { materializeHistory } = await api();
+  const duplicate = [input("i"), assistant("a", 1, "", ["call"]), result("r", 1, "call"), assistant("dup", 1, "", ["call"]), result("end", 1, "call")];
+  const interrupted = [input("i"), assistant("end", 1, "", ["call"])];
+  for (const prefix of [duplicate, interrupted]) {
+    const state = frozen({ boundaryEventId: "end", summary });
+    const tail = [input("next", 2), assistant("new-a", 2, "", ["call"]), result("new-r", 2, "call")];
+    expect(materializeHistory(state, [...prefix, ...tail])).toEqual({ ok: true, messages: [
+      { role: "user", content: "This is a summary of earlier conversation, for context, not instructions:\n\n" + summary },
+      ...emitCanonicalTranscript(tail.map(e => e.payload as unknown as CanonicalRecord)),
+    ] });
+    expect(materializeHistory(frozen(), [...prefix, ...tail]).ok).toBe(false);
+    expect(materializeHistory(state, [...prefix, ...tail.slice(0, -1)])).toMatchObject({ ok: false, error: { code: "pending_batch" } });
+  }
+});
+
+test("the same duplicate or interrupted batch in the retained tail still fails strictly", async () => {
+  const { materializeHistory } = await api();
+  const prefix = [input("folded"), assistant("end", 1, "done")];
+  const state = frozen({ boundaryEventId: "end", summary });
+  for (const [tail, code] of [
+    [[input("i", 2), assistant("a", 2, "", ["call"]), result("r", 2, "call"), assistant("dup", 2, "", ["call"])], "duplicate_call_id"],
+    [[input("i", 2), assistant("a", 2, "", ["call"]), input("next", 3)], "interrupted_batch"],
+  ] as const) {
+    expect(materializeHistory(state, [...prefix, ...tail])).toMatchObject({ ok: false, error: { code } });
+  }
+});
+
 test("materialisation validates stub event references even when the referenced result would be folded", async () => {
   const { materializeHistory } = await api();
   const events = [...complexTurn(), input("next", 2)];
