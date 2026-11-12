@@ -5,6 +5,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { redactSecretsStrict } from "../redact/secrets.js";
 import { parseMemory, serializeMemory, validName, validateMemory, type Memory, type MemoryInput } from "./format.js";
 import { memoryDirectories, projectKey, type MemoryScope } from "./paths.js";
+import { buildMemoryIndex as renderMemoryIndex, type MemoryIndex } from "./index.js";
 
 export interface StoreOptions {
   home: string;
@@ -58,7 +59,7 @@ export function createFileMemoryStore(options: StoreOptions) {
     return path;
   }
 
-  async function readFile(dir: string, name: string): Promise<Memory | null> {
+  async function readFile(dir: string, name: string, frontmatterOnly = false): Promise<Memory | null> {
     const path = join(dir, `${name}.md`);
     let handle: nodeFs.FileHandle | undefined;
     try {
@@ -70,9 +71,20 @@ export function createFileMemoryStore(options: StoreOptions) {
       const buffer = Buffer.alloc(65537);
       let length = 0;
       while (length < buffer.length) {
-        const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+        const size = frontmatterOnly ? Math.min(1024, buffer.length - length) : buffer.length - length;
+        const { bytesRead } = await handle.read(buffer, length, size, length);
         if (!bytesRead) break;
         length += bytesRead;
+        if (frontmatterOnly) {
+          const header = buffer.subarray(0, length).toString("utf8").replace(/^\uFEFF/, "").replace(/\r\n/g, "\n");
+          const closing = (length >= actual.size ? /\n---(?:\n|$)/ : /\n---\n/).exec(header.slice(4));
+          if (closing) {
+            const memory = parseMemory(header.slice(0, closing.index + 4 + closing[0].length));
+            return memory?.name === name ? memory : null;
+          }
+          // Raw CRLF frontmatter can be up to twice the normalized byte bound.
+          if (length > 16390) return null;
+        }
       }
       if (length > 65536) return null;
       const memory = parseMemory(buffer.subarray(0, length).toString("utf8"));
@@ -83,7 +95,7 @@ export function createFileMemoryStore(options: StoreOptions) {
     } finally { if (handle) await handle.close(); }
   }
 
-  async function entries(scope: MemoryScope): Promise<{ memories: Memory[]; skipped: number; filenames: string[] }> {
+  async function entries(scope: MemoryScope, frontmatterOnly = false): Promise<{ memories: Memory[]; skipped: number; filenames: string[] }> {
     const dir = await directory(scope, false);
     if (!dir) return { memories: [], skipped: 0, filenames: [] };
     let filenames: string[];
@@ -94,7 +106,7 @@ export function createFileMemoryStore(options: StoreOptions) {
       if (file.startsWith(".") || file === "MEMORY.md" || !file.endsWith(".md")) continue;
       const name = file.slice(0, -3);
       if (!validName(name)) { skipped++; continue; }
-      const memory = await readFile(dir, name);
+      const memory = await readFile(dir, name, frontmatterOnly);
       if (memory) memories.push(memory); else skipped++;
     }
     return { memories, skipped, filenames };
@@ -199,7 +211,7 @@ export function createFileMemoryStore(options: StoreOptions) {
       const result: ListEntry[] = [];
       let skipped = 0;
       for (const scope of input.scope ? [input.scope] : scopes) {
-        const data = await entries(scope);
+        const data = await entries(scope, true);
         skipped += data.skipped;
         for (const { body: _body, ...memory } of data.memories) {
           const age = Math.max(0, Math.floor((now().getTime() - Date.parse(memory.updated)) / 86400000));
@@ -210,5 +222,10 @@ export function createFileMemoryStore(options: StoreOptions) {
       return { ok: true, entries: result, skipped };
     } catch (error) { return { ...errorResult(error), entries: [], skipped: 0 }; }
   }
-  return { write, read, remove, list };
+  async function buildMemoryIndex(input: { scope?: MemoryScope } = {}): Promise<MemoryIndex> {
+    const data = await list(input);
+    if (!data.ok) throw new Error(data.error);
+    return renderMemoryIndex({ entries: data.entries.map((entry) => ({ ...entry, file: join(dirs[entry.scope], `${entry.name}.md`) })) });
+  }
+  return { write, read, remove, list, buildMemoryIndex };
 }
