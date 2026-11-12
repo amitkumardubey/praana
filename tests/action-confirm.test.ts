@@ -209,9 +209,27 @@ describe("edit_file confirmation", () => {
       oldText: oldLines.join("\n"),
       newText: newLines.join("\n"),
     });
-    // 1 header + 60 removed + 1 footer header + 60 added.
-    expect(preview).toHaveLength(122);
-    expect(preview.some((line) => line.includes("more lines"))).toBe(false);
+    // Both sides are separately bounded, preserving the after header.
+    expect(preview).toHaveLength(28);
+    expect(preview.filter((line) => line.includes("48 more lines"))).toHaveLength(2);
+    expect(preview.some((line) => line.includes("+++ big.txt"))).toBe(true);
+  });
+
+  it("keeps the classic edit preview complete", async () => {
+    const session = makeSession();
+    const cwd = makeWorkDir();
+    const lines = Array.from({ length: 40 }, (_, i) => `old ${i}`);
+    writeFileSync(join(cwd, "classic-big.txt"), lines.join("\n"));
+    const chunks: string[] = [];
+    setUiWriters({ stderr: (line) => chunks.push(line) });
+    const promptSpy = spyOn(prompt, "promptYesNo").mockResolvedValue(false);
+    try {
+      await systemToolsWith(session, cwd).edit_file.execute({ path: "classic-big.txt", oldText: lines.join("\n"), newText: "new" });
+      expect(chunks.join("\n")).toContain("- old 39");
+      expect(chunks.join("\n")).not.toContain("more lines");
+    } finally {
+      promptSpy.mockRestore();
+    }
   });
 
   it("does not overwrite a file changed while awaiting confirmation", async () => {
@@ -369,6 +387,20 @@ describe("git_commit confirmation", () => {
     expect(preview).toContain("fix: staged preview");
     expect(preview).toContain("readme.md");
     expect(preview).not.toMatch(/\u001b\[/);
+  });
+
+  it("bounds commit message and stat sections independently", async () => {
+    if (!hasGit) return;
+    const session = makeSession();
+    const cwd = setupRepo();
+    for (let i = 0; i < 20; i++) writeFileSync(join(cwd, `file-${i}.txt`), "change\n");
+    git(cwd, ["add", "."]);
+    let preview: readonly string[] = [];
+    session.setConfirmHandler(async (_message, options) => { preview = options?.preview ?? []; return false; });
+    await gitToolsWith(session, cwd).git_commit.execute({ message: Array.from({ length: 30 }, (_, i) => `message ${i}`).join("\n") });
+    expect(preview).toContain("... 18 more lines");
+    expect(preview.some((line) => line.includes("file-0.txt"))).toBe(true);
+    expect(preview.filter((line) => line.includes("more lines"))).toHaveLength(2);
   });
 
   it("returns the cancelled error and leaves the index and HEAD untouched on no", async () => {

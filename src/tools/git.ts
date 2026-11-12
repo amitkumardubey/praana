@@ -17,6 +17,7 @@ import type { SandboxConfig } from "../types.js";
 import { pathInRoot } from "../path-containment.js";
 import {
   actionRefusalError,
+  boundPreviewSection,
   type ActionConfirmHandler,
   type PreviewLine,
 } from "../confirm/action.js";
@@ -975,6 +976,11 @@ export async function runGitCommit(
             { text: "--- git commit preview ---", tone: "dim" },
             { text: message, tone: "accent" },
             ...detail,
+          ],
+          overlayPreview: [
+            { text: "--- git commit preview ---", tone: "dim" },
+            ...boundPreviewSection([{ text: message, tone: "accent" }]),
+            ...boundPreviewSection(detail),
           ],
         })
       : null;

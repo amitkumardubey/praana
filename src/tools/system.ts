@@ -21,6 +21,7 @@ import type { ScorecardInc } from "../context-engine/telemetry.js";
 import { estimateTokens } from "../token-estimate.js";
 import {
   actionRefusalError,
+  boundPreviewSection,
   type ActionConfirmHandler,
   type PreviewLine,
 } from "../confirm/action.js";
@@ -752,8 +753,15 @@ export function createSystemTools(ctx: SystemToolContext) {
                 (line: string): PreviewLine => ({ text: `+ ${line}`, tone: "add" }),
               ),
             ];
+            const afterIndex = oldText.split("\n").length + 1;
+            const overlayPreview = [
+              preview[0]!,
+              ...boundPreviewSection(preview.slice(1, afterIndex)),
+              preview[afterIndex]!,
+              ...boundPreviewSection(preview.slice(afterIndex + 1)),
+            ];
             const decision = confirmAction
-              ? await confirmAction({ question: "Apply edit? [y/N]", preview })
+              ? await confirmAction({ question: "Apply edit? [y/N]", preview, overlayPreview })
               : null;
             if (!decision?.allowed) {
               return { ok: false, error: actionRefusalError("edit", decision) };

@@ -352,7 +352,8 @@ describe("action confirmation preview (#748)", () => {
     expect(capConfirmPreview(preview, 30)).toHaveLength(30);
     const capped = capConfirmPreview(preview, 10);
     expect(capped).toHaveLength(10);
-    expect(capped[9]).toBe("... 21 more lines");
+    expect(capped[5]).toBe("... 21 more lines");
+    expect(capped.at(-1)).toBe("- line 29");
     expect(capConfirmPreview(preview, 0)).toEqual([]);
   });
 
@@ -380,6 +381,8 @@ describe("action confirmation preview (#748)", () => {
     expect(frame).toContain("y = yes");
     expect(frame).toContain("more lines");
     expect(frame).toContain("--- a.txt:2 (before)");
+    expect(frame).toContain("+++ a.txt:2 (after)");
+    expect(frame).toContain("+ new");
     setup.renderer.destroy();
     overlay.dispose();
   });
@@ -399,6 +402,8 @@ describe("action confirmation preview (#748)", () => {
     // exactly what is missing.
     const rows = confirmPreviewRows(24, 1, true);
     expect(frame).toContain(`... ${200 - (rows - 1)} more lines`);
+    expect(frame).toContain("- line 0");
+    expect(frame).toContain("- line 199");
     setup.renderer.destroy();
     overlay.dispose();
   });

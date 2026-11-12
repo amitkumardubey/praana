@@ -120,8 +120,10 @@ export function confirmPreviewRows(
 export function capConfirmPreview(preview: readonly string[], rows: number): string[] {
   if (rows <= 0) return [];
   if (preview.length <= rows) return [...preview];
-  const keep = Math.max(0, rows - 1);
-  return [...preview.slice(0, keep), `... ${preview.length - keep} more lines`];
+  const keep = rows - 1;
+  const head = Math.ceil(keep / 2);
+  const tail = Math.floor(keep / 2);
+  return [...preview.slice(0, head), `... ${preview.length - keep} more lines`, ...(tail ? preview.slice(-tail) : [])];
 }
 
 /**

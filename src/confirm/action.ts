@@ -30,6 +30,8 @@ export interface ActionConfirmRequest {
   question: string;
   /** Plain-text preview lines (header, changes, message/stat), no ANSI. */
   preview: readonly PreviewLine[];
+  /** Optional separately bounded preview for the overlay only. */
+  overlayPreview?: readonly PreviewLine[];
 }
 
 /**
@@ -99,6 +101,13 @@ const UNPROMPTABLE = {
   commit: "Commit not created: confirmation required but no confirmation handler is installed",
 } satisfies Record<ActionKind, string>;
 
+/** Bound one overlay section without changing the classic terminal preview. */
+export function boundPreviewSection(lines: readonly PreviewLine[]): PreviewLine[] {
+  const rows = lines.flatMap((line) => line.text.split("\n").map((text) => ({ text, tone: line.tone })));
+  if (rows.length <= 12) return rows;
+  return [...rows.slice(0, 12), { text: `... ${rows.length - 12} more lines`, tone: "dim" }];
+}
+
 /**
  * Plain preview lines for the UI handler: one row per line, multi-line blocks
  * split, no ANSI. The session passes the full preview so the overlay makes the
@@ -107,7 +116,7 @@ const UNPROMPTABLE = {
  */
 export function actionPreviewLines(request: ActionConfirmRequest): string[] {
   // Replace terminal controls visibly; newline has already separated the rows.
-  const lines = request.preview.flatMap((line) =>
+  const lines = (request.overlayPreview ?? request.preview).flatMap((line) =>
     line.text.split("\n").map((row) => row.replace(/[\u0000-\u001f\u007f-\u009f]/g, "·")),
   );
   if (lines.length <= ACTION_PREVIEW_MAX_LINES) return lines;
