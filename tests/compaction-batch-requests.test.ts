@@ -244,6 +244,19 @@ test("repair builder preserves request fields and includes failed markdown and e
   expect(buildSummaryRepairRequest(request, bad, { ...options, attempt: 1 })).toMatchObject({ status: "failed", reason: "invalid_summary" });
 });
 
+test("empty and whitespace summary attempts omit invalid assistant messages and explain the empty attempt", async () => {
+  const { buildSummaryRepairRequest } = await api();
+  const request: StreamRequest = { model: "m", provider: "anthropic", messages: [{ role: "user", content: "Summarise." }] };
+  for (const text of ["", " \n\t "]) {
+    const repair = buildSummaryRepairRequest(request, response(text), { ...options, attempt: 0 });
+    expect(repair.status).toBe("repair");
+    if (repair.status !== "repair") throw new Error("Expected repair");
+    expect(repair.request.messages.slice(0, -1)).toEqual(request.messages);
+    expect(repair.request.messages.at(-1)).toMatchObject({ role: "user", content: expect.stringContaining("previous attempt was empty") });
+    expect(repair.request.messages.some(message => message.role === "assistant")).toBe(false);
+  }
+});
+
 test("tool calls make primary and repair summaries failed attempts even with otherwise valid markdown", async () => {
   const { summaryResponseHasToolCalls, buildSummaryRepairRequest, nextBatchSummaryRequest } = await api();
   const tool = { ...response(), toolCalls: [{ id: "call", name: "read", args: {} }] };

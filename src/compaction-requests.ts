@@ -189,9 +189,10 @@ export function buildSummaryRepairRequest(
   const failure = checkResult(result, options.capTokens);
   if (!failure) return { status: "not_needed" };
   if (failure.reason === "tool_calls" || options.attempt !== 0) return failure;
+  const empty = !result.text.trim();
   const repair = buildSameModelSummaryRequest({ ...request, messages: [
-    ...request.messages, { role: "assistant", content: result.text },
-  ] }, buildRepairInstruction(failure.failures!));
+    ...request.messages, ...(empty ? [] : [{ role: "assistant" as const, content: result.text }]),
+  ] }, buildRepairInstruction(failure.failures!) + (empty ? "\nThe previous attempt was empty." : ""));
   const measured = requestFill(repair, repair.messages, options.contextWindowTokens, options);
   if (!measured.ok) return measured.error;
   if (!measured.fill.fits) return { status: "failed", reason: "repair_exceeds_capacity" };
