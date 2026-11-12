@@ -66,6 +66,71 @@ describe("Anthropic ordered assistant blocks", () => {
     ] }]);
   });
 
+  test("omits empty text on the wire while retaining ordered neighbours and parsed fidelity", async () => {
+    globalThis.fetch = (async () => new Response(anthropicSse([
+      { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+      { type: "content_block_stop", index: 0 },
+      { type: "content_block_start", index: 1, content_block: { type: "thinking", thinking: "", signature: "sig" } },
+      { type: "content_block_start", index: 2, content_block: { type: "redacted_thinking", data: "opaque" } },
+      { type: "content_block_start", index: 3, content_block: { type: "tool_use", id: "call", name: "read_file", input: {} } },
+      { type: "content_block_delta", index: 3, delta: { type: "input_json_delta", partial_json: '{"path":"a"}' } },
+      terminal("tool_use"),
+    ]))) as unknown as typeof fetch;
+    const message = doneMessage(await collect(request()));
+    expect(message.blocks).toEqual([
+      { type: "text", text: "" },
+      { type: "thinking", thinking: "", signature: "sig" },
+      { type: "redacted_thinking", data: "opaque" },
+      { type: "tool_use", id: "call" },
+    ]);
+    const body = JSON.parse(await wireBody(new AnthropicDriver(), { ...request(), messages: [message] }));
+    expect(body.messages[0].content).toEqual([
+      { type: "thinking", thinking: "", signature: "sig" },
+      { type: "redacted_thinking", data: "opaque" },
+      { type: "tool_use", id: "call", name: "read_file", input: { path: "a" } },
+    ]);
+  });
+
+  test("falls back to legacy string for an empty ordered list", async () => {
+    for (const content of ["", "legacy text"]) {
+      const message: AssistantMessage = { role: "assistant", content, blocks: [] };
+      const body = JSON.parse(await wireBody(new AnthropicDriver(), { ...request(), messages: [message] }));
+      expect(body.messages[0].content).toBe(content);
+    }
+  });
+
+  test("falls back to the legacy empty string when the only block is empty text", async () => {
+    const message: AssistantMessage = { role: "assistant", content: "", blocks: [{ type: "text", text: "" }] };
+    const body = JSON.parse(await wireBody(new AnthropicDriver(), { ...request(), messages: [message] }));
+    expect(body.messages[0].content).toBe("");
+  });
+
+  test("uses the legacy projection when redacted thinking data is not a string", async () => {
+    for (const data of [undefined, null, 42]) {
+      globalThis.fetch = (async () => new Response(anthropicSse([
+        { type: "content_block_start", index: 0, content_block: { type: "text", text: "visible" } },
+        { type: "content_block_start", index: 1, content_block: { type: "redacted_thinking", data } },
+        terminal("end_turn"),
+      ]))) as unknown as typeof fetch;
+      const message = doneMessage(await collect(request()));
+      expect(message.blocks).toBeUndefined();
+      const body = JSON.parse(await wireBody(new AnthropicDriver(), { ...request(), messages: [message] }));
+      expect(body.messages[0].content).toEqual([{ type: "text", text: "visible" }]);
+    }
+  });
+
+  test("keeps streamed tool arguments exact after an empty input start", async () => {
+    globalThis.fetch = (async () => new Response(anthropicSse([
+      { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "call", name: "read_file", input: {} } },
+      { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"path":' } },
+      { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '"a.ts"}' } },
+      terminal("tool_use"),
+    ]))) as unknown as typeof fetch;
+    const message = doneMessage(await collect(request()));
+    expect(message.toolCalls?.[0]?.rawArgs).toBe('{"path":"a.ts"}');
+    expect(message.toolCalls?.[0]?.args).toEqual({ path: "a.ts" });
+  });
+
   test("routes deltas by their block index, including interleaved tool arguments", async () => {
     const frames = [
       { type: "content_block_start", index: 2, content_block: { type: "thinking", thinking: "A", signature: "a" } },

@@ -195,7 +195,11 @@ export class AnthropicDriver implements LlmDriver {
               events.push({ type: "thinking_delta", delta: thinking });
             }
           } else if (block?.type === "redacted_thinking") {
-            blocks.set(currentBlockIndex, { type: "redacted_thinking", data: block.data });
+            if (typeof block.data === "string") {
+              blocks.set(currentBlockIndex, { type: "redacted_thinking", data: block.data });
+            } else {
+              blocksComplete = false;
+            }
           } else if (block?.type === "text") {
             const text = block.text ?? "";
             blocks.set(currentBlockIndex, { type: "text", text });
@@ -401,7 +405,7 @@ export class AnthropicDriver implements LlmDriver {
               if (call) {
                 contentParts.push({ type: "tool_use", id: call.id, name: call.name, input: call.args });
               }
-            } else {
+            } else if (block.type !== "text" || block.text !== "") {
               contentParts.push({ ...block });
             }
           }
@@ -433,7 +437,7 @@ export class AnthropicDriver implements LlmDriver {
 
         formatted.push({
           role: "assistant",
-          content: msg.blocks !== undefined || contentParts.length > 0 ? contentParts : msg.content || "",
+          content: contentParts.length > 0 ? contentParts : msg.content || "",
         });
       } else if (msg.role === "tool_result") {
         // Tool results are sent under user role in Anthropic Messages API
