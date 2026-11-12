@@ -24,7 +24,7 @@ import * as prompt from "../src/risk/prompt.js";
 import { Session } from "../src/session.js";
 import { createSystemTools } from "../src/tools/system.js";
 import { createGitTools, runGitCommit, runGitStatus } from "../src/tools/git.js";
-import type { ActionConfirmRequest } from "../src/confirm/action.js";
+import { actionPreviewLines, writeActionConfirmPreview, type ActionConfirmRequest } from "../src/confirm/action.js";
 import { createOverlayUi } from "../src/ui/tui/overlays/state.js";
 import { setUiWriters } from "../src/ui.js";
 import { readFileSync as readSource } from "node:fs";
@@ -122,6 +122,18 @@ beforeEach(() => {
 
 afterEach(() => {
   setUiWriters();
+});
+
+describe("action preview sanitization", () => {
+  it("preserves tabs and CRLF while replacing unsafe controls only in the overlay", () => {
+    const request: ActionConfirmRequest = { question: "?", preview: [{ text: "\tindent\r\nplain\r\n\u001b[31m\u202Eevil\u200b\u2028\ufeff", tone: "plain" }] };
+    const lines = actionPreviewLines(request);
+    expect(lines).toEqual(["\tindent", "plain", "·[31m·evil···"]);
+    const chunks: string[] = [];
+    setUiWriters({ stderr: (line) => chunks.push(line) });
+    writeActionConfirmPreview(request);
+    expect(chunks.join("")).toContain(request.preview[0]!.text);
+  });
 });
 
 describe("edit_file confirmation", () => {

@@ -117,7 +117,7 @@ export function boundPreviewSection(lines: readonly PreviewLine[]): PreviewLine[
 export function actionPreviewLines(request: ActionConfirmRequest): string[] {
   // Replace terminal controls visibly; newline has already separated the rows.
   const lines = (request.overlayPreview ?? request.preview).flatMap((line) =>
-    line.text.split("\n").map((row) => row.replace(/[\u0000-\u001f\u007f-\u009f]/g, "·")),
+    line.text.split("\n").map((row) => row.replace(/\r$/, "").replace(/[\u0000-\u0008\u000b-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]/g, "·")),
   );
   if (lines.length <= ACTION_PREVIEW_MAX_LINES) return lines;
   const keep = ACTION_PREVIEW_MAX_LINES - 1;
