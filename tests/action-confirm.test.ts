@@ -134,6 +134,18 @@ describe("action preview sanitization", () => {
     expect(lines.at(-1)).toBe("line 499");
     expect(lines.filter((line) => line.includes("more lines"))).toHaveLength(1);
   });
+  it("replaces each unsafe invisible and bidi character", () => {
+    const ranges = [[0x00, 0x08], [0x0b, 0x1f], [0x7f, 0x9f], [0x00ad, 0x00ad],
+      [0x061c, 0x061c], [0x180e, 0x180e], [0x200b, 0x200f], [0x2028, 0x202e],
+      [0x2060, 0x2064], [0x2066, 0x2069], [0xfeff, 0xfeff]];
+    for (const [start, end] of ranges) {
+      for (let code = start!; code <= end!; code++) {
+        const text = `a${String.fromCodePoint(code)}b`;
+        expect(actionPreviewLines({ question: "?", preview: [{ text, tone: "plain" }] })).toEqual(["a·b"]);
+      }
+    }
+  });
+
   it("distinguishes CRLF from LF in edit rows", () => {
     const preview: ActionConfirmRequest["preview"] = [
       ..."foo\r\nbar".split("\n").map((text) => ({ text: `- ${text}`, tone: "remove" as const })),
