@@ -6,7 +6,6 @@ import { ulid } from "ulid";
 import type { CompileMetrics } from "./compiler.js";
 import type { ContextDisplaySnapshot } from "./context-display.js";
 import type { PraanaConfig, SkillRecord, Event, StateObject } from "./types.js";
-import type { SkillTelemetryEvent } from "./skills/types.js";
 import { SkillRuntime, discoverSkills } from "./skills/index.js";
 import { SkillStatsStore } from "./skills/skill-stats-store.js";
 import { hashString } from "./hash.js";
@@ -16,7 +15,6 @@ import {
   writeSessionMeta,
   readSessionMeta,
   findLastResetBoundaryTurn,
-  eventsAfterResetBoundary,
 } from "./event-log.js";
 import { detectActivityLogNote } from "./tools/memory.js";
 import { StateGraph } from "./state-graph.js";
@@ -422,7 +420,8 @@ export class Session {
         });
       },
     });
-    session.restoreWorkingMemory(allEvents);
+    // Checkpoint ids may refer to canonical events; resolve on the raw log.
+    session.restoreWorkingMemory(session.eventLog.readAll({ includeCanonical: true }));
 
     loadProjectContextField(session, cwd);
 
@@ -753,7 +752,7 @@ export class Session {
 
   /** Persist working-memory state for fast resume (issue #464). */
   persistStateGraphCheckpoint(): void {
-    const lastEvent = this.eventLog.getLastEvent();
+    const lastEvent = this.eventLog.getLastEvent({ includeCanonical: true });
     if (!lastEvent) return;
 
     const sessionDir = join(this.config.session.log_dir, this.id);

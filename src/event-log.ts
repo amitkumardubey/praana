@@ -20,6 +20,11 @@ import {
   SessionNotFoundError,
 } from "./session-errors.js";
 
+/** Unfiltered access is reserved for canonical readers and event-id anchors. */
+export interface EventReadOptions {
+  includeCanonical?: boolean;
+}
+
 export interface EventSearchOptions {
   kinds?: EventKind[];
   limit?: number;
@@ -188,15 +193,18 @@ export class EventLog {
     return this.internalRead().slice(-n);
   }
 
-  readAll(): Event[] {
-    return this.internalRead();
+  readAll(options: EventReadOptions = {}): Event[] {
+    return this.internalRead(options.includeCanonical);
   }
 
-  /** Last event in the log without allocating a full copy. O(1) with warm cache. */
-  getLastEvent(): Event | null {
+  /** Last visible event without allocating a copy; anchors may opt into the raw tail. */
+  getLastEvent(options: EventReadOptions = {}): Event | null {
     this.syncCache();
-    if (!this.eventCache || this.eventCache.length === 0) return null;
-    return this.eventCache[this.eventCache.length - 1];
+    for (let i = (this.eventCache?.length ?? 0) - 1; i >= 0; i--) {
+      const event = this.eventCache![i];
+      if (options.includeCanonical || event.kind !== "canonical_message") return event;
+    }
+    return null;
   }
 
   /** All events excluding those marked compressed for prompt assembly. */
@@ -265,12 +273,11 @@ export class EventLog {
     return matches;
   }
 
-  private internalRead(): Event[] {
+  private internalRead(includeCanonical = false): Event[] {
     this.syncCache();
-    // Return a shallow copy so callers cannot mutate the internal cache.
-    // Previously internalRead() always built a fresh array via split/filter/map;
-    // this preserves that behaviour with the new cache-backed path.
-    return this.eventCache ? [...this.eventCache] : [];
+    // Filter before any bounded read, search limit or compaction selection.
+    // Always return a fresh array so readers cannot mutate the cache.
+    return this.eventCache?.filter((event) => includeCanonical || event.kind !== "canonical_message") ?? [];
   }
 
   getSessionId(): string {

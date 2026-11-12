@@ -47,13 +47,13 @@ test.each([false, true])("resume never adds a marker to older sessions, partial 
     await writer(session).startTurn("old input");
     await writer(session).assistant(1, { role: "assistant", content: "", toolCalls: [{ id: "pending", name: "echo", args: {} }] });
   }
-  const before = session.eventLog.readAll().filter((e) => e.kind === "canonical_message").length;
+  const before = session.eventLog.readAll({ includeCanonical: true }).filter((e) => e.kind === "canonical_message").length;
   session.eventLog.close();
   const resumed = await Session.resume(session.id, root, config, { suppressLoggerStderr: true });
   sessions.push(resumed);
   expect(readSessionMeta(root, session.id)).not.toHaveProperty("canonical_transcript");
   // Opening a session does not run interruption repair.
-  expect(resumed.eventLog.readAll().filter((e) => e.kind === "canonical_message")).toHaveLength(before);
+  expect(resumed.eventLog.readAll({ includeCanonical: true }).filter((e) => e.kind === "canonical_message")).toHaveLength(before);
 });
 
 test("canonical resume preserves the marker and allocates across a reset boundary", async () => {
@@ -65,7 +65,7 @@ test("canonical resume preserves the marker and allocates across a reset boundar
   sessions.push(resumed);
   expect(readSessionMeta(root, session.id)).toMatchObject({ canonical_transcript: { version: 1 } });
   expect(await writer(resumed).startTurn("second")).toBe(2);
-  const events = resumed.eventLog.readAll();
+  const events = resumed.eventLog.readAll({ includeCanonical: true });
   expect(readFullSessionCanonicalRecords(events).map((r) => r.turnId)).toEqual([1, 2]);
   expect(emitCanonicalTranscript(readCanonicalRecords(events))).toEqual([{ role: "user", content: "second" }]);
 });

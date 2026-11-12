@@ -317,7 +317,7 @@ export class CanonicalWriter {
     if (this.failed) return null;
     let record: CanonicalRecord | undefined;
     try {
-      this.records ??= readFullSessionCanonicalRecords(this.log.readAll());
+      this.records ??= readFullSessionCanonicalRecords(this.log.readAll({ includeCanonical: true }));
       record = build();
       if (record.kind !== "tool_result") {
         await repairCanonicalTranscript(this.records, (repair) => this.persist(repair));
