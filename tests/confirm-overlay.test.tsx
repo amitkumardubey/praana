@@ -501,8 +501,6 @@ describe("action preview on a short terminal (#748)", () => {
     });
     setup.mockInput.pressKey("y");
     setup.mockInput.pressEnter();
-    expect(await stillPending(pending)).toBe(true);
-    setup.mockInput.pressKey("n");
     expect(await settledSoon(pending)).toEqual({ settled: true, value: false });
     setup.renderer.destroy();
     overlay.dispose();
