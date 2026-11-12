@@ -204,7 +204,7 @@ function normalizeUsage(value: unknown): Partial<ProviderUsage> | null {
   const usage: Partial<ProviderUsage> = {};
   for (const key of ["input", "output", "totalTokens", "cacheReadTokens", "cacheWriteTokens"] as const) {
     const count = (value as Record<string, unknown>)[key];
-    if (typeof count === "number" && Number.isFinite(count) && count >= 0) usage[key] = Math.floor(count);
+    if (typeof count === "number" && count >= 0 && Number.isSafeInteger(Math.floor(count))) usage[key] = Math.floor(count);
   }
   return Object.keys(usage).length ? usage : null;
 }
@@ -316,8 +316,11 @@ export function restoreFrozenState(events: readonly Event[]): FrozenRestoreResul
           if (!target || target.payload.kind !== "tool_result") commitError("invalid_stub", index, `stub ${stub.eventId} must reference an earlier canonical tool result in this epoch`);
         }
         if (sameRewrite(state, commit)) commitError("unchanged_commit", index, "a no-op must not increment generation");
-        if ((commit.summary !== state.summary) !== (commit.summaryRequest !== null)) {
-          commitError("invalid_commit", index, "a new summary requires a request; an unchanged summary requires a null request");
+        // Commits never clear a summary: /clear starts a new reset epoch instead.
+        // A rewrite can advance the boundary even when the markdown is byte-identical.
+        const rewrites = commit.summary !== state.summary || commit.boundaryEventId !== state.boundaryEventId;
+        if (rewrites !== (commit.summaryRequest !== null)) {
+          commitError("invalid_commit", index, "a summary or boundary rewrite requires a request; a stubs-only commit requires a null request");
         }
         state = copyState(commit);
         boundaryIndex = nextBoundaryIndex;

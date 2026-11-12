@@ -228,7 +228,9 @@ const usageCases: [string, unknown, unknown][] = [
   ["null prototype", Object.assign(Object.create(null), { cacheWriteTokens: 2.9 }), { cacheWriteTokens: 2 }],
   ["symbol extra key", { input: 5, [Symbol("future")]: 2 }, { input: 5 }],
   ["invalid fields", { input: "1", output: null, totalTokens: false }, null],
-  ["large finite count", { input: 1e100 }, { input: 1e100 }],
+  ["large finite count", { input: 1e100 }, null],
+  ["unsafe integer", { input: Number.MAX_SAFE_INTEGER + 1 }, null],
+  ["mixed unsafe and safe counts", { input: 1e100, output: 2.9, totalTokens: Number.MAX_SAFE_INTEGER }, { output: 2, totalTokens: Number.MAX_SAFE_INTEGER }],
 ];
 for (const [name, usage, expected] of usageCases) {
   test(`usage is informational during build, read, replay and append: ${name}`, async () => {
@@ -335,6 +337,33 @@ test("request pairing rejects a null summary with request metadata in builder an
   expect(() => buildCommitEvent(commit)).toThrow(FrozenSummaryError);
   expect(() => readCommits([recorded(commit)])).toThrow(FrozenSummaryError);
   expect(restoreFrozenState([canonical("a", "tool_result"), recorded(commit)])).toMatchObject({ ok: false, error: { code: "invalid_commit" } });
+});
+
+test("identical summary bytes with an advancing boundary require a request in replay and append", async () => {
+  const { restoreFrozenState, appendCommit, restoreFrozenStateFromLog } = await api();
+  const events = [canonical("z"), recorded(data()), canonical("a")];
+  const rewrite = data({ generation: 2, boundaryEventId: "a" });
+  expect(restoreFrozenState([...events, recorded(rewrite)])).toMatchObject({ ok: true, state: { generation: 2, boundaryEventId: "a", summary: markdown } });
+  const { log } = openLog();
+  for (const event of events) log.append(event);
+  const before = readFileSync(log.getLogPath(), "utf8");
+  expect(restoreFrozenState([...events, recorded({ ...rewrite, summaryRequest: null })])).toMatchObject({ ok: false, error: { code: "invalid_commit" } });
+  expect(appendCommit(log, { ...rewrite, summaryRequest: null })).toMatchObject({ status: "rejected", error: { code: "invalid_commit" } });
+  expect(readFileSync(log.getLogPath(), "utf8")).toBe(before);
+  expect(appendCommit(log, rewrite)).toEqual({ status: "committed" });
+  expect(restoreFrozenStateFromLog(log)).toMatchObject({ ok: true, state: { generation: 2, boundaryEventId: "a", summary: markdown } });
+});
+
+test("advancing the boundary without changing summary bytes rejects a missing request before append", async () => {
+  const { restoreFrozenState, appendCommit } = await api();
+  const events = [canonical("z"), recorded(data()), canonical("a")];
+  const rewrite = data({ generation: 2, boundaryEventId: "a", summaryRequest: null });
+  expect(restoreFrozenState([...events, recorded(rewrite)])).toMatchObject({ ok: false, error: { code: "invalid_commit" } });
+  const { log } = openLog();
+  for (const event of events) log.append(event);
+  const before = readFileSync(log.getLogPath(), "utf8");
+  expect(appendCommit(log, rewrite)).toMatchObject({ status: "rejected", error: { code: "invalid_commit" } });
+  expect(readFileSync(log.getLogPath(), "utf8")).toBe(before);
 });
 
 test("request pairing requires metadata for every new summary rewrite", async () => {
