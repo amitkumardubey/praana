@@ -57,6 +57,27 @@ describe("file memory store", () => {
     expect((await updater.write({ ...input, body: "updated" })).ok).toBe(true);
     expect(reads).toBe(0);
   });
+  test("version numbers remain distinct but genuine duplicates are refused", async () => {
+    const { store } = await setup();
+    for (const [name, description] of [["node-18-notes", "Legacy runtime compatibility"], ["node-20-notes", "Modern platform support"], ["release-0-17", "First release information"], ["release-0-18", "Second deployment details"]]) {
+      expect((await store.write({ ...input, name: name!, description: description! })).ok).toBe(true);
+    }
+    expect((await store.write({ ...input, name: "the-node-20-notes", description: "Different prose entirely" })).ok).toBe(false);
+    expect((await store.write({ ...input, name: "unrelated", description: "Modern platform support" })).ok).toBe(false);
+  });
+  test("secret refusal identifies fields and instructs removal without leaking content", async () => {
+    const { store } = await setup();
+    const secret = "sk-abcdefghijklmnopqrstuvwxyz123456";
+    for (const fields of [["name"], ["description"], ["body"], ["description", "body"]]) {
+      const result = await store.write({ ...input, ...Object.fromEntries(fields.map((field) => [field, secret])) });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        for (const field of fields) expect(result.error).toContain(field);
+        expect(result.error).toContain("Remove");
+        expect(result.error).not.toContain(secret);
+      }
+    }
+  });
   test("incognito prevents mutation", async () => {
     const { store } = await setup({ incognito: true });
     expect((await store.write(input)).ok).toBe(false);

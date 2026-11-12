@@ -51,13 +51,41 @@ test("refuses a write when strict redaction throws", async () => {
   expect((await make(home).list({})).entries).toHaveLength(0);
 });
 
-test("rejects symlinked directories and directories escaping home", async () => {
-  const home = await homeDir(), outside = await homeDir();
-  await fs.symlink(outside, join(home, ".praana"));
-  const store = make(home);
-  expect((await store.write(entry)).ok).toBe(false);
-  expect((await store.list({})).ok).toBe(false);
-  expect(await fs.readdir(outside)).toEqual([]);
+test("trusts symlinked .praana and symlinks above it", async () => {
+  const home = await homeDir(), dotfiles = await homeDir();
+  await fs.symlink(dotfiles, join(home, ".praana"));
+  const alias = join(await homeDir(), "alias");
+  await fs.symlink(home, alias);
+  const store = make(alias);
+  expect((await store.write(entry)).ok).toBe(true);
+  expect((await store.read({ name: entry.name })).ok).toBe(true);
+  expect((await store.list({})).entries).toHaveLength(1);
+  expect((await store.remove({ name: entry.name })).ok).toBe(true);
+  expect(await fs.exists(join(dotfiles, "memory/alpha.md"))).toBe(false);
+});
+
+for (const component of ["memory", "projects", "key", "project-memory"]) {
+  test(`refuses symlink below .praana: ${component}`, async () => {
+    const home = await homeDir(), outside = await homeDir();
+    const { projectKey } = await import("../src/file-memory/paths.js");
+    const base = join(home, ".praana");
+    const key = projectKey(home, (cwd) => cwd);
+    const path = component === "memory" ? join(base, "memory") : component === "projects" ? join(base, "projects") : component === "key" ? join(base, "projects", key) : join(base, "projects", key, "memory");
+    await fs.mkdir(join(path, ".."), { recursive: true });
+    await fs.symlink(outside, path);
+    const store = make(home);
+    expect((await store.write({ ...entry, scope: component === "memory" ? "global" : "project" })).ok).toBe(false);
+    expect((await store.list({})).ok).toBe(false);
+    expect(await fs.readdir(outside)).toEqual([]);
+  });
+}
+
+test("refuses even contained symlinks below the trusted root", async () => {
+  const home = await homeDir();
+  const base = join(home, ".praana");
+  await fs.mkdir(join(base, "real"), { recursive: true });
+  await fs.symlink(join(base, "real"), join(base, "memory"));
+  expect((await make(home).write(entry)).ok).toBe(false);
 });
 
 test("list reports ages and stale boundary", async () => {

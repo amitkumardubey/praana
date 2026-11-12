@@ -31,10 +31,19 @@ export function createFileMemoryStore(options: StoreOptions) {
 
   async function directory(scope: MemoryScope, create: boolean): Promise<string | null> {
     if (!scopes.includes(scope)) throw new Error("Invalid scope");
-    const root = await fs.realpath(home);
-    const path = dirs[scope];
-    let current = home;
-    for (const part of relative(home, path).split(sep)) {
+    // The user controls .praana and its ancestors; only descendants are untrusted.
+    const base = join(home, ".praana");
+    let root: string;
+    try { root = await fs.realpath(base); } catch (error) {
+      if (!missing(error)) throw error;
+      if (!create) return null;
+      await fs.mkdir(base, { mode: 0o700, recursive: true });
+      root = await fs.realpath(base);
+    }
+    if (!(await fs.stat(root)).isDirectory()) throw new Error("Unsafe .praana root");
+    const path = join(root, relative(base, dirs[scope]));
+    let current = root;
+    for (const part of relative(root, path).split(sep)) {
       current = join(current, part);
       let stat;
       try { stat = await fs.lstat(current); } catch (error) {
@@ -44,7 +53,7 @@ export function createFileMemoryStore(options: StoreOptions) {
         stat = await fs.lstat(current);
       }
       if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`Unsafe memory directory: ${current}`);
-      if (!inside(root, await fs.realpath(current))) throw new Error("Memory directory escapes home");
+      if (!inside(root, await fs.realpath(current))) throw new Error("Memory directory escapes .praana root");
     }
     return path;
   }
@@ -91,9 +100,9 @@ export function createFileMemoryStore(options: StoreOptions) {
     return { memories, skipped, filenames };
   }
 
-  // Strip digits and generic affixes, or require 0.6 Jaccard overlap of word tokens.
+  // Strip only generic affixes, or require 0.6 Jaccard overlap of word tokens.
   function similar(a: MemoryInput, b: Memory): boolean {
-    const normalize = (s: string) => s.replace(/\d+/g, "").replace(/(?:^|-)(?:the|a|an|note|memory)(?=-|$)/g, "").replace(/-+/g, "-").replace(/^-|-$/g, "");
+    const normalize = (s: string) => s.replace(/(?:^|-)(?:the|a|an|note|memory)(?=-|$)/g, "").replace(/-+/g, "-").replace(/^-|-$/g, "");
     if (normalize(a.name) && normalize(a.name) === normalize(b.name)) return true;
     const tokens = (s: string) => new Set((s.toLowerCase().match(/[a-z0-9]{3,}/g) ?? []));
     const x = tokens(a.description), y = tokens(b.description);
@@ -109,7 +118,8 @@ export function createFileMemoryStore(options: StoreOptions) {
       if (!scopes.includes(input.scope)) return { ok: false, error: "Invalid scope" };
       let redacted: typeof input;
       try { redacted = redactSecretsStrict(input); } catch { return { ok: false, error: "Secret scan failed" }; }
-      if (JSON.stringify(redacted) !== JSON.stringify(input)) return { ok: false, error: "Secret-shaped content refused" };
+      const secretFields = (["name", "description", "body"] as const).filter((field) => redacted[field] !== input[field]);
+      if (secretFields.length) return { ok: false, error: `Secret-shaped content refused in ${secretFields.join(", ")}. Remove the secret-shaped text before retrying` };
       const existingDir = await directory(input.scope, false);
       let filenames: string[] = [];
       if (existingDir) {
