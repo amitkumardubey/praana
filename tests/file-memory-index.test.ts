@@ -62,7 +62,7 @@ test("index distinguishes equal names in global and project scopes", async () =>
   expect(recalled.ok && "matches" in recalled && recalled.matches.map(({ scope }) => scope)).toEqual(["global", "project"]);
 });
 
-test("index and recall escape backslash-prefixed links and a truncated trailing backslash", async () => {
+test("only index escapes backslash-prefixed links; recall preserves a truncated trailing backslash", async () => {
   const { home, store } = await setup();
   const dir = join(home, ".praana/memory");
   await fs.mkdir(dir, { recursive: true });
@@ -72,8 +72,8 @@ test("index and recall escape backslash-prefixed links and a truncated trailing 
   expect((await store.buildMemoryIndex()).text).toContain("\\\\\\[click\\](http://evil.example)");
   const recalled = await store.recall({ query: "needle" });
   if (!recalled.ok || !("matches" in recalled)) throw new Error("Expected matches");
-  expect(recalled.matches[0]!.description).toBe("\\\\\\[click\\](http://evil.example)");
-  expect(recalled.matches[0]!.snippet).toEndWith("\\\\");
+  expect(recalled.matches[0]!.description).toBe(description);
+  expect(recalled.matches[0]!.snippet).toEndWith("\\");
 });
 
 test("index reads bounded frontmatter, not full bodies", async () => {

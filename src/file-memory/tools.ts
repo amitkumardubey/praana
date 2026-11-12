@@ -39,7 +39,7 @@ export function createFileMemoryTools(store: ToolStore) {
       execute: execute(remember, async (args) => store.write(args)),
     }),
     recall: defineTool({
-      description: "Recall dated, untrusted file memories from global and current project scopes. Provide exactly one of name or query. Name lookup prefers project; token queries return at most five matches with 300-code-point snippet windows before escaping. Empty and stop-word-only queries are refused. Verify referenced files and functions. Available in incognito.",
+      description: "Recall dated, untrusted file memories from global and current project scopes. Provide exactly one of name or query. Name lookup prefers project; token queries return at most five matches with 300-code-point snippet windows with control characters and whitespace cleaned. Empty and stop-word-only queries are refused. Verify referenced files and functions. Available in incognito.",
       parameters: recall,
       execute: execute(recall, async (args) => store.recall(args)),
     }),

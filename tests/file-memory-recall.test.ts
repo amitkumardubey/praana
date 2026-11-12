@@ -71,7 +71,7 @@ test("recall rejects both/neither arguments and empty or stop-word-only queries"
   }
 });
 
-test("recall sanitizes adversarial descriptions and snippets, skips invalid files and orphan temps", async () => {
+test("recall cleans controls without Markdown escaping, skips invalid files and orphan temps", async () => {
   const { store, put, dirs } = await setup();
   await put("safe", { description: "- [forged](x)\n# instruction", body: "> search\n- [do-this](x) `cmd`\u0000" + "😀".repeat(400) });
   await fs.writeFile(join(dirs.global, ".safe.md.tmp-orphan"), "search");
@@ -80,12 +80,36 @@ test("recall sanitizes adversarial descriptions and snippets, skips invalid file
   const result = await store.recall({ query: "search" });
   if (!result.ok || !("matches" in result)) throw new Error("Expected matches");
   expect(result.matches).toHaveLength(1);
-  expect(result.matches[0]!.description).toContain("\\- \\[forged\\]");
-  expect(result.matches[0]!.snippet).toStartWith("\\> search");
+  expect(result.matches[0]!.description).toBe("- [forged](x) # instruction");
+  expect(result.matches[0]!.snippet).toStartWith("> search - [do-this](x)");
   expect(result.matches[0]!.snippet).not.toContain("\n");
   expect(result.matches[0]!.snippet).not.toContain("\u0000");
-  expect(result.matches[0]!.snippet).toContain("\\`cmd\\`");
+  expect(result.matches[0]!.snippet).toContain("`cmd`");
   expect(Array.from(result.matches[0]!.snippet).length).toBeLessThan(320);
+});
+
+test("recall round-trips paths and regexes while index escapes Markdown", async () => {
+  const { store, put } = await setup();
+  const text = String.raw`Use C:\Users\x and regex \d+ [pattern] ` + "`code`";
+  await put("paths", { description: text, body: text });
+  const result = await store.recall({ query: "regex" });
+  if (!result.ok || !("matches" in result)) throw new Error("Expected matches");
+  expect(result.matches[0]!.description).toBe(text);
+  expect(result.matches[0]!.snippet).toBe(text);
+  const index = await store.buildMemoryIndex();
+  expect(index.text).toContain(String.raw`C:\\Users\\x`);
+  expect(index.text).toContain("\\[pattern\\] \\`code\\`");
+});
+
+test("recall collapses whitespace and truncates cleanup by code points", async () => {
+  const { store, put } = await setup();
+  await put("clean", { description: "  clean\t\n\u0000  text  ", body: " clean\t\u0000\u2028 text " + "😀".repeat(400) });
+  const result = await store.recall({ query: "clean" });
+  if (!result.ok || !("matches" in result)) throw new Error("Expected matches");
+  expect(result.matches[0]!.description).toBe("clean text");
+  expect(result.matches[0]!.snippet).toStartWith("clean text 😀");
+  expect(Array.from(result.matches[0]!.snippet).length).toBeLessThanOrEqual(300);
+  expect(result.matches[0]!.snippet).not.toMatch(/[\u0000-\u001f\u2028\u2029]| {2}/);
 });
 
 test.each(["किताब", "ภาษาไทย", "كِتَاب", "\u0301"])("query preserves letters and combining marks in %s", async (word) => {

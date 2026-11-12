@@ -1,4 +1,4 @@
-import { sanitizeDescription, searchTokens, type Memory } from "./format.js";
+import { searchTokens, type Memory } from "./format.js";
 import type { MemoryScope } from "./paths.js";
 
 export type ScopedMemory = Memory & { scope: MemoryScope };
@@ -7,6 +7,11 @@ export interface RecallMatch {
   scope: MemoryScope;
   description: string;
   snippet: string;
+}
+
+function cleanRecallText(text: string): string {
+  const cleaned = text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ").replace(/\s+/g, " ").trim();
+  return Array.from(cleaned).slice(0, 300).join("");
 }
 
 function matchingWindow(text: string, tokens: readonly string[]): string | null {
@@ -32,5 +37,5 @@ export function rankMemories(memories: readonly ScopedMemory[], query: string): 
   }).filter(({ score }) => score > 0)
     .sort((a, b) => b.score - a.score || b.memory.updated.localeCompare(a.memory.updated) || a.memory.name.localeCompare(b.memory.name) || a.memory.scope.localeCompare(b.memory.scope))
     .slice(0, 5)
-    .map(({ memory }) => ({ name: memory.name, scope: memory.scope, description: sanitizeDescription(memory.description), snippet: sanitizeDescription(matchingWindow(memory.body, tokens) ?? matchingWindow(memory.description, tokens) ?? memory.body) }));
+    .map(({ memory }) => ({ name: memory.name, scope: memory.scope, description: cleanRecallText(memory.description), snippet: cleanRecallText(matchingWindow(memory.body, tokens) ?? matchingWindow(memory.description, tokens) ?? memory.body) }));
 }
