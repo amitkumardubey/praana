@@ -1,5 +1,6 @@
 import type { AssistantBlock, ConversationMessage } from "./llm/types.js";
 import type { Event } from "./types.js";
+import { eventsAfterResetBoundary } from "./event-log.js";
 
 export const CANONICAL_TRANSCRIPT_VERSION = 1;
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -63,7 +64,8 @@ function object(value: unknown): value is Record<string, unknown> {
 }
 
 /** Reject lossy JSON values, custom objects and cycles rather than silently rewriting them. */
-function isJson(value: unknown, ancestors = new Set<object>()): boolean {
+function isJson(value: unknown, ancestors = new Set<object>(), depth = 0): boolean {
+  if (depth > 64) return false;
   if (value === null || typeof value === "string" || typeof value === "boolean") return true;
   if (typeof value === "number") return Number.isFinite(value);
   if (typeof value !== "object" || ancestors.has(value)) return false;
@@ -71,8 +73,8 @@ function isJson(value: unknown, ancestors = new Set<object>()): boolean {
   if (Object.getOwnPropertySymbols(value).length) return false;
   ancestors.add(value);
   const valid = Array.isArray(value)
-    ? Object.keys(value).length === value.length && Array.from(value).every((item) => isJson(item, ancestors))
-    : Object.values(value).every((item) => isJson(item, ancestors));
+    ? Object.keys(value).length === value.length && Array.from(value).every((item) => isJson(item, ancestors, depth + 1))
+    : Object.values(value).every((item) => isJson(item, ancestors, depth + 1));
   ancestors.delete(value);
   return valid;
 }
@@ -163,19 +165,21 @@ function assertRecord(value: unknown, index: number): asserts value is Canonical
   if (!valid) fail("invalid_record", index, "invalid kind or message payload");
 }
 
-/** Current reset epoch only. No generic event reader or event-log dependency is involved. */
+/** Current reset epoch for replay. Results stranded before its first input are hidden. */
 export function readCanonicalRecords(events: readonly Event[]): CanonicalRecord[] {
-  let start = 0;
-  for (let index = events.length - 1; index >= 0; index--) {
-    if (events[index].kind === "system_note" && events[index].payload.type === "reset_boundary") {
-      start = index + 1;
-      break;
-    }
-  }
+  let seenInput = false;
+  return readFullSessionCanonicalRecords(eventsAfterResetBoundary([...events])).filter((record) => {
+    if (record.kind === "user_input") seenInput = true;
+    return seenInput || record.kind !== "tool_result";
+  });
+}
+
+/** All epochs, with schema validation. Use for session-wide turn-id allocation. */
+export function readFullSessionCanonicalRecords(events: readonly Event[]): CanonicalRecord[] {
   const records: CanonicalRecord[] = [];
-  for (let index = start; index < events.length; index++) {
-    if (events[index].kind !== "canonical_message") continue;
-    const record = events[index].payload;
+  for (const event of events) {
+    if (event.kind !== "canonical_message") continue;
+    const record = event.payload;
     assertRecord(record, records.length);
     records.push(record);
   }

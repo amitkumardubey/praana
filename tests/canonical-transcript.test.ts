@@ -13,6 +13,7 @@ import {
   type CanonicalToolResultRecord,
   type CanonicalTranscriptErrorCode,
 } from "../src/canonical-transcript.js";
+import * as canonicalApi from "../src/canonical-transcript.js";
 import type { ConversationMessage } from "../src/llm/types.js";
 import type { Event } from "../src/types.js";
 
@@ -49,6 +50,27 @@ function rejects(records: CanonicalRecord[], code: CanonicalTranscriptErrorCode,
 }
 
 describe("canonical transcript", () => {
+  test("full-session reader allocates across reset epochs and validates old records", () => {
+    expect(canonicalApi).toHaveProperty("readFullSessionCanonicalRecords");
+    const read = (canonicalApi as unknown as { readFullSessionCanonicalRecords: (events: Event[]) => CanonicalRecord[] }).readFullSessionCanonicalRecords;
+    const events = [canonical(user("one")), event("system_note", { type: "reset_boundary" }), canonical(user("two", 2))];
+    expect(nextCanonicalTurnId(read(events))).toBe(3);
+    expect(readCanonicalRecords(events)).toEqual([user("two", 2)]);
+    expect(() => read([event("canonical_message", { formatVersion: 999 }), ...events])).toThrow(CanonicalTranscriptError);
+  });
+
+  test("epoch reader drops only leading results whose calls precede reset", () => {
+    const events = [canonical(user()), canonical(assistant([call("a")])), event("system_note", { type: "reset_boundary" }), canonical(result("a")), canonical(user("next", 2)), canonical(assistant([], "done", 2))];
+    expect(readCanonicalRecords(events)).toEqual([user("next", 2), assistant([], "done", 2)]);
+    expect(emitCanonicalTranscript(readCanonicalRecords(events))).toHaveLength(2);
+    expect(() => emitCanonicalTranscript(readCanonicalRecords([...events, canonical(result("a", "late", 2))]))).toThrow(CanonicalTranscriptError);
+  });
+
+  test("deep JSON fails with invalid_record rather than overflowing the stack", () => {
+    let nested: unknown = "leaf";
+    for (let depth = 0; depth < 10000; depth++) nested = { nested };
+    rejects([user(), invalidArgument(nested)], "invalid_record", 1);
+  });
   test("replays handwritten logical history as exact driver-contract literals without sanitizing", () => {
     const records: CanonicalRecord[] = [
       user("inspect"),
