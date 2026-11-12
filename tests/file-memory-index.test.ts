@@ -13,9 +13,9 @@ async function setup() {
   const store = createFileMemoryStore({ home, cwd: home, findRoot: (cwd) => cwd, now: () => new Date("2026-05-01T00:00:00Z") });
   return { home, store };
 }
-const fixture = (i: number, extra: Partial<IndexEntry> = {}): IndexEntry => ({ name: `n${String(i).padStart(3, "0")}`, description: "detail", type: "user", updated: "2026-05-01", scope: "global", age: 0, file: `/g/n${String(i).padStart(3, "0")}.md`, ...extra });
+const fixture = (i: number, extra: Partial<IndexEntry> = {}): IndexEntry => ({ name: `n${String(i).padStart(3, "0")}`, description: "detail", type: "user", updated: "2026-05-01", scope: "global", age: 0, file: `global/n${String(i).padStart(3, "0")}.md`, ...extra });
 const payload = (text: string) => text.slice(INDEX_PREFACE.length + 2);
-const line = (entry: IndexEntry) => `- [${entry.name}](${entry.file}) (${entry.type}, ${entry.age}d) ${entry.description}`;
+const line = (entry: IndexEntry) => `- [${entry.name}](${entry.scope}/${entry.name}.md) (${entry.type}, ${entry.age}d) ${entry.description}`;
 
 test("index is derived from files, not MEMORY.md; ages, grouping and deterministic bytes", async () => {
   const { home, store } = await setup();
@@ -31,8 +31,8 @@ test("index is derived from files, not MEMORY.md; ages, grouping and determinist
   const first = await store.buildMemoryIndex();
   expect(first.total).toBe(4);
   for (const match of first.text.matchAll(/^- \[([^\]]+)\]\(([^)]+)\)/gm)) {
-    expect(match[2]).toBe(`${match[1]}.md`);
-    expect(match[2]).toMatch(/^[a-z0-9][a-z0-9-]{0,63}\.md$/);
+    expect(match[2]).toBe(`${match[1] === "project-note" ? "project" : "global"}/${match[1]}.md`);
+    expect(match[2]).toMatch(/^(global|project)\/[a-z0-9][a-z0-9-]{0,63}\.md$/);
   }
   expect(first.shown).toBe(4);
   expect(first.truncated).toBe(false);
@@ -48,6 +48,18 @@ test("index is derived from files, not MEMORY.md; ages, grouping and determinist
   expect(await store.buildMemoryIndex()).toEqual(first);
   const other = createFileMemoryStore({ home, cwd: home, findRoot: (cwd) => cwd, now: () => new Date("2026-05-01T00:00:00Z") });
   expect(await other.buildMemoryIndex()).toEqual(first);
+});
+
+test("index distinguishes equal names in global and project scopes", async () => {
+  const { store } = await setup();
+  const input = { name: "coffee", description: "Coffee preference", type: "user" as const, body: "Coffee" };
+  expect((await store.write({ ...input, scope: "global" })).ok).toBe(true);
+  expect((await store.write({ ...input, scope: "project" })).ok).toBe(true);
+  const index = await store.buildMemoryIndex();
+  expect(index.text).toContain("[coffee](global/coffee.md)");
+  expect(index.text).toContain("[coffee](project/coffee.md)");
+  const recalled = await store.recall({ query: "coffee" });
+  expect(recalled.ok && "matches" in recalled && recalled.matches.map(({ scope }) => scope)).toEqual(["global", "project"]);
 });
 
 test("index and recall escape backslash-prefixed links and a truncated trailing backslash", async () => {

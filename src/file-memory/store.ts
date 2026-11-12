@@ -240,7 +240,7 @@ export function createFileMemoryStore(options: StoreOptions) {
   async function buildMemoryIndex(input: { scope?: MemoryScope } = {}): Promise<MemoryIndex> {
     const data = await list(input);
     if (!data.ok) throw new Error(data.error);
-    return renderMemoryIndex({ entries: data.entries.map((entry) => ({ ...entry, file: `${entry.name}.md` })) });
+    return renderMemoryIndex({ entries: data.entries.map((entry) => ({ ...entry, file: `${entry.scope}/${entry.name}.md` })) });
   }
   async function recall(input: { query?: string; name?: string }): Promise<{ ok: true; memory: ScopedMemory } | { ok: true; matches: RecallMatch[] } | ResultError> {
     if ((input.query !== undefined) === (input.name !== undefined)) return { ok: false, error: "Provide exactly one of query or name" };

@@ -11,7 +11,7 @@ export interface MemoryIndex { text: string; truncated: boolean; shown: number; 
  * Limits include separators and the overflow line, but exclude the fixed preface. */
 export function buildMemoryIndex({ entries }: { entries: readonly IndexEntry[] }): MemoryIndex {
   const sorted = [...entries].sort((a, b) => b.updated.localeCompare(a.updated) || a.scope.localeCompare(b.scope) || a.name.localeCompare(b.name));
-  const lines = sorted.map((entry) => `- [${entry.name}](${entry.file}) (${entry.type}, ${entry.age}d) ${sanitizeDescription(entry.description)}`);
+  const lines = sorted.map((entry) => `- [${entry.name}](${entry.scope}/${entry.name}.md) (${entry.type}, ${entry.age}d) ${sanitizeDescription(entry.description)}`);
   const total = lines.length;
   const fits = (list: string[]) => list.length <= 200 && Buffer.byteLength(list.join("\n"), "utf8") <= 25600;
   let shown = total;
@@ -23,7 +23,7 @@ export function buildMemoryIndex({ entries }: { entries: readonly IndexEntry[] }
     overflow = omitted(total - shown);
   }
   const selected = sorted.slice(0, shown).sort((a, b) => a.scope.localeCompare(b.scope) || b.updated.localeCompare(a.updated) || a.name.localeCompare(b.name));
-  const rendered = selected.map((entry) => `- [${entry.name}](${entry.file}) (${entry.type}, ${entry.age}d) ${sanitizeDescription(entry.description)}`);
+  const rendered = selected.map((entry) => `- [${entry.name}](${entry.scope}/${entry.name}.md) (${entry.type}, ${entry.age}d) ${sanitizeDescription(entry.description)}`);
   if (overflow) rendered.push(overflow);
   return { text: `${INDEX_PREFACE}\n\n${rendered.join("\n")}`, truncated: shown < total, shown, total };
 }

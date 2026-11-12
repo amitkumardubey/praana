@@ -33,7 +33,7 @@ async function assertSurvivors(home: string) {
   expect(parseMemory(raw)?.name).toBe("shared");
   const index = await store.buildMemoryIndex();
   expect(index).toMatchObject({ total: expected.length, shown: expected.length, truncated: false });
-  expect([...index.text.matchAll(/^- \[([^\]]+)\]\(([a-z0-9-]+\.md)\) \(user, \d+d\) /gm)].map((match) => match[1]).sort()).toEqual(expected);
+  expect([...index.text.matchAll(/^- \[([^\]]+)\]\((global\/[a-z0-9-]+\.md)\) \(user, \d+d\) /gm)].map((match) => match[1]).sort()).toEqual(expected);
   expect(index.text).not.toContain(".tmp-");
 }
 
