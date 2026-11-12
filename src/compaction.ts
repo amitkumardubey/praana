@@ -5,6 +5,38 @@ import type { ConversationMessage, ToolDefinition } from "./llm/types.js";
 import { estimateTokens } from "./token-estimate.js";
 import type { Event } from "./types.js";
 
+export const DEFAULT_CONTEXT_LIMIT_RATIO = 0.80;
+export const DEFAULT_TAIL_TURNS = 4;
+export const DEFAULT_TOKENS_RESERVE = 4096;
+export const DEFAULT_POST_REWRITE_MARGIN = 0.15;
+export const DEFAULT_STUB_KEEP_RECENT = 3;
+/** Avoid replacing small outputs whose likely savings do not justify stub overhead. */
+export const DEFAULT_STUB_MIN_TOKENS = 256;
+export const DEFAULT_SUMMARY_TIMEOUT_MS = 60000;
+
+/** Module-local policy, not public configuration. */
+export interface CompactionOptions {
+  contextLimitRatio: number;
+  tailTurns: number;
+  tokensReserve: number;
+  /** Effective output cap of this request; omitted means tokensReserve. */
+  effectiveMaxTokens?: number;
+  postRewriteMargin: number;
+  stubKeepRecent: number;
+  stubMinTokens: number;
+  summaryTimeoutMs: number;
+}
+
+export const DEFAULT_COMPACTION_OPTIONS: Readonly<CompactionOptions> = Object.freeze({
+  contextLimitRatio: DEFAULT_CONTEXT_LIMIT_RATIO,
+  tailTurns: DEFAULT_TAIL_TURNS,
+  tokensReserve: DEFAULT_TOKENS_RESERVE,
+  postRewriteMargin: DEFAULT_POST_REWRITE_MARGIN,
+  stubKeepRecent: DEFAULT_STUB_KEEP_RECENT,
+  stubMinTokens: DEFAULT_STUB_MIN_TOKENS,
+  summaryTimeoutMs: DEFAULT_SUMMARY_TIMEOUT_MS,
+});
+
 /** Prefix components not already present in messages. Do not count an embedded snapshot twice. */
 export interface RequestFrame {
   systemPrompt?: string;
@@ -145,3 +177,86 @@ export function materializeHistory(state: FrozenState, events: readonly Event[])
     throw error;
   }
 }
+
+export interface RequestFill {
+  inputTokens: number;
+  reservedOutputTokens: number;
+  contextWindowTokens: number;
+  usableTokens: number;
+  totalTokens: number;
+  /** Input divided by window minus this request's effective output cap; not clamped. */
+  ratio: number;
+  fits: boolean;
+}
+
+export type CapacityErrorKind = "reserve_exceeds_window" | "invalid_capacity" | "request_exceeds_capacity";
+
+/** Values only: the integration layer must make terminal capacity stops exit headless runs non-zero. */
+export interface CapacityErrorOutcome {
+  status: "capacity_error";
+  kind: CapacityErrorKind;
+  message: string;
+}
+
+export type RequestFillResult = { ok: true; fill: RequestFill } | { ok: false; error: CapacityErrorOutcome };
+
+function capacityError(kind: CapacityErrorKind, detail: string): RequestFillResult {
+  return { ok: false, error: { status: "capacity_error", kind, message: `${detail} Use /clear or a larger-context model before continuing.` } };
+}
+
+/**
+ * Account for a complete prospective request of any kind, including summary/batch
+ * requests. Supply each request's own effectiveMaxTokens, never its summary cap.
+ * An oversized input is measurable (fits=false), so a rewrite can still be tried;
+ * an invalid reserve/window cannot be admitted or assigned a clamped fill ratio.
+ */
+export function requestFill(
+  frame: RequestFrame,
+  messages: readonly ConversationMessage[],
+  contextWindowTokens: number,
+  options: Partial<CompactionOptions> = {},
+): RequestFillResult {
+  const reservedOutputTokens = options.effectiveMaxTokens ?? options.tokensReserve ?? DEFAULT_TOKENS_RESERVE;
+  if (!Number.isSafeInteger(contextWindowTokens) || contextWindowTokens <= 0) {
+    return capacityError("invalid_capacity", "The context window must be a positive safe-integer token count.");
+  }
+  if (!Number.isSafeInteger(reservedOutputTokens) || reservedOutputTokens < 0) {
+    return capacityError("invalid_capacity", "The effective output cap must be a non-negative safe-integer token count.");
+  }
+  if (reservedOutputTokens >= contextWindowTokens) {
+    return capacityError("reserve_exceeds_window", `The effective output reserve (${reservedOutputTokens}) is at or above the context window (${contextWindowTokens}).`);
+  }
+  const inputTokens = estimateRequestTokens(frame, messages);
+  const usableTokens = contextWindowTokens - reservedOutputTokens;
+  return { ok: true, fill: {
+    inputTokens, reservedOutputTokens, contextWindowTokens, usableTokens,
+    totalTokens: inputTokens + reservedOutputTokens,
+    ratio: inputTokens / usableTokens,
+    fits: inputTokens <= usableTokens,
+  } };
+}
+
+/** Use a complete requestFill measurement. No latch, hysteresis or remembered trigger state. */
+export function shouldRewrite(fill: RequestFill, options: Partial<CompactionOptions> = {}): boolean {
+  const threshold = options.contextLimitRatio ?? DEFAULT_CONTEXT_LIMIT_RATIO;
+  if (!Number.isFinite(threshold) || threshold <= 0 || threshold > 1) throw new RangeError("contextLimitRatio must be in (0, 1].");
+  return fill.ratio >= threshold;
+}
+
+/** Contracts for rewrite orchestration; defining outcomes does not execute or commit a rewrite. */
+export type CompactionOutcome =
+  /** Below the trigger; no state change. */
+  | { status: "noop"; state: FrozenState; fill: RequestFill }
+  /** A committed summary rewrite, with exactly one generation increment. */
+  | { status: "rewritten"; state: FrozenState; fill: RequestFill }
+  /** A stubs-only commit: one generation increment, existing summary/boundary preserved. */
+  | { status: "stubbed"; state: FrozenState; fill: RequestFill }
+  /** No useful change, but the unchanged request fits usable capacity. */
+  | { status: "unchanged_fits"; state: FrozenState; fill: RequestFill }
+  /** Summary failure/timeout; previous state retained and the unchanged request fits. */
+  | { status: "summary_failed_fits"; state: FrozenState; fill: RequestFill; reason: string }
+  /** Nothing committed; state is the previously restored state. */
+  | { status: "cancelled"; state: FrozenState }
+  /** Do not assume the previous state: reload raw events and restore before continuing. */
+  | { status: "commit_uncertain"; error: unknown }
+  | CapacityErrorOutcome;

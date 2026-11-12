@@ -4,6 +4,7 @@ import type { ConversationMessage } from "../src/llm/types.js";
 import { buildCommitEvent, restoreFrozenState, SESSION_START_EPOCH, type FrozenState } from "../src/frozen-summary.js";
 import { estimateTokens } from "../src/token-estimate.js";
 import type { Event } from "../src/types.js";
+import type { CompactionOutcome } from "../src/compaction.js";
 
 // Resolve inside tests so missing APIs produce individual red results.
 const api = () => import("../src/compaction.js");
@@ -318,4 +319,177 @@ test("INV-1: 500 seeded logs retain identical prefix bytes after complete record
     expect(JSON.stringify(after.messages)).toBe(JSON.stringify([...before.messages, ...suffix]));
     expect(JSON.stringify({ events, state })).toBe(beforeBytes);
   }
+});
+
+test("exports module-local option defaults and documents a minimum worth stubbing", async () => {
+  const defaults = await api();
+  expect(defaults.DEFAULT_COMPACTION_OPTIONS).toEqual({
+    contextLimitRatio: 0.80, tailTurns: 4, tokensReserve: 4096, postRewriteMargin: 0.15,
+    stubKeepRecent: 3, stubMinTokens: 256, summaryTimeoutMs: 60000,
+  });
+  expect(Object.isFrozen(defaults.DEFAULT_COMPACTION_OPTIONS)).toBe(true);
+  expect([
+    defaults.DEFAULT_CONTEXT_LIMIT_RATIO, defaults.DEFAULT_TAIL_TURNS, defaults.DEFAULT_TOKENS_RESERVE,
+    defaults.DEFAULT_POST_REWRITE_MARGIN, defaults.DEFAULT_STUB_KEEP_RECENT, defaults.DEFAULT_STUB_MIN_TOKENS,
+    defaults.DEFAULT_SUMMARY_TIMEOUT_MS,
+  ]).toEqual([0.80, 4, 4096, 0.15, 3, 256, 60000]);
+});
+
+test("fill accounts for the complete prospective request and effective output cap against usable capacity", async () => {
+  const { requestFill } = await api();
+  const frame = { systemPrompt: "system text", snapshot: "snapshot text", tools: [{ name: "shell", description: "run", parameters: { type: "object" } }] };
+  const messages: ConversationMessage[] = [
+    { role: "user", content: "summary text" }, { role: "assistant", content: "retained history" }, { role: "user", content: "current input" },
+  ];
+  // Independent input oracle: explicit sorted frame/message serialization, not the request estimator.
+  const inputTokens = estimateTokens('{"snapshot":"snapshot text","systemPrompt":"system text","tools":[{"description":"run","name":"shell","parameters":{"type":"object"}}]}') +
+    ["summary text", "retained history", "current input"].reduce((sum, content, i) => sum + estimateTokens(JSON.stringify({ content, role: i === 1 ? "assistant" : "user" })), 0);
+  const fill = requestFill(frame, messages, 2000, { tokensReserve: 10, effectiveMaxTokens: 500 });
+  expect(fill).toEqual({ ok: true, fill: {
+    inputTokens, reservedOutputTokens: 500, contextWindowTokens: 2000, usableTokens: 1500,
+    totalTokens: inputTokens + 500, ratio: inputTokens / 1500, fits: true,
+  } });
+  for (const smaller of [
+    requestFill({ ...frame, tools: [] }, messages, 2000, { effectiveMaxTokens: 500 }),
+    requestFill({ ...frame, systemPrompt: "" }, messages, 2000, { effectiveMaxTokens: 500 }),
+    requestFill({ ...frame, snapshot: "" }, messages, 2000, { effectiveMaxTokens: 500 }),
+    requestFill(frame, messages.slice(0, -1), 2000, { effectiveMaxTokens: 500 }),
+    requestFill(frame, messages.slice(1), 2000, { effectiveMaxTokens: 500 }),
+  ]) {
+    expect(smaller.ok).toBe(true);
+    if (!smaller.ok || !fill.ok) throw new Error("valid capacity rejected");
+    expect(smaller.fill.ratio).toBeLessThan(fill.fill.ratio);
+  }
+});
+
+test("effective output reserve falls back to tokensReserve, not the summary cap, and honors explicit zero", async () => {
+  const { requestFill, DEFAULT_TOKENS_RESERVE } = await api();
+  expect(requestFill({}, [], 10000)).toMatchObject({ ok: true, fill: { reservedOutputTokens: DEFAULT_TOKENS_RESERVE, usableTokens: 5904 } });
+  expect(requestFill({}, [], 10000, { tokensReserve: 1234 })).toMatchObject({ ok: true, fill: { reservedOutputTokens: 1234, usableTokens: 8766 } });
+  expect(requestFill({}, [], 10000, { tokensReserve: 1234, effectiveMaxTokens: 9876 })).toMatchObject({ ok: true, fill: { reservedOutputTokens: 9876, usableTokens: 124 } });
+  expect(requestFill({}, [], 100, { tokensReserve: 10000, effectiveMaxTokens: 0 })).toMatchObject({ ok: true, fill: { reservedOutputTokens: 0, usableTokens: 100 } });
+});
+
+for (const kind of ["live", "same-model summary", "batch summary"] as const) {
+  test(`${kind} requests reserve their own effective output cap for admission`, async () => {
+    const { requestFill } = await api();
+    const messages: ConversationMessage[] = [{ role: "user", content: `${kind} input` }];
+    const effectiveMaxTokens = kind === "live" ? 900 : kind === "same-model summary" ? 700 : 500;
+    const measured = requestFill({}, messages, 1000, { tokensReserve: 20, effectiveMaxTokens });
+    expect(measured).toMatchObject({ ok: true, fill: { reservedOutputTokens: effectiveMaxTokens, usableTokens: 1000 - effectiveMaxTokens } });
+    for (const reserve of [1000, 1001]) {
+      const rejected = requestFill({}, messages, 1000, { tokensReserve: 20, effectiveMaxTokens: reserve });
+      expect(rejected).toMatchObject({ ok: false, error: { status: "capacity_error", kind: "reserve_exceeds_window" } });
+      if (rejected.ok) throw new Error("oversized reserve admitted");
+      expect(rejected.error.message).toMatch(/\/clear|larger-context model/);
+    }
+  });
+}
+
+test("fallback reserve at or above the window is rejected without a pressure-helper clamp", async () => {
+  const { requestFill } = await api();
+  expect(requestFill({}, [], 4096)).toMatchObject({ ok: false, error: { kind: "reserve_exceeds_window" } });
+  expect(requestFill({}, [], 4095)).toMatchObject({ ok: false, error: { kind: "reserve_exceeds_window" } });
+  expect(requestFill({}, [], 100, { tokensReserve: 100 })).toMatchObject({ ok: false, error: { kind: "reserve_exceeds_window" } });
+  expect(requestFill({}, [], 100, { tokensReserve: 99 })).toMatchObject({ ok: true, fill: { usableTokens: 1 } });
+});
+
+test("fill rejects invalid windows and output caps as typed capacity errors with recovery guidance", async () => {
+  const { requestFill } = await api();
+  const cases = [
+    ...[0, -1, 1.5, NaN, Infinity, -Infinity, Number.MAX_SAFE_INTEGER + 1].map((window) => requestFill({}, [], window, { effectiveMaxTokens: 0 })),
+    ...[-1, 1.5, NaN, Infinity, -Infinity, Number.MAX_SAFE_INTEGER + 1].map((effectiveMaxTokens) => requestFill({}, [], 100, { effectiveMaxTokens })),
+    requestFill({}, [], 100, { tokensReserve: -1 }),
+  ];
+  for (const rejected of cases) {
+    expect(rejected).toMatchObject({ ok: false, error: { status: "capacity_error", kind: "invalid_capacity" } });
+    if (rejected.ok) throw new Error("invalid capacity admitted");
+    expect(rejected.error.message).toMatch(/\/clear|larger-context model/);
+  }
+});
+
+test("fits includes the exact usable-capacity boundary and does not clamp oversized input fill", async () => {
+  const { requestFill } = await api();
+  const messages: ConversationMessage[] = [{ role: "user", content: "input" }];
+  const inputTokens = estimateTokens("{}") + estimateTokens('{"content":"input","role":"user"}');
+  expect(requestFill({}, messages, inputTokens + 10, { effectiveMaxTokens: 10 })).toMatchObject({ ok: true, fill: { ratio: 1, fits: true, totalTokens: inputTokens + 10 } });
+  const over = requestFill({}, messages, inputTokens + 9, { effectiveMaxTokens: 10 });
+  expect(over).toMatchObject({ ok: true, fill: { fits: false } });
+  if (!over.ok) throw new Error("valid reserve rejected");
+  expect(over.fill.ratio).toBeGreaterThan(1);
+  expect(over.fill.totalTokens).toBeGreaterThan(over.fill.contextWindowTokens);
+});
+
+test("trigger fires exactly at and above the threshold and never stays armed below it", async () => {
+  const { requestFill, shouldRewrite } = await api();
+  const messages: ConversationMessage[] = [{ role: "user", content: "x".repeat(96) }];
+  const tokens = estimateTokens("{}") + estimateTokens(JSON.stringify({ content: "x".repeat(96), role: "user" }));
+  expect(tokens % 4).toBe(0);
+  const atWindow = tokens * 5 / 4 + 100;
+  for (const delta of [-1, 1, 0, 1]) {
+    const fill = requestFill({}, messages, atWindow + delta, { effectiveMaxTokens: 100 });
+    if (!fill.ok) throw new Error("valid capacity rejected");
+    expect(shouldRewrite(fill.fill)).toBe(delta <= 0);
+  }
+  const custom = requestFill({}, messages, tokens * 2 + 100, { effectiveMaxTokens: 100 });
+  if (!custom.ok) throw new Error("valid capacity rejected");
+  expect(shouldRewrite(custom.fill)).toBe(false);
+  expect(shouldRewrite(custom.fill, { contextLimitRatio: 0.5 })).toBe(true);
+});
+
+test("trigger is based on the full request, not history alone or output tokens added to the numerator", async () => {
+  const { requestFill, shouldRewrite } = await api();
+  const frame = { systemPrompt: "s".repeat(4000), snapshot: "n".repeat(1000), tools: [{ name: "shell", description: "d".repeat(1000), parameters: {} }] };
+  const messages: ConversationMessage[] = [{ role: "user", content: "history" }, { role: "user", content: "current".repeat(50) }];
+  const small = requestFill({}, messages.slice(0, 1), 2000, { effectiveMaxTokens: 100 });
+  const full = requestFill(frame, messages, 2000, { effectiveMaxTokens: 100 });
+  if (!small.ok || !full.ok) throw new Error("valid capacity rejected");
+  expect(shouldRewrite(small.fill)).toBe(false);
+  expect(shouldRewrite(full.fill)).toBe(true);
+  const mostlyOutput = requestFill({}, [{ role: "user", content: "x".repeat(200) }], 1000, { effectiveMaxTokens: 900 });
+  if (!mostlyOutput.ok) throw new Error("valid capacity rejected");
+  expect(mostlyOutput.fill.totalTokens / 1000).toBeGreaterThan(0.8);
+  expect(shouldRewrite(mostlyOutput.fill)).toBe(false);
+});
+
+test("trigger rejects non-finite and out-of-range module-local thresholds", async () => {
+  const { requestFill, shouldRewrite } = await api();
+  const fill = requestFill({}, [], 10000);
+  if (!fill.ok) throw new Error("valid capacity rejected");
+  for (const contextLimitRatio of [0, -0.1, 1.1, NaN, Infinity, -Infinity]) {
+    expect(() => shouldRewrite(fill.fill, { contextLimitRatio })).toThrow(RangeError);
+  }
+  expect(shouldRewrite(fill.fill, { contextLimitRatio: 1 })).toBe(false);
+});
+
+test("outcome contracts discriminate every terminal status without implementing orchestration", async () => {
+  const { requestFill } = await api();
+  const measured = requestFill({}, [], 10000);
+  if (!measured.ok) throw new Error("valid capacity rejected");
+  const state = frozen();
+  const fill = measured.fill;
+  const outcomes: CompactionOutcome[] = [
+    { status: "noop", state, fill }, { status: "rewritten", state: { ...state, generation: 1 }, fill },
+    { status: "stubbed", state: { ...state, generation: 1 }, fill }, { status: "unchanged_fits", state, fill },
+    { status: "summary_failed_fits", state, fill, reason: "summary timed out" }, { status: "cancelled", state },
+    { status: "commit_uncertain", error: new Error("fsync failed") },
+    { status: "capacity_error", kind: "request_exceeds_capacity", message: "Use /clear or a larger-context model." },
+  ];
+  function label(outcome: CompactionOutcome): string {
+    switch (outcome.status) {
+      case "noop": case "rewritten": case "stubbed": case "unchanged_fits": return `${outcome.status}:${outcome.state.generation}:${outcome.fill.fits}`;
+      case "summary_failed_fits": return outcome.reason;
+      case "cancelled": return `cancelled:${outcome.state.generation}`;
+      case "commit_uncertain": return String(outcome.error);
+      case "capacity_error": return `${outcome.kind}:${outcome.message}`;
+      default: {
+        const exhaustive: never = outcome;
+        return exhaustive;
+      }
+    }
+  }
+  expect(outcomes.map(label)).toEqual([
+    "noop:0:true", "rewritten:1:true", "stubbed:1:true", "unchanged_fits:0:true", "summary timed out", "cancelled:0",
+    "Error: fsync failed", "request_exceeds_capacity:Use /clear or a larger-context model.",
+  ]);
 });
