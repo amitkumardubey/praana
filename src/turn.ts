@@ -274,6 +274,7 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
         thinking: m.thinking,
         thinkingSignature: m.thinkingSignature,
         toolCalls,
+        blocks: m.blocks,
       };
     }
     return {

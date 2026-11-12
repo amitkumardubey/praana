@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterAll, mock, spyOn } from "bun:test";
 import { z } from "zod";
+import { AnthropicDriver } from "../src/llm/drivers/anthropic.js";
+import type { ConversationMessage, StreamRequest } from "../src/llm/types.js";
+import { anthropicSse, signedAssistant, signedBlockFrames, signedWireBlocks } from "./helpers/anthropic-blocks.js";
 import { createNullScorecard } from "../src/context-engine/telemetry.js";
 import * as contextEngineActual from "../src/context-engine/index.js";
 import * as compileClassicActual from "../src/compile-classic.js";
@@ -629,6 +632,48 @@ describe("runTurn", () => {
     expect(createAllTools).toHaveBeenCalled();
     expect(createProvider).toHaveBeenCalled();
     expect(resolveModel).toHaveBeenCalled();
+  });
+
+  it("carries independently signed and redacted Anthropic blocks into the next tool-loop request", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests: ConversationMessage[][] = [];
+    const bodies: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
+    const execute = mock(async () => ({ ok: true, content: "file bytes" }));
+    (createAllTools as ReturnType<typeof mock>).mockImplementationOnce(() => ({
+      read_file: { description: "Read a file", parameters: z.object({ path: z.string() }), execute },
+    }));
+    const driver = new AnthropicDriver();
+    (piStream as ReturnType<typeof mock>).mockImplementation((req: StreamRequest) => {
+      requests.push(structuredClone(req.messages));
+      return driver.stream(req, { apiKey: "test" });
+    });
+    globalThis.fetch = (async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(anthropicSse(bodies.length === 1 ? [
+        ...signedBlockFrames,
+        { type: "message_delta", delta: { stop_reason: "tool_use" } },
+      ] : [
+        { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+        { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Done." } },
+        { type: "message_delta", delta: { stop_reason: "end_turn" } },
+      ]));
+    }) as typeof fetch;
+    try {
+      const session = makeMockSession({ config: makeConfig({ llm: { provider: "anthropic", model: "claude-blocks-test" } }) });
+      const response = await runTurn(session, "read the file");
+      expect(response).toContain("Done.");
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(requests).toHaveLength(2);
+      expect(bodies).toHaveLength(2);
+      const assistant = requests[1]!.find((message) => message.role === "assistant");
+      expect(assistant?.blocks).toEqual(signedAssistant.blocks);
+      expect(assistant).toEqual(signedAssistant);
+      expect(bodies[1]!.messages.find((message) => message.role === "assistant")).toEqual({
+        role: "assistant", content: signedWireBlocks,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("does not execute a tool call leaked by a non-tool stream terminal", async () => {
