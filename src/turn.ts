@@ -1071,13 +1071,10 @@ export async function runTurn(
   const llmLogger = logger.child("llm");
   const providerName = effectiveLlm.provider;
   const canonicalWriter = new CanonicalWriter(session.eventLog, (error, context) => {
-    const entry: LogEntry = {
-      level: "error", domain: "session", code: "TURN_FAILED",
-      message: "Canonical transcript recording stopped; live turn continues",
-      details: { sessionId: session.id, ...context }, cause: error instanceof Error ? error : new Error(String(error)),
-    };
-    logger.child("session").error(entry.message, { code: entry.code, details: entry.details, cause: entry.cause });
-    s.onError?.(entry);
+    logger.child("session").warn("Canonical transcript recording stopped; live turn continues", {
+      details: { sessionId: session.id, ...context },
+      cause: error instanceof Error ? error : new Error(String(error)),
+    });
   });
   let canonicalTurnId: number | null | undefined;
 
@@ -1162,7 +1159,7 @@ export async function runTurn(
     );
     session.recordReasoningEffortUsed?.(reasoningEffort);
     if (canonicalTurnId === undefined && !options?.signal?.aborted) {
-      canonicalTurnId = await canonicalWriter.startTurn(userInput);
+      canonicalTurnId = session.canonicalTranscriptEnabled ? await canonicalWriter.startTurn(userInput) : null;
     }
     return runLlmStream({
       model: activeModel,

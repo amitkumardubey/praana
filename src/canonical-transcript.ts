@@ -167,7 +167,11 @@ function assertRecord(value: unknown, index: number): asserts value is Canonical
   if (!valid) fail("invalid_record", index, "invalid kind or message payload");
 }
 
-/** Current reset epoch for replay. Results stranded before its first input are hidden. */
+/**
+ * Current reset epoch for replay. Results stranded before its first input are hidden.
+ * Pass raw events from EventLog.readAll({ includeCanonical: true }); the default
+ * read filters canonical events and would silently return an empty transcript.
+ */
 export function readCanonicalRecords(events: readonly Event[]): CanonicalRecord[] {
   let seenInput = false;
   return readFullSessionCanonicalRecords(eventsAfterResetBoundary([...events])).filter((record) => {
@@ -176,7 +180,11 @@ export function readCanonicalRecords(events: readonly Event[]): CanonicalRecord[
   });
 }
 
-/** All epochs, with schema validation. Use for session-wide turn-id allocation. */
+/**
+ * All epochs, with schema validation. Use for session-wide turn-id allocation.
+ * Pass raw events from EventLog.readAll({ includeCanonical: true }); the default
+ * read filters canonical events and would silently return an empty transcript.
+ */
 export function readFullSessionCanonicalRecords(events: readonly Event[]): CanonicalRecord[] {
   const records: CanonicalRecord[] = [];
   for (const event of events) {
@@ -206,50 +214,77 @@ function emitResult(record: CanonicalToolResultRecord): ConversationMessage {
   return { role: "tool_result", toolCallId: message.callId, toolName: message.toolName, isError: message.isError, result: message.text };
 }
 
+/** Stateful strict validator, shared by replay and the append path. */
+export class CanonicalValidator {
+  private calls = new Set<string>();
+  private results = new Set<string>();
+  private pending = new Map<string, { call: CanonicalToolCall; turnId: number }>();
+  private turnId: number | undefined;
+  private index = 0;
+
+  accept(record: unknown): void {
+    const index = this.index;
+    assertRecord(record, index);
+    if (record.kind === "tool_result") {
+      const { callId, toolName } = record.message;
+      if (!this.calls.has(callId)) fail("orphan_result", index, `no earlier call ${callId}`);
+      if (this.results.has(callId)) fail("duplicate_result", index, `result already recorded for ${callId}`);
+      const batch = this.pending.get(callId);
+      if (!batch) fail("orphan_result", index, `no pending batch for ${callId}`);
+      if (record.turnId !== batch.turnId) fail("invalid_turn", index, "result must use its batch's turn id");
+      if (toolName !== batch.call.name) fail("tool_name_mismatch", index, `result tool does not match ${callId}`);
+      this.results.add(callId);
+      this.pending.delete(callId);
+    } else {
+      if (this.pending.size) fail("interrupted_batch", index, "only results may follow an incomplete assistant batch");
+      if (record.kind === "user_input") {
+        if (this.turnId !== undefined && record.turnId <= this.turnId) fail("invalid_turn", index, "user_input turn ids must increase");
+      } else if (this.turnId === undefined || record.turnId !== this.turnId) {
+        fail("invalid_turn", index, "record must belong to the current user_input turn");
+      }
+      if (record.kind === "assistant") {
+        const newIds = new Set<string>();
+        for (const call of record.message.toolCalls ?? []) {
+          if (this.calls.has(call.id) || newIds.has(call.id)) fail("duplicate_call_id", index, `call id already used: ${call.id}`);
+          newIds.add(call.id);
+        }
+        for (const call of record.message.toolCalls ?? []) {
+          this.calls.add(call.id);
+          this.pending.set(call.id, { call, turnId: record.turnId });
+        }
+      }
+      if (record.kind === "user_input") this.turnId = record.turnId;
+    }
+    this.index++;
+  }
+
+  nextTurnId(): number {
+    if (this.turnId === Number.MAX_SAFE_INTEGER) fail("invalid_turn", this.index, "turn id sequence exhausted");
+    return (this.turnId ?? 0) + 1;
+  }
+
+  repairs(): CanonicalToolResultRecord[] {
+    return Array.from(this.pending.values(), ({ call, turnId }) => ({
+      formatVersion: CANONICAL_TRANSCRIPT_VERSION, kind: "tool_result", turnId,
+      message: { callId: call.id, toolName: call.name, ...INTERRUPTED_TOOL_RESULT },
+    }));
+  }
+}
+
 function scan(records: readonly CanonicalRecord[]): {
   messages: ConversationMessage[];
   repairs: CanonicalToolResultRecord[];
 } {
   const messages: ConversationMessage[] = [];
-  const calls = new Set<string>();
-  const results = new Set<string>();
-  const pending = new Map<string, { call: CanonicalToolCall; turnId: number }>();
-  let turnId: number | undefined;
-  for (const [index, record] of records.entries()) {
-    assertRecord(record, index);
-    if (record.kind === "tool_result") {
-      const { callId, toolName } = record.message;
-      if (!calls.has(callId)) fail("orphan_result", index, `no earlier call ${callId}`);
-      if (results.has(callId)) fail("duplicate_result", index, `result already recorded for ${callId}`);
-      const batch = pending.get(callId);
-      if (!batch) fail("orphan_result", index, `no pending batch for ${callId}`);
-      if (record.turnId !== batch.turnId) fail("invalid_turn", index, "result must use its batch's turn id");
-      if (toolName !== batch.call.name) fail("tool_name_mismatch", index, `result tool does not match ${callId}`);
-      results.add(callId);
-      pending.delete(callId);
-      messages.push(emitResult(record));
-      continue;
-    }
-    if (pending.size) fail("interrupted_batch", index, "only results may follow an incomplete assistant batch");
-    if (record.kind === "user_input") {
-      if (turnId !== undefined && record.turnId <= turnId) fail("invalid_turn", index, "user_input turn ids must increase");
-      turnId = record.turnId;
-    } else if (turnId === undefined || record.turnId !== turnId) {
-      fail("invalid_turn", index, "record must belong to the current user_input turn");
-    }
+  const validator = new CanonicalValidator();
+  for (const record of records) {
+    validator.accept(record);
     switch (record.kind) {
+      case "tool_result": messages.push(emitResult(record)); break;
       case "user_input":
-      case "wrap_up":
-        // Wrap-up is logical history; its flattened projection remains a live-request concern.
-        messages.push({ role: "user", content: record.message.text });
-        break;
+      case "wrap_up": messages.push({ role: "user", content: record.message.text }); break;
       case "assistant": {
         const message = record.message;
-        for (const call of message.toolCalls ?? []) {
-          if (calls.has(call.id)) fail("duplicate_call_id", index, `call id already used: ${call.id}`);
-          calls.add(call.id);
-          pending.set(call.id, { call, turnId: record.turnId });
-        }
         messages.push({
           role: "assistant", content: message.text,
           ...(message.thinking !== undefined ? { thinking: message.thinking } : {}),
@@ -259,19 +294,9 @@ function scan(records: readonly CanonicalRecord[]): {
         });
         break;
       }
-      // Reserved records have no conversation-message semantics yet.
-      case "notice":
-      case "snapshot":
-      case "summary":
-        break;
     }
   }
-  // Map insertion order is the original call order, minus already recorded results.
-  const repairs: CanonicalToolResultRecord[] = Array.from(pending.values(), ({ call, turnId }) => ({
-    formatVersion: CANONICAL_TRANSCRIPT_VERSION, kind: "tool_result", turnId,
-    message: { callId: call.id, toolName: call.name, ...INTERRUPTED_TOOL_RESULT },
-  }));
-  return { messages, repairs };
+  return { messages, repairs: validator.repairs() };
 }
 
 /** Strict replay. The sole tolerated gap is an incomplete batch at the very end. */
@@ -300,7 +325,7 @@ export async function repairCanonicalTranscript(
  * the log. Live model/tool work can continue without trusting in-memory state.
  */
 export class CanonicalWriter {
-  private records: CanonicalRecord[] | undefined;
+  private validator: CanonicalValidator | undefined;
   private failed = false;
 
   constructor(
@@ -309,21 +334,25 @@ export class CanonicalWriter {
   ) {}
 
   private persist(record: CanonicalRecord): void {
+    this.validator!.accept(record);
     this.log.append({ kind: "canonical_message", actor: "kernel", payload: { ...record } });
-    this.records!.push(record);
   }
 
   private async write(kind: CanonicalRecord["kind"], build: () => CanonicalRecord): Promise<CanonicalRecord | null> {
     if (this.failed) return null;
     let record: CanonicalRecord | undefined;
     try {
-      this.records ??= readFullSessionCanonicalRecords(this.log.readAll({ includeCanonical: true }));
+      if (!this.validator) {
+        const validator = new CanonicalValidator();
+        for (const event of this.log.readAll({ includeCanonical: true })) {
+          if (event.kind === "canonical_message") validator.accept(event.payload);
+        }
+        this.validator = validator;
+      }
       record = build();
       if (record.kind !== "tool_result") {
-        await repairCanonicalTranscript(this.records, (repair) => this.persist(repair));
+        for (const repair of this.validator.repairs()) this.persist(repair);
       }
-      // Validate before persistence; the emitter tolerates only a terminal gap.
-      emitCanonicalTranscript([...this.records, record]);
       this.persist(record);
       return record;
     } catch (error) {
@@ -336,7 +365,7 @@ export class CanonicalWriter {
   async startTurn(text: string): Promise<number | null> {
     const record = await this.write("user_input", () => ({
       formatVersion: CANONICAL_TRANSCRIPT_VERSION, kind: "user_input",
-      turnId: nextCanonicalTurnId(this.records!), message: { text },
+      turnId: this.validator!.nextTurnId(), message: { text },
     }));
     return record?.turnId ?? null;
   }

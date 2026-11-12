@@ -49,6 +49,43 @@ function rejects(records: CanonicalRecord[], code: CanonicalTranscriptErrorCode,
   }
 }
 
+test("incremental validation agrees with full replay for seeded sequences", () => {
+  const Validator = (canonicalApi as any).CanonicalValidator;
+  expect(Validator).toBeDefined();
+  let seed = 0x51234567;
+  const random = (n: number) => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return seed % n; };
+  const code = (fn: () => unknown) => { try { fn(); return null; } catch (e) { return (e as CanonicalTranscriptError).code; } };
+  for (let sequence = 0; sequence < 500; sequence++) {
+    const validator = new Validator();
+    const accepted: CanonicalRecord[] = [];
+    for (let i = 0; i < 30; i++) {
+      const id = String(random(6));
+      const turn = 1 + random(5);
+      const candidate = [user("x", turn), assistant([call(id)], "", turn), result(id, "ok", turn), assistant([], "x", turn), { ...result(id, "x", turn), message: { ...result(id).message, toolName: "wrong" } }, { ...user(), formatVersion: 2 }][random(6)] as CanonicalRecord;
+      const expected = code(() => emitCanonicalTranscript([...accepted, candidate]));
+      const actual = code(() => validator.accept(candidate));
+      expect(actual).toBe(expected);
+      if (actual === null) accepted.push(candidate);
+    }
+  }
+});
+
+test("writer validates each appended record only once", async () => {
+  const Validator = (canonicalApi as any).CanonicalValidator;
+  expect(Validator).toBeDefined();
+  let validations = 0;
+  const original = Validator.prototype.accept;
+  Validator.prototype.accept = function (...args: unknown[]) { validations++; return original.apply(this, args); };
+  try {
+    const seeded = [user("previous"), ...Array.from({ length: 49 }, () => assistant())];
+    const log = { readAll: () => seeded.map(canonical), append: () => {} } as any;
+    const writer = new canonicalApi.CanonicalWriter(log, (error) => { throw error; });
+    const turn = await writer.startTurn("start");
+    for (let i = 0; i < 100; i++) await writer.assistant(turn, { role: "assistant", content: "ok" });
+    expect(validations).toBe(151);
+  } finally { Validator.prototype.accept = original; }
+});
+
 describe("canonical transcript", () => {
   test("full-session reader allocates across reset epochs and validates old records", () => {
     expect(canonicalApi).toHaveProperty("readFullSessionCanonicalRecords");

@@ -142,6 +142,7 @@ export class Session {
   nativeStatus: NativeAddonStatus | null = null;
   /** Whether native search (search_code / find_files) is available. */
   fffStatus: string | null = null;
+  canonicalTranscriptEnabled = false;
   incognito = false;
   digest: string | null = null;
   agentsContext: string | null = null;  // content from AGENTS.md / CLAUDE.md
@@ -255,6 +256,7 @@ export class Session {
   static createNew(id: string, cwd: string, config: PraanaConfig): Session {
     const startedAt = Date.now();
     const session = new Session(id, cwd, config, startedAt);
+    session.canonicalTranscriptEnabled = true;
 
     writeSessionMeta(config.session.log_dir, {
       session_id: id,
@@ -394,6 +396,7 @@ export class Session {
     }
 
     const session = new Session(sessionId, cwd, cfg, meta.started_at);
+    session.canonicalTranscriptEnabled = meta.canonical_transcript?.version === CANONICAL_TRANSCRIPT_VERSION;
     session.noticeCapture = opts?.captureNotice;
     session.suppressLoggerStderr = opts?.suppressLoggerStderr ?? false;
     await session.initLogger();

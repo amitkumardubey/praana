@@ -1,16 +1,17 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import * as nativeLlm from "../src/llm/index.js";
 import * as toolRegistry from "../src/tools/index.js";
 import * as oauth from "../src/oauth.js";
 import * as canonical from "../src/canonical-transcript.js";
+import * as loggerModule from "../src/logger.js";
 import { Session } from "../src/session.js";
 import { loadConfig } from "../src/config.js";
 import { runTurn } from "../src/turn.js";
 import { TurnAbortedError } from "../src/turn-control.js";
-import { EventLog } from "../src/event-log.js";
+import { EventLog, readSessionMeta } from "../src/event-log.js";
 import { OpenTuiSink } from "../src/ui/tui/sink.js";
 import { TranscriptProjection } from "../src/ui/tui/transcript/projection.js";
 import type { TranscriptMount } from "../src/ui/tui/transcript/mount.js";
@@ -58,6 +59,63 @@ function writer(log: EventLog, errors: unknown[] = []) {
   expect(canonical).toHaveProperty("CanonicalWriter");
   return new canonical.CanonicalWriter(log, (error, context) => { errors.push({ error, context }); });
 }
+
+test.each([false, true])("legacy resumed turns never record or repair, partial=%s", async (partial) => {
+  const { session, records } = setup();
+  if (partial) {
+    session.eventLog.append({ kind: "canonical_message", actor: "kernel", payload: user("old") });
+    session.eventLog.append({ kind: "canonical_message", actor: "kernel", payload: batch });
+  }
+  const before = structuredClone(records());
+  const meta = readSessionMeta(session.config.session.log_dir, session.id)!;
+  delete meta.canonical_transcript;
+  writeFileSync(join(session.config.session.log_dir, session.id, "meta.json"), JSON.stringify(meta));
+  session.eventLog.close();
+  const resumed = await Session.resume(session.id, session.cwd, session.config, { suppressLoggerStderr: true });
+  logs.push(resumed.eventLog);
+  spyOn(resumed, "ensureModelContextWindow").mockResolvedValue(128000);
+  const requests: ConversationMessage[][] = [];
+  spyOn(nativeLlm, "streamLlmResponse").mockImplementation((request) => {
+    requests.push(structuredClone(request.messages));
+    return stream({ role: "assistant", content: "done" });
+  });
+  await runTurn(resumed, "hello", undefined, { sink: {} });
+  expect(canonical.readFullSessionCanonicalRecords(resumed.eventLog.readAll({ includeCanonical: true }))).toEqual(before);
+  expect(requests[0].at(-1)).toEqual({ role: "user", content: "hello" });
+  expect(resumed.eventLog.readAll().some((e) => e.kind === "user_message")).toBe(true);
+});
+
+test("resumed canonical turns continue the session sequence", async () => {
+  const { session } = setup();
+  await writer(session.eventLog).startTurn("first");
+  session.eventLog.close();
+  const resumed = await Session.resume(session.id, session.cwd, session.config, { suppressLoggerStderr: true });
+  logs.push(resumed.eventLog);
+  spyOn(resumed, "ensureModelContextWindow").mockResolvedValue(128000);
+  spyOn(nativeLlm, "streamLlmResponse").mockImplementation(() => stream({ role: "assistant", content: "done" }));
+  await runTurn(resumed, "second", undefined, { sink: {} });
+  expect(canonical.readFullSessionCanonicalRecords(resumed.eventLog.readAll({ includeCanonical: true })).map((record) => record.turnId)).toEqual([1, 2, 2]);
+});
+
+test("canonical write failure warns once without a UI error", async () => {
+  const { session } = setup();
+  const lines: string[] = [];
+  const logger = loggerModule.createTestLogger((line) => lines.push(line));
+  spyOn(loggerModule, "createSessionLogger").mockResolvedValue(logger);
+  const append = session.eventLog.append.bind(session.eventLog);
+  spyOn(session.eventLog, "append").mockImplementation((event) => {
+    if (event.kind === "canonical_message") throw new Error("canonical disk failure");
+    return append(event);
+  });
+  spyOn(nativeLlm, "streamLlmResponse").mockImplementation(() => stream({ role: "assistant", content: "done" }));
+  const onError = mock(() => {});
+  await runTurn(session, "hello", undefined, { sink: { onError } });
+  expect(onError).not.toHaveBeenCalled();
+  const failures = lines.map((line) => JSON.parse(line)).filter((entry) => entry.msg?.includes("Canonical transcript recording stopped"));
+  expect(failures).toHaveLength(1);
+  expect(failures[0]).toMatchObject({ level: 40, details: { sessionId: session.id, kind: "user_input", turnId: 1 } });
+  expect(JSON.stringify(failures[0])).toContain("canonical disk failure");
+});
 
 test.each([false, true])("writer repairs crashed batches before a new input, partial=%s", async (partial) => {
   const { session, records } = setup();
