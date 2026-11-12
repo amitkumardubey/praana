@@ -134,10 +134,18 @@ describe("action preview sanitization", () => {
     expect(lines.at(-1)).toBe("line 499");
     expect(lines.filter((line) => line.includes("more lines"))).toHaveLength(1);
   });
-  it("preserves tabs and CRLF while replacing unsafe controls only in the overlay", () => {
+  it("distinguishes CRLF from LF in edit rows", () => {
+    const preview: ActionConfirmRequest["preview"] = [
+      ..."foo\r\nbar".split("\n").map((text) => ({ text: `- ${text}`, tone: "remove" as const })),
+      ..."foo\nbar".split("\n").map((text) => ({ text: `+ ${text}`, tone: "add" as const })),
+    ];
+    expect(actionPreviewLines({ question: "?", preview })).toEqual(["- foo␍", "- bar", "+ foo", "+ bar"]);
+  });
+
+  it("preserves tabs and marks CRLF while replacing unsafe controls only in the overlay", () => {
     const request: ActionConfirmRequest = { question: "?", preview: [{ text: "\tindent\r\nplain\r\n\u001b[31m\u202Eevil\u200b\u2028\ufeff", tone: "plain" }] };
     const lines = actionPreviewLines(request);
-    expect(lines).toEqual(["\tindent", "plain", "·[31m·evil···"]);
+    expect(lines).toEqual(["\tindent␍", "plain␍", "·[31m·evil···"]);
     const chunks: string[] = [];
     setUiWriters({ stderr: (line) => chunks.push(line) });
     writeActionConfirmPreview(request);
