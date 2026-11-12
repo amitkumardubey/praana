@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { resolve } from "node:path";
+import { resolve, join } from "node:path";
+import * as fs from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { memoryDirectories, projectKey } from "../src/file-memory/paths.js";
 
 describe("file memory paths", () => {
@@ -12,6 +14,17 @@ describe("file memory paths", () => {
     expect(root).toMatch(/^repo-[0-9a-f]{6}$/);
     expect(projectKey("/two/repo", (cwd) => cwd)).not.toBe(root);
     expect(projectKey("relative", (cwd) => cwd)).toBe(projectKey(resolve("relative"), (cwd) => cwd));
+  });
+
+  test("canonicalizes a symlinked cwd before choosing both slug and hash", async () => {
+    const home = await fs.mkdtemp(join(tmpdir(), "paths-"));
+    try {
+      const real = join(home, "canonical"), alias = join(home, "alias");
+      await fs.mkdir(real);
+      await fs.symlink(real, alias);
+      expect(projectKey(alias, (cwd) => cwd)).toBe(projectKey(real, (cwd) => cwd));
+      expect(projectKey(join(alias, "..", "alias"), (cwd) => cwd)).toBe(projectKey(real, (cwd) => cwd));
+    } finally { await fs.rm(home, { recursive: true, force: true }); }
   });
 
   test("constructs directories below the injected home", () => {

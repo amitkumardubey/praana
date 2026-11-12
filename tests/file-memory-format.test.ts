@@ -39,6 +39,19 @@ describe("file memory format", () => {
     expect(safe).not.toContain("\u2028");
     expect(safe).toContain("\\[");
   });
+  test("truncates code points before escaping without changing interior hyphens", () => {
+    expect(sanitizeDescription("pre-commit and node-20 #label")).toBe("pre-commit and node-20 #label");
+    expect(sanitizeDescription("a".repeat(299) + "[tail")).toBe("a".repeat(299) + "\\[");
+    expect(sanitizeDescription("😀".repeat(301))).toBe("😀".repeat(300));
+    expect(validateMemory({ ...entry, description: "😀".repeat(300) })).toBeNull();
+    expect(validateMemory({ ...entry, description: "😀".repeat(301) })).not.toBeNull();
+    for (const prefix of ["-", "*", "+", "#", ">", "1.", "123."]) {
+      const safe = sanitizeDescription(`${prefix} forged`);
+      expect(safe).toContain("\\");
+      expect(safe).not.toBe(`${prefix} forged`);
+    }
+    expect(sanitizeDescription("  - [fake]\n`run`\u0000")).toBe("  \\- \\[fake\\] `run` ".replace(/`/g, "\\`"));
+  });
   test("sanitizes control and markdown structure", () => {
     const safe = sanitizeDescription("note\n- [fake] `x` #heading\u0000");
     expect(safe).not.toContain("\n");

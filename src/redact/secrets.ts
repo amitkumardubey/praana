@@ -51,16 +51,19 @@ function redactString(text: string): string {
   return redactUrlsInText(out);
 }
 
-function walk(value: unknown, depth: number): unknown {
-  if (depth >= MAX_DEPTH) return value;
+function walk(value: unknown, depth: number, strict = false): unknown {
+  if (depth >= MAX_DEPTH) {
+    if (strict) throw new Error("Secret redaction depth limit exceeded");
+    return value;
+  }
   if (typeof value === "string") return redactString(value);
   if (Array.isArray(value)) {
-    return value.map((item) => walk(item, depth + 1));
+    return value.map((item) => walk(item, depth + 1, strict));
   }
   if (value !== null && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
     const copy: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      copy[k] = walk(v, depth + 1);
+      copy[k] = walk(v, depth + 1, strict);
     }
     return copy;
   }
@@ -68,7 +71,7 @@ function walk(value: unknown, depth: number): unknown {
 }
 
 export function redactSecretsStrict<T>(value: T): T {
-  return walk(value, 0) as T;
+  return walk(value, 0, true) as T;
 }
 
 export function redactSecrets(value: unknown): unknown {

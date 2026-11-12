@@ -19,7 +19,7 @@ export function validName(name: unknown): name is string {
 }
 
 export function validatePolicy(input: MemoryInput): string | null {
-  if (!input.description.trim() || input.description.length > 300 || /[\r\n]/.test(input.description)) return "Description must be one line and at most 300 characters";
+  if (!input.description.trim() || Array.from(input.description).length > 300 || /[\r\n]/.test(input.description)) return "Description must be one line and at most 300 characters";
   if ((input.type === "feedback" || input.type === "project") && (!/^\*\*Why:\*\*[ \t]*\S/m.test(input.body) || !/^\*\*How to apply:\*\*[ \t]*\S/m.test(input.body))) return "Add **Why:** and **How to apply:** lines";
   return null;
 }
@@ -57,5 +57,8 @@ export function parseMemory(text: string): Memory | null {
 }
 
 export function sanitizeDescription(text: string): string {
-  return Array.from(text.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ").replace(/[-\[\]`#\\]/g, "\\$&")).slice(0, 300).join("");
+  return Array.from(text).slice(0, 300).join("")
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ")
+    .replace(/[\[\]`]/g, "\\$&")
+    .replace(/^(\s*)([-*+#>]|\d+\.)/, (_match, space: string, marker: string) => `${space}${marker.replace(/[-*+#>.]/g, "\\$&")}`);
 }

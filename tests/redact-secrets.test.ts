@@ -8,6 +8,15 @@ describe("redactSecretsStrict", () => {
     expect(redactSecretsStrict(value)).toEqual(redactSecrets(value));
   });
 
+  it("fails closed at the walk depth limit without changing the non-strict redactor", () => {
+    for (const depth of [8, 9, 20]) {
+      let value: unknown = "AKIAIOSFODNN7EXAMPLE";
+      for (let i = 0; i < depth; i++) value = { nested: value };
+      expect(() => redactSecretsStrict(value)).toThrow("depth");
+      expect(redactSecrets(value)).toEqual(value);
+    }
+  });
+
   it("propagates errors rather than returning the original value", () => {
     const value = Object.defineProperty({}, "broken", {
       enumerable: true,
