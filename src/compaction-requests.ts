@@ -1,6 +1,7 @@
 import { requestFill, type CapacityErrorOutcome, type CompactionTurn, type RequestFill } from "./compaction.js";
 import { buildRepairInstruction, buildSummaryInstruction, checkSummary, type SummaryFailure, type SummaryInstructionOptions } from "./frozen-summary.js";
 import type { ConversationMessage, ProviderUsage, StreamRequest, ToolCall } from "./llm/types.js";
+import { serializeToolResult } from "./llm/serialize.js";
 
 /**
  * Preserve the last-sent prefix, including the entire terminal tool-result batch.
@@ -56,6 +57,20 @@ export type BatchSummaryPlanResult =
   | { status: "not_foldable"; reason: "oversized_turn"; turnId: number; message: string }
   | CapacityErrorOutcome;
 
+/** Plain data transcript: no native tool blocks requiring live tool definitions. */
+function renderBatchMessage(message: ConversationMessage): ConversationMessage {
+  if (message.role === "tool_result") {
+    return { role: "user", content: `tool_result ${message.toolName}: ${serializeToolResult(message.result)}` };
+  }
+  const text = typeof message.content === "string" ? message.content :
+    message.content.filter(part => part.type === "text").map(part => part.text).join("\n");
+  const lines = [`${message.role}: ${text}`];
+  if (message.role === "assistant") {
+    for (const call of message.toolCalls ?? []) lines.push(`tool_call ${call.name}(${JSON.stringify(call.args)})`);
+  }
+  return { role: "user", content: lines.join("\n") };
+}
+
 /**
  * A separate compact request, not a continuation of the cached live prefix.
  * Transport/model settings survive; the live system, tools and history do not.
@@ -67,7 +82,7 @@ export function buildBatchSummaryRequest(
   options: SummaryInstructionOptions & { effectiveMaxTokens: number },
 ): StreamRequest {
   const { systemPrompt: _system, tools: _tools, messages: _messages, ...transport } = live;
-  return buildSameModelSummaryRequest({ ...transport, maxTokens: options.effectiveMaxTokens, messages: batch.messages }, options);
+  return buildSameModelSummaryRequest({ ...transport, maxTokens: options.effectiveMaxTokens, messages: batch.messages.map(renderBatchMessage) }, options);
 }
 
 function validateSummaryCap(capTokens: number): void {

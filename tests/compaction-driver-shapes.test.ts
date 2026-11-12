@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { buildSameModelSummaryRequest } from "../src/compaction-requests.js";
+import { buildBatchSummaryRequest, buildSameModelSummaryRequest } from "../src/compaction-requests.js";
 import { buildSummaryInstruction } from "../src/frozen-summary.js";
 import { AnthropicDriver } from "../src/llm/drivers/anthropic.js";
 import { OpenAICompatibleDriver } from "../src/llm/drivers/openai.js";
@@ -88,6 +88,24 @@ const drivers: { name: string; provider: string; driver: () => LlmDriver; key: "
 ];
 
 for (const { name, provider, driver, key } of drivers) {
+  test(`${name} serializes standalone folded tool turns as user text without native tool blocks`, async () => {
+    const source = live(provider, "off");
+    const request = buildBatchSummaryRequest(source, { messages: source.messages.slice(1) }, {
+      cutDescription: "through call-b", capTokens: 256, effectiveMaxTokens: 1024,
+    });
+    const wire = await capture(driver(), request, provider);
+    const items = wire.body[key] as WireItem[];
+    const serialized = JSON.stringify(items);
+    expect(items.every(item => item.role === "user")).toBe(true);
+    for (const field of ['"tool_use"', '"tool_result"', '"tool_calls"', '"toolCalls"', '"toolUse"', '"toolResult"', '"functionCall"', '"functionResponse"', '"function_call"', '"function_call_output"']) {
+      expect(serialized).not.toContain(field);
+    }
+    expect(serialized).toContain('tool_call read_a(');
+    expect(serialized).toContain(`tool_result read_b: ${resultB}`);
+    expect(wire.body.tools).toBeUndefined();
+    expect(wire.body.toolConfig).toBeUndefined();
+  });
+
   for (const reasoningEffort of ["off", "high"] as const) {
     test(`${name} preserves the serialized live request and places the instruction after both parallel results (${reasoningEffort})`, async () => {
       const source = live(provider, reasoningEffort);

@@ -4,6 +4,7 @@ import { buildSummaryInstruction, checkSummary, SUMMARY_HEADINGS } from "../src/
 import type { BatchSummaryAttempt, BatchSummaryPlan, SummaryResult } from "../src/compaction-requests.js";
 import type { CanonicalRecord } from "../src/canonical-transcript.js";
 import type { StreamRequest } from "../src/llm/types.js";
+import { MAX_TOOL_RESULT_CHARS, serializeToolResult } from "../src/llm/serialize.js";
 import { estimateTokens } from "../src/token-estimate.js";
 import type { Event } from "../src/types.js";
 
@@ -72,7 +73,8 @@ test("batch requests discard the live prefix and tools but keep model and all tr
   const planned = await plan();
   const batch = planned.batches[0];
   const request = buildBatchSummaryRequest(source, batch, { ...options, cutDescription: batch.cutDescription });
-  expect(request.messages).toEqual([...batch.messages, { role: "user", content: buildSummaryInstruction({ ...options, cutDescription: batch.cutDescription }) }]);
+  expect(request.messages.at(-1)).toEqual({ role: "user", content: buildSummaryInstruction({ ...options, cutDescription: batch.cutDescription }) });
+  expect(request.messages.every(message => message.role === "user" && typeof message.content === "string")).toBe(true);
   expect(request).not.toHaveProperty("systemPrompt");
   expect(request).not.toHaveProperty("tools");
   expect(request).not.toHaveProperty("tool_choice");
@@ -83,6 +85,26 @@ test("batch requests discard the live prefix and tools but keep model and all tr
   expect(tokens(request) + options.effectiveMaxTokens).toBeLessThanOrEqual(options.contextWindowTokens);
   expect(JSON.stringify(request)).not.toContain("TAIL MUST NOT BE FOLDED");
   expect(JSON.stringify(source)).toBe(before);
+});
+
+test("batch transcript text is deterministic, bounds tool results and is included in the input budget", async () => {
+  const { buildBatchSummaryRequest } = await api();
+  const turns = foldedTurns(1, MAX_TOOL_RESULT_CHARS + 1000);
+  const batch = { messages: turns[0].messages };
+  const request = buildBatchSummaryRequest(live(), batch, { ...options, cutDescription: "cut" });
+  const result = batch.messages[2];
+  if (result.role !== "tool_result") throw new Error("Expected result");
+  expect(request.messages.slice(0, -1)).toEqual([
+    { role: "user", content: "user: Fold turn 1" },
+    { role: "user", content: 'assistant: read\ntool_call read({"path":"file-1"})' },
+    { role: "user", content: `tool_result read: ${serializeToolResult(result.result)}` },
+  ]);
+  expect(JSON.stringify(request)).not.toContain("x".repeat(MAX_TOOL_RESULT_CHARS + 1));
+  expect(buildBatchSummaryRequest(live(), batch, { ...options, cutDescription: "cut" }).messages).toEqual(request.messages);
+  const planned = await plan(foldedTurns(2, 500), { contextWindowTokens: 10000 });
+  const first = planned.batches[0];
+  const budgeted = buildBatchSummaryRequest(planned.template, first, { ...planned.options, cutDescription: first.cutDescription });
+  expect(first.budgetedInputTokens).toBe(tokens(budgeted));
 });
 
 test("chaining uses each checked whole summary as the next input, publishing only a checked final block", async () => {
