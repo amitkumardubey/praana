@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFileMemoryStore } from "../src/file-memory/store.js";
 import { memoryDirectories, projectKey, type MemoryScope } from "../src/file-memory/paths.js";
-import { serializeMemory, type Memory } from "../src/file-memory/format.js";
+import { searchTokens, serializeMemory, type Memory } from "../src/file-memory/format.js";
 
 const homes: string[] = [];
 afterEach(async () => { for (const home of homes.splice(0)) await fs.rm(home, { recursive: true, force: true }); });
@@ -86,6 +86,24 @@ test("recall sanitizes adversarial descriptions and snippets, skips invalid file
   expect(result.matches[0]!.snippet).not.toContain("\u0000");
   expect(result.matches[0]!.snippet).toContain("\\`cmd\\`");
   expect(Array.from(result.matches[0]!.snippet).length).toBeLessThan(320);
+});
+
+test.each(["किताब", "ภาษาไทย", "كِتَاب", "\u0301"])("query preserves letters and combining marks in %s", async (word) => {
+  expect(searchTokens(word)).toEqual([word.normalize("NFC").toLowerCase()]);
+  const { store, put } = await setup();
+  await put("unicode", { body: word });
+  const result = await store.recall({ query: word });
+  expect(result.ok && "matches" in result && result.matches.map((match) => match.name)).toEqual(["unicode"]);
+});
+
+test("query and corpus match NFC and NFD accents in both directions", async () => {
+  const { store, put } = await setup();
+  await put("composed", { body: "café" });
+  await put("decomposed", { body: "cafe\u0301" });
+  for (const query of ["café", "cafe\u0301"]) {
+    const result = await store.recall({ query });
+    expect(result.ok && "matches" in result && result.matches.map((match) => match.name)).toEqual(["composed", "decomposed"]);
+  }
 });
 
 test("query tokenizes multiple words case-insensitively and supports Unicode", async () => {

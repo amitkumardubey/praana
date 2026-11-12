@@ -20,7 +20,7 @@ export function validName(name: unknown): name is string {
 
 const stopWords = new Set("a an and are as at be been but by for from had has have he her his i if in into is it its me my not of on or our she so than that the their them then there these they this those to too us was we were what when where which who will with you your".split(" "));
 export function searchTokens(text: string): string[] {
-  return [...new Set((text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter((token) => !stopWords.has(token)))];
+  return [...new Set((text.normalize("NFC").toLowerCase().match(/[\p{L}\p{M}\p{N}]+/gu) ?? []).filter((token) => !stopWords.has(token)))];
 }
 
 export function validateQueryPolicy(query: string): string | null {
