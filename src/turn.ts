@@ -48,6 +48,7 @@ import {
 } from "./context-display.js";
 import { estimateTokens as estimateDisplayTokens } from "./token-estimate.js";
 import { redactSecrets } from "./redact/secrets.js";
+import { CanonicalWriter } from "./canonical-transcript.js";
 import { checkCircuitBudget } from "./circuit/budget.js";
 import {
   createSessionLogger,
@@ -192,6 +193,7 @@ export function assistantTextAfterTimeout(message: unknown): AssistantMessage | 
     content?: unknown;
     thinking?: unknown;
     thinkingSignature?: unknown;
+    blocks?: unknown;
   };
   let text = "";
   if (typeof record.content === "string") {
@@ -210,6 +212,9 @@ export function assistantTextAfterTimeout(message: unknown): AssistantMessage | 
   if (typeof record.thinking === "string" && record.thinking) kept.thinking = record.thinking;
   if (typeof record.thinkingSignature === "string" && record.thinkingSignature) {
     kept.thinkingSignature = record.thinkingSignature;
+  }
+  if (Array.isArray(record.blocks)) {
+    kept.blocks = record.blocks.filter((block) => !isToolUsePart(block)) as AssistantMessage["blocks"];
   }
   return kept;
 }
@@ -274,6 +279,7 @@ export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResu
         thinking: m.thinking,
         thinkingSignature: m.thinkingSignature,
         toolCalls,
+        blocks: m.blocks,
       };
     }
     return {
@@ -559,6 +565,27 @@ function isToolUsePart(part: unknown): boolean {
   if (!part || typeof part !== "object") return false;
   const type = (part as { type?: unknown }).type;
   return type === "tool_use" || type === "toolUse" || type === "toolCall";
+}
+
+/** Drop tool calls the wrap-up was told not to make, so they are not stored or run. */
+export function withoutWrapUpToolCalls(message: any): any {
+  if (!message || typeof message !== "object") return message;
+  const hadCalls = Array.isArray(message.toolCalls) && message.toolCalls.length > 0;
+  let content = message.content;
+  let strippedContent = false;
+  if (Array.isArray(content)) {
+    const next = content.filter((part: unknown) => !isToolUsePart(part));
+    strippedContent = next.length !== content.length;
+    content = next;
+  }
+  const blocks = Array.isArray(message.blocks)
+    ? message.blocks.filter((block: unknown) => !isToolUsePart(block))
+    : undefined;
+  const strippedBlocks = blocks !== undefined && blocks.length !== message.blocks.length;
+  if (!hadCalls && !strippedContent && !strippedBlocks) return message;
+  const nextMessage = { ...message, content, ...(blocks !== undefined ? { blocks } : {}) };
+  delete nextMessage.toolCalls;
+  return nextMessage;
 }
 
 /** Keep the call's name and id, and cap its arguments the same way as results. */
@@ -1044,6 +1071,13 @@ export async function runTurn(
   });
   const llmLogger = logger.child("llm");
   const providerName = effectiveLlm.provider;
+  const canonicalWriter = new CanonicalWriter(session.eventLog, (error, context) => {
+    logger.child("session").warn("Canonical transcript recording stopped; live turn continues", {
+      details: { sessionId: session.id, ...context },
+      cause: error instanceof Error ? error : new Error(String(error)),
+    });
+  });
+  let canonicalTurnId: number | null | undefined;
 
   // 5. Stream response
   let fullResponse = "";
@@ -1125,6 +1159,9 @@ export async function runTurn(
       },
     );
     session.recordReasoningEffortUsed?.(reasoningEffort);
+    if (canonicalTurnId === undefined && !options?.signal?.aborted) {
+      canonicalTurnId = session.canonicalTranscriptEnabled ? await canonicalWriter.startTurn(userInput) : null;
+    }
     return runLlmStream({
       model: activeModel,
       modelName: activeModelName,
@@ -1270,10 +1307,11 @@ export async function runTurn(
     "Not executed: the step budget was reached and the turn was stopped.";
 
   /** Record pending tool calls as errors without running them. */
-  function appendNotExecutedResults(
+  async function appendNotExecutedResults(
     calls: Array<{ toolCallId?: string; toolName: string }>,
-  ): void {
+  ): Promise<void> {
     for (const tc of calls) {
+      await canonicalWriter.result(canonicalTurnId ?? null, tc.toolCallId ?? "", tc.toolName, NOT_EXECUTED_TEXT, true);
       history.push({
         role: "toolResult",
         toolCallId: tc.toolCallId,
@@ -1283,23 +1321,6 @@ export async function runTurn(
         timestamp: Date.now(),
       });
     }
-  }
-
-  /** Drop tool calls the wrap-up was told not to make, so they are not stored or run. */
-  function withoutWrapUpToolCalls(message: any): any {
-    if (!message || typeof message !== "object") return message;
-    const hadCalls = Array.isArray(message.toolCalls) && message.toolCalls.length > 0;
-    let content = message.content;
-    let strippedContent = false;
-    if (Array.isArray(content)) {
-      const next = content.filter((part: unknown) => !isToolUsePart(part));
-      strippedContent = next.length !== content.length;
-      content = next;
-    }
-    if (!hadCalls && !strippedContent) return message;
-    const nextMessage = { ...message, content };
-    delete nextMessage.toolCalls;
-    return nextMessage;
   }
 
   function logWrapUpFailure(reason: string, error: string | undefined): void {
@@ -1347,6 +1368,8 @@ export async function runTurn(
       content: `${reason} Reply with a short summary of what was done and what remains. Do not call tools.`,
       timestamp: Date.now(),
     };
+    // Store logical history; flattening remains a live-request projection.
+    await canonicalWriter.wrapUp(canonicalTurnId ?? null, instruction.content);
     history.push(instruction);
     const dropInstruction = () => {
       const idx = history.lastIndexOf(instruction);
@@ -1364,7 +1387,7 @@ export async function runTurn(
       const text = streamed.trim() ? streamed : fromMessage;
       // Show and count a summary only when it is stored. An errored wrap-up
       // keeps neither, and an aborted reply with no visible text is not stored.
-      const publishSummary = () => {
+      const publishSummary = async () => {
         if (!text) return;
         if (!streamed.trim()) {
           if (fullResponse.length > 0) {
@@ -1375,6 +1398,7 @@ export async function runTurn(
         }
         if (wrapSeparatorSent) fullResponse += "\n\n";
         fullResponse += text;
+        await canonicalWriter.assistant(canonicalTurnId ?? null, { role: "assistant", content: text });
         history.push({ role: "assistant", content: text, timestamp: Date.now() });
         if (wrap.finalMessage && wrap.assistantTokens > 0) {
           turnHistoryTokens += wrap.assistantTokens;
@@ -1389,7 +1413,7 @@ export async function runTurn(
         !!options?.signal?.aborted ||
         wrap.finalReason === "aborted";
       if (aborted) {
-        publishSummary();
+        await publishSummary();
         providerUsage = wrap.providerUsage ?? providerUsage;
         recordedProviderUsage = wrap.recordedProviderUsage || recordedProviderUsage;
         lastStreamReason = "aborted";
@@ -1404,7 +1428,7 @@ export async function runTurn(
       lastLlmErrorMessage = undefined;
       providerUsage = wrap.providerUsage ?? providerUsage;
       recordedProviderUsage = wrap.recordedProviderUsage || recordedProviderUsage;
-      publishSummary();
+      await publishSummary();
     } catch (err) {
       stopWrapSpinner();
       if (options?.signal?.aborted) {
@@ -1577,6 +1601,7 @@ export async function runTurn(
           source: "assistant",
         });
       }
+      await canonicalWriter.assistant(canonicalTurnId ?? null, streamResult.finalMessage);
       history.push(streamResult.finalMessage);
     }
 
@@ -1595,7 +1620,7 @@ export async function runTurn(
       });
       if (reason) {
         session.scorecard.inc("circuitBudgetWrapups");
-        appendNotExecutedResults(pendingToolCalls);
+        await appendNotExecutedResults(pendingToolCalls);
         await wrapUpStep(`Circuit budget exceeded (${reason}).`);
         break;
       }
@@ -1608,7 +1633,7 @@ export async function runTurn(
       const stepsUsed = step + 1;
       if (stepsUsed >= hardMaxSteps) {
         s.onSystemLines?.([`Reached the step limit (${stepsUsed}).`]);
-        appendNotExecutedResults(pendingToolCalls);
+        await appendNotExecutedResults(pendingToolCalls);
         await wrapUpStep("Hard per-turn step ceiling reached.");
         break;
       }
@@ -1635,13 +1660,13 @@ export async function runTurn(
           pauseController.abort();
         }
         if (options?.signal?.aborted) {
-          appendNotExecutedResults(pendingToolCalls);
+          await appendNotExecutedResults(pendingToolCalls);
           interrupted = true;
           break;
         }
         if (!cont) {
           s.onSystemLines?.(["Stopped at the step pause."]);
-          appendNotExecutedResults(pendingToolCalls);
+          await appendNotExecutedResults(pendingToolCalls);
           await wrapUpStep("Stopped at per-turn step pause.");
           break;
         }
@@ -1875,6 +1900,7 @@ export async function runTurn(
           artifactId,
         });
 
+        await canonicalWriter.result(canonicalTurnId ?? null, tc.toolCallId, tc.toolName, promptResultText, isError);
         history.push({
           role: "toolResult",
           toolCallId: tc.toolCallId,

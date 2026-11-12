@@ -16,6 +16,13 @@ export interface ToolCall {
   rawArgs?: string;
 }
 
+/** Ordered assistant content; tool arguments live only in `toolCalls`. */
+export type AssistantBlock =
+  | { type: "thinking"; thinking: string; signature: string }
+  | { type: "redacted_thinking"; data: string }
+  | { type: "text"; text: string }
+  | { type: "tool_use"; id: string };
+
 /** Canonical assistant message produced by the model. */
 export interface AssistantMessage {
   role: "assistant";
@@ -23,6 +30,7 @@ export interface AssistantMessage {
   thinking?: string;
   thinkingSignature?: string;
   toolCalls?: ToolCall[];
+  blocks?: AssistantBlock[];
 }
 
 /** Canonical conversation message model for history and turns. */

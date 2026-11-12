@@ -160,7 +160,9 @@ describe("terminal stream events", () => {
         expect(events).toContainEqual({ type: "text_delta", delta: "Partial" });
         expect(events.some((ev) => (ev as { type: string }).type === "tool_call_end")).toBe(false);
         expect(events.some((ev) => (ev as { type: string }).type === "error")).toBe(false);
-        expect(events.at(-1)).toEqual({ type: "done", reason, message: { role: "assistant", content: "Partial" } });
+        expect(events.at(-1)).toEqual({ type: "done", reason, message: {
+          role: "assistant", content: "Partial", blocks: [{ type: "text", text: "Partial" }],
+        } });
       });
     }
   }
@@ -191,7 +193,7 @@ describe("terminal stream events", () => {
         type: "usage",
         usage: { input: 5, output: 1, totalTokens: 9, cacheReadTokens: 1, cacheWriteTokens: 2 },
       },
-      { type: "done", reason: "stop", message: { role: "assistant", content: "Hi" } },
+      { type: "done", reason: "stop", message: { role: "assistant", content: "Hi", blocks: [{ type: "text", text: "Hi" }] } },
     ]);
   });
 
@@ -213,7 +215,7 @@ describe("terminal stream events", () => {
         usage: { input: 3, output: 4, totalTokens: 7, cacheReadTokens: 0, cacheWriteTokens: 0 },
       },
       { type: "tool_call_end", toolCall: { id: "toolu_1", name: "read_file", args: { path: "a.ts" }, rawArgs: '{"path":"a.ts"}' } },
-      { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [{ id: "toolu_1", name: "read_file", args: { path: "a.ts" }, rawArgs: '{"path":"a.ts"}' }] } },
+      { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [{ id: "toolu_1", name: "read_file", args: { path: "a.ts" }, rawArgs: '{"path":"a.ts"}' }], blocks: [{ type: "tool_use", id: "toolu_1" }] } },
     ]);
   });
 

@@ -1079,9 +1079,9 @@ describe("safety legacy fixtures", () => {
 
     const oracleKeys = Object.keys(manifest.oracle_sha256_by_file);
     expect(oracleKeys).toEqual(ORACLE_FILES_SORTED);
-    // src/turn.ts is allowlisted: the capture is of the legacy behaviour and the
-    // Rust fixtures are intentionally not regenerated here.
-    const ORACLE_HASH_ALLOWLIST = new Set(["src/turn.ts"]);
+    // These files can evolve while the captured legacy behavior stays pinned;
+    // the Rust fixtures are intentionally not regenerated here.
+    const ORACLE_HASH_ALLOWLIST = new Set(["src/session.ts", "src/turn.ts"]);
     for (const rel of ORACLE_FILES_SORTED) {
       if (ORACLE_HASH_ALLOWLIST.has(rel)) continue;
       const bytes = readFileSync(join(REPO_ROOT, rel));

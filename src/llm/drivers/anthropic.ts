@@ -11,6 +11,7 @@ import type {
   ConversationMessage,
   ToolDefinition,
   AssistantMessage,
+  AssistantBlock,
   ToolCall,
 } from "../types.js";
 import { parseSseStream } from "../sse.js";
@@ -88,6 +89,14 @@ export class AnthropicDriver implements LlmDriver {
     let switched = false;
 
     const accumulator = new ToolCallAccumulator();
+    const blocks = new Map<number, AssistantBlock>();
+    let blocksComplete = true;
+    const orderedBlocks = (calls: ToolCall[]): AssistantBlock[] | undefined => {
+      // A partial ordered list must not hide legacy content from streams missing block starts.
+      if (!blocksComplete || blocks.size === 0) return undefined;
+      const callIds = new Set(calls.map((call) => call.id));
+      return [...blocks.values()].filter((block) => block.type !== "tool_use" || callIds.has(block.id));
+    };
     let accumulatedContent = "";
     let accumulatedThinking = "";
     let thinkingSignature: string | undefined;
@@ -109,6 +118,7 @@ export class AnthropicDriver implements LlmDriver {
       thinking: accumulatedThinking || undefined,
       thinkingSignature,
       toolCalls: [],
+      blocks: orderedBlocks([]),
     });
 
     yield* runGuardedProviderStream({
@@ -174,34 +184,70 @@ export class AnthropicDriver implements LlmDriver {
         } else if (type === "content_block_start") {
           currentBlockIndex = parsed.index ?? 0;
           const block = parsed.content_block;
-          if (block?.type === "tool_use") {
+          if (block?.type === "thinking") {
+            const thinking = block.thinking ?? "";
+            const signature = block.signature ?? "";
+            blocks.set(currentBlockIndex, { type: "thinking", thinking, signature });
+            accumulatedThinking += thinking;
+            thinkingSignature = (thinkingSignature || "") + signature;
+            if (thinking) {
+              emittedDelta = true;
+              events.push({ type: "thinking_delta", delta: thinking });
+            }
+          } else if (block?.type === "redacted_thinking") {
+            if (typeof block.data === "string") {
+              blocks.set(currentBlockIndex, { type: "redacted_thinking", data: block.data });
+            } else {
+              blocksComplete = false;
+            }
+          } else if (block?.type === "text") {
+            const text = block.text ?? "";
+            blocks.set(currentBlockIndex, { type: "text", text });
+            accumulatedContent += text;
+            if (text) {
+              emittedDelta = true;
+              events.push({ type: "text_delta", delta: text });
+            }
+          } else if (block?.type === "tool_use") {
             const res = accumulator.processChunk({
               index: currentBlockIndex,
               id: block.id,
               name: block.name,
             });
             if (res.started) {
+              blocks.set(currentBlockIndex, { type: "tool_use", id: res.started.id });
               emittedDelta = true;
               events.push({ type: "tool_call_start", id: res.started.id, name: res.started.name });
             }
+          } else {
+            blocksComplete = false;
           }
         } else if (type === "content_block_delta") {
           const delta = parsed.delta;
           if (!delta) return { events };
+          const blockIndex = parsed.index ?? currentBlockIndex;
+          const block = blocks.get(blockIndex);
 
           if (delta.type === "text_delta") {
+            if (block?.type === "text") block.text += delta.text;
+            else blocksComplete = false;
             accumulatedContent += delta.text;
             emittedDelta = true;
             events.push({ type: "text_delta", delta: delta.text });
           } else if (delta.type === "thinking_delta") {
+            if (block?.type === "thinking") block.thinking += delta.thinking;
+            else blocksComplete = false;
             accumulatedThinking += delta.thinking;
             emittedDelta = true;
             events.push({ type: "thinking_delta", delta: delta.thinking });
           } else if (delta.type === "signature_delta") {
+            if (block?.type === "thinking") block.signature += delta.signature;
+            else blocksComplete = false;
             thinkingSignature = (thinkingSignature || "") + delta.signature;
           } else if (delta.type === "input_json_delta") {
+            if (block?.type !== "tool_use") blocksComplete = false;
             const res = accumulator.processChunk({
-              index: currentBlockIndex,
+              index: blockIndex,
               argsDelta: delta.partial_json,
             });
             if (res.delta) {
@@ -289,6 +335,7 @@ export class AnthropicDriver implements LlmDriver {
           thinking: accumulatedThinking || undefined,
           thinkingSignature: thinkingSignature || undefined,
           toolCalls: completedToolCalls.length > 0 ? completedToolCalls : undefined,
+          blocks: orderedBlocks(completedToolCalls),
         };
 
         events.push({
@@ -348,27 +395,45 @@ export class AnthropicDriver implements LlmDriver {
       } else if (msg.role === "assistant") {
         const contentParts: Array<Record<string, unknown>> = [];
 
-        // Preserve thinking block and signature if present
-        if (msg.thinking && msg.thinkingSignature) {
-          contentParts.push({
-            type: "thinking",
-            thinking: msg.thinking,
-            signature: msg.thinkingSignature,
-          });
-        }
-
-        if (msg.content) {
-          contentParts.push({ type: "text", text: msg.content });
-        }
-
-        if (msg.toolCalls) {
-          for (const tc of msg.toolCalls) {
+        const blockToolIds = new Set(msg.blocks?.filter((block) => block.type === "tool_use").map((block) => block.id));
+        const blocksCoverCalls = msg.toolCalls?.every((call) => blockToolIds.has(call.id)) ?? true;
+        if (msg.blocks !== undefined && blocksCoverCalls) {
+          const calls = new Map(msg.toolCalls?.map((call) => [call.id, call]));
+          for (const block of msg.blocks) {
+            if (block.type === "tool_use") {
+              const call = calls.get(block.id);
+              if (call) {
+                contentParts.push({ type: "tool_use", id: call.id, name: call.name, input: call.args });
+              }
+            } else if (block.type === "thinking" && (typeof block.signature !== "string" || !block.signature)) {
+              continue;
+            } else if (block.type !== "text" || block.text.trim() !== "") {
+              contentParts.push({ ...block });
+            }
+          }
+        } else {
+          // Preserve the legacy projection for messages without ordered blocks.
+          if (msg.thinking && msg.thinkingSignature) {
             contentParts.push({
-              type: "tool_use",
-              id: tc.id,
-              name: tc.name,
-              input: tc.args,
+              type: "thinking",
+              thinking: msg.thinking,
+              signature: msg.thinkingSignature,
             });
+          }
+
+          if (msg.content) {
+            contentParts.push({ type: "text", text: msg.content });
+          }
+
+          if (msg.toolCalls) {
+            for (const tc of msg.toolCalls) {
+              contentParts.push({
+                type: "tool_use",
+                id: tc.id,
+                name: tc.name,
+                input: tc.args,
+              });
+            }
           }
         }
 

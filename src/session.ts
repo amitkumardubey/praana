@@ -18,6 +18,7 @@ import {
 } from "./event-log.js";
 import { detectActivityLogNote } from "./tools/memory.js";
 import { StateGraph } from "./state-graph.js";
+import { CANONICAL_TRANSCRIPT_VERSION } from "./canonical-transcript.js";
 import {
   deleteStateGraphCheckpoint,
   findReplayStartIndex,
@@ -146,6 +147,7 @@ export class Session {
   nativeStatus: NativeAddonStatus | null = null;
   /** Whether native search (search_code / find_files) is available. */
   fffStatus: string | null = null;
+  canonicalTranscriptEnabled = false;
   incognito = false;
   digest: string | null = null;
   agentsContext: string | null = null;  // content from AGENTS.md / CLAUDE.md
@@ -261,12 +263,14 @@ export class Session {
   static createNew(id: string, cwd: string, config: PraanaConfig): Session {
     const startedAt = Date.now();
     const session = new Session(id, cwd, config, startedAt);
+    session.canonicalTranscriptEnabled = true;
 
     writeSessionMeta(config.session.log_dir, {
       session_id: id,
       started_at: startedAt,
       cwd,
       agent: APP_AGENT_ID,
+      canonical_transcript: { version: CANONICAL_TRANSCRIPT_VERSION },
     });
 
     return session;
@@ -399,6 +403,7 @@ export class Session {
     }
 
     const session = new Session(sessionId, cwd, cfg, meta.started_at);
+    session.canonicalTranscriptEnabled = meta.canonical_transcript?.version === CANONICAL_TRANSCRIPT_VERSION;
     session.noticeCapture = opts?.captureNotice;
     session.suppressLoggerStderr = opts?.suppressLoggerStderr ?? false;
     await session.initLogger();
@@ -425,7 +430,8 @@ export class Session {
         });
       },
     });
-    session.restoreWorkingMemory(allEvents);
+    // Checkpoint ids may refer to canonical events; resolve on the raw log.
+    session.restoreWorkingMemory(session.eventLog.readAll({ includeCanonical: true }));
 
     loadProjectContextField(session, cwd);
 
@@ -816,7 +822,7 @@ export class Session {
 
   /** Persist working-memory state for fast resume (issue #464). */
   persistStateGraphCheckpoint(): void {
-    const lastEvent = this.eventLog.getLastEvent();
+    const lastEvent = this.eventLog.getLastEvent({ includeCanonical: true });
     if (!lastEvent) return;
 
     const sessionDir = join(this.config.session.log_dir, this.id);
