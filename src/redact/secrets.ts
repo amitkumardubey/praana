@@ -67,6 +67,10 @@ function walk(value: unknown, depth: number): unknown {
   return value;
 }
 
+export function redactSecretsStrict<T>(value: T): T {
+  return walk(value, 0) as T;
+}
+
 export function redactSecrets(value: unknown): unknown {
   try {
     return walk(value, 0);

@@ -1,6 +1,22 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
-import { redactSecrets } from "../src/redact/secrets.js";
+import { redactSecrets, redactSecretsStrict } from "../src/redact/secrets.js";
+
+describe("redactSecretsStrict", () => {
+  it("uses the same redaction walk", () => {
+    const value = { key: "AKIAIOSFODNN7EXAMPLE" };
+    expect(redactSecretsStrict(value)).toEqual(redactSecrets(value));
+  });
+
+  it("propagates errors rather than returning the original value", () => {
+    const value = Object.defineProperty({}, "broken", {
+      enumerable: true,
+      get() { throw new Error("walk failed"); },
+    });
+    expect(redactSecrets(value)).toBe(value);
+    expect(() => redactSecretsStrict(value)).toThrow("walk failed");
+  });
+});
 
 describe("redactSecrets", () => {
   it("redacts AWS, GitHub, GitLab, OpenAI, Anthropic", () => {
