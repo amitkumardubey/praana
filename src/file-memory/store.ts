@@ -164,7 +164,7 @@ export function createFileMemoryStore(options: StoreOptions) {
       const exists = filenames.includes(targetName);
       if (!exists) {
         const existing = await entries(input.scope);
-        const matches = existing.memories.filter((entry) => similar(input, entry)).map(({ name, description }) => ({ name, description }));
+        const matches = existing.memories.filter((entry) => entry.name !== input.name && similar(input, entry)).map(({ name, description }) => ({ name, description }));
         if (matches.length) return { ok: false, error: "Similar memory exists; update it instead", similar: matches };
       }
       if (filenames.some((file) => file.toLowerCase() === targetName.toLowerCase() && file !== targetName)) return { ok: false, error: "Case-insensitive filename collision" };
