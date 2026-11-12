@@ -198,6 +198,22 @@ describe("edit_file confirmation", () => {
     expect(preview.some((line) => line.includes("more lines"))).toBe(false);
   });
 
+  it("does not overwrite a file changed while awaiting confirmation", async () => {
+    const session = makeSession();
+    const cwd = makeWorkDir();
+    const file = join(cwd, "race.txt");
+    writeFileSync(file, "original");
+    session.setConfirmHandler(async () => {
+      writeFileSync(file, "changed externally");
+      return true;
+    });
+    const result = await systemToolsWith(session, cwd).edit_file.execute({
+      path: "race.txt", oldText: "original", newText: "replacement",
+    });
+    expect(result).toEqual({ ok: false, error: "File changed while waiting for confirmation; nothing was written" });
+    expect(readFileSync(file, "utf-8")).toBe("changed externally");
+  });
+
   it("returns the cancelled error and leaves the bytes untouched on no", async () => {
     const session = makeSession();
     const cwd = makeWorkDir();

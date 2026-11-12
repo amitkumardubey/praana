@@ -715,7 +715,8 @@ export function createSystemTools(ctx: SystemToolContext) {
             return { ok: false, error: `File not found: ${path}` };
           }
 
-          const content = readFileSync(absPath, "utf-8");
+          const originalBytes = readFileSync(absPath);
+          const content = originalBytes.toString("utf-8");
 
           // Exact match via indexOf — no regex, handles all special chars
           const idx = content.indexOf(oldText);
@@ -756,6 +757,9 @@ export function createSystemTools(ctx: SystemToolContext) {
               : null;
             if (!decision?.allowed) {
               return { ok: false, error: actionRefusalError("edit", decision) };
+            }
+            if (!readFileSync(absPath).equals(originalBytes)) {
+              return { ok: false, error: "File changed while waiting for confirmation; nothing was written" };
             }
           }
 
