@@ -133,6 +133,8 @@ export function capConfirmPreview(preview: readonly string[], rows: number): str
  * out of the frame. Tabs are expanded first: the terminal advances them to a
  * stop, which would otherwise widen the row past what was measured.
  */
+const GRAPHEME_SEGMENTER = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+
 export function fitPreviewRows(
   preview: readonly string[],
   innerWidth: number,
@@ -142,7 +144,7 @@ export function fitPreviewRows(
     if (Bun.stringWidth(expanded) <= innerWidth) return expanded;
     let fitted = "";
     let width = 0;
-    for (const { segment } of new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(expanded)) {
+    for (const { segment } of GRAPHEME_SEGMENTER.segment(expanded)) {
       const columns = Bun.stringWidth(segment);
       if (width + columns > innerWidth - 1) break;
       fitted += segment;
@@ -158,7 +160,7 @@ function expandTabs(line: string): string {
   const TAB_WIDTH = 4;
   let out = "";
   let width = 0;
-  for (const { segment } of new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(line)) {
+  for (const { segment } of GRAPHEME_SEGMENTER.segment(line)) {
     if (segment === "\t") {
       const spaces = TAB_WIDTH - (width % TAB_WIDTH);
       out += " ".repeat(spaces);
@@ -216,7 +218,7 @@ export function ConfirmOverlay(props: ConfirmOverlayProps) {
   const previewHidden = () => hasPreview() && previewRows() < CONFIRM_MIN_PREVIEW_ROWS;
   const innerWidth = () => overlayFrameInnerWidth(dimensions().width, CONFIRM_FRAME_WIDTH);
   const previewLines = () =>
-    previewHidden() ? [] : capConfirmPreview(fitPreviewRows(preview(), innerWidth()), previewRows());
+    previewHidden() ? [] : fitPreviewRows(capConfirmPreview(preview(), previewRows()), innerWidth());
   const maxHeight = () => confirmFrameMaxHeight(dimensions().height, hasPreview());
 
   return (

@@ -3,7 +3,7 @@
  * arm delay. Ctrl+C is not consumed, including during that window, so the
  * global handler can abort the turn.
  */
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { createTestRenderer } from "@opentui/core/testing";
 import { render } from "@opentui/solid";
 import { createComponent } from "solid-js";
@@ -385,6 +385,20 @@ describe("action confirmation preview (#748)", () => {
     expect(frame).toContain("+ new");
     setup.renderer.destroy();
     overlay.dispose();
+  });
+
+  it("fits only retained preview rows", async () => {
+    const width = spyOn(Bun, "stringWidth");
+    try {
+      const preview = Array.from({ length: 200 }, (_, i) => `UNIQUE-PREVIEW-${i}`);
+      const { setup, overlay } = await mount(0, { mode: "yesno", preview });
+      const measured = width.mock.calls.filter(([text]) => typeof text === "string" && text.startsWith("UNIQUE-PREVIEW-"));
+      expect(measured.length).toBeLessThan(100);
+      setup.renderer.destroy();
+      overlay.dispose();
+    } finally {
+      width.mockRestore();
+    }
   });
 
   it("shows the elided count once for a 200-line preview", async () => {
