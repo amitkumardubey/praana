@@ -403,3 +403,159 @@ describe("action confirmation preview (#748)", () => {
     overlay.dispose();
   });
 });
+
+/** Inner text of each screen row that sits between the frame borders. */
+function innerRows(frame: string): string[] {
+  return frame
+    .split("\n")
+    .filter((line) => line.includes("│"))
+    // Exclude the one-column padding on either side of the frame.
+    .map((line) => line.slice(line.indexOf("│") + 2, line.lastIndexOf("│") - 1));
+}
+
+const SHORT_PREVIEW = [
+  "--- a.txt:2 (before)",
+  "- old line one",
+  "- old line two",
+  "+++ a.txt:2 (after)",
+  "+ new line one",
+  "+ new line two",
+  "+ new line three",
+];
+
+describe("action preview on a short terminal (#748)", () => {
+  it("shows several preview rows at 80x24", async () => {
+    const { setup, overlay } = await mount(0, {
+      mode: "yesno",
+      message: "Apply edit? [y/N]",
+      preview: SHORT_PREVIEW,
+      width: 80,
+      height: 24,
+    });
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("Apply edit?");
+    expect(frame).toContain("y = yes");
+    // A preview-carrying prompt may use height - 2 rows, so 24 rows fit well
+    // past the three-row floor.
+    expect(confirmPreviewRows(24, 1, true)).toBeGreaterThanOrEqual(3);
+    for (const line of SHORT_PREVIEW) expect(frame).toContain(line);
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+
+  it("still shows at least three preview rows at 80x14", async () => {
+    const { setup, overlay } = await mount(0, {
+      mode: "yesno",
+      message: "Apply edit? [y/N]",
+      preview: SHORT_PREVIEW,
+      width: 80,
+      height: 14,
+    });
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("Apply edit?");
+    expect(frame).toContain("y = yes");
+    expect(frame).not.toContain("preview does not fit");
+    const shown = innerRows(frame).filter((row) => SHORT_PREVIEW.includes(row.trim()));
+    expect(shown.length).toBeGreaterThanOrEqual(3);
+    expect(frame).toContain("more lines");
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+
+  it("says the preview does not fit at 80x10 instead of asking blind", async () => {
+    const { setup, overlay } = await mount(0, {
+      mode: "yesno",
+      message: "Apply edit? [y/N]",
+      preview: SHORT_PREVIEW,
+      width: 80,
+      height: 10,
+    });
+    const frame = setup.captureCharFrame();
+    // Two rows of room left cannot hold three preview rows, so say so and keep
+    // the question and the hint: an approval prompt must not hide the change.
+    expect(frame).toContain("preview does not fit: enlarge the terminal to review");
+    expect(frame).toContain("Apply edit?");
+    expect(frame).toContain("y = yes");
+    expect(frame).not.toContain("--- a.txt:2 (before)");
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+
+  it("does not render even a single preview row when there is no room", async () => {
+    const { setup, overlay } = await mount(0, {
+      mode: "yesno", message: "Apply edit? [y/N]", preview: ["UNIQUE PREVIEW"], width: 80, height: 10,
+    });
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("preview does not fit");
+    expect(frame).toContain("Apply edit?");
+    expect(frame).toContain("y = yes");
+    expect(frame).not.toContain("UNIQUE PREVIEW");
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+
+  it("leaves a risk prompt on the shorter frame it always had", async () => {
+    // No preview, so no extra rows and no "does not fit" note even at 80x10.
+    const { setup, overlay } = await mount(0, {
+      mode: "yesno",
+      message: "shell: rm -rf build",
+      width: 80,
+      height: 10,
+    });
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("shell: rm -rf build");
+    expect(frame).toContain("y = yes");
+    expect(frame).not.toContain("preview does not fit");
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+});
+
+describe("action preview line width (#748)", () => {
+  it("truncates a long preview line to the frame's inner width", async () => {
+    const long = `- ${"x".repeat(200)}`;
+    const { setup, overlay } = await mount(0, {
+      mode: "yesno",
+      message: "Apply edit? [y/N]",
+      preview: [long, "+ short"],
+      width: 80,
+      height: 24,
+    });
+    const frame = setup.captureCharFrame();
+    const inner = innerRows(frame);
+    // 64-column frame, 4 chrome columns: 60 columns of text.
+    const width = 60;
+    const row = inner.find((line) => line.trimStart().startsWith("- xxx"));
+    expect(row).toBeDefined();
+    expect(row?.trimEnd()).toHaveLength(width);
+    expect(row?.trimEnd().endsWith("\u2026")).toBe(true);
+    // One terminal row per preview line: the hint and question stay on screen.
+    expect(frame).toContain("Apply edit?");
+    expect(frame).toContain("y = yes");
+    expect(frame).toContain("+ short");
+    for (const line of inner) expect(line.length).toBeLessThanOrEqual(width);
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+
+  it("expands tabs before measuring so a tabbed line cannot wrap", async () => {
+    const preview = [`- \t${"y".repeat(200)}`];
+    const { setup, overlay } = await mount(0, {
+      mode: "yesno",
+      message: "Apply edit? [y/N]",
+      preview,
+      width: 80,
+      height: 24,
+    });
+    const frame = setup.captureCharFrame();
+    expect(frame).not.toContain("\t");
+    const inner = innerRows(frame);
+    for (const line of inner) expect(line.length).toBeLessThanOrEqual(60);
+    expect(frame).toContain("Apply edit?");
+    expect(frame).toContain("y = yes");
+    // The tab is spaces, so the row still starts with the diff marker.
+    expect(inner.some((line) => /^- +y+/.test(line.trimEnd()))).toBe(true);
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+});

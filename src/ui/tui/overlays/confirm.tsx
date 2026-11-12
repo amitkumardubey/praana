@@ -193,7 +193,7 @@ export function ConfirmOverlay(props: ConfirmOverlayProps) {
   const previewHidden = () => hasPreview() && previewRows() < CONFIRM_MIN_PREVIEW_ROWS;
   const innerWidth = () => overlayFrameInnerWidth(dimensions().width, CONFIRM_FRAME_WIDTH);
   const previewLines = () =>
-    capConfirmPreview(fitPreviewRows(preview(), innerWidth()), previewRows());
+    previewHidden() ? [] : capConfirmPreview(fitPreviewRows(preview(), innerWidth()), previewRows());
   const maxHeight = () => confirmFrameMaxHeight(dimensions().height, hasPreview());
 
   return (
