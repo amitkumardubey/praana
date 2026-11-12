@@ -24,7 +24,7 @@ import * as prompt from "../src/risk/prompt.js";
 import { Session } from "../src/session.js";
 import { createSystemTools } from "../src/tools/system.js";
 import { createGitTools, runGitCommit, runGitStatus } from "../src/tools/git.js";
-import { actionPreviewLines, writeActionConfirmPreview, type ActionConfirmRequest } from "../src/confirm/action.js";
+import { ACTION_PREVIEW_MAX_LINES, actionPreviewLines, writeActionConfirmPreview, type ActionConfirmRequest } from "../src/confirm/action.js";
 import { capConfirmPreview, confirmPreviewRows } from "../src/ui/tui/overlays/confirm.js";
 import { createOverlayUi } from "../src/ui/tui/overlays/state.js";
 import { setUiWriters } from "../src/ui.js";
@@ -134,6 +134,37 @@ describe("action preview sanitization", () => {
     expect(lines.at(-1)).toBe("line 499");
     expect(lines.filter((line) => line.includes("more lines"))).toHaveLength(1);
   });
+  it("bounds rows before sanitizing and preserves the retained head and tail", () => {
+    const text = Array.from({ length: 200_000 }, (_, i) => `row ${i}\u200b\r`).join("\n");
+    const originalReplace = String.prototype.replace;
+    let replacements = 0;
+    const replace = spyOn(String.prototype, "replace").mockImplementation(function (this: string, pattern: string | RegExp, replacement: string) {
+      replacements++;
+      return originalReplace.call(this, pattern, replacement);
+    });
+    let lines: string[];
+    try {
+      lines = actionPreviewLines({ question: "?", preview: [{ text, tone: "plain" }] });
+    } finally {
+      replace.mockRestore();
+    }
+    expect(replacements).toBeLessThanOrEqual(ACTION_PREVIEW_MAX_LINES * 2);
+    expect(lines).toHaveLength(ACTION_PREVIEW_MAX_LINES);
+    expect(lines[0]).toBe("row 0·␍");
+    expect(lines[199]).toBe("row 199·␍");
+    expect(lines[200]).toBe("... 199601 more lines");
+    expect(lines[201]).toBe("row 199801·␍");
+    expect(lines.at(-1)).toBe("row 199999·␍");
+  });
+
+  it("preserves all small preview rows and their sanitization", () => {
+    const preview: ActionConfirmRequest["preview"] = [
+      { text: "a\tb\r\nc\u200b", tone: "plain" },
+      { text: "\nend\r", tone: "add" },
+    ];
+    expect(actionPreviewLines({ question: "?", preview })).toEqual(["a\tb␍", "c·", "", "end␍"]);
+  });
+
   it("replaces each unsafe invisible and bidi character", () => {
     const ranges = [[0x00, 0x08], [0x0b, 0x1f], [0x7f, 0x9f], [0x00ad, 0x00ad],
       [0x061c, 0x061c], [0x180e, 0x180e], [0x200b, 0x200f], [0x2028, 0x202e],

@@ -108,15 +108,18 @@ const UNPROMPTABLE = {
  * bounds pathological diffs while retaining both ends and a count.
  */
 export function actionPreviewLines(request: ActionConfirmRequest): string[] {
+  const lines = request.preview.flatMap((line) => line.text.split("\n"));
   // Replace terminal controls visibly; newline has already separated the rows.
-  const lines = request.preview.flatMap((line) =>
-    line.text.split("\n").map((row) => row.replace(/\r$/, "␍").replace(UNSAFE_PREVIEW_CHARACTERS, "·")),
-  );
-  if (lines.length <= ACTION_PREVIEW_MAX_LINES) return lines;
+  const sanitize = (row: string) => row.replace(/\r$/, "␍").replace(UNSAFE_PREVIEW_CHARACTERS, "·");
+  if (lines.length <= ACTION_PREVIEW_MAX_LINES) return lines.map(sanitize);
   const keep = ACTION_PREVIEW_MAX_LINES - 1;
   const head = Math.ceil(keep / 2);
   const tail = Math.floor(keep / 2);
-  return [...lines.slice(0, head), `... ${lines.length - keep} more lines`, ...lines.slice(-tail)];
+  return [
+    ...lines.slice(0, head).map(sanitize),
+    `... ${lines.length - keep} more lines`,
+    ...lines.slice(-tail).map(sanitize),
+  ];
 }
 
 /** Classic terminal preview: today's coloured stderr output, before the question. */
