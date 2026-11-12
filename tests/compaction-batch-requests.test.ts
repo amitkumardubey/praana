@@ -311,6 +311,23 @@ test("oversized repair input and over-cap repaired output fail atomically", asyn
   expect(nextBatchSummaryRequest(planned, [{ result: response("bad"), repair: response(overCap) }])).toMatchObject({ status: "failed", reason: "invalid_summary" });
 });
 
+test("a later batch that exceeds real capacity reports measured and allowed tokens rather than invalid sequencing", async () => {
+  const { buildBatchSummaryRequest, nextBatchSummaryRequest } = await api();
+  const planned = await plan();
+  // Reduce the first batch to keep it admissible when exercising the later fit guard.
+  planned.batches[0].messages = [{ role: "user", content: "small first batch" }];
+  const previous = response(summary("Actual previous summary."));
+  const second = planned.batches[1];
+  const request = buildBatchSummaryRequest(planned.template, second, { ...planned.options, cutDescription: second.cutDescription, previousSummary: previous.text });
+  const inputTokens = tokens(request);
+  planned.options.contextWindowTokens = inputTokens + planned.options.effectiveMaxTokens - 1;
+  expect(nextBatchSummaryRequest(planned, [])).toMatchObject({ status: "request", batchIndex: 0 });
+  const result = nextBatchSummaryRequest(planned, [{ result: previous }]);
+  expect(result).toEqual({ status: "failed", reason: "batch_exceeds_capacity", batchIndex: 1, inputTokens, usableTokens: inputTokens - 1 });
+  expect(result).not.toHaveProperty("summary");
+  expect(result).not.toHaveProperty("boundaryEventId");
+});
+
 test("out-of-sequence extra results and unnecessary repairs cannot publish a completed summary", async () => {
   const { nextBatchSummaryRequest } = await api();
   const planned = await plan();

@@ -212,6 +212,7 @@ export interface BatchSummaryAttempt {
 export type NextBatchSummaryResult =
   | { status: "request"; batchIndex: number; attempt: 0 | 1; request: StreamRequest; fill: RequestFill }
   | { status: "complete"; summary: string; boundaryEventId: string }
+  | { status: "failed"; reason: "batch_exceeds_capacity"; batchIndex: number; inputTokens: number; usableTokens: number }
   | (SummaryAttemptFailure & { batchIndex: number })
   | CapacityErrorOutcome;
 
@@ -229,7 +230,8 @@ export function nextBatchSummaryRequest(plan: BatchSummaryPlan, attempts: readon
     const request = buildBatchSummaryRequest(plan.template, batch, { ...plan.options, cutDescription: batch.cutDescription, previousSummary });
     const measured = requestFill(request, request.messages, plan.options.contextWindowTokens, plan.options);
     if (!measured.ok) return measured.error;
-    if (!measured.fill.fits) return { status: "failed", reason: "invalid_attempts", batchIndex: index };
+    if (!measured.fill.fits) return { status: "failed", reason: "batch_exceeds_capacity", batchIndex: index,
+      inputTokens: measured.fill.inputTokens, usableTokens: measured.fill.usableTokens };
     const attempt = attempts[index];
     if (!attempt) return { status: "request", batchIndex: index, attempt: 0, request, fill: measured.fill };
     const failure = checkResult(attempt.result, plan.options.capTokens);
