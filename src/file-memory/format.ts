@@ -18,7 +18,13 @@ export function validName(name: unknown): name is string {
   return typeof name === "string" && namePattern.test(name) && !reserved.test(name);
 }
 
-export function validatePolicy(input: MemoryInput): string | null {
+const stopWords = new Set("a an and are as at be been but by for from had has have he her his i if in into is it its me my not of on or our she so than that the their them then there these they this those to too us was we were what when where which who will with you your".split(" "));
+export function searchTokens(text: string): string[] {
+  return [...new Set((text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter((token) => !stopWords.has(token)))];
+}
+
+export function validatePolicy(input: MemoryInput | { query: string }): string | null {
+  if ("query" in input) return searchTokens(input.query).length ? null : "Query is empty or contains only stop-words";
   if (!input.description.trim() || Array.from(input.description).length > 300 || /[\r\n]/.test(input.description)) return "Description must be one line and at most 300 characters";
   if ((input.type === "feedback" || input.type === "project") && (!/^\*\*Why:\*\*[ \t]*\S/m.test(input.body) || !/^\*\*How to apply:\*\*[ \t]*\S/m.test(input.body))) return "Add **Why:** and **How to apply:** lines";
   return null;

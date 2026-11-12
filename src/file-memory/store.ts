@@ -3,9 +3,10 @@ import * as nodeFs from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { redactSecretsStrict } from "../redact/secrets.js";
-import { parseMemory, serializeMemory, validName, validateMemory, type Memory, type MemoryInput } from "./format.js";
+import { parseMemory, serializeMemory, validName, validateMemory, validatePolicy, type Memory, type MemoryInput } from "./format.js";
 import { memoryDirectories, projectKey, type MemoryScope } from "./paths.js";
 import { buildMemoryIndex as renderMemoryIndex, type MemoryIndex } from "./index.js";
+import { rankMemories, type RecallMatch, type ScopedMemory } from "./recall.js";
 
 export interface StoreOptions {
   home: string;
@@ -227,5 +228,20 @@ export function createFileMemoryStore(options: StoreOptions) {
     if (!data.ok) throw new Error(data.error);
     return renderMemoryIndex({ entries: data.entries.map((entry) => ({ ...entry, file: join(dirs[entry.scope], `${entry.name}.md`) })) });
   }
-  return { write, read, remove, list, buildMemoryIndex };
+  async function recall(input: { query?: string; name?: string }): Promise<{ ok: true; memory: ScopedMemory } | { ok: true; matches: RecallMatch[] } | ResultError> {
+    if ((input.query !== undefined) === (input.name !== undefined)) return { ok: false, error: "Provide exactly one of query or name" };
+    if (input.name !== undefined) return read({ name: input.name });
+    if (typeof input.query !== "string") return { ok: false, error: "Query must be a string" };
+    const invalid = validatePolicy({ query: input.query });
+    if (invalid) return { ok: false, error: invalid };
+    try {
+      const memories: ScopedMemory[] = [];
+      for (const scope of scopes) {
+        const data = await entries(scope);
+        for (const memory of data.memories) memories.push({ ...memory, scope });
+      }
+      return { ok: true, matches: rankMemories(memories, input.query) };
+    } catch (error) { return errorResult(error); }
+  }
+  return { write, read, remove, list, buildMemoryIndex, recall };
 }
