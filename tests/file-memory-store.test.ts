@@ -53,7 +53,9 @@ describe("file memory store", () => {
     await fs.unlink(stray);
     if (kind === "symlink") await fs.symlink(join(home, "missing"), stray);
     else await fs.mkdir(stray);
-    expect(await store.remove({ name: "coffee" })).toMatchObject({ ok: true });
+    expect(await store.remove({ name: "coffee" })).toMatchObject({
+      ok: true, skipped: [{ scope: badScope, reason: expect.stringMatching(/regular.*non-symlink/i) }],
+    });
     const goodScope = badScope === "project" ? "global" : "project";
     expect(await fs.exists(join(dirs[goodScope], "coffee.md"))).toBe(false);
     const stat = await fs.lstat(stray);
@@ -62,6 +64,23 @@ describe("file memory store", () => {
     expect(onlyStray.ok).toBe(false);
     if (!onlyStray.ok) expect(onlyStray.error).toMatch(/regular.*non-symlink/);
   });
+  test.each(["project", "global"] as const)("skips an unsafe %s directory while removing the other scope's memory", async (badScope) => {
+    const { home, store } = await setup();
+    const dirs = memoryDirectories(home, projectKey(home, (cwd) => cwd));
+    const goodScope = badScope === "project" ? "global" : "project";
+    expect((await store.write({ ...input, scope: goodScope })).ok).toBe(true);
+    const outside = join(home, "outside");
+    await fs.mkdir(outside);
+    await fs.mkdir(join(dirs[badScope], ".."), { recursive: true });
+    await fs.symlink(outside, dirs[badScope]);
+    const explicit = await store.remove({ name: "coffee", scope: badScope });
+    expect(explicit).toMatchObject({ ok: false, error: expect.stringContaining(dirs[badScope]) });
+    const result = await store.remove({ name: "coffee" });
+    expect(result).toMatchObject({ ok: true, skippedScopes: [{ scope: badScope, reason: expect.stringContaining(dirs[badScope]) }] });
+    expect(await fs.exists(join(dirs[goodScope], "coffee.md"))).toBe(false);
+    expect(await fs.readdir(outside)).toEqual([]);
+  });
+
   test("two non-removable entries give a clear error, never ambiguity", async () => {
     const { home, store } = await setup();
     const dirs = memoryDirectories(home, projectKey(home, (cwd) => cwd));

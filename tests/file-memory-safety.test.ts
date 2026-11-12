@@ -91,10 +91,51 @@ for (const component of ["memory", "projects", "key", "project-memory"]) {
     await fs.symlink(outside, path);
     const store = make(home);
     expect((await store.write({ ...entry, scope: component === "memory" ? "global" : "project" })).ok).toBe(false);
-    expect((await store.list({})).ok).toBe(false);
+    const scope = component === "memory" ? "global" : "project";
+    expect((await store.list({ scope })).ok).toBe(false);
+    expect(await store.list()).toMatchObject({ ok: true, skippedScopes: [{ scope, reason: expect.stringContaining(path) }] });
     expect(await fs.readdir(outside)).toEqual([]);
   });
 }
+
+test.each(["project", "global"] as const)("list and query recall skip an unsafe %s directory", async (badScope) => {
+  const home = await homeDir(), outside = await homeDir();
+  const { memoryDirectories, projectKey } = await import("../src/file-memory/paths.js");
+  const dirs = memoryDirectories(home, projectKey(home, (cwd) => cwd));
+  const store = make(home), goodScope = badScope === "project" ? "global" : "project";
+  expect((await store.write({ ...entry, scope: goodScope })).ok).toBe(true);
+  await fs.mkdir(join(dirs[badScope], ".."), { recursive: true });
+  await fs.symlink(outside, dirs[badScope]);
+  const warnings = [{ scope: badScope, reason: expect.stringContaining(dirs[badScope]) }];
+  const listed = await store.list();
+  expect(listed).toMatchObject({ ok: true, skippedScopes: warnings });
+  expect(listed.entries.map(({ name, scope }) => ({ name, scope }))).toEqual([{ name: "alpha", scope: goodScope }]);
+  const recalled = await store.recall({ query: "complete" });
+  expect(recalled).toMatchObject({ ok: true, matches: [{ name: "alpha", scope: goodScope }], skippedScopes: warnings });
+  expect(await store.list({ scope: badScope })).toMatchObject({ ok: false, error: expect.stringContaining(dirs[badScope]) });
+  const index = await store.buildMemoryIndex();
+  expect(index).toMatchObject({ ok: true, total: 1, skippedScopes: warnings });
+  await fs.rm(dirs[goodScope], { recursive: true });
+  await fs.symlink(outside, dirs[goodScope]);
+  for (const result of [await store.list(), await store.recall({ query: "complete" }), await store.remove({ name: "alpha" })]) {
+    expect(result).toMatchObject({ ok: false, error: expect.stringContaining("Unsafe memory directory"), skippedScopes: expect.arrayContaining(warnings) });
+  }
+});
+
+test.skipIf(process.platform === "win32" || process.getuid?.() === 0)("unavailable scope is reported while the other scope remains usable", async () => {
+  const home = await homeDir();
+  const { memoryDirectories, projectKey } = await import("../src/file-memory/paths.js");
+  const dirs = memoryDirectories(home, projectKey(home, (cwd) => cwd));
+  const store = make(home);
+  for (const scope of ["project", "global"] as const) expect((await store.write({ ...entry, scope })).ok).toBe(true);
+  await fs.chmod(dirs.project, 0);
+  try {
+    const warnings = [{ scope: "project", reason: expect.stringContaining("EACCES") }];
+    expect(await store.list()).toMatchObject({ ok: true, entries: [{ name: "alpha", scope: "global" }], skippedScopes: warnings });
+    expect(await store.recall({ query: "complete" })).toMatchObject({ ok: true, matches: [{ name: "alpha", scope: "global" }], skippedScopes: warnings });
+    expect(await store.remove({ name: "alpha" })).toMatchObject({ ok: true, skippedScopes: warnings });
+  } finally { await fs.chmod(dirs.project, 0o700); }
+});
 
 test("refuses even contained symlinks below the trusted root", async () => {
   const home = await homeDir();

@@ -17,7 +17,10 @@ export interface StoreOptions {
   incognito?: boolean;
   findRoot?: (cwd: string) => string;
 }
-type ResultError = { ok: false; error: string; similar?: Array<{ name: string; description: string }> };
+type SkippedScope = { scope: MemoryScope; reason: string };
+type ScopeWarnings = { skippedScopes?: SkippedScope[] };
+type ResultError = { ok: false; error: string; similar?: Array<{ name: string; description: string }> } & ScopeWarnings;
+const scopeWarnings = (skippedScopes: SkippedScope[]): ScopeWarnings => skippedScopes.length ? { skippedScopes } : {};
 type ListEntry = Omit<Memory, "body"> & { scope: MemoryScope; age: number; stale: boolean };
 const scopes: MemoryScope[] = ["project", "global"];
 const missing = (error: unknown) => (error as NodeJS.ErrnoException)?.code === "ENOENT";
@@ -122,6 +125,17 @@ export function createFileMemoryStore(options: StoreOptions) {
     return { memories, skipped, filenames };
   }
 
+  async function visitScopes<T>(requested: MemoryScope | undefined, visit: (scope: MemoryScope) => Promise<T>) {
+    const values: T[] = [];
+    const skippedScopes: SkippedScope[] = [];
+    for (const scope of requested ? [requested] : scopes) {
+      try { values.push(await visit(scope)); }
+      catch (error) { skippedScopes.push({ scope, reason: errorResult(error).error }); }
+    }
+    if (!values.length) return { ok: false as const, error: skippedScopes.map(({ scope, reason }) => `${scope}: ${reason}`).join("; "), skippedScopes };
+    return { ok: true as const, values, ...scopeWarnings(skippedScopes) };
+  }
+
   // Strip only generic affixes, or require 0.6 Jaccard overlap of word tokens.
   function similar(a: MemoryInput, b: Memory): boolean {
     const normalize = (s: string) => s.replace(/(?:^|-)(?:the|a|an|note|memory)(?=-|$)/g, "").replace(/-+/g, "-").replace(/^-|-$/g, "");
@@ -196,46 +210,52 @@ export function createFileMemoryStore(options: StoreOptions) {
     } catch (error) { return errorResult(error); }
   }
 
-  async function remove(input: { scope?: MemoryScope; name: string }): Promise<{ ok: true } | ResultError> {
+  async function remove(input: { scope?: MemoryScope; name: string }): Promise<({ ok: true; skipped?: SkippedScope[] } & ScopeWarnings) | ResultError> {
     if (rootError) return rootError;
     if (options.incognito) return { ok: false, error: "Incognito mode prevents removal" };
     if (!validName(input.name)) return { ok: false, error: "Invalid memory name" };
     try {
-      const found: Array<{ dir: string; scope: MemoryScope }> = [];
-      const skipped: MemoryScope[] = [];
-      for (const scope of input.scope ? [input.scope] : scopes) {
+      const skipped: SkippedScope[] = [];
+      const skip = (scope: MemoryScope) => skipped.push({ scope, reason: "Only regular, non-symlink memory files can be removed" });
+      const scanned = await visitScopes(input.scope, async (scope) => {
         const dir = await directory(scope, false);
-        if (!dir) continue;
+        if (!dir) return null;
         let handle: nodeFs.FileHandle | undefined;
         try {
           const path = join(dir, `${input.name}.md`);
           const stat = await fs.lstat(path);
-          if (!stat.isFile() || stat.isSymbolicLink()) { skipped.push(scope); continue; }
+          if (!stat.isFile() || stat.isSymbolicLink()) { skip(scope); return null; }
           handle = await fs.open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-          if (!(await handle.stat()).isFile()) { skipped.push(scope); continue; }
-          found.push({ dir, scope });
+          if (!(await handle.stat()).isFile()) { skip(scope); return null; }
+          return { dir, scope };
         } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "ELOOP") skipped.push(scope);
+          if ((error as NodeJS.ErrnoException).code === "ELOOP") skip(scope);
           else if (!missing(error)) throw error;
         }
         finally { if (handle) await handle.close(); }
-      }
-      if (found.length > 1) return { ok: false, error: "Memory exists in both project and global scopes; specify scope" };
+        return null;
+      });
+      if (!scanned.ok) return scanned;
+      const warnings = scopeWarnings(scanned.skippedScopes ?? []);
+      const found = scanned.values.filter((match) => match !== null);
+      if (found.length > 1) return { ok: false, error: "Memory exists in both project and global scopes; specify scope", ...warnings };
       const match = found[0];
-      if (!match) return { ok: false, error: skipped.length ? `Only regular, non-symlink memory files can be removed; skipped ${skipped.join(", ")} scopes` : "Memory not found" };
+      if (!match) return { ok: false, error: skipped.length ? `Only regular, non-symlink memory files can be removed; skipped ${skipped.map(({ scope }) => scope).join(", ")} scopes` : scanned.skippedScopes?.map(({ scope, reason }) => `${scope}: ${reason}`).join("; ") ?? "Memory not found", ...warnings };
       await fs.unlink(join(match.dir, `${input.name}.md`));
       await refreshIndexFile(match.scope);
-      return { ok: true };
+      return { ok: true, ...warnings, ...(skipped.length ? { skipped } : {}) };
     } catch (error) { return errorResult(error); }
   }
 
-  async function list(input: { scope?: MemoryScope } = {}): Promise<{ ok: true; entries: ListEntry[]; skipped: number } | ({ entries: ListEntry[]; skipped: number } & ResultError)> {
+  async function list(input: { scope?: MemoryScope } = {}): Promise<({ ok: true; entries: ListEntry[]; skipped: number } & ScopeWarnings) | ({ entries: ListEntry[]; skipped: number } & ResultError)> {
     if (rootError) return { ...rootError, entries: [], skipped: 0 };
     try {
       const result: ListEntry[] = [];
       let skipped = 0;
-      for (const scope of input.scope ? [input.scope] : scopes) {
-        const data = await entries(scope, true);
+      const scanned = await visitScopes(input.scope, async (scope) => ({ scope, ...await entries(scope, true) }));
+      if (!scanned.ok) return { ...scanned, entries: [], skipped: 0 };
+      for (const data of scanned.values) {
+        const { scope } = data;
         skipped += data.skipped;
         for (const { body: _body, ...memory } of data.memories) {
           const age = Math.max(0, Math.floor((now().getTime() - Date.parse(memory.updated)) / 86400000));
@@ -243,15 +263,15 @@ export function createFileMemoryStore(options: StoreOptions) {
         }
       }
       result.sort((a, b) => b.updated.localeCompare(a.updated) || a.name.localeCompare(b.name) || a.scope.localeCompare(b.scope));
-      return { ok: true, entries: result, skipped };
+      return { ok: true, entries: result, skipped, ...scopeWarnings(scanned.skippedScopes ?? []) };
     } catch (error) { return { ...errorResult(error), entries: [], skipped: 0 }; }
   }
-  async function buildMemoryIndex(input: { scope?: MemoryScope } = {}): Promise<MemoryIndex & ({ ok: true } | ResultError)> {
+  async function buildMemoryIndex(input: { scope?: MemoryScope } = {}): Promise<MemoryIndex & (({ ok: true } & ScopeWarnings) | ResultError)> {
     const data = await list(input);
     if (!data.ok) return { ...data, text: "", truncated: false, shown: 0, total: 0 };
-    return { ok: true, ...renderMemoryIndex({ entries: data.entries.map((entry) => ({ ...entry, file: `${entry.scope}/${entry.name}.md` })) }) };
+    return { ok: true, ...scopeWarnings(data.skippedScopes ?? []), ...renderMemoryIndex({ entries: data.entries.map((entry) => ({ ...entry, file: `${entry.scope}/${entry.name}.md` })) }) };
   }
-  async function recall(input: { query?: string; name?: string }): Promise<{ ok: true; memory: ScopedMemory } | { ok: true; matches: RecallMatch[] } | ResultError> {
+  async function recall(input: { query?: string; name?: string }): Promise<{ ok: true; memory: ScopedMemory } | ({ ok: true; matches: RecallMatch[] } & ScopeWarnings) | ResultError> {
     if (rootError) return rootError;
     if ((input.query !== undefined) === (input.name !== undefined)) return { ok: false, error: "Provide exactly one of query or name" };
     if (input.name !== undefined) return read({ name: input.name });
@@ -260,11 +280,12 @@ export function createFileMemoryStore(options: StoreOptions) {
     if (invalid) return { ok: false, error: invalid };
     try {
       const memories: ScopedMemory[] = [];
-      for (const scope of scopes) {
-        const data = await entries(scope);
-        for (const memory of data.memories) memories.push({ ...memory, scope });
+      const scanned = await visitScopes(undefined, async (scope) => ({ scope, ...await entries(scope) }));
+      if (!scanned.ok) return scanned;
+      for (const { scope, memories: entries } of scanned.values) {
+        for (const memory of entries) memories.push({ ...memory, scope });
       }
-      return { ok: true, matches: rankMemories(memories, input.query) };
+      return { ok: true, matches: rankMemories(memories, input.query), ...scopeWarnings(scanned.skippedScopes ?? []) };
     } catch (error) { return errorResult(error); }
   }
   /** Derived convenience copy only. A failed refresh is observable here but never
