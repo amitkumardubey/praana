@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterAll, mock, spyOn } from "bun:test";
 import { z } from "zod";
+import { AnthropicDriver } from "../src/llm/drivers/anthropic.js";
+import type { ConversationMessage, StreamRequest } from "../src/llm/types.js";
+import { anthropicSse, signedAssistant, signedBlockFrames, signedWireBlocks } from "./helpers/anthropic-blocks.js";
 import { createNullScorecard } from "../src/context-engine/telemetry.js";
 import * as contextEngineActual from "../src/context-engine/index.js";
 import * as compileClassicActual from "../src/compile-classic.js";
@@ -159,6 +162,7 @@ import {
   computeMemoryStats,
   isZodSchema,
 } from "../src/turn.js";
+import * as turnModule from "../src/turn.js";
 import { StateGraph } from "../src/state-graph.js";
 import { EventLog } from "../src/event-log.js";
 import { createBuiltinHookRegistry } from "../src/hooks/index.js";
@@ -598,6 +602,60 @@ describe("computeMemoryStats", () => {
   });
 });
 
+describe("ordered blocks on discarded tools", () => {
+  it("removes wrap-up tool blocks while retaining other blocks and empty arrays", () => {
+    const strip = (turnModule as any).withoutWrapUpToolCalls;
+    expect(typeof strip).toBe("function");
+    for (const blocks of [[{ type: "text", text: "summary" }, { type: "tool_use", id: "call" }], [{ type: "tool_use", id: "call" }]]) {
+      const message = { role: "assistant", content: [{ type: "text", text: "summary" }, { type: "tool_use", id: "call" }], toolCalls: [{ id: "call" }], blocks };
+      const kept = strip(message);
+      expect(kept.blocks).toEqual(blocks.filter((block) => block.type !== "tool_use"));
+      expect(kept.toolCalls).toBeUndefined();
+      expect(kept.content).toEqual([{ type: "text", text: "summary" }]);
+      expect(message.blocks).toEqual(blocks);
+    }
+  });
+
+  it("retains non-tool ordered blocks after timeout", () => {
+    const kept = turnModule.assistantTextAfterTimeout(signedAssistant);
+    expect(kept?.blocks).toEqual(signedAssistant.blocks.filter((block) => block.type !== "tool_use"));
+    expect(kept?.toolCalls).toBeUndefined();
+    expect(turnModule.assistantTextAfterTimeout({ role: "assistant", content: "text", blocks: [{ type: "tool_use", id: "x" }] })?.blocks).toEqual([]);
+  });
+
+  it("replays separately signed thinking after a timed-out stream on the next request", async () => {
+    const originalFetch = globalThis.fetch;
+    const bodies: any[] = [];
+    globalThis.fetch = (async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      if (bodies.length > 1) return new Response("reject", { status: 400 });
+      const bytes = new TextEncoder().encode(anthropicSse(signedBlockFrames.slice(0, 14)));
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(bytes);
+          init?.signal?.addEventListener("abort", () => controller.error(new Error("aborted")), { once: true });
+        },
+      }));
+    }) as typeof fetch;
+    try {
+      const driver = new AnthropicDriver();
+      const req: StreamRequest = { provider: "anthropic", model: "claude-blocks-test", messages: [{ role: "user", content: "hello" }], connectTimeoutMs: 1000, idleTimeoutMs: 20 };
+      let timedOut: unknown;
+      for await (const event of driver.stream(req, { apiKey: "test" })) {
+        if (event.type === "done" && event.reason === "timeout") timedOut = event.message;
+      }
+      expect(timedOut).toBeDefined();
+      const kept = turnModule.assistantTextAfterTimeout(timedOut);
+      expect(kept).not.toBeNull();
+      for await (const _event of driver.stream({ ...req, messages: [kept!] }, { apiKey: "test" })) { /* drain */ }
+      expect(bodies).toHaveLength(2);
+      expect(bodies[1].messages[0].content).toEqual(signedWireBlocks.slice(0, 4));
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+});
+
 describe("runTurn", () => {
   beforeEach(() => {
     mock.clearAllMocks();
@@ -629,6 +687,48 @@ describe("runTurn", () => {
     expect(createAllTools).toHaveBeenCalled();
     expect(createProvider).toHaveBeenCalled();
     expect(resolveModel).toHaveBeenCalled();
+  });
+
+  it("carries independently signed and redacted Anthropic blocks into the next tool-loop request", async () => {
+    const originalFetch = globalThis.fetch;
+    const requests: ConversationMessage[][] = [];
+    const bodies: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
+    const execute = mock(async () => ({ ok: true, content: "file bytes" }));
+    (createAllTools as ReturnType<typeof mock>).mockImplementationOnce(() => ({
+      read_file: { description: "Read a file", parameters: z.object({ path: z.string() }), execute },
+    }));
+    const driver = new AnthropicDriver();
+    (piStream as ReturnType<typeof mock>).mockImplementation((req: StreamRequest) => {
+      requests.push(structuredClone(req.messages));
+      return driver.stream(req, { apiKey: "test" });
+    });
+    globalThis.fetch = (async (_url, init) => {
+      bodies.push(JSON.parse(String(init?.body)));
+      return new Response(anthropicSse(bodies.length === 1 ? [
+        ...signedBlockFrames,
+        { type: "message_delta", delta: { stop_reason: "tool_use" } },
+      ] : [
+        { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } },
+        { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "Done." } },
+        { type: "message_delta", delta: { stop_reason: "end_turn" } },
+      ]));
+    }) as typeof fetch;
+    try {
+      const session = makeMockSession({ config: makeConfig({ llm: { provider: "anthropic", model: "claude-blocks-test" } }) });
+      const response = await runTurn(session, "read the file");
+      expect(response).toContain("Done.");
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(requests).toHaveLength(2);
+      expect(bodies).toHaveLength(2);
+      const assistant = requests[1]!.find((message) => message.role === "assistant");
+      expect(assistant?.blocks).toEqual(signedAssistant.blocks);
+      expect(assistant).toEqual(signedAssistant);
+      expect(bodies[1]!.messages.find((message) => message.role === "assistant")).toEqual({
+        role: "assistant", content: signedWireBlocks,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it("does not execute a tool call leaked by a non-tool stream terminal", async () => {

@@ -52,6 +52,7 @@ export type EventKind =
   | "tool_call"
   | "tool_result"
   | "context_action"
+  | "canonical_message"
   | "ui_transcript"
   | "system_note";
 
@@ -507,6 +508,8 @@ export interface PraanaConfig {
 // ---- Session Meta ----
 
 export interface SessionMeta {
+  /** Present only when canonical recording was enabled at session creation. */
+  canonical_transcript?: { version: 1 };
   session_id: string;
   started_at: number;
   cwd: string;

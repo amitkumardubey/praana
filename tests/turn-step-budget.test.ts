@@ -466,7 +466,7 @@ function makeLoopStream(req: FakeStreamRequest, loop: number, opts?: LoopStreamO
 
   if (toolResultsSoFar < loop) {
     const id = `call-${toolResultsSoFar}`;
-    const toolCalls = opts?.withToolCalls
+    const toolCalls = opts?.withToolCalls !== false
       ? [{ id, name: "shell", args: { command: `echo ${id}` } }]
       : undefined;
     return (async function* () {
