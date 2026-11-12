@@ -10,7 +10,6 @@ import type { StateGraph } from '../src/state-graph.js';
 import type { MemoryStore } from '../src/memory/index.js';
 import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { Readable } from 'node:stream';
 import { setUiWriters } from '../src/ui.js';
 import { isWindows } from './helpers/platform.js';
 
@@ -815,49 +814,40 @@ describe('System Tools (createSystemTools)', () => {
       expect(readFileSync(join(testDir, 'special.txt'), 'utf-8')).toBe('price is $50.00 & more');
     });
 
-    it('should write file when editConfirm is true and user answers y', async () => {
+    it('should write file when editConfirm is true and the confirmation accepts', async () => {
       writeFileSync(join(testDir, 'confirm.txt'), 'Hello World');
-      const confirmTools = createSystemTools({ cwd: testDir, editConfirm: true });
+      // Confirmations go through the session callback since #748; the old
+      // version of this test faked `process.stdin` for a readline prompt.
+      const confirmTools = createSystemTools({
+        cwd: testDir,
+        editConfirm: true,
+        confirmAction: async () => ({ allowed: true }),
+      });
 
-      // Mock stdin to emit 'y\n'
-      const { Readable } = await import('node:stream');
-      const mockStdin = Readable.from(['y\n']);
-      const originalStdin = process.stdin;
-      Object.defineProperty(process, 'stdin', { value: mockStdin, configurable: true });
-
-      try {
-        const result = await confirmTools.edit_file.execute({
-          path: 'confirm.txt',
-          oldText: 'World',
-          newText: 'PRAANA',
-        });
-        expect(result).toEqual({ ok: true });
-        expect(readFileSync(join(testDir, 'confirm.txt'), 'utf-8')).toBe('Hello PRAANA');
-      } finally {
-        Object.defineProperty(process, 'stdin', { value: originalStdin, configurable: true });
-      }
+      const result = await confirmTools.edit_file.execute({
+        path: 'confirm.txt',
+        oldText: 'World',
+        newText: 'PRAANA',
+      });
+      expect(result).toEqual({ ok: true });
+      expect(readFileSync(join(testDir, 'confirm.txt'), 'utf-8')).toBe('Hello PRAANA');
     });
 
-    it('should cancel edit when editConfirm is true and user answers n', async () => {
+    it('should cancel edit when editConfirm is true and the confirmation declines', async () => {
       writeFileSync(join(testDir, 'confirm.txt'), 'Hello World');
-      const confirmTools = createSystemTools({ cwd: testDir, editConfirm: true });
+      const confirmTools = createSystemTools({
+        cwd: testDir,
+        editConfirm: true,
+        confirmAction: async () => ({ allowed: false, reason: 'declined' }),
+      });
 
-      const { Readable } = await import('node:stream');
-      const mockStdin = Readable.from(['n\n']);
-      const originalStdin = process.stdin;
-      Object.defineProperty(process, 'stdin', { value: mockStdin, configurable: true });
-
-      try {
-        const result = await confirmTools.edit_file.execute({
-          path: 'confirm.txt',
-          oldText: 'World',
-          newText: 'PRAANA',
-        });
-        expect(result).toEqual({ ok: false, error: 'Edit cancelled by user' });
-        expect(readFileSync(join(testDir, 'confirm.txt'), 'utf-8')).toBe('Hello World');
-      } finally {
-        Object.defineProperty(process, 'stdin', { value: originalStdin, configurable: true });
-      }
+      const result = await confirmTools.edit_file.execute({
+        path: 'confirm.txt',
+        oldText: 'World',
+        newText: 'PRAANA',
+      });
+      expect(result).toEqual({ ok: false, error: 'Edit cancelled by user' });
+      expect(readFileSync(join(testDir, 'confirm.txt'), 'utf-8')).toBe('Hello World');
     });
 
     it('should write file without prompt when editConfirm is false (default)', async () => {
@@ -872,50 +862,48 @@ describe('System Tools (createSystemTools)', () => {
       expect(readFileSync(join(testDir, 'noconfirm.txt'), 'utf-8')).toBe('Hello PRAANA');
     });
 
-    it('should show line number in diff preview when editConfirm is enabled', async () => {
+    it('should show line number in the confirmation preview when editConfirm is enabled', async () => {
       writeFileSync(join(testDir, 'linenum.txt'), 'line1\nline2\nHello World');
-      const confirmTools = createSystemTools({ cwd: testDir, editConfirm: true });
-
-      const mockStdin = Readable.from(['y\n']);
-      const originalStdin = process.stdin;
-      Object.defineProperty(process, 'stdin', { value: mockStdin, configurable: true });
-
-      // Capture diff preview output via UI stderr channel
-      const stderrChunks: string[] = [];
-      setUiWriters({
-        stderr: (line) => {
-          stderrChunks.push(line);
+      // The preview is part of the prompt the confirmation receives now, not
+      // stderr: in the TUI the overlay renders it. Hence the message assertion.
+      const seen: string[] = [];
+      const confirmTools = createSystemTools({
+        cwd: testDir,
+        editConfirm: true,
+        confirmAction: async (request) => {
+          seen.push(request.preview.map((line) => line.text).join('\n'));
+          return { allowed: true };
         },
       });
 
-      try {
-        await confirmTools.edit_file.execute({
-          path: 'linenum.txt',
-          oldText: 'World',
-          newText: 'PRAANA',
-        });
-        const stderrOutput = stderrChunks.join('');
-        expect(stderrOutput).toContain('linenum.txt:3');
-      } finally {
-        Object.defineProperty(process, 'stdin', { value: originalStdin, configurable: true });
-        setUiWriters();
-      }
+      await confirmTools.edit_file.execute({
+        path: 'linenum.txt',
+        oldText: 'World',
+        newText: 'PRAANA',
+      });
+      expect(seen.join('')).toContain('linenum.txt:3');
     });
   });
 
   describe('read-write guard (concurrent tool execution)', () => {
     it('read_file fails when a write to the same path is in progress', async () => {
       writeFileSync(join(testDir, 'race.txt'), 'old content');
-      const confirmTools = createSystemTools({ cwd: testDir, editConfirm: true });
+      // The confirmation is held open (like a pending overlay prompt) so the
+      // read/write guard sees the write in progress; #748 replaced the stdin
+      // readline prompt this test used to block on.
+      let releaseConfirm: (() => void) | null = null;
+      const confirmTools = createSystemTools({
+        cwd: testDir,
+        editConfirm: true,
+        confirmAction: () =>
+          new Promise((resolve) => {
+            releaseConfirm = (): void => {
+              resolve({ allowed: false, reason: 'declined' });
+            };
+          }),
+      });
       const hooks = createBuiltinHookRegistry(testDir);
       const session = { cwd: testDir, isPlanMode: () => false };
-      const { PassThrough } = await import('node:stream');
-      const mockStdin = new PassThrough();
-      const originalStdin = process.stdin;
-      Object.defineProperty(process, 'stdin', { value: mockStdin, configurable: true });
-
-      // Suppress diff output to stderr
-      setUiWriters({ stderr: () => {} });
 
       try {
         const editArgs = {
@@ -931,7 +919,7 @@ describe('System Tools (createSystemTools)', () => {
         expect(preEdit.action).toBe('continue');
 
         // Start edit_file — lock is already held by pre_tool_call; execute
-        // then blocks on the readline confirmation prompt.
+        // then blocks on the confirmation callback.
         const editPromise = confirmTools.edit_file.execute(editArgs);
 
         // Let the event loop run so edit_file reaches the await point.
@@ -948,9 +936,10 @@ describe('System Tools (createSystemTools)', () => {
           expect(preRead.error).toContain('in progress');
         }
 
-        // Unblock the edit by providing stdin input.
-        mockStdin.write('n\n');
+        // Unblock the edit by answering the confirmation.
+        (releaseConfirm as (() => void) | null)?.();
         const editResult = await editPromise;
+        expect(editResult).toEqual({ ok: false, error: 'Edit cancelled by user' });
         await hooks.runPostToolCall({
           toolName: 'edit_file',
           args: editArgs,
@@ -959,7 +948,6 @@ describe('System Tools (createSystemTools)', () => {
           session,
         });
       } finally {
-        Object.defineProperty(process, 'stdin', { value: originalStdin, configurable: true });
         setUiWriters();
       }
     });

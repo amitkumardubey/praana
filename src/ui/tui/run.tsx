@@ -53,6 +53,7 @@ import type { SetupResult } from "../../setup/types.js";
 import { loadConfig } from "../../config.js";
 import { getSetupConfigPath } from "../../setup/config-writer.js";
 import { setEmbedderConsent } from "../../memory/embedder-consent.js";
+import type { ConfirmHandlerOptions } from "../../confirm/action.js";
 import { setSpinnerSink } from "../../ui.js";
 import type { Session } from "../../session.js";
 import {
@@ -531,14 +532,23 @@ export async function runTui(
    * same stdin while the terminal was in raw mode with mouse tracking on.
    * Ctrl+C is left for the global handler, which aborts the turn and settles
    * this false.
+   *
+   * `options.preview` carries the `edit_file` / `git_commit` action preview as
+   * structured data (#748). Risk prompts pass no options and render as before.
    */
-  const askRiskFromOverlay = async (message: string): Promise<boolean> => {
+  const askRiskFromOverlay = async (
+    message: string,
+    options?: ConfirmHandlerOptions,
+  ): Promise<boolean> => {
     const own = turnAbort?.signal;
     if (own?.aborted) return false;
     ui.spinner.stop();
     // showConfirm closes itself when the signal aborts, so an interrupted turn
     // cannot leave the question or its key intercept on screen.
-    const pending = overlay.showConfirm(message, own, { mode: "yesno" });
+    const pending = overlay.showConfirm(message, own, {
+      mode: "yesno",
+      preview: options?.preview,
+    });
     renderer.requestRender();
     try {
       const yes = await pending;
