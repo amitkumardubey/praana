@@ -19,9 +19,11 @@ import type { SkillRecord } from "../skills/types.js";
 import type { SkillRuntime } from "../skills/index.js";
 import type { ScorecardInc } from "../context-engine/telemetry.js";
 import { estimateTokens } from "../token-estimate.js";
-import { createInterface } from "node:readline";
-import chalk from "chalk";
-import { writeUiStderr } from "../ui.js";
+import {
+  actionRefusalError,
+  type ActionConfirmHandler,
+  type PreviewLine,
+} from "../confirm/action.js";
 import { detectShellReads } from "./shell-read-detect.js";
 import { buildPathChurnHint } from "./read-churn.js";
 import { sanitizeChildEnv } from "./sanitize-child-env.js";
@@ -50,6 +52,11 @@ export interface SystemToolContext {
   getAbortSignal?: () => AbortSignal | undefined;
   sandbox?: SandboxConfig;
   editConfirm?: boolean;
+  /**
+   * Ask the session to confirm `edit_file` (#748). Supplied by `turn.ts`; the
+   * tool never reads stdin itself, because in the TUI OpenTUI owns it.
+   */
+  confirmAction?: ActionConfirmHandler;
   shellLiveStream?: boolean;
   skills: SkillRecord[];
   skillRuntime: SkillRuntime | null;
@@ -329,6 +336,7 @@ export function createSystemTools(ctx: SystemToolContext) {
     getAbortSignal,
     sandbox,
     editConfirm,
+    confirmAction,
     shellLiveStream,
     skills,
     skillRuntime,
@@ -726,27 +734,28 @@ export function createSystemTools(ctx: SystemToolContext) {
           }
           const newContent = content.slice(0, idx) + newText + content.slice(idx + oldText.length);
 
-          // Show diff and prompt for confirmation if editConfirm is enabled
+          // Preview the diff and confirm before touching the file when
+          // edit.confirm is on. The session owns the prompt (#748): a TUI
+          // session shows this text in its overlay, a classic session prints
+          // the coloured preview and asks on the terminal, a headless one
+          // refuses. Without a callback there is nothing to ask through.
           if (editConfirm) {
             const matchLine = content.slice(0, idx).split("\n").length;
-            const oldLines = oldText.split("\n");
-            const newLines = newText.split("\n");
-            writeUiStderr(chalk.dim(`\n--- ${path}:${matchLine} (before)`));
-            for (const line of oldLines) writeUiStderr(chalk.red(`- ${line}`));
-            writeUiStderr(chalk.dim(`+++ ${path}:${matchLine} (after)`));
-            for (const line of newLines) writeUiStderr(chalk.green(`+ ${line}`));
-            const answer = await new Promise<string>((resolve) => {
-              const rl = createInterface({
-                input: process.stdin,
-                output: process.stderr,
-              });
-              rl.question("Apply edit? [y/N] ", (ans) => {
-                rl.close();
-                resolve(ans.trim().toLowerCase());
-              });
-            });
-            if (answer !== "y" && answer !== "yes") {
-              return { ok: false, error: "Edit cancelled by user" };
+            const preview: PreviewLine[] = [
+              { text: `--- ${path}:${matchLine} (before)`, tone: "dim" },
+              ...oldText.split("\n").map(
+                (line: string): PreviewLine => ({ text: `- ${line}`, tone: "remove" }),
+              ),
+              { text: `+++ ${path}:${matchLine} (after)`, tone: "dim" },
+              ...newText.split("\n").map(
+                (line: string): PreviewLine => ({ text: `+ ${line}`, tone: "add" }),
+              ),
+            ];
+            const decision = confirmAction
+              ? await confirmAction({ question: "Apply edit? [y/N]", preview })
+              : null;
+            if (!decision?.allowed) {
+              return { ok: false, error: actionRefusalError("edit", decision) };
             }
           }
 

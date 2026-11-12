@@ -10,6 +10,14 @@ const OVERLAY_Z = 1000;
 export const OVERLAY_BACKGROUND = "#2a2d37";
 export const OVERLAY_BORDER = "#3d414d";
 
+/** Rows the frame spends on its border and padding, outside the children. */
+export const OVERLAY_FRAME_CHROME_ROWS = 4;
+
+/** Frame height cap for a terminal height. Callers that budget child rows need this. */
+export function overlayFrameMaxHeight(termHeight: number, explicitMax?: number): number {
+  return explicitMax ?? Math.max(8, (termHeight || 24) - 6);
+}
+
 export function OverlayFrame(props: {
   children: JSX.Element;
   width?: number;
@@ -20,8 +28,7 @@ export function OverlayFrame(props: {
   const dimensions = useTerminalDimensions();
   const boxWidth = () =>
     Math.min(props.width ?? 70, Math.max(20, (dimensions().width || 80) - 4));
-  const boxMaxHeight = () =>
-    props.maxHeight ?? Math.max(8, (dimensions().height || 24) - 6);
+  const boxMaxHeight = () => overlayFrameMaxHeight(dimensions().height, props.maxHeight);
   const left = () =>
     Math.max(0, Math.floor(((dimensions().width || 80) - boxWidth()) / 2));
   const top = () => Math.max(1, Math.floor((dimensions().height || 24) / 5));

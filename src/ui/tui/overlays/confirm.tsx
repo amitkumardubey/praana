@@ -15,8 +15,9 @@
  * even when this component stays mounted.
  */
 import { createEffect, onCleanup } from "solid-js";
+import { useTerminalDimensions } from "@opentui/solid";
 import { useKeymap } from "@opentui/keymap/solid";
-import { OverlayFrame } from "./frame.js";
+import { OverlayFrame, overlayFrameMaxHeight, OVERLAY_FRAME_CHROME_ROWS } from "./frame.js";
 import { TUI_STYLE } from "../theme.js";
 import type { ConfirmMode, OverlayUi } from "./state.js";
 
@@ -72,12 +73,56 @@ export function formatConfirmQuestion(message: string, mode: ConfirmMode): strin
   return message.replace(/\s*\[y\/N\]\s*$/i, "");
 }
 
+/** Rows the hint line occupies; it is never elided. */
+export const CONFIRM_HINT_ROWS = 1;
+
+/**
+ * Preview rows that fit for a terminal height, keeping the question, the blank
+ * separator, and the hint on screen. Also used to size the session-side cap.
+ */
+export function confirmPreviewRows(termHeight: number, questionLines = 1, messageRows?: number): number {
+  const frame = overlayFrameMaxHeight(termHeight, messageRows);
+  const inner = frame - OVERLAY_FRAME_CHROME_ROWS;
+  // One blank row separates the question from the preview.
+  return Math.max(0, inner - CONFIRM_HINT_ROWS - questionLines - 1);
+}
+
+/**
+ * Split a prompt that carries a preview from its question. `edit_file` and
+ * `git_commit` (#748) send `preview lines`, a blank line, then the question,
+ * because the session handler is a plain string shared with risk prompts. The
+ * overlay pins the question so a long diff cannot push it out of the frame.
+ * A message without that separator is all question, so risk prompts are
+ * unchanged.
+ */
+export function splitConfirmMessage(message: string): { preview: string[]; question: string } {
+  const at = message.lastIndexOf("\n\n");
+  if (at === -1) return { preview: [], question: message };
+  const question = message.slice(at + 2);
+  if (question.trim().length === 0) return { preview: [], question: message };
+  const preview = message.slice(0, at).split("\n");
+  while (preview.length > 0 && preview[preview.length - 1] === "") preview.pop();
+  return { preview, question };
+}
+
+/**
+ * Cap the preview to the rows left in the frame. The last kept row becomes a
+ * count so the reader knows the preview was elided rather than truncated.
+ */
+export function capConfirmPreview(preview: readonly string[], rows: number): string[] {
+  if (rows <= 0) return [];
+  if (preview.length <= rows) return [...preview];
+  const keep = Math.max(0, rows - 1);
+  return [...preview.slice(0, keep), `... ${preview.length - keep} more lines`];
+}
+
 function confirmHint(mode: ConfirmMode): string {
   return mode === "yesno" ? CONFIRM_YESNO_HINT : CONFIRM_HINT;
 }
 
 export function ConfirmOverlay(props: ConfirmOverlayProps) {
   const keymap = useKeymap();
+  const dimensions = useTerminalDimensions();
 
   // Re-bind when the prompt changes, including when this component stays mounted.
   createEffect(() => {
@@ -101,10 +146,23 @@ export function ConfirmOverlay(props: ConfirmOverlayProps) {
   });
 
   const prompt = () => props.overlay.confirmPrompt();
+  const parsed = () => splitConfirmMessage(prompt()?.message ?? "");
+  const previewRows = () =>
+    confirmPreviewRows(
+      dimensions().height,
+      parsed().question.split("\n").length,
+    );
+  const previewLines = () => capConfirmPreview(parsed().preview, previewRows());
+  const question = () => formatConfirmQuestion(parsed().question, prompt()?.mode ?? "step");
 
   return (
     <OverlayFrame width={64}>
-      <text>{formatConfirmQuestion(prompt()?.message ?? "", prompt()?.mode ?? "step")}</text>
+      <text>{question()}</text>
+      {previewLines().map((line) => (
+        <text>
+          <span style={TUI_STYLE.muted}>{line.length === 0 ? " " : line}</span>
+        </text>
+      ))}
       <text><span style={TUI_STYLE.muted}>{confirmHint(prompt()?.mode ?? "step")}</span></text>
     </OverlayFrame>
   );

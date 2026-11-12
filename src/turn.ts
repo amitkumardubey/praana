@@ -743,6 +743,7 @@ export async function runTurn(
     sandbox: session.config.shell,
     scanTimeoutMs: session.config.search_code?.scan_timeout_ms,
     editConfirm: session.config.edit?.confirm,
+    confirmAction: (request) => session.confirmAction(request),
     getCurrentTurn: () => session.getTurnCount(),
     getLastResetBoundaryTurn: () => boundaryTurn,
     getAbortSignal: () => options?.signal,

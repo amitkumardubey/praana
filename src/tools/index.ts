@@ -6,6 +6,7 @@ import type { ScorecardInc } from "../context-engine/telemetry.js";
 import type { SandboxConfig } from "../types.js";
 import type { SkillRecord } from "../skills/types.js";
 import type { SkillRuntime } from "../skills/index.js";
+import type { ActionConfirmHandler } from "../confirm/action.js";
 import { createMemoryTools } from "./memory.js";
 import { createKnowledgeTools } from "./knowledge.js";
 import { createSystemTools } from "./system.js";
@@ -36,6 +37,8 @@ export interface ToolRegistryContext {
   sandbox?: SandboxConfig;
   scanTimeoutMs?: number;
   editConfirm?: boolean;
+  /** Session confirmation for `edit_file` / `git_commit` (#748). */
+  confirmAction?: ActionConfirmHandler;
   getCurrentTurn?: () => number;
   getLastResetBoundaryTurn?: () => number;
   shellLiveStream?: boolean;
@@ -102,6 +105,7 @@ export function createAllTools(ctx: ToolRegistryContext) {
     getAbortSignal: ctx.getAbortSignal,
     sandbox: ctx.sandbox,
     editConfirm: ctx.editConfirm,
+    confirmAction: ctx.confirmAction,
     shellLiveStream: ctx.shellLiveStream,
     skills: ctx.skills,
     skillRuntime: ctx.skillRuntime,
@@ -131,6 +135,7 @@ export function createAllTools(ctx: ToolRegistryContext) {
   const gitTools = createGitTools({
     cwd: ctx.cwd,
     editConfirm: ctx.editConfirm,
+    confirmAction: ctx.confirmAction,
     sandbox: ctx.sandbox,
     getAbortSignal: ctx.getAbortSignal,
   });

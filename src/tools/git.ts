@@ -9,15 +9,17 @@
 import { defineTool } from "./tool-def.js";
 import { z } from "zod";
 import { spawn } from "node:child_process";
-import { createInterface } from "node:readline";
 import { existsSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, normalize, relative, resolve } from "node:path";
-import chalk from "chalk";
-import { writeUiStderr } from "../ui.js";
 import { findGitRoot, isGitRepo } from "../git-context.js";
 import type { SandboxConfig } from "../types.js";
 import { pathInRoot } from "../path-containment.js";
+import {
+  actionRefusalError,
+  type ActionConfirmHandler,
+  type PreviewLine,
+} from "../confirm/action.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -125,6 +127,11 @@ export type GitLogResult = GitLogSuccess | GitToolError;
 export interface GitToolsContext {
   cwd: string;
   editConfirm?: boolean;
+  /**
+   * Ask the session to confirm `git_commit` (#748). Supplied by `turn.ts`; the
+   * tool never reads stdin itself, because in the TUI OpenTUI owns it.
+   */
+  confirmAction?: ActionConfirmHandler;
   sandbox?: SandboxConfig;
   getAbortSignal?: () => AbortSignal | undefined;
 }
@@ -880,6 +887,7 @@ export async function runGitCommit(
   args: { message: string; paths?: string[]; all?: boolean },
   options?: {
     editConfirm?: boolean;
+    confirmAction?: ActionConfirmHandler;
     sandbox?: SandboxConfig;
     getAbortSignal?: () => AbortSignal | undefined;
   },
@@ -939,6 +947,10 @@ export async function runGitCommit(
     }
   }
 
+  // Preview the intended commit and confirm before mutating anything. The
+  // session owns the prompt (#748): a TUI session shows this text in its
+  // overlay, a classic session prints the coloured preview and asks on the
+  // terminal, a headless one refuses.
   if (options?.editConfirm) {
     const previewArgs = args.all
       ? ["diff", "HEAD", "--stat"]
@@ -948,27 +960,26 @@ export async function runGitCommit(
     const preview = await runGitAsync(repoRoot, previewArgs, abort);
     const spawnErr = mapGitSpawnError(preview);
     if (spawnErr) return spawnErr;
-    writeUiStderr(chalk.dim("\n--- git commit preview ---"));
-    writeUiStderr(chalk.cyan(message));
+    const detail: PreviewLine[] = [];
     if (preview.stdout.trim()) {
-      writeUiStderr(preview.stdout.trimEnd());
+      detail.push({ text: preview.stdout.trimEnd(), tone: "plain" });
     } else if (args.all) {
-      writeUiStderr(chalk.dim("(will stage tracked modifications with -a)"));
+      detail.push({ text: "(will stage tracked modifications with -a)", tone: "dim" });
     } else if (repoPaths?.length) {
-      writeUiStderr(chalk.dim(`(paths: ${repoPaths.join(", ")})`));
+      detail.push({ text: `(paths: ${repoPaths.join(", ")})`, tone: "dim" });
     }
-    const answer = await new Promise<string>((resolveAnswer) => {
-      const rl = createInterface({
-        input: process.stdin,
-        output: process.stderr,
-      });
-      rl.question("Create commit? [y/N] ", (ans) => {
-        rl.close();
-        resolveAnswer(ans.trim().toLowerCase());
-      });
-    });
-    if (answer !== "y" && answer !== "yes") {
-      return { ok: false, error: "Commit cancelled by user" };
+    const decision = options.confirmAction
+      ? await options.confirmAction({
+          question: "Create commit? [y/N]",
+          preview: [
+            { text: "--- git commit preview ---", tone: "dim" },
+            { text: message, tone: "accent" },
+            ...detail,
+          ],
+        })
+      : null;
+    if (!decision?.allowed) {
+      return { ok: false, error: actionRefusalError("commit", decision) };
     }
   }
 
@@ -1106,6 +1117,7 @@ export function createGitTools(ctx: GitToolsContext) {
         }
         return runGitCommit(ctx.cwd, parsed.data, {
           editConfirm: ctx.editConfirm,
+          confirmAction: ctx.confirmAction,
           sandbox: ctx.sandbox,
           getAbortSignal: ctx.getAbortSignal,
         });
