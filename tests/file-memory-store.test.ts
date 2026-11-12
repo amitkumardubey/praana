@@ -42,13 +42,17 @@ describe("file memory store", () => {
     expect((await store.remove({ name: "coffee" })).ok).toBe(false);
     expect((await store.remove({ name: "coffee", scope: "global" })).ok).toBe(true);
   });
-  test("updates do not read other memory files", async () => {
+  test("updates skip similarity reads before committing; derived refresh may read headers", async () => {
     const { home, store } = await setup();
     await store.write(input);
-    let reads = 0;
+    let reads = 0, committed = false;
     const seam = new Proxy(fs, { get(target, key) {
+      if (key === "rename") return async (...args: Parameters<typeof fs.rename>) => {
+        await fs.rename(...args);
+        if (String(args[1]).endsWith("coffee.md")) committed = true;
+      };
       if (key === "open") return async (...args: Parameters<typeof fs.open>) => {
-        if (String(args[0]).endsWith("coffee.md")) reads++;
+        if (!committed && String(args[0]).endsWith("coffee.md")) reads++;
         return fs.open(...args);
       };
       return Reflect.get(target, key);

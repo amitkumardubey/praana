@@ -7,6 +7,7 @@ import { parseMemory, serializeMemory, validName, validateMemory, validatePolicy
 import { memoryDirectories, projectKey, type MemoryScope } from "./paths.js";
 import { buildMemoryIndex as renderMemoryIndex, type MemoryIndex } from "./index.js";
 import { rankMemories, type RecallMatch, type ScopedMemory } from "./recall.js";
+export { MEMORY_POLICY } from "./index.js";
 
 export interface StoreOptions {
   home: string;
@@ -123,6 +124,22 @@ export function createFileMemoryStore(options: StoreOptions) {
     return union.size > 0 && [...x].filter((t) => y.has(t)).length / union.size >= 0.6;
   }
 
+  async function atomicReplace(dir: string, filename: string, text: string): Promise<void> {
+    const target = join(dir, filename);
+    try { if ((await fs.lstat(target)).isSymbolicLink()) throw new Error("Symlink memory file refused"); } catch (error) { if (!missing(error)) throw error; }
+    const temp = join(dir, `.${filename}.tmp-${process.pid}-${randomBytes(12).toString("hex")}`);
+    let createdTemp = false;
+    try {
+      const handle = await fs.open(temp, "wx", 0o600);
+      createdTemp = true;
+      try { await handle.writeFile(text, "utf8"); await handle.sync(); }
+      finally { await handle.close(); }
+      await fs.rename(temp, target);
+      createdTemp = false;
+      try { const handle = await fs.open(dir, "r"); try { await handle.sync(); } finally { await handle.close(); } } catch { /* Directory fsync is best-effort. */ }
+    } finally { if (createdTemp) { try { await fs.unlink(temp); } catch (error) { if (!missing(error)) throw error; } } }
+  }
+
   async function write(input: MemoryInput & { scope: MemoryScope }): Promise<{ ok: true; name: string; scope: MemoryScope; created: boolean } | ResultError> {
     if (options.incognito) return { ok: false, error: "Incognito mode prevents writes" };
     try {
@@ -148,22 +165,9 @@ export function createFileMemoryStore(options: StoreOptions) {
       if (filenames.some((file) => file.toLowerCase() === targetName.toLowerCase() && file !== targetName)) return { ok: false, error: "Case-insensitive filename collision" };
       const dir = await directory(input.scope, true);
       if (!dir) throw new Error("Memory directory unavailable");
-      const target = join(dir, targetName);
-      // Refuse to replace a symlink, including a dangling one.
-      try { if ((await fs.lstat(target)).isSymbolicLink()) return { ok: false, error: "Symlink memory file refused" }; } catch (error) { if (!missing(error)) throw error; }
-      const temp = join(dir, `.${targetName}.tmp-${process.pid}-${randomBytes(12).toString("hex")}`);
-      let createdTemp = false;
-      try {
-        const handle = await fs.open(temp, "wx", 0o600);
-        createdTemp = true;
-        try {
-          await handle.writeFile(serializeMemory({ ...input, updated: now().toISOString().slice(0, 10) }), "utf8");
-          await handle.sync();
-        } finally { await handle.close(); }
-        await fs.rename(temp, target);
-        createdTemp = false;
-        try { const handle = await fs.open(dir, "r"); try { await handle.sync(); } finally { await handle.close(); } } catch { /* Directory fsync is best-effort. */ }
-      } finally { if (createdTemp) { try { await fs.unlink(temp); } catch (error) { if (!missing(error)) throw error; } } }
+      await atomicReplace(dir, targetName, serializeMemory({ ...input, updated: now().toISOString().slice(0, 10) }));
+      // The authoritative file is committed; refresh reports its own best-effort error.
+      await refreshIndexFile(input.scope);
       return { ok: true, name: input.name, scope: input.scope, created: !exists };
     } catch (error) { return errorResult(error); }
   }
@@ -184,7 +188,7 @@ export function createFileMemoryStore(options: StoreOptions) {
     if (options.incognito) return { ok: false, error: "Incognito mode prevents removal" };
     if (!validName(input.name)) return { ok: false, error: "Invalid memory name" };
     try {
-      const found: string[] = [];
+      const found: Array<{ dir: string; scope: MemoryScope }> = [];
       for (const scope of input.scope ? [input.scope] : scopes) {
         const dir = await directory(scope, false);
         if (!dir) continue;
@@ -195,14 +199,15 @@ export function createFileMemoryStore(options: StoreOptions) {
           if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("Only regular, non-symlink memory files can be removed");
           handle = await fs.open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
           if (!(await handle.stat()).isFile()) throw new Error("Only regular memory files can be removed");
-          found.push(dir);
+          found.push({ dir, scope });
         } catch (error) { if (!missing(error)) throw error; }
         finally { if (handle) await handle.close(); }
       }
       if (found.length > 1) return { ok: false, error: "Memory exists in both project and global scopes; specify scope" };
-      const dir = found[0];
-      if (!dir) return { ok: false, error: "Memory not found" };
-      await fs.unlink(join(dir, `${input.name}.md`));
+      const match = found[0];
+      if (!match) return { ok: false, error: "Memory not found" };
+      await fs.unlink(join(match.dir, `${input.name}.md`));
+      await refreshIndexFile(match.scope);
       return { ok: true };
     } catch (error) { return errorResult(error); }
   }
@@ -243,5 +248,16 @@ export function createFileMemoryStore(options: StoreOptions) {
       return { ok: true, matches: rankMemories(memories, input.query) };
     } catch (error) { return errorResult(error); }
   }
-  return { write, read, remove, list, buildMemoryIndex, recall };
+  /** Derived convenience copy only. A failed refresh is observable here but never
+   * changes the result of an already-committed write or removal. Never read back. */
+  async function refreshIndexFile(scope: MemoryScope): Promise<{ ok: true } | ResultError> {
+    try {
+      const index = await buildMemoryIndex({ scope });
+      const dir = await directory(scope, true);
+      if (!dir) throw new Error("Memory directory unavailable");
+      await atomicReplace(dir, "MEMORY.md", index.text);
+      return { ok: true };
+    } catch (error) { return errorResult(error); }
+  }
+  return { write, read, remove, list, buildMemoryIndex, recall, refreshIndexFile };
 }

@@ -89,13 +89,17 @@ for (const multibyte of [false, true]) {
   test(`byte cap at exactly 25600 and one byte past; multibyte=${multibyte}`, () => {
     const entries = Array.from({ length: 100 }, (_, i) => fixture(i, { description: multibyte ? "é".repeat(100) : "x".repeat(200) }));
     const base = Buffer.byteLength(entries.map(line).join("\n"));
-    const remaining = 25600 - base;
-    // Link destinations are unbounded paths; descriptions remain under the 300-code-point cap.
-    entries[0]!.file += "x".repeat(remaining);
+    let remaining = 25600 - base;
+    for (const entry of [...entries].reverse()) {
+      const padding = Math.min(300 - Array.from(entry.description).length, remaining);
+      entry.description += "x".repeat(padding);
+      remaining -= padding;
+    }
+    expect(remaining).toBe(0);
     const exact = buildMemoryIndex({ entries });
     expect(Buffer.byteLength(payload(exact.text))).toBe(25600);
     expect(exact.shown).toBe(100); expect(exact.truncated).toBe(false);
-    entries[0]!.file += "x";
+    entries[0]!.description += "x";
     const over = buildMemoryIndex({ entries });
     expect(over.truncated).toBe(true); expect(over.shown).toBe(99);
     expect(Buffer.byteLength(payload(over.text))).toBeLessThanOrEqual(25600);
