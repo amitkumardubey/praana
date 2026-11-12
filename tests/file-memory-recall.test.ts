@@ -1,10 +1,12 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFileMemoryStore } from "../src/file-memory/store.js";
 import { memoryDirectories, projectKey, type MemoryScope } from "../src/file-memory/paths.js";
 import { searchTokens, serializeMemory, type Memory } from "../src/file-memory/format.js";
+import * as format from "../src/file-memory/format.js";
+import { rankMemories } from "../src/file-memory/recall.js";
 
 const homes: string[] = [];
 afterEach(async () => { for (const home of homes.splice(0)) await fs.rm(home, { recursive: true, force: true }); });
@@ -150,6 +152,20 @@ test("name-only matches use the body start; body matches take precedence over de
   if (!result.ok || !("matches" in result)) throw new Error("Expected matches");
   expect(result.matches.find((match) => match.name === "needle")!.snippet).toStartWith("start ");
   expect(result.matches.find((match) => match.name === "both")!.snippet).toContain("needle body");
+});
+
+test("a 64 KiB body matching only its last word is tokenized once, not once per preceding word", () => {
+  const body = "word ".repeat(13106) + "needle";
+  expect(Buffer.byteLength(body)).toBe(65536);
+  const tokenize = spyOn(format, "searchTokens");
+  try {
+    const matches = rankMemories([{ name: "large", description: "details", body, type: "user", updated: "2026-05-01", scope: "global" }], "needle");
+    expect(matches[0]!.snippet).toEndWith("needle");
+    expect(Array.from(matches[0]!.snippet)).toHaveLength(300);
+    expect(tokenize.mock.calls.filter(([text]) => text === body)).toHaveLength(1);
+    // One query and three corpus fields; the snippet must not re-tokenize words.
+    expect(tokenize).toHaveBeenCalledTimes(4);
+  } finally { tokenize.mockRestore(); }
 });
 
 test("query tokenizes multiple words case-insensitively and supports Unicode", async () => {

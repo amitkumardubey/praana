@@ -16,8 +16,10 @@ function cleanRecallText(text: string): string {
 
 function matchingWindow(text: string, tokens: readonly string[]): string | null {
   const normalized = text.normalize("NFC");
+  const queryTokens = new Set(tokens);
+  // Query tokens are already filtered; scan corpus words once, keeping their positions.
   for (const match of normalized.matchAll(/[\p{L}\p{M}\p{N}]+/gu)) {
-    if (!searchTokens(match[0]).some((token) => tokens.includes(token))) continue;
+    if (!queryTokens.has(match[0].toLowerCase())) continue;
     const points = Array.from(normalized);
     const centre = Array.from(normalized.slice(0, match.index)).length + Math.floor(Array.from(match[0]).length / 2);
     const start = Math.max(0, Math.min(centre - 150, points.length - 300));

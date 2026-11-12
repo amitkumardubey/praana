@@ -47,9 +47,11 @@ export function createFileMemoryStore(options: StoreOptions) {
     let root: string;
     try { root = await fs.realpath(base); } catch (error) {
       if (!missing(error)) throw error;
-      try {
-        if ((await fs.lstat(base)).isSymbolicLink()) throw new Error(`Dangling .praana symlink: ${base}`);
-      } catch (entryError) { if (!missing(entryError)) throw entryError; }
+      let entry;
+      try { entry = await fs.lstat(base); }
+      catch (entryError) { if (!missing(entryError)) throw entryError; }
+      // realpath missed, but lstat still sees a dangling link: never create its target.
+      if (entry?.isSymbolicLink()) throw new Error(`Dangling .praana symlink: ${base}`);
       if (!create) return null;
       await fs.mkdir(base, { mode: 0o700, recursive: true });
       root = await fs.realpath(base);
