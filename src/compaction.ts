@@ -58,9 +58,20 @@ function estimateJson(value: ConversationMessage | RequestFrame): number {
   }));
 }
 
+/** Fixed visual allowance per image; base64 bytes do not represent text tokens. */
+export const IMAGE_TOKEN_ALLOWANCE = 1600;
+
 /** Provider-independent estimate of all native fields, not an exact wire tokenizer. */
 export function estimateMessageTokens(message: ConversationMessage): number {
-  return estimateJson(message);
+  if (message.role !== "user" || typeof message.content === "string") return estimateJson(message);
+  let imageTokens = 0;
+  const content = message.content.map((part) => {
+    if (part.type !== "image") return part;
+    imageTokens += IMAGE_TOKEN_ALLOWANCE;
+    const { data: _data, ...metadata } = part;
+    return metadata;
+  });
+  return imageTokens + estimateJson({ ...message, content } as ConversationMessage);
 }
 
 /** Messages must include the summary, retained history and current input, in send order. */

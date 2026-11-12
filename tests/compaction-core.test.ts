@@ -120,13 +120,12 @@ test("message estimator counts ordered text, thinking, redacted bytes and tool-u
   ]) expect(estimateMessageTokens({ ...base, blocks: [block] })).toBeGreaterThan(estimateMessageTokens(base) + 150);
 });
 
-test("message estimator includes every content-part payload and tool-result metadata", async () => {
+test("message estimator includes non-image content payloads and tool-result metadata", async () => {
   const { estimateMessageTokens } = await api();
   const base: ConversationMessage = { role: "user", content: [] };
   for (const part of [
     { type: "text" as const, text: "文字".repeat(100) },
     { type: "thinking" as const, thinking: "thinking".repeat(100), signature: "signed".repeat(100) },
-    { type: "image" as const, mimeType: "image/png", data: "base64".repeat(300) },
   ]) expect(estimateMessageTokens({ role: "user", content: [part] })).toBeGreaterThan(estimateMessageTokens(base) + 100);
   const tool: ConversationMessage = { role: "tool_result", toolCallId: "call", toolName: "shell", result: "" };
   for (const message of [
@@ -134,6 +133,18 @@ test("message estimator includes every content-part payload and tool-result meta
   ]) expect(estimateMessageTokens(message)).toBeGreaterThan(estimateMessageTokens(tool) + 150);
   expect(estimateMessageTokens({ ...tool, isError: true })).toBeGreaterThan(estimateMessageTokens(tool));
   expect(estimateMessageTokens({ role: "system", content: "system".repeat(100) })).toBeGreaterThan(150);
+});
+
+test("image estimates are bounded independently of base64 length while metadata and text still scale", async () => {
+  const { estimateMessageTokens } = await api();
+  const image = (data: string, mimeType = "image/png"): ConversationMessage => ({ role: "user", content: [{ type: "image", mimeType, data }] });
+  const small = estimateMessageTokens(image("abc"));
+  expect(estimateMessageTokens(image("x".repeat(1024 * 1024)))).toBe(small);
+  expect(small).toBeGreaterThanOrEqual(1600);
+  expect(small).toBeLessThan(1700);
+  expect(estimateMessageTokens(image("abc", "metadata".repeat(100)))).toBeGreaterThan(small + 100);
+  const text = (size: number): ConversationMessage => ({ role: "user", content: [{ type: "text", text: "x".repeat(size) }] });
+  expect(estimateMessageTokens(text(10000))).toBeGreaterThan(estimateMessageTokens(text(10)) + 2000);
 });
 
 test("message estimates use stable JSON including role and escaping, independent of object key insertion order", async () => {
