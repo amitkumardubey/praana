@@ -538,6 +538,21 @@ describe("action preview line width (#748)", () => {
     overlay.dispose();
   });
 
+  it("fits wide Unicode characters in one preview row", async () => {
+    const { setup, overlay } = await mount(0, {
+      mode: "yesno", message: "Apply edit? [y/N]", preview: [`- ${"界".repeat(50)}`, "+ short"],
+      width: 80, height: 24,
+    });
+    const frame = setup.captureCharFrame();
+    expect(frame).toContain("…");
+    expect(frame).toContain("+ short");
+    expect(frame).toContain("y = yes");
+    const rows = innerRows(frame).filter((line) => line.includes("界"));
+    expect(rows).toHaveLength(1);
+    setup.renderer.destroy();
+    overlay.dispose();
+  });
+
   it("expands tabs before measuring so a tabbed line cannot wrap", async () => {
     const preview = [`- \t${"y".repeat(200)}`];
     const { setup, overlay } = await mount(0, {

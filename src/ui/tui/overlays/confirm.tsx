@@ -22,7 +22,7 @@ import {
   overlayFrameInnerWidth,
   OVERLAY_FRAME_CHROME_ROWS,
 } from "./frame.js";
-import { TUI_STYLE, truncatePlainText } from "../theme.js";
+import { TUI_STYLE } from "../theme.js";
 import type { ConfirmMode, OverlayUi } from "./state.js";
 
 /** How long a freshly opened confirm ignores its answer keys. */
@@ -135,7 +135,19 @@ export function fitPreviewRows(
   preview: readonly string[],
   innerWidth: number,
 ): string[] {
-  return preview.map((line) => truncatePlainText(expandTabs(line), innerWidth));
+  return preview.map((line) => {
+    const expanded = expandTabs(line);
+    if (Bun.stringWidth(expanded) <= innerWidth) return expanded;
+    let fitted = "";
+    let width = 0;
+    for (const { segment } of new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(expanded)) {
+      const columns = Bun.stringWidth(segment);
+      if (width + columns > innerWidth - 1) break;
+      fitted += segment;
+      width += columns;
+    }
+    return `${fitted}…`;
+  });
 }
 
 /** Expand a tab to the next 4-column stop, matching nothing in particular but keeping width predictable. */
@@ -143,8 +155,16 @@ function expandTabs(line: string): string {
   if (!line.includes("\t")) return line;
   const TAB_WIDTH = 4;
   let out = "";
-  for (const ch of line) {
-    out += ch === "\t" ? " ".repeat(TAB_WIDTH - (out.length % TAB_WIDTH)) : ch;
+  let width = 0;
+  for (const { segment } of new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(line)) {
+    if (segment === "\t") {
+      const spaces = TAB_WIDTH - (width % TAB_WIDTH);
+      out += " ".repeat(spaces);
+      width += spaces;
+    } else {
+      out += segment;
+      width += Bun.stringWidth(segment);
+    }
   }
   return out;
 }
