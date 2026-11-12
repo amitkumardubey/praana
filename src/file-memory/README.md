@@ -4,12 +4,12 @@ This module is inert: it has no production callers or registered tools. Storage 
 
 `createFileMemoryStore({ home, cwd, now?, fs?, findRoot?, incognito? })` requires an explicit home. Its methods are:
 
-- `write({ scope, name, type, description, body })`: strict validation, secret refusal, advisory duplicate check, atomic upsert. Names are safe lowercase slugs; descriptions are at most 300 Unicode code points on one line; bodies are at most 2048 UTF-8 bytes. Feedback/project bodies require Why/How lines. Policy-only validation lives in `validatePolicy`.
+- `write({ scope, name, type, description, body })`: strict validation, secret refusal, advisory duplicate check, atomic upsert. Names are safe lowercase slugs; descriptions are at most 300 Unicode code points on one line; bodies are at most 2048 UTF-8 bytes. Feedback/project bodies require Why/How lines. Unknown write keys are rejected. Policy-only validation lives in `validateMemoryPolicy`.
 - `read({ name, scope? })`: parsed memory; project takes precedence without a scope.
 - `remove({ name, scope? })`: hard delete, including malformed or oversized regular files. Ambiguous names require an explicit scope. Symlinks/directories are refused.
 - `list({ scope? } = {})`: frontmatter entries, whole-day ages and stale flags (>90 days), plus skipped count. Invalid files are skipped; disappearing files are treated as absent.
 - `buildMemoryIndex({ scope? } = {})`: derives `{ text, truncated, shown, total }` from directory listings and bounded frontmatter reads, never `MEMORY.md`. It throws on unsafe directories or filesystem failures. The pure renderer is also exported from `index.ts` for already-collected `IndexEntry` values.
-- `recall({ name?, query? })`: exactly one argument. Name lookup returns the parsed memory. Query lookup returns `{ ok: true, matches }`, at most five `{ name, scope, description, snippet }` records. Unique case-insensitive Unicode tokens score 9/3/1 for name/description/body; ties use updated descending, name, then scope. Empty/stop-word-only queries are rejected by `validatePolicy`.
+- `recall({ name?, query? })`: exactly one argument. Name lookup returns the parsed memory. Query lookup returns `{ ok: true, matches }`, at most five `{ name, scope, description, snippet }` records. Unique case-insensitive Unicode tokens score 9/3/1 for name/description/body; ties use updated descending, name, then scope. Empty/stop-word-only queries are rejected by the separate `validateQueryPolicy`.
 - `refreshIndexFile(scope)`: atomically regenerates that scope's `MEMORY.md`. Returns a typed success/error result; writes and removals await it but deliberately ignore refresh failures after committing the authoritative change.
 
 `MEMORY_POLICY`, exported by `index.ts` and `store.ts`, describes which durable observations to save and which transient or derivable information not to save.

@@ -31,6 +31,12 @@ describe("file memory format", () => {
       expect(validateMemory({ ...entry, type, body: "**Why:** reason\n**How to apply:** action" })).toBeNull();
     }
   });
+  test("memory policy never switches to query validation for extra keys", () => {
+    const extra = { ...entry, query: "search" };
+    expect(validateMemory({ ...extra, description: "bad\nline" })).not.toBeNull();
+    expect(validateMemory({ ...extra, description: "x".repeat(301) })).not.toBeNull();
+    expect(validateMemory({ ...extra, type: "feedback" })).not.toBeNull();
+  });
   test("parses unquoted dates and sanitizes hand-edited multiline descriptions", () => {
     const parsed = parseMemory("---\nname: example\ndescription: |\n  note\n  - [fake](x)\ntype: user\nupdated: 2026-01-02\n---\nbody");
     expect(parsed?.updated).toBe("2026-01-02");

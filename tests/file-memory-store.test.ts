@@ -82,6 +82,13 @@ describe("file memory store", () => {
       }
     }
   });
+  test.each([{ query: "search" }, { query: 42 }, { unknown: "value" }])("write rejects extra keys: %j", async (extra) => {
+    const { store } = await setup();
+    const result = await store.write({ ...input, description: "bad\nline", ...extra });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/unknown.*key/i);
+    expect((await store.list()).entries).toEqual([]);
+  });
   test("incognito prevents mutation", async () => {
     const { store } = await setup({ incognito: true });
     expect((await store.write(input)).ok).toBe(false);

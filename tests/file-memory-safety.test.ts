@@ -44,7 +44,11 @@ test("write errors at temp write, fsync and rename preserve complete old content
 test("refuses a write when strict redaction throws", async () => {
   const home = await homeDir();
   const input = { ...entry };
-  Object.defineProperty(input, "trap", { enumerable: true, get() { throw new Error("redaction failed"); } });
+  let reads = 0;
+  Object.defineProperty(input, "name", { enumerable: true, get() {
+    if (++reads > 1) throw new Error("redaction failed");
+    return entry.name;
+  } });
   const result = await make(home).write(input);
   expect(result.ok).toBe(false);
   if (!result.ok) expect(result.error).toContain("Secret scan failed");

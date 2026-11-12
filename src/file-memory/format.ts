@@ -23,8 +23,11 @@ export function searchTokens(text: string): string[] {
   return [...new Set((text.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? []).filter((token) => !stopWords.has(token)))];
 }
 
-export function validatePolicy(input: MemoryInput | { query: string }): string | null {
-  if ("query" in input) return searchTokens(input.query).length ? null : "Query is empty or contains only stop-words";
+export function validateQueryPolicy(query: string): string | null {
+  return searchTokens(query).length ? null : "Query is empty or contains only stop-words";
+}
+
+export function validateMemoryPolicy(input: MemoryInput): string | null {
   if (!input.description.trim() || Array.from(input.description).length > 300 || /[\r\n]/.test(input.description)) return "Description must be one line and at most 300 characters";
   if ((input.type === "feedback" || input.type === "project") && (!/^\*\*Why:\*\*[ \t]*\S/m.test(input.body) || !/^\*\*How to apply:\*\*[ \t]*\S/m.test(input.body))) return "Add **Why:** and **How to apply:** lines";
   return null;
@@ -35,7 +38,7 @@ export function validateMemory(input: MemoryInput): string | null {
   if (!types.has(input.type)) return "Invalid memory type";
   if (typeof input.description !== "string" || typeof input.body !== "string") return "Description and body must be strings";
   if (Buffer.byteLength(input.body, "utf8") > 2048) return "Body exceeds 2048 bytes; split or tighten it";
-  return validatePolicy(input);
+  return validateMemoryPolicy(input);
 }
 
 export function serializeMemory(memory: Memory): string {

@@ -3,7 +3,7 @@ import * as nodeFs from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { redactSecretsStrict } from "../redact/secrets.js";
-import { parseMemory, serializeMemory, validName, validateMemory, validatePolicy, type Memory, type MemoryInput } from "./format.js";
+import { parseMemory, serializeMemory, validName, validateMemory, validateQueryPolicy, type Memory, type MemoryInput } from "./format.js";
 import { memoryDirectories, projectKey, type MemoryScope } from "./paths.js";
 import { buildMemoryIndex as renderMemoryIndex, type MemoryIndex } from "./index.js";
 import { rankMemories, type RecallMatch, type ScopedMemory } from "./recall.js";
@@ -143,6 +143,8 @@ export function createFileMemoryStore(options: StoreOptions) {
   async function write(input: MemoryInput & { scope: MemoryScope }): Promise<{ ok: true; name: string; scope: MemoryScope; created: boolean } | ResultError> {
     if (options.incognito) return { ok: false, error: "Incognito mode prevents writes" };
     try {
+      const allowed = new Set(["scope", "type", "name", "description", "body"]);
+      if (!input || typeof input !== "object" || Reflect.ownKeys(input).some((key) => !allowed.has(String(key)))) return { ok: false, error: "Unknown write input key; allowed keys: scope, type, name, description, body" };
       const invalid = validateMemory(input);
       if (invalid) return { ok: false, error: invalid };
       if (!scopes.includes(input.scope)) return { ok: false, error: "Invalid scope" };
@@ -237,7 +239,7 @@ export function createFileMemoryStore(options: StoreOptions) {
     if ((input.query !== undefined) === (input.name !== undefined)) return { ok: false, error: "Provide exactly one of query or name" };
     if (input.name !== undefined) return read({ name: input.name });
     if (typeof input.query !== "string") return { ok: false, error: "Query must be a string" };
-    const invalid = validatePolicy({ query: input.query });
+    const invalid = validateQueryPolicy(input.query);
     if (invalid) return { ok: false, error: invalid };
     try {
       const memories: ScopedMemory[] = [];
