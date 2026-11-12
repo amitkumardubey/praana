@@ -1,4 +1,6 @@
-import type { AssistantBlock, ConversationMessage } from "./llm/types.js";
+import type { AssistantBlock, AssistantMessage, ConversationMessage } from "./llm/types.js";
+import type { EventLog } from "./event-log.js";
+import { redactSecrets } from "./redact/secrets.js";
 import type { Event } from "./types.js";
 import { eventsAfterResetBoundary } from "./event-log.js";
 
@@ -290,4 +292,86 @@ export async function repairCanonicalTranscript(
   const { repairs } = scan(records);
   for (const record of repairs) await append(record);
   return repairs.length;
+}
+
+/**
+ * Session-bound, sequential writer. A failed append has an uncertain durable
+ * outcome: stop this writer, report the error, and let a fresh writer reread
+ * the log. Live model/tool work can continue without trusting in-memory state.
+ */
+export class CanonicalWriter {
+  private records: CanonicalRecord[] | undefined;
+  private failed = false;
+
+  constructor(
+    private readonly log: Pick<EventLog, "readAll" | "append">,
+    private readonly onError: (error: unknown, context: { kind: string; turnId?: number }) => void,
+  ) {}
+
+  private persist(record: CanonicalRecord): void {
+    this.log.append({ kind: "canonical_message", actor: "kernel", payload: { ...record } });
+    this.records!.push(record);
+  }
+
+  private async write(kind: CanonicalRecord["kind"], build: () => CanonicalRecord): Promise<CanonicalRecord | null> {
+    if (this.failed) return null;
+    let record: CanonicalRecord | undefined;
+    try {
+      this.records ??= readFullSessionCanonicalRecords(this.log.readAll());
+      record = build();
+      if (record.kind !== "tool_result") {
+        await repairCanonicalTranscript(this.records, (repair) => this.persist(repair));
+      }
+      // Validate before persistence; the emitter tolerates only a terminal gap.
+      emitCanonicalTranscript([...this.records, record]);
+      this.persist(record);
+      return record;
+    } catch (error) {
+      this.failed = true;
+      this.onError(error, { kind, ...(record ? { turnId: record.turnId } : {}) });
+      return null;
+    }
+  }
+
+  async startTurn(text: string): Promise<number | null> {
+    const record = await this.write("user_input", () => ({
+      formatVersion: CANONICAL_TRANSCRIPT_VERSION, kind: "user_input",
+      turnId: nextCanonicalTurnId(this.records!), message: { text },
+    }));
+    return record?.turnId ?? null;
+  }
+
+  async assistant(turnId: number | null, message: AssistantMessage): Promise<void> {
+    if (turnId === null) return;
+    await this.write("assistant", () => ({
+      formatVersion: CANONICAL_TRANSCRIPT_VERSION, kind: "assistant", turnId,
+      message: {
+        text: typeof message.content === "string" ? message.content :
+          (message.content as Array<{ type: string; text?: string }>).filter((part) => part.type === "text").map((part) => part.text ?? "").join(""),
+        ...(message.thinking !== undefined ? { thinking: message.thinking } : {}),
+        ...(message.thinkingSignature !== undefined ? { thinkingSignature: message.thinkingSignature } : {}),
+        ...(message.blocks !== undefined ? { blocks: structuredClone(message.blocks) } : {}),
+        ...(message.toolCalls !== undefined ? { toolCalls: message.toolCalls.map((call) => {
+          const args = redactSecrets(call.args) as JsonObject;
+          // Never retain raw input: duplicate JSON keys can conceal secrets.
+          return { id: call.id, name: call.name, args, rawArgs: JSON.stringify(args) };
+        }) } : {}),
+      },
+    }));
+  }
+
+  async result(turnId: number | null, callId: string, toolName: string, text: string, isError: boolean): Promise<void> {
+    if (turnId === null) return;
+    await this.write("tool_result", () => ({
+      formatVersion: CANONICAL_TRANSCRIPT_VERSION, kind: "tool_result", turnId,
+      message: { callId, toolName, text: redactSecrets(text) as string, isError },
+    }));
+  }
+
+  async wrapUp(turnId: number | null, text: string): Promise<void> {
+    if (turnId === null) return;
+    await this.write("wrap_up", () => ({
+      formatVersion: CANONICAL_TRANSCRIPT_VERSION, kind: "wrap_up", turnId, message: { text },
+    }));
+  }
 }
