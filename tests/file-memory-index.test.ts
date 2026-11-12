@@ -30,6 +30,10 @@ test("index is derived from files, not MEMORY.md; ages, grouping and determinist
   await fs.symlink(join(dir, "recent.md"), join(dir, "link.md"));
   const first = await store.buildMemoryIndex();
   expect(first.total).toBe(4);
+  for (const match of first.text.matchAll(/^- \[([^\]]+)\]\(([^)]+)\)/gm)) {
+    expect(match[2]).toBe(`${match[1]}.md`);
+    expect(match[2]).toMatch(/^[a-z0-9][a-z0-9-]{0,63}\.md$/);
+  }
   expect(first.shown).toBe(4);
   expect(first.truncated).toBe(false);
   expect(first.text).toStartWith(INDEX_PREFACE);
@@ -44,6 +48,20 @@ test("index is derived from files, not MEMORY.md; ages, grouping and determinist
   expect(await store.buildMemoryIndex()).toEqual(first);
   const other = createFileMemoryStore({ home, cwd: home, findRoot: (cwd) => cwd, now: () => new Date("2026-05-01T00:00:00Z") });
   expect(await other.buildMemoryIndex()).toEqual(first);
+});
+
+test("index and recall escape backslash-prefixed links and a truncated trailing backslash", async () => {
+  const { home, store } = await setup();
+  const dir = join(home, ".praana/memory");
+  await fs.mkdir(dir, { recursive: true });
+  const description = "\\[click](http://evil.example)";
+  const body = "needle " + "a".repeat(292) + "\\tail";
+  await fs.writeFile(join(dir, "safe.md"), serializeMemory({ name: "safe", description, body, type: "user", updated: "2026-05-01" }));
+  expect((await store.buildMemoryIndex()).text).toContain("\\\\\\[click\\](http://evil.example)");
+  const recalled = await store.recall({ query: "needle" });
+  if (!recalled.ok || !("matches" in recalled)) throw new Error("Expected matches");
+  expect(recalled.matches[0]!.description).toBe("\\\\\\[click\\](http://evil.example)");
+  expect(recalled.matches[0]!.snippet).toEndWith("\\\\");
 });
 
 test("index reads bounded frontmatter, not full bodies", async () => {

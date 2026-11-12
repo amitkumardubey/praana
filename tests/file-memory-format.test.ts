@@ -58,6 +58,10 @@ describe("file memory format", () => {
     }
     expect(sanitizeDescription("  - [fake]\n`run`\u0000")).toBe("  \\- \\[fake\\] `run` ".replace(/`/g, "\\`"));
   });
+  test("escapes backslashes before link brackets and after truncation", () => {
+    expect(sanitizeDescription("\\[click](http://evil.example)")).toBe("\\\\\\[click\\](http://evil.example)");
+    expect(sanitizeDescription("a".repeat(299) + "\\discarded")).toBe("a".repeat(299) + "\\\\");
+  });
   test("sanitizes control and markdown structure", () => {
     const safe = sanitizeDescription("note\n- [fake] `x` #heading\u0000");
     expect(safe).not.toContain("\n");

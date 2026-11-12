@@ -68,6 +68,6 @@ export function parseMemory(text: string): Memory | null {
 export function sanitizeDescription(text: string): string {
   return Array.from(text).slice(0, 300).join("")
     .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, " ")
-    .replace(/[\[\]`]/g, "\\$&")
+    .replace(/[\\\[\]`]/g, "\\$&")
     .replace(/^(\s*)([-*+#>]|\d+\.)/, (_match, space: string, marker: string) => `${space}${marker.replace(/[-*+#>.]/g, "\\$&")}`);
 }
