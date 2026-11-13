@@ -208,12 +208,17 @@ export function createFileMemoryStore(options: StoreOptions) {
       return memory ? { ...memory, scope } : null;
     });
     const warnings = scopeWarnings(scanned.skippedScopes ?? []);
-    if (!input.scope && scanned.skippedScopes?.length) {
-      return { ok: false, error: `Cannot resolve "${input.name}" safely because a scope scan failed; pass an explicit scope to read: ${scanned.skippedScopes.map(({ scope, reason }) => `${scope}: ${reason}`).join("; ")}`, ...warnings };
+    // Project takes precedence, so only a failed project scan can hide the answer.
+    if (!input.scope && scanned.skippedScopes?.some(({ scope }) => scope === "project")) {
+      return { ok: false, error: `Cannot resolve "${input.name}" safely because a scope scan failed; pass an explicit scope to read: ${(scanned.skippedScopes ?? []).map(({ scope, reason }) => `${scope}: ${reason}`).join("; ")}`, ...warnings };
     }
     if (!scanned.ok) return scanned;
     const memory = scanned.values.find((memory) => memory !== null);
-    return memory ? { ok: true, memory, ...warnings } : { ok: false, error: "Memory not found", ...warnings };
+    if (memory) return { ok: true, memory, ...warnings };
+    // A clean project miss falls through to the global result, including its own failure.
+    const globalFailure = scanned.skippedScopes?.find(({ scope }) => scope === "global");
+    if (globalFailure) return { ok: false, error: `global: ${globalFailure.reason}`, ...warnings };
+    return { ok: false, error: "Memory not found", ...warnings };
   }
 
   async function remove(input: { scope?: MemoryScope; name: string }): Promise<({ ok: true; skipped?: SkippedScope[] } & ScopeWarnings) | ResultError> {

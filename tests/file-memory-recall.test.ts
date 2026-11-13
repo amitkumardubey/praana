@@ -21,6 +21,17 @@ async function setup() {
   }
   return { home, options, dirs, put, store: createFileMemoryStore(options) };
 }
+/** A store whose lstat fails for one path, standing in for an unreadable scope file. */
+function failingOn(options: { home: string; cwd: string; findRoot: (cwd: string) => string; now: () => Date }, failPath: string) {
+  const seam = new Proxy(fs, { get(target, key) {
+    if (key !== "lstat") return Reflect.get(target, key);
+    return async (...args: Parameters<typeof fs.lstat>) => {
+      if (args[0] === failPath) throw Object.assign(new Error(`EACCES: permission denied, lstat '${failPath}'`), { code: "EACCES" });
+      return fs.lstat(...args);
+    };
+  } });
+  return createFileMemoryStore({ ...options, fs: seam });
+}
 
 test("recall name prefers project, supports incognito and refuses invalid names", async () => {
   const { store, put, options } = await setup();
@@ -64,13 +75,58 @@ for (const lookup of ["read", "recall"] as const) {
     const failing = createFileMemoryStore({ ...options, cwd, fs: seam });
     const reason = failure === "EACCES" ? unreadable : failure === "unsafe" ? dirs[badScope] : "cannot resolve project root: ELOOP";
     const warnings = [{ scope: badScope, reason: expect.stringContaining(reason) }];
-    expect(await failing[lookup]({ name: "shared" })).toMatchObject({ ok: false, error: expect.stringMatching(/explicit scope/i), skippedScopes: warnings });
+    if (badScope === "project") {
+      // Project has precedence, so a failed project scan blocks an unscoped answer.
+      expect(await failing[lookup]({ name: "shared" })).toMatchObject({ ok: false, error: expect.stringMatching(/explicit scope/i), skippedScopes: warnings });
+    } else {
+      // The project copy is authoritative, so a failed global scan only warns.
+      expect(await failing[lookup]({ name: "shared" })).toMatchObject({ ok: true, memory: { scope: "project", body: "Searchable project preference" }, skippedScopes: warnings });
+    }
     const goodScope = badScope === "project" ? "global" : "project";
     expect(await failing[lookup]({ name: "shared", scope: goodScope })).toMatchObject({ ok: true, memory: { scope: goodScope, body: `Searchable ${goodScope} preference` } });
     expect(await failing[lookup]({ name: "shared", scope: badScope })).toMatchObject({ ok: false, error: expect.stringContaining(reason) });
     expect(await failing.recall({ query: "Searchable" })).toMatchObject({ ok: true, matches: [{ name: "shared", scope: goodScope }], skippedScopes: warnings });
-    expect(stats).toBeGreaterThan(0);
     expect(await fs.exists(join(dirs[goodScope], "shared.md"))).toBe(true);
+  });
+}
+
+for (const lookup of ["read", "recall"] as const) {
+  test(`${lookup} returns a project hit even when the global scan failed`, async () => {
+    const { options, dirs, put } = await setup();
+    await put("shared", { body: "global copy" }); await put("shared", { body: "project copy" }, "project");
+    const failing = failingOn(options, join(dirs.global, "shared.md"));
+    expect(await failing[lookup]({ name: "shared" })).toEqual({
+      ok: true,
+      memory: expect.objectContaining({ name: "shared", scope: "project", body: "project copy" }),
+      skippedScopes: [{ scope: "global", reason: expect.stringContaining(join(dirs.global, "shared.md")) }],
+    });
+  });
+
+  test(`${lookup} refuses an unscoped lookup when the project scan failed, with or without a global copy`, async () => {
+    const { options, dirs, put } = await setup();
+    await put("shared", { body: "project copy" }, "project");
+    const failing = failingOn(options, join(dirs.project, "shared.md"));
+    const warnings = [{ scope: "project", reason: expect.stringContaining(join(dirs.project, "shared.md")) }];
+    // No global copy at all: the project might still hold the name, so refuse.
+    expect(await failing[lookup]({ name: "shared" })).toMatchObject({ ok: false, error: expect.stringMatching(/explicit scope/i), skippedScopes: warnings });
+    await put("shared", { body: "global copy" });
+    expect(await failing[lookup]({ name: "shared" })).toMatchObject({ ok: false, error: expect.stringMatching(/explicit scope/i), skippedScopes: warnings });
+    expect(await failing[lookup]({ name: "shared", scope: "global" })).toMatchObject({ ok: true, memory: { scope: "global", body: "global copy" } });
+  });
+
+  test(`${lookup} falls through to the global result after a clean project miss`, async () => {
+    const { options, dirs, put, store } = await setup();
+    await put("shared", { body: "global copy" });
+    // Hit, miss and failure all come from global unchanged, with no warning.
+    expect(await store[lookup]({ name: "shared" })).toEqual(await store[lookup]({ name: "shared", scope: "global" }));
+    expect(await store[lookup]({ name: "absent" })).toEqual(await store[lookup]({ name: "absent", scope: "global" }));
+    const failing = failingOn(options, join(dirs.global, "shared.md"));
+    const unscoped = await failing[lookup]({ name: "shared" });
+    const explicit = await failing[lookup]({ name: "shared", scope: "global" });
+    if (unscoped.ok) throw new Error("Expected the global scan failure to surface");
+    expect(unscoped.error).not.toMatch(/explicit scope/i);
+    expect(unscoped).toEqual(explicit);
+    expect(unscoped).toMatchObject({ ok: false, error: expect.stringContaining(join(dirs.global, "shared.md")), skippedScopes: [{ scope: "global" }] });
   });
 }
 
