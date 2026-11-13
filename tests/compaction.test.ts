@@ -1269,29 +1269,62 @@ test("compaction modules import nothing from src/memory/ or checkpoint.ts and do
   expect(compactionSource).not.toMatch(/from\s*["']\.\/compaction\.js["']/);
 });
 
-test("materialises each distinct state at most once per run (bounded by 3 + 2 * stubKeepRecent) with identical outcomes", async () => {
-  const { runCompaction, materializeHistory, requestFill, stateCacheKey } = await api();
-  const baseKeyState: FrozenState = {
-    resetEpoch: "epoch-1",
-    generation: 1,
-    boundaryEventId: "t1-final",
-    summary: validSummary("First summary"),
-    stubSet: [{ eventId: "r1", stubText: "stub" }],
-    summaryRequest: null,
+async function runWithFreshFillOracle(input: compaction.RunCompactionInput & { frame: compaction.RequestFrame }) {
+  const { materializeHistory, requestFill } = compaction;
+  const source = structuredClone(input.log.readAll({ includeInternal: true }));
+  const records: { state: FrozenState; messages: ConversationMessage[]; fill?: compaction.RequestFillResult }[] = [];
+  // Capture the runner's measurements, not a second run through the same cache.
+  const measureSpy = spyOn(compaction, "requestFill").mockImplementation((...args) => {
+    const measured = requestFill(...args);
+    const record = records.find((r) => r.messages === args[1]);
+    if (record) record.fill = measured;
+    return measured;
+  });
+  let outcome: compaction.CompactionOutcome;
+  try {
+    outcome = await compaction.runCompaction({
+      ...input,
+      materialize: (state, events) => {
+        const mat = (input.materialize ?? materializeHistory)(state, events);
+        if (!mat.ok) throw mat.error;
+        records.push({ state: structuredClone(state), messages: mat.messages });
+        return mat;
+      },
+    });
+  } finally {
+    measureSpy.mockRestore();
+  }
+  const freshFill = (state: FrozenState) => {
+    const mat = materializeHistory(state, source);
+    if (!mat.ok) throw mat.error;
+    return requestFill(input.frame, mat.messages, input.contextWindowTokens, input.options);
   };
-  expect(stateCacheKey(baseKeyState)).not.toBe(stateCacheKey({ ...baseKeyState, summary: validSummary("Different summary") }));
-  expect(stateCacheKey(baseKeyState)).not.toBe(stateCacheKey({ ...baseKeyState, resetEpoch: "epoch-2" }));
-  expect(stateCacheKey(baseKeyState)).not.toBe(stateCacheKey({ ...baseKeyState, boundaryEventId: "t2-final" }));
-  expect(stateCacheKey(baseKeyState)).not.toBe(stateCacheKey({ ...baseKeyState, stubSet: [] }));
+  for (const record of records) expect(record.fill).toEqual(freshFill(record.state));
+  if ("fill" in outcome && "state" in outcome) {
+    expect({ ok: true, fill: outcome.fill }).toEqual(freshFill(outcome.state));
+  }
+  // The identity oracle is deliberately independent of the production cache key.
+  const keys = records.map(({ state }) => JSON.stringify([
+    state.resetEpoch, state.boundaryEventId, state.summary,
+    state.stubSet.map((s) => [s.eventId, s.stubText]).sort(),
+  ]));
+  expect(records.length).toBe(new Set(keys).size);
+  expect(records.length).toBeLessThanOrEqual(3 + 2 * (input.options?.stubKeepRecent ?? 3));
+  return outcome;
+}
 
+const oracleFrame: compaction.RequestFrame = {
+  systemPrompt: "Follow the repository conventions. ".repeat(3),
+  tools: [{ name: "shell", description: "Run a shell command", parameters: { type: "object", properties: { command: { type: "string" } } } }],
+};
+
+test("materialises each distinct state at most once with fresh full-frame fill measurements", async () => {
   let seed = 0x7f4a7c15;
   const rand = (max: number) => {
     seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
     return seed % max;
   };
 
-  let totalCachedCalls = 0;
-  let totalUncachedCalls = 0;
   for (let scenario = 0; scenario < 100; scenario++) {
     const buildScenarioEvents = (): Event[] => {
       const evs: Event[] = [];
@@ -1350,8 +1383,7 @@ test("materialises each distinct state at most once per run (bounded by 3 + 2 * 
     const stubMinTokens = 50 + rand(150);
     const mode = rand(5);
 
-    const eventsA = buildScenarioEvents();
-    const eventsB = buildScenarioEvents();
+    const events = buildScenarioEvents();
     const makeLog = (evs: Event[]) => ({
       readAll() { return evs; },
       append(partial: Omit<Event, "event_id" | "session_id" | "timestamp">) {
@@ -1361,82 +1393,22 @@ test("materialises each distinct state at most once per run (bounded by 3 + 2 * 
       },
     });
 
-    let calls = 0;
-    const seenKeys = new Set<string>();
-    const cachedFills = new Map<string, compaction.RequestFill>();
-    let summaryCallsA = 0;
-    const outcomeA = await runCompaction({
-      log: makeLog(eventsA),
+    let summaryCalls = 0;
+    await runWithFreshFillOracle({
+      log: makeLog(events),
       liveRequest: baseLiveRequest(),
+      frame: oracleFrame,
       contextWindowTokens: windowTokens,
       options: { effectiveMaxTokens, tailTurns, stubKeepRecent, stubMinTokens },
       planStubs: (candidates) => candidates.map((c) => ({ eventId: c.eventId, stubText: `[stub:${c.eventId}]` })),
-      materialize: (s, src) => {
-        calls++;
-        totalCachedCalls++;
-        const key = stateCacheKey(s);
-        seenKeys.add(key);
-        const mat = materializeHistory(s, src);
-        if (mat.ok) {
-          const fill = requestFill({}, mat.messages, windowTokens, { effectiveMaxTokens });
-          if (fill.ok) cachedFills.set(key, fill.fill);
-        }
-        return mat;
-      },
       runSummary: async () => {
-        summaryCallsA++;
+        summaryCalls++;
         if (mode === 4) return summaryResp("invalid summary");
-        if (mode === 3 && summaryCallsA % 2 === 1) return summaryResp("needs repair");
+        if (mode === 3 && summaryCalls % 2 === 1) return summaryResp("needs repair");
         return summaryResp(validSummary(`Scenario ${scenario}`));
       },
     });
-
-    // Reference uncached run must bypass the memoization cache and produce identical outcome, fills, and log events.
-    let summaryCallsB = 0;
-    const uncachedFills = new Map<string, compaction.RequestFill>();
-    const outcomeB = await runCompaction({
-      log: makeLog(eventsB),
-      liveRequest: baseLiveRequest(),
-      contextWindowTokens: windowTokens,
-      options: { effectiveMaxTokens, tailTurns, stubKeepRecent, stubMinTokens },
-      bypassMaterializeCache: true,
-      planStubs: (candidates) => candidates.map((c) => ({ eventId: c.eventId, stubText: `[stub:${c.eventId}]` })),
-      materialize: (s, src) => {
-        totalUncachedCalls++;
-        const mat = materializeHistory(s, src);
-        if (mat.ok) {
-          const fill = requestFill({}, mat.messages, windowTokens, { effectiveMaxTokens });
-          if (fill.ok) uncachedFills.set(stateCacheKey(s), fill.fill);
-        }
-        return mat;
-      },
-      runSummary: async () => {
-        summaryCallsB++;
-        if (mode === 4) return summaryResp("invalid summary");
-        if (mode === 3 && summaryCallsB % 2 === 1) return summaryResp("needs repair");
-        return summaryResp(validSummary(`Scenario ${scenario}`));
-      },
-    });
-
-    expect(outcomeA).toEqual(outcomeB);
-    expect(eventsA).toEqual(eventsB);
-    for (const [key, cachedFill] of cachedFills) {
-      expect(uncachedFills.get(key)).toEqual(cachedFill);
-    }
-    if ("fill" in outcomeA && "state" in outcomeA) {
-      const oracleMat = materializeHistory(outcomeA.state, eventsA);
-      expect(oracleMat.ok).toBe(true);
-      if (!oracleMat.ok) throw oracleMat.error;
-      const oracleFill = requestFill({}, oracleMat.messages, windowTokens, { effectiveMaxTokens });
-      expect(oracleFill.ok).toBe(true);
-      if (!oracleFill.ok) throw new Error(JSON.stringify(oracleFill));
-      expect(outcomeA.fill).toEqual(oracleFill.fill);
-    }
-    // Each distinct state is materialised at most once, and total calls are bounded by 3 + 2 * stubKeepRecent.
-    expect(calls).toBe(seenKeys.size);
-    expect(calls).toBeLessThanOrEqual(3 + 2 * stubKeepRecent);
   }
-  expect(totalUncachedCalls).toBeGreaterThan(totalCachedCalls);
 
   // Scenario reaching both runInFlightStubbing paths (after an insufficient fold and again in Step 3)
   // exercises the true worst-case bound of 3 + 2 * stubKeepRecent materialisations.
@@ -1458,16 +1430,18 @@ test("materialises each distinct state at most once per run (bounded by 3 + 2 * 
     let bothPathCalls = 0;
     const bothPathKeys = new Set<string>();
     const stubKeepRecent = 2;
-    const outcome = await runCompaction({
+    const outcome = await runWithFreshFillOracle({
       log,
       liveRequest: baseLiveRequest(),
+      frame: {},
       contextWindowTokens: 1200,
       options: { effectiveMaxTokens: 200, tailTurns: 0, stubKeepRecent, stubMinTokens: 50 },
       planStubs: (candidates) => candidates.map((c) => ({ eventId: c.eventId, stubText: "s" })),
-      materialize: (s, src) => {
+
+      materialize: (state, source) => {
         bothPathCalls++;
-        bothPathKeys.add(stateCacheKey(s));
-        return materializeHistory(s, src);
+        bothPathKeys.add(JSON.stringify([state.resetEpoch, state.boundaryEventId, state.summary, state.stubSet]));
+        return compaction.materializeHistory(state, source);
       },
       runSummary: async () => summaryResp(validSummary("S".repeat(280))),
     });
@@ -1478,6 +1452,26 @@ test("materialises each distinct state at most once per run (bounded by 3 + 2 * 
     expect(bothPathCalls).toBeGreaterThan(3 + stubKeepRecent);
   }
 });
+
+for (const status of ["cancelled", "capacity_error"] as const) {
+  test(`fresh full-frame fill oracle checks intermediate measurements ending in ${status}`, async () => {
+    const { log } = openLog();
+    addTurn(log, 1, { inputText: "old".repeat(1300) });
+    addTurn(log, 2, {
+      inputText: status === "capacity_error" ? "U".repeat(8000) : "new",
+      toolResults: [{ id: "older", text: "X".repeat(1600) }, { id: "newest", text: "ok" }],
+    });
+    const controller = new AbortController();
+    const outcome = await runWithFreshFillOracle({
+      log, liveRequest: baseLiveRequest(), frame: oracleFrame,
+      contextWindowTokens: 2000,
+      options: { effectiveMaxTokens: 200, tailTurns: 0, stubKeepRecent: 1, stubMinTokens: 50 },
+      signal: controller.signal,
+      runSummary: async () => { controller.abort(); return summaryResp(); },
+    });
+    expect(outcome.status).toBe(status);
+  });
+}
 
 test("unchanged_fits carries reason for fold_not_possible, fold_insufficient, and nothing_to_stub, and marks discarded summaries", async () => {
   const { runCompaction } = await api();
