@@ -36,6 +36,7 @@ import {
   CredentialLockTimeoutError,
   type CredentialLock,
 } from "../credential-lock.js";
+import { getAppLogger } from "../logger.js";
 import {
   parseConfigOverrides,
   type AcceptedOverrides,
@@ -412,8 +413,13 @@ function writeDocumentAtomic(
       // Best effort: the rename has already committed, so a directory fsync failure must
       // not report the write as failed.
       fs.fsyncDir(dir);
-    } catch {
+    } catch (err) {
       // Ignore: durability of the directory entry is not something the caller can act on.
+      const msg = err instanceof Error ? err.message : String(err);
+      getAppLogger().child("config").warn(`Failed to fsync settings directory (${dir}) for ${path}: ${msg}`, {
+        details: { path, dir, operation: "fsyncSettingsDir" },
+        cause: err instanceof Error ? err : undefined,
+      });
     }
   });
 }
@@ -446,8 +452,13 @@ function withSettingsLock<T>(
   } finally {
     try {
       lock.release();
-    } catch {
+    } catch (err) {
       // Best effort: a release failure must not replace a committed result with an exception.
+      const msg = err instanceof Error ? err.message : String(err);
+      getAppLogger().child("config").warn(`Failed to release settings lock (${lockPath}): ${msg}`, {
+        details: { path: lockPath, settingsPath: path, operation: "releaseSettingsLock" },
+        cause: err instanceof Error ? err : undefined,
+      });
     }
   }
 }
@@ -663,8 +674,13 @@ function backupCorruptFile(
 function discardCorruptBackup(backupPath: string, fs: SettingsFs): void {
   try {
     fs.unlink(backupPath);
-  } catch {
+  } catch (err) {
     // Ignore: the write error is the result the caller needs.
+    const msg = err instanceof Error ? err.message : String(err);
+    getAppLogger().child("config").warn(`Failed to remove discarded corrupt settings backup (${backupPath}): ${msg}`, {
+      details: { path: backupPath, operation: "discardCorruptBackup" },
+      cause: err instanceof Error ? err : undefined,
+    });
   }
 }
 

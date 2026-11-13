@@ -17,6 +17,7 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { APP_HOME_DIR } from "../src/app-identity.js";
 import { resolveActiveModelAndProvider } from "../src/llm/resolver.js";
+import { createTestLogger, getAppLogger, setAppLogger } from "../src/logger.js";
 import {
   DEFAULT_USER_SETTINGS,
   getUserSettingsPath,
@@ -1401,5 +1402,98 @@ console.log(JSON.stringify(res));
     expect(rejected.ok).toBe(false);
     if (!rejected.ok) expect(rejected.error).toContain("constructor");
     expect(readSettingsDocument().doc.custom_constructor).toEqual(diskDoc.custom_constructor);
+  });
+
+  test("logs a warning with context when lock.release fails without replacing the committed result", async () => {
+    const { updateSettingsDocument } = await storeApi();
+    const lockMod = await import("../src/credential-lock.js");
+    const realAcquireSync = lockMod.acquireSync;
+    const lockPath = join(homeDir, ".settings.json.lock.db");
+
+    const lines: string[] = [];
+    const previousLogger = getAppLogger();
+    setAppLogger(createTestLogger((line) => lines.push(line)));
+    const spy = spyOn(lockMod, "acquireSync").mockImplementation((p: string, opts: { waitMs: number }) => {
+      const lock = realAcquireSync(p, opts);
+      return {
+        release() {
+          lock.release();
+          throw new Error("injected release failure");
+        },
+      };
+    });
+
+    try {
+      const updated = updateSettingsDocument({ thinking: false });
+      expect(updated.ok).toBe(true);
+      if (updated.ok) expect(updated.doc.thinking).toBe(false);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain(lockPath);
+      expect(lines[0]).toContain("injected release failure");
+    } finally {
+      spy.mockRestore();
+      setAppLogger(previousLogger);
+    }
+  });
+
+  test("logs a warning with context when directory fsync fails after a committed rename", async () => {
+    const { replaceSettingsDocument, createSettingsFs } = await storeApi();
+    const lines: string[] = [];
+    const previousLogger = getAppLogger();
+    setAppLogger(createTestLogger((line) => lines.push(line)));
+
+    try {
+      const fsyncFailFs = createSettingsFs({
+        fsyncDir() {
+          throw new Error("injected fsyncDir failure");
+        },
+      });
+      const replaced = replaceSettingsDocument({ ...DEFAULT_USER_SETTINGS }, { fs: fsyncFailFs });
+      expect(replaced.ok).toBe(true);
+      if (replaced.ok) expect(replaced.doc).toEqual(DEFAULT_USER_SETTINGS);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain(homeDir);
+      expect(lines[0]).toContain("injected fsyncDir failure");
+    } finally {
+      setAppLogger(previousLogger);
+    }
+  });
+
+  test("logs a warning with context when discarding a corrupt backup fails", async () => {
+    const { updateSettingsDocument, createSettingsFs } = await storeApi();
+    const baseFs = createSettingsFs();
+    const lines: string[] = [];
+    const previousLogger = getAppLogger();
+    setAppLogger(createTestLogger((line) => lines.push(line)));
+
+    try {
+      writeFileSync(settingsPath, "{corrupt-unlink-fail", "utf-8");
+      const unlinkFailFs = createSettingsFs({
+        rename() {
+          throw new Error("injected rename failure");
+        },
+        unlink(p) {
+          if (p.includes(".corrupt-")) {
+            throw new Error("injected unlink failure");
+          }
+          return baseFs.unlink(p);
+        },
+      });
+      const failedUpdate = updateSettingsDocument(
+        { ...DEFAULT_USER_SETTINGS },
+        {
+          fs: unlinkFailFs,
+          baseDefaultsIfMissing: { ...DEFAULT_USER_SETTINGS },
+          onCorrupt: "backup-and-reset-legacy",
+        },
+      );
+      expect(failedUpdate.ok).toBe(false);
+      if (!failedUpdate.ok) expect(failedUpdate.error).toContain("injected rename failure");
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain(`${settingsPath}.corrupt-`);
+      expect(lines[0]).toContain("injected unlink failure");
+    } finally {
+      setAppLogger(previousLogger);
+    }
   });
 });
