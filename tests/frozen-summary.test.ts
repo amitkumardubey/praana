@@ -489,13 +489,13 @@ test("append rejects unreplayable commits without changing the log", async () =>
   expect(log.readAll({ includeInternal: true })).toEqual(afterReset);
 });
 
-test("append rejects invalid input and read errors without writing", async () => {
+test("append rejects invalid input and propagates read errors without writing", async () => {
   const { appendCommit } = await api();
   const { log } = openLog();
   expect(appendCommit(log, data({ generation: 0 }))).toMatchObject({ status: "rejected" });
   const append = spyOn(log, "append");
   spyOn(log, "readAll").mockImplementation(() => { throw new Error("read failed"); });
-  expect(appendCommit(log, data())).toMatchObject({ status: "rejected", error: { message: expect.stringContaining("read failed") } });
+  expect(() => appendCommit(log, data())).toThrow("read failed");
   expect(append).not.toHaveBeenCalled();
 });
 

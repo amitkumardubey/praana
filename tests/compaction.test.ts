@@ -1205,6 +1205,34 @@ test("commit_rejected is returned with reason when replay or validation rejects 
   }
 });
 
+test("log read failure during commit validation propagates instead of becoming commit_rejected", async () => {
+  const { runCompaction } = await api();
+  const { log } = openLog();
+  addTurn(log, 1, { inputText: "Turn 1 " + "a".repeat(6000) });
+  addTurn(log, 2, { inputText: "Turn 2" });
+  const events = log.readAll({ includeInternal: true });
+  let readCalls = 0;
+  const failingLog = {
+    readAll() {
+      readCalls++;
+      if (readCalls === 1) return events;
+      throw new Error("simulated I/O read error");
+    },
+    append() {
+      throw new Error("Should not append when readAll fails");
+    },
+  };
+
+  await expect(runCompaction({
+    log: failingLog,
+    liveRequest: baseLiveRequest(),
+    contextWindowTokens: 2100,
+    options: { effectiveMaxTokens: 200, tailTurns: 0 },
+    runSummary: async () => summaryResp(validSummary("Summary before read error.")),
+  })).rejects.toThrow("simulated I/O read error");
+  expect(readCalls).toBe(2);
+});
+
 test("compaction modules import nothing from src/memory/ or checkpoint.ts", async () => {
   await api();
   for (const rel of ["../src/compaction.ts", "../src/compaction-requests.ts"]) {

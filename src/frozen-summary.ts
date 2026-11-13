@@ -349,13 +349,14 @@ export function appendCommit(log: Pick<EventLog, "append" | "readAll">, commit: 
   let event: ReturnType<typeof buildCommitEvent>;
   try {
     event = buildCommitEvent(commit);
-    const events = log.readAll({ includeInternal: true });
-    const candidate: Event = { ...event, event_id: "", session_id: "", timestamp: 0 };
-    const result = restoreFrozenState([...events, candidate]);
-    if (!result.ok) return { status: "rejected", error: result.error };
   } catch (error) {
-    return { status: "rejected", error: error instanceof FrozenSummaryError ? error : new FrozenSummaryError("invalid_commit", -1, `cannot validate commit: ${String(error)}`) };
+    if (error instanceof FrozenSummaryError) return { status: "rejected", error };
+    throw error;
   }
+  const events = log.readAll({ includeInternal: true });
+  const candidate: Event = { ...event, event_id: "", session_id: "", timestamp: 0 };
+  const result = restoreFrozenState([...events, candidate]);
+  if (!result.ok) return { status: "rejected", error: result.error };
   try {
     log.append(event);
     return { status: "committed" };
