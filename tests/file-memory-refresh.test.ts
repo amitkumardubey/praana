@@ -39,6 +39,35 @@ test("each scope's MEMORY.md links resolve relative to its own directory", async
   expect(prompt.text).toContain("[coffee](project/coffee.md)");
 });
 
+for (const scope of ["global", "project"] as const) {
+  test.each([false, true])(`incognito refresh leaves the ${scope} scope untouched (existing: %s)`, async (existing) => {
+    const { store, options } = await setup();
+    if (existing) expect((await store.write({ ...input, scope })).ok).toBe(true);
+    const before = (await fs.readdir(options.home, { recursive: true })).sort();
+    const index = before.find((path) => path.endsWith("MEMORY.md"));
+    const text = index ? await fs.readFile(join(options.home, index), "utf8") : undefined;
+    const stat = index ? await fs.stat(join(options.home, index)) : undefined;
+    const calls: string[] = [];
+    const seam = new Proxy(fs, { get(target, method) {
+      const value = Reflect.get(target, method);
+      if (typeof value !== "function") return value;
+      return (...args: unknown[]) => { calls.push(String(method)); return Reflect.apply(value, target, args); };
+    } });
+    const incognito = createFileMemoryStore({ ...options, incognito: true, fs: seam });
+    const result = await incognito.refreshIndexFile(scope);
+    expect((await fs.readdir(options.home, { recursive: true })).sort()).toEqual(before);
+    if (index) {
+      expect(await fs.readFile(join(options.home, index), "utf8")).toBe(text!);
+      const after = await fs.stat(join(options.home, index));
+      expect(after.ino).toBe(stat!.ino);
+      expect(after.mtimeMs).toBe(stat!.mtimeMs);
+    }
+    expect(calls).toEqual([]);
+    expect(result).toEqual({ ok: false, error: "Incognito mode prevents writes" });
+    expect(result).toEqual(await incognito.write({ ...input, scope }));
+  });
+}
+
 test("write and remove refresh only the affected scope; copy is derived and never read", async () => {
   const { store, dir, options } = await setup();
   expect((await store.write(input)).ok).toBe(true);

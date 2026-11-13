@@ -301,6 +301,7 @@ export function createFileMemoryStore(options: StoreOptions) {
   /** Derived convenience copy only. A failed refresh is observable here but never
    * changes the result of an already-committed write or removal. Never read back. */
   async function refreshIndexFile(scope: MemoryScope): Promise<{ ok: true } | ResultError> {
+    if (options.incognito) return { ok: false, error: "Incognito mode prevents writes" };
     try {
       const data = await list({ scope });
       if (!data.ok) return errorResult(new Error(data.error));
