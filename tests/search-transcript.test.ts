@@ -1,8 +1,16 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CanonicalRecord } from "../src/canonical-transcript.js";
+import { readFullSessionCanonicalRecords, type CanonicalRecord } from "../src/canonical-transcript.js";
+import { loadConfig } from "../src/config.js";
+import { ContextEngine } from "../src/context-engine/index.js";
+import * as nativeLlm from "../src/llm/index.js";
+import type { StreamEvent } from "../src/llm/types.js";
+import * as oauth from "../src/oauth.js";
+import { Session } from "../src/session.js";
+import * as toolRegistry from "../src/tools/index.js";
+import { runTurn } from "../src/turn.js";
 import { isLoopExempt } from "../src/circuit/loop-gate.js";
 import { EventLog } from "../src/event-log.js";
 import { StateGraph } from "../src/state-graph.js";
@@ -16,6 +24,7 @@ const api = async () => searchTranscriptModule;
 const roots: string[] = [];
 const logs: EventLog[] = [];
 afterEach(() => {
+  mock.restore();
   for (const log of logs.splice(0)) log.close();
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
 });
@@ -174,6 +183,91 @@ describe("search_transcript tool (PR3)", () => {
     if (!full.ok || full.mode !== "fetch") throw new Error("Expected fetch");
     expect(full.message.content).toContain("[REDACTED:github-token]");
     expect(full.message.totalChars).toBe(full.message.content.length);
+  });
+
+  test("searches original tool output behind an engine-mode artifact card after reload", async () => {
+    const { root, log, sessionId } = openLog();
+    log.close();
+    const config = loadConfig();
+    config.session.log_dir = root;
+    config.memory.enabled = false;
+    config.native = { ...config.native!, enabled: false };
+    config.llm = { provider: "openrouter", model: "test/model" };
+    config.context_engine = { ...config.context_engine!, enabled: true, artifact_inline_threshold: 1 };
+    const session = Session.createNew(sessionId, root, config);
+    logs.push(session.eventLog);
+    const engine = ContextEngine.open(":memory:", sessionId, config.context_engine);
+    session.contextEngine = engine;
+    session.headless = true;
+    const needle = "ENGINE_OUTPUT_NEEDLE_7319";
+    const raw = { ok: true, content: `${"ordinary output ".repeat(200)}${needle}` };
+    spyOn(session, "ensureModelContextWindow").mockResolvedValue(128000);
+    spyOn(oauth, "resolveOAuthModelAuth").mockResolvedValue(null);
+    spyOn(toolRegistry, "createAllTools").mockReturnValue({
+      echo: { description: "echo", parameters: {}, execute: async () => raw },
+    } as unknown as ReturnType<typeof createAllTools>);
+    let step = 0;
+    spyOn(nativeLlm, "streamLlmResponse").mockImplementation(() => (async function* (): AsyncGenerator<StreamEvent> {
+      if (step++ === 0) {
+        const call = { id: "engine-call", name: "echo", args: {} };
+        yield { type: "tool_call_end", toolCall: call };
+        yield { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [call] } };
+      } else {
+        yield { type: "text_delta", delta: "done" };
+        yield { type: "done", reason: "stop", message: { role: "assistant", content: "done" } };
+      }
+    })());
+    try {
+      await runTurn(session, "inspect output", undefined, { sink: {} });
+      const records = readFullSessionCanonicalRecords(session.eventLog.readAll({ includeCanonical: true }));
+      const result = records.find((r) => r.kind === "tool_result");
+      expect(result?.message.text).toContain("[artifact:");
+      expect(result?.message.text).not.toContain(needle);
+      expect(session.eventLog.readAll().find((e) => e.kind === "tool_result")?.payload.result).toEqual(raw);
+      session.eventLog.close();
+      const reloaded = new EventLog(sessionId, root);
+      logs.push(reloaded);
+      const tool = searchTranscriptModule.createSearchTranscriptTool({ eventLog: reloaded }).search_transcript;
+      const search = await tool.execute({ query: needle });
+      if (!search.ok || search.mode !== "search") throw new Error("Expected search");
+      expect(search.matches).toHaveLength(1);
+      expect(search.matches[0]?.artifactId).toMatch(/^art_/);
+      const fetched = await tool.execute({ id: search.matches[0]!.id });
+      if (!fetched.ok || fetched.mode !== "fetch") throw new Error("Expected fetch");
+      expect(fetched.message.content).toContain(needle);
+    } finally {
+      engine.close();
+    }
+  });
+
+  test("only recovers paired source results within the same reset epoch", async () => {
+    for (const scenario of ["wrong-tool", "wrong-call", "repeat-read", "reset"] as const) {
+      const { log } = openLog();
+      const card = '[artifact: art_abcdef123456 | shell: inspect | 1,000 tokens raw]';
+      addCanonical(log, "card", {
+        formatVersion: 1,
+        kind: "tool_result",
+        turnId: 1,
+        message: { callId: "call", toolName: "shell", text: card, isError: false },
+      });
+      if (scenario === "reset") addResetBoundary(log, "reset");
+      log.append({
+        kind: "tool_result",
+        actor: "tool",
+        payload: {
+          toolCallId: scenario === "wrong-call" ? "other" : "call",
+          tool: scenario === "wrong-tool" ? "read_file" : "shell",
+          result: { content: "unrelated needle", skipped_disk: scenario === "repeat-read" },
+        },
+      });
+      const tool = searchTranscriptModule.createSearchTranscriptTool({ eventLog: log }).search_transcript;
+      const fetched = await tool.execute({ id: "card", include_previous_resets: true });
+      if (!fetched.ok || fetched.mode !== "fetch") throw new Error("Expected fetch");
+      expect(fetched.message.content).toBe(card);
+      const search = await tool.execute({ query: "needle", include_previous_resets: true });
+      if (!search.ok || search.mode !== "search") throw new Error("Expected search");
+      expect(search.matches).toEqual([]);
+    }
   });
 
   test("recovers a unique fact folded across two compactions and after session reload", async () => {

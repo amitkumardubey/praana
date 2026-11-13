@@ -109,6 +109,7 @@ export function indexSessionTranscript(
   const events = eventLog.readAll({ includeCanonical: true });
   let currentResetEpoch = SESSION_START_EPOCH;
   const entries: IndexedTranscriptEntry[] = [];
+  const artifactResults = new Map<string, IndexedTranscriptEntry>();
   let epochPosition = 0;
 
   for (let i = 0; i < events.length; i++) {
@@ -117,6 +118,23 @@ export function indexSessionTranscript(
     if (isResetBoundaryEvent(ev)) {
       currentResetEpoch = ev.event_id;
       epochPosition = 0;
+      artifactResults.clear();
+      continue;
+    }
+    if (ev.kind === "tool_result") {
+      // Engine canonical results may hold only a card; the paired event retains
+      // the original output. Recover it under the canonical ID, not as a new hit.
+      const key = JSON.stringify([ev.payload.tool, ev.payload.toolCallId]);
+      const entry = artifactResults.get(key);
+      const result = ev.payload.result;
+      const skippedDisk = result !== null && typeof result === "object" &&
+        (result as { skipped_disk?: unknown }).skipped_disk === true;
+      if (entry && result !== undefined && !skippedDisk) {
+        const text = typeof result === "string" ? result : JSON.stringify(result);
+        entry.text = redactSecrets(text) as string;
+        entry.searchText = `${entry.toolName} ${entry.callId}\n${entry.text}`;
+      }
+      artifactResults.delete(key);
       continue;
     }
     if (ev.kind !== "canonical_message") continue;
@@ -146,6 +164,9 @@ export function indexSessionTranscript(
     if (extracted.isError !== undefined) entry.isError = extracted.isError;
     if (extracted.artifactId !== undefined) entry.artifactId = extracted.artifactId;
     entries.push(entry);
+    if (entry.kind === "tool_result" && entry.artifactId && entry.toolName !== "retrieve_artifact") {
+      artifactResults.set(JSON.stringify([entry.toolName, entry.callId]), entry);
+    }
     epochPosition++;
   }
 
