@@ -1404,6 +1404,57 @@ console.log(JSON.stringify(res));
     expect(readSettingsDocument().doc.custom_constructor).toEqual(diskDoc.custom_constructor);
   });
 
+  test("top-level own __proto__ key on disk can be read, updated, and reset without polluting Object.prototype", async () => {
+    const { updateSettingsDocument, readSettingsDocument } = await storeApi();
+
+    writeFileSync(settingsPath, '{"__proto__": {"polluted": true}, "thinking": true}\n', "utf-8");
+
+    const initialRead = readSettingsDocument();
+    expect(initialRead.state).toBe("ok");
+    expect(Object.hasOwn(initialRead.doc, "__proto__")).toBe(true);
+    expect(Object.getOwnPropertyDescriptor(initialRead.doc, "__proto__")?.value).toEqual({
+      polluted: true,
+    });
+    expect(Object.getPrototypeOf(initialRead.doc)).toBe(Object.prototype);
+    expect((Object.prototype as Record<string, unknown>).polluted).toBeUndefined();
+
+    // Update another key: __proto__ survives as an own data property and does not pollute prototypes.
+    const updated = updateSettingsDocument({ debug: true });
+    expect(updated.ok).toBe(true);
+    if (updated.ok) {
+      expect(Object.hasOwn(updated.doc, "__proto__")).toBe(true);
+      const desc = Object.getOwnPropertyDescriptor(updated.doc, "__proto__");
+      expect(desc?.enumerable).toBe(true);
+      expect(desc?.value).toEqual({ polluted: true });
+      expect(Object.getPrototypeOf(updated.doc)).toBe(Object.prototype);
+    }
+    expect((Object.prototype as Record<string, unknown>).polluted).toBeUndefined();
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+
+    const afterUpdate = readSettingsDocument();
+    expect(afterUpdate.state).toBe("ok");
+    expect(afterUpdate.doc.debug).toBe(true);
+    expect(afterUpdate.doc.thinking).toBe(true);
+    expect(Object.hasOwn(afterUpdate.doc, "__proto__")).toBe(true);
+    expect(Object.getOwnPropertyDescriptor(afterUpdate.doc, "__proto__")?.value).toEqual({
+      polluted: true,
+    });
+
+    // Reset also succeeds and preserves the own __proto__ key on disk.
+    const reset = resetUserSettings();
+    expect(reset.ok).toBe(true);
+    const afterReset = readSettingsDocument();
+    expect(afterReset.state).toBe("ok");
+    expect(afterReset.doc.thinking).toBe(true);
+    expect(afterReset.doc.debug).toBe(false);
+    expect(Object.hasOwn(afterReset.doc, "__proto__")).toBe(true);
+    expect(Object.getOwnPropertyDescriptor(afterReset.doc, "__proto__")?.value).toEqual({
+      polluted: true,
+    });
+    expect((Object.prototype as Record<string, unknown>).polluted).toBeUndefined();
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+
   test("logs a warning with context when lock.release fails without replacing the committed result", async () => {
     const { updateSettingsDocument } = await storeApi();
     const lockMod = await import("../src/credential-lock.js");
