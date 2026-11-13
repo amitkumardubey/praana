@@ -386,10 +386,53 @@ function withSettingsLock<T>(
   }
 }
 
+const FORBIDDEN_DOC_KEYS = ["__proto__", "constructor", "prototype"] as const;
+
+function findForbiddenOwnKey(value: unknown, visited = new Set<object>()): string | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  if (visited.has(value)) return undefined;
+  visited.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const hit = findForbiddenOwnKey(item, visited);
+      if (hit) return hit;
+    }
+    return undefined;
+  }
+  for (const key of FORBIDDEN_DOC_KEYS) {
+    if (Object.hasOwn(value, key)) {
+      return key;
+    }
+  }
+  for (const key of Object.keys(value)) {
+    const hit = findForbiddenOwnKey((value as Record<string, unknown>)[key], visited);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+function validateSettingsObject(obj: unknown, label: string): string | undefined {
+  if (!isPlainObject(obj)) {
+    return `${label} must be a plain object`;
+  }
+  const forbiddenKey = findForbiddenOwnKey(obj);
+  if (forbiddenKey) {
+    return `Forbidden settings key "${forbiddenKey}"`;
+  }
+  return undefined;
+}
+
 export function updateSettingsDocument(
   patch: Record<string, unknown>,
   options?: SettingsStoreOptions & { baseDefaultsIfMissing?: Record<string, unknown> },
 ): { ok: true; doc: Record<string, unknown> } | { ok: false; error: string } {
+  const patchErr = validateSettingsObject(patch, "Settings patch");
+  if (patchErr) return { ok: false, error: patchErr };
+  if (options?.baseDefaultsIfMissing !== undefined) {
+    const baseErr = validateSettingsObject(options.baseDefaultsIfMissing, "Settings base defaults");
+    if (baseErr) return { ok: false, error: baseErr };
+  }
+
   const path = resolveSettingsPath(options);
   const fs = options?.fs ?? defaultFs;
   return withSettingsLock(path, () => {
@@ -412,7 +455,12 @@ export function updateSettingsDocument(
       if (val === null) {
         delete nextDoc[key];
       } else if (val !== undefined) {
-        nextDoc[key] = val;
+        Object.defineProperty(nextDoc, key, {
+          value: val,
+          writable: true,
+          enumerable: true,
+          configurable: true,
+        });
       }
     }
 
@@ -426,6 +474,9 @@ export function replaceSettingsDocument(
   doc: Record<string, unknown>,
   options?: SettingsStoreOptions & { backupCorrupt?: boolean },
 ): { ok: true; doc: Record<string, unknown>; backupPath?: string } | { ok: false; error: string } {
+  const docErr = validateSettingsObject(doc, "Settings document");
+  if (docErr) return { ok: false, error: docErr };
+
   const path = resolveSettingsPath(options);
   const fs = options?.fs ?? defaultFs;
   return withSettingsLock(path, () => {

@@ -665,4 +665,73 @@ for (let i = 0; i < 50; i++) {
       rmSync(workerScript, { force: true });
     }
   });
+
+  test("rejects __proto__, constructor, and prototype keys in update/replace before any write, and JSON.parse read path cannot poison prototypes", async () => {
+    const {
+      readSettingsDocument,
+      updateSettingsDocument,
+      replaceSettingsDocument,
+      loadSettingsFile,
+    } = await storeApi();
+
+    const baseline = JSON.stringify({ thinking: true }, null, 2) + "\n";
+    writeFileSync(settingsPath, baseline, "utf-8");
+
+    for (const forbiddenKey of ["__proto__", "constructor", "prototype"] as const) {
+      const hostilePatch = JSON.parse(`{"${forbiddenKey}": {"polluted": "yes"}, "debug": true}`) as Record<
+        string,
+        unknown
+      >;
+      const updateRes = updateSettingsDocument(hostilePatch);
+      expect(updateRes.ok).toBe(false);
+      if (!updateRes.ok) {
+        expect(updateRes.error).toContain(forbiddenKey);
+      }
+      expect(readFileSync(settingsPath, "utf-8")).toBe(baseline);
+      expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+
+      const hostileNullPatch = JSON.parse(`{"${forbiddenKey}": null}`) as Record<string, unknown>;
+      expect(updateSettingsDocument(hostileNullPatch).ok).toBe(false);
+      expect(readFileSync(settingsPath, "utf-8")).toBe(baseline);
+
+      const hostileDoc = JSON.parse(`{"${forbiddenKey}": {"polluted": "yes"}, "thinking": false}`) as Record<
+        string,
+        unknown
+      >;
+      const replaceRes = replaceSettingsDocument(hostileDoc);
+      expect(replaceRes.ok).toBe(false);
+      if (!replaceRes.ok) {
+        expect(replaceRes.error).toContain(forbiddenKey);
+      }
+      expect(readFileSync(settingsPath, "utf-8")).toBe(baseline);
+      expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    }
+
+    // Object literal with mutated prototype (not an own key) is also rejected.
+    const protoMutated = { __proto__: { polluted: "yes" } } as unknown as Record<string, unknown>;
+    expect(updateSettingsDocument(protoMutated).ok).toBe(false);
+    expect(replaceSettingsDocument(protoMutated).ok).toBe(false);
+    expect(readFileSync(settingsPath, "utf-8")).toBe(baseline);
+
+    // Confirm JSON.parse of a file on disk containing __proto__/constructor/prototype cannot poison the read path.
+    writeFileSync(
+      settingsPath,
+      '{"__proto__": {"polluted": "yes"}, "constructor": {"bad": 1}, "prototype": {"bad": 2}, "thinking": false}\n',
+      "utf-8",
+    );
+    const readRes = readSettingsDocument();
+    expect(readRes.state).toBe("ok");
+    expect(Object.getPrototypeOf(readRes.doc)).toBe(Object.prototype);
+    expect((readRes.doc as Record<string, unknown>).polluted).toBeUndefined();
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    expect((Object.prototype as Record<string, unknown>).polluted).toBeUndefined();
+
+    const loaded = loadSettingsFile();
+    expect(loaded.state).toBe("ok");
+    expect(loaded.settings.thinking).toBe(false);
+    expect(loaded.ignoredUnknownKeys).toEqual(["__proto__", "constructor", "prototype"]);
+
+    const legacyLoaded = loadUserSettings();
+    expect(legacyLoaded.settings.thinking).toBe(false);
+  });
 });
