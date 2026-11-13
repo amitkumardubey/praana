@@ -13,9 +13,9 @@ import {
   normalizeLegacySettings,
   settingsFilePath,
   readSettingsDocument,
-  replaceSettingsDocument,
   updateSettingsDocument,
   USER_SETTINGS_KEYS,
+  type SettingsStoreOptions,
   type UserSettings,
   type UserSettingsKey,
 } from "./settings/store.js";
@@ -66,24 +66,46 @@ export function normalizeUserSettings(
  * Load settings from disk. Missing file → defaults (and create the file with mode 0600).
  * Corrupt JSON or unreadable file → defaults + warning (does not overwrite the bad file).
  */
-export function loadUserSettings(): LoadUserSettingsResult {
-  const path = getUserSettingsPath();
-  const read = readSettingsDocument({ path });
+export function loadUserSettings(options?: SettingsStoreOptions): LoadUserSettingsResult {
+  const path = options?.path ?? getUserSettingsPath();
+  const fs = options?.fs;
+  const read = readSettingsDocument({ path, fs });
 
   if (read.state === "missing") {
     const settings = { ...DEFAULT_USER_SETTINGS };
     const written = updateSettingsDocument(
       {},
-      { path, baseDefaultsIfMissing: { ...settings } },
+      { path, fs, baseDefaultsIfMissing: { ...settings }, createOnly: true },
     );
     if (!written.ok) {
+      if (written.state === "corrupt") {
+        return {
+          settings,
+          warning: `Corrupt settings file (${path}); using defaults`,
+        };
+      }
+      if (written.state === "unreadable") {
+        return {
+          settings,
+          warning: `Could not read settings file (${path}): ${written.error}`,
+        };
+      }
       return {
         settings,
         warning: `Could not create settings file (${path}): ${written.error}`,
-        createdDefaults: true,
       };
     }
-    return { settings: normalizeUserSettings(written.doc).settings, createdDefaults: true };
+    const { settings: normalized, invalid } = normalizeUserSettings(written.doc);
+    if (written.created) {
+      return { settings: normalized, createdDefaults: true };
+    }
+    if (invalid) {
+      return {
+        settings: normalized,
+        warning: `Invalid fields in settings file (${path}); invalid keys ignored`,
+      };
+    }
+    return { settings: normalized };
   }
 
   if (read.state === "unreadable") {
@@ -161,26 +183,15 @@ export function updateUserSettings(
  * `settings.json.corrupt-<timestamp>` (0600) first and then writes default
  * legacy fields. Never replaces an unreadable file.
  */
-export function resetUserSettings():
-  | { ok: true; settings: UserSettings }
-  | { ok: false; error: string } {
-  const path = getUserSettingsPath();
-  const current = readSettingsDocument({ path });
-  if (current.state === "unreadable") {
-    return {
-      ok: false,
-      error: current.error ?? `Cannot reset unreadable settings file (${path})`,
-    };
-  }
+export function resetUserSettings(
+  options?: SettingsStoreOptions,
+): { ok: true; settings: UserSettings } | { ok: false; error: string } {
+  const path = options?.path ?? getUserSettingsPath();
+  const fs = options?.fs;
   const defaults = { ...DEFAULT_USER_SETTINGS };
-  if (current.state === "corrupt") {
-    const replaced = replaceSettingsDocument({ ...defaults }, { path, backupCorrupt: true });
-    if (!replaced.ok) return replaced;
-    return { ok: true, settings: defaults };
-  }
   const updated = updateSettingsDocument(
     { ...defaults },
-    { path, baseDefaultsIfMissing: { ...defaults } },
+    { path, fs, baseDefaultsIfMissing: { ...defaults }, onCorrupt: "backup-and-reset-legacy" },
   );
   if (!updated.ok) return updated;
   return { ok: true, settings: defaults };

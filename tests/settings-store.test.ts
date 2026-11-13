@@ -906,4 +906,77 @@ console.log(JSON.stringify(res));
     expect(readCalled).toBe(false);
     expect(closedFd).toBe(fakeFd);
   });
+
+  test("updateSettingsDocument supports createOnly and onCorrupt backup-and-reset-legacy inside the lock", async () => {
+    const { updateSettingsDocument, createSettingsFs } = await storeApi();
+    const baseFs = createSettingsFs();
+
+    // createOnly creates when missing and reports created: true
+    const created = updateSettingsDocument(
+      { extra: "ignored-only-not-used" },
+      { baseDefaultsIfMissing: { ...DEFAULT_USER_SETTINGS }, createOnly: true },
+    );
+    expect(created.ok).toBe(true);
+    if (created.ok) {
+      expect(created.created).toBe(true);
+      expect(created.doc.extra).toBe("ignored-only-not-used");
+    }
+
+    // createOnly on existing valid file returns existing doc without writing and reports created: false
+    let renameCalls = 0;
+    const spyFs = createSettingsFs({
+      rename(oldPath, newPath) {
+        renameCalls++;
+        return baseFs.rename(oldPath, newPath);
+      },
+    });
+    const existing = updateSettingsDocument(
+      { thinking: false },
+      { fs: spyFs, baseDefaultsIfMissing: { ...DEFAULT_USER_SETTINGS }, createOnly: true },
+    );
+    expect(existing.ok).toBe(true);
+    if (existing.ok) {
+      expect(existing.created).toBe(false);
+      expect(existing.doc.thinking).toBe(true);
+    }
+    expect(renameCalls).toBe(0);
+
+    // onCorrupt: "backup-and-reset-legacy" backs up corrupt bytes with 0600 and writes defaults
+    writeFileSync(settingsPath, "{corrupt-on-disk", "utf-8");
+    const resetCorrupt = updateSettingsDocument(
+      { ...DEFAULT_USER_SETTINGS },
+      { baseDefaultsIfMissing: { ...DEFAULT_USER_SETTINGS }, onCorrupt: "backup-and-reset-legacy" },
+    );
+    expect(resetCorrupt.ok).toBe(true);
+    if (resetCorrupt.ok) {
+      expect(resetCorrupt.backupPath).toBeDefined();
+      expect(readFileSync(resetCorrupt.backupPath!, "utf-8")).toBe("{corrupt-on-disk");
+      if (process.platform !== "win32") {
+        expect(statSync(resetCorrupt.backupPath!).mode & 0o777).toBe(0o600);
+      }
+    }
+    expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual(DEFAULT_USER_SETTINGS);
+
+    // onCorrupt: "backup-and-reset-legacy" on valid file preserves default_model/config_overrides/unknown keys without backup
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        thinking: false,
+        default_model: { provider: "openai", model: "gpt-4o" },
+        custom_key: "keep",
+      }),
+      "utf-8",
+    );
+    const resetValid = updateSettingsDocument(
+      { ...DEFAULT_USER_SETTINGS },
+      { baseDefaultsIfMissing: { ...DEFAULT_USER_SETTINGS }, onCorrupt: "backup-and-reset-legacy" },
+    );
+    expect(resetValid.ok).toBe(true);
+    if (resetValid.ok) {
+      expect(resetValid.backupPath).toBeUndefined();
+      expect(resetValid.doc.default_model).toEqual({ provider: "openai", model: "gpt-4o" });
+      expect(resetValid.doc.custom_key).toBe("keep");
+      expect(resetValid.doc.thinking).toBe(true);
+    }
+  });
 });

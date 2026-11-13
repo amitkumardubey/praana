@@ -461,10 +461,20 @@ function validateSettingsObject(obj: unknown, label: string): string | undefined
   return undefined;
 }
 
+export interface UpdateSettingsDocumentOptions extends SettingsStoreOptions {
+  baseDefaultsIfMissing?: Record<string, unknown>;
+  createOnly?: boolean;
+  onCorrupt?: "error" | "backup-and-reset-legacy";
+}
+
+export type UpdateSettingsDocumentResult =
+  | { ok: true; doc: Record<string, unknown>; created: boolean; backupPath?: string }
+  | { ok: false; error: string; state?: SettingsReadState };
+
 export function updateSettingsDocument(
   patch: Record<string, unknown>,
-  options?: SettingsStoreOptions & { baseDefaultsIfMissing?: Record<string, unknown> },
-): { ok: true; doc: Record<string, unknown> } | { ok: false; error: string } {
+  options?: UpdateSettingsDocumentOptions,
+): UpdateSettingsDocumentResult {
   const patchErr = validateSettingsObject(patch, "Settings patch");
   if (patchErr) return { ok: false, error: patchErr };
   if (options?.baseDefaultsIfMissing !== undefined) {
@@ -474,20 +484,41 @@ export function updateSettingsDocument(
 
   const path = resolveSettingsPath(options);
   const fs = options?.fs ?? defaultFs;
-  return withSettingsLock(path, () => {
-    const current = readSettingsDocument({ path, fs });
+  return withSettingsLock<UpdateSettingsDocumentResult>(path, () => {
+    const { result: current, rawBytes } = readSettingsDocumentWithBytes(path, fs);
 
-    if (current.state === "corrupt" || current.state === "unreadable") {
+    if (current.state === "unreadable") {
       return {
         ok: false,
-        error: current.error ?? `Cannot update ${current.state} settings file (${path})`,
+        error: current.error ?? `Cannot update unreadable settings file (${path})`,
+        state: current.state,
       };
     }
 
+    let backupPath: string | undefined;
+    if (current.state === "corrupt") {
+      if (options?.onCorrupt !== "backup-and-reset-legacy") {
+        return {
+          ok: false,
+          error: current.error ?? `Cannot update corrupt settings file (${path})`,
+          state: current.state,
+        };
+      }
+      const backedUp = backupCorruptFile(path, rawBytes, fs);
+      if (!backedUp.ok) return backedUp;
+      backupPath = backedUp.backupPath;
+    }
+
+    if (current.state === "ok" && options?.createOnly) {
+      return { ok: true, doc: { ...current.doc }, created: false };
+    }
+
     const nextDoc: Record<string, unknown> =
-      current.state === "missing" && options?.baseDefaultsIfMissing
+      (current.state === "missing" || current.state === "corrupt") && options?.baseDefaultsIfMissing
         ? { ...options.baseDefaultsIfMissing }
-        : { ...current.doc };
+        : current.state === "ok"
+          ? { ...current.doc }
+          : {};
 
     for (const key of Object.keys(patch)) {
       const val = patch[key];
@@ -505,7 +536,12 @@ export function updateSettingsDocument(
 
     const written = writeDocumentAtomic(path, nextDoc, fs);
     if (!written.ok) return written;
-    return { ok: true, doc: nextDoc };
+    return {
+      ok: true,
+      doc: nextDoc,
+      created: current.state === "missing",
+      ...(backupPath ? { backupPath } : {}),
+    };
   });
 }
 
@@ -553,6 +589,24 @@ function writeCorruptBackup(
   }
 }
 
+function backupCorruptFile(
+  path: string,
+  rawBytes: Buffer | undefined,
+  fs: SettingsFs,
+): { ok: true; backupPath: string } | { ok: false; error: string } {
+  const backupPath = `${path}.corrupt-${Date.now()}-${randomBytes(4).toString("hex")}`;
+  let backupBytes: Buffer;
+  try {
+    backupBytes = rawBytes ?? fs.readBounded(path, MAX_SETTINGS_BYTES);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: `Failed to back up corrupt settings file (${path}): ${msg}` };
+  }
+  const backedUp = writeCorruptBackup(path, backupPath, backupBytes, fs);
+  if (!backedUp.ok) return backedUp;
+  return { ok: true, backupPath };
+}
+
 export function replaceSettingsDocument(
   doc: Record<string, unknown>,
   options?: SettingsStoreOptions & { backupCorrupt?: boolean },
@@ -574,16 +628,9 @@ export function replaceSettingsDocument(
 
     let backupPath: string | undefined;
     if (current.state === "corrupt" && options?.backupCorrupt !== false) {
-      backupPath = `${path}.corrupt-${Date.now()}-${randomBytes(4).toString("hex")}`;
-      let backupBytes: Buffer;
-      try {
-        backupBytes = rawBytes ?? fs.readBounded(path, MAX_SETTINGS_BYTES);
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        return { ok: false, error: `Failed to back up corrupt settings file (${path}): ${msg}` };
-      }
-      const backedUp = writeCorruptBackup(path, backupPath, backupBytes, fs);
+      const backedUp = backupCorruptFile(path, rawBytes, fs);
       if (!backedUp.ok) return backedUp;
+      backupPath = backedUp.backupPath;
     }
 
     const copy = { ...doc };

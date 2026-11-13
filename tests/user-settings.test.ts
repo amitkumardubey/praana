@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { APP_HOME_DIR } from "../src/app-identity.js";
+import { createSettingsFs } from "../src/settings/store.js";
 import {
   DEFAULT_USER_SETTINGS,
   getUserSettingsPath,
@@ -157,5 +158,124 @@ describe("user-settings", () => {
     expect(parseSettingsSetValue("auto_update", "off")).toEqual({ ok: true, value: false });
     const created = loadUserSettings();
     expect(created.settings.auto_update).toBe(false);
+  });
+
+  it("resetUserSettings decides corrupt vs valid state inside the lock (no unlocked read race)", () => {
+    const settingsPath = getUserSettingsPath();
+    const corruptBytes = "{corrupt-before-repair";
+    const repairedDoc = {
+      thinking: false,
+      default_model: { provider: "anthropic", model: "claude-sonnet-4-20250514" },
+      config_overrides: { "edit.confirm": true },
+      custom_key: "preserve-me",
+    };
+    writeFileSync(settingsPath, corruptBytes, "utf-8");
+
+    const baseFs = createSettingsFs();
+    let readCount = 0;
+    const interleavingFs = createSettingsFs({
+      readBounded(p, maxBytes) {
+        const bytes = baseFs.readBounded(p, maxBytes);
+        if (p === settingsPath) {
+          readCount++;
+          if (readCount === 1) {
+            // Simulate another process repairing the file right after an unlocked read.
+            writeFileSync(settingsPath, JSON.stringify(repairedDoc, null, 2) + "\n", "utf-8");
+          }
+        }
+        return bytes;
+      },
+    });
+
+    const reset = resetUserSettings({ fs: interleavingFs });
+    expect(reset.ok).toBe(true);
+    // Must not read before acquiring the lock.
+    expect(readCount).toBe(1);
+
+    const homeDir = join(root, APP_HOME_DIR);
+    const backups = readdirSync(homeDir).filter((f) => f.startsWith("settings.json.corrupt-"));
+    const onDisk = JSON.parse(readFileSync(settingsPath, "utf-8"));
+    // Either corrupt bytes were backed up (when lock ran before repair) or repaired keys were preserved.
+    const backedUp = backups.length === 1;
+    const preserved =
+      onDisk.custom_key === "preserve-me" &&
+      onDisk.default_model?.model === "claude-sonnet-4-20250514" &&
+      onDisk.config_overrides?.["edit.confirm"] === true;
+    expect(backedUp || preserved).toBe(true);
+    if (backedUp && process.platform !== "win32") {
+      expect(statSync(join(homeDir, backups[0] ?? "")).mode & 0o777).toBe(0o600);
+    }
+  });
+
+  it("loadUserSettings handles a concurrent valid write between initial missing read and lock without rewriting or setting createdDefaults", () => {
+    const settingsPath = getUserSettingsPath();
+    const concurrentDoc = { thinking: false, custom_key: "from-other-process" };
+    const baseFs = createSettingsFs();
+    let lstatCalls = 0;
+    let openExclusiveCalls = 0;
+    let renameCalls = 0;
+
+    const interleavingFs = createSettingsFs({
+      lstat(p) {
+        if (p === settingsPath) {
+          lstatCalls++;
+          if (lstatCalls === 1) {
+            try {
+              return baseFs.lstat(p);
+            } catch (err) {
+              // After returning ENOENT on the unlocked read, another process writes a valid file.
+              writeFileSync(settingsPath, JSON.stringify(concurrentDoc, null, 2) + "\n", "utf-8");
+              throw err;
+            }
+          }
+        }
+        return baseFs.lstat(p);
+      },
+      openExclusive(p, mode) {
+        openExclusiveCalls++;
+        return baseFs.openExclusive(p, mode);
+      },
+      rename(oldPath, newPath) {
+        renameCalls++;
+        return baseFs.rename(oldPath, newPath);
+      },
+    });
+
+    const loaded = loadUserSettings({ fs: interleavingFs });
+    expect(loaded.createdDefaults).toBeUndefined();
+    expect(loaded.warning).toBeUndefined();
+    expect(loaded.settings.thinking).toBe(false);
+    expect(openExclusiveCalls).toBe(0);
+    expect(renameCalls).toBe(0);
+    expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual(concurrentDoc);
+  });
+
+  it("loadUserSettings reports corrupt warning (not Could not create) when file becomes corrupt before lock", () => {
+    const settingsPath = getUserSettingsPath();
+    const baseFs = createSettingsFs();
+    let lstatCalls = 0;
+
+    const interleavingFs = createSettingsFs({
+      lstat(p) {
+        if (p === settingsPath) {
+          lstatCalls++;
+          if (lstatCalls === 1) {
+            try {
+              return baseFs.lstat(p);
+            } catch (err) {
+              writeFileSync(settingsPath, "{corrupt-from-other-process", "utf-8");
+              throw err;
+            }
+          }
+        }
+        return baseFs.lstat(p);
+      },
+    });
+
+    const loaded = loadUserSettings({ fs: interleavingFs });
+    expect(loaded.createdDefaults).toBeUndefined();
+    expect(loaded.warning).toContain("Corrupt settings file");
+    expect(loaded.warning).not.toContain("Could not create settings file");
+    expect(loaded.settings).toEqual(DEFAULT_USER_SETTINGS);
   });
 });
