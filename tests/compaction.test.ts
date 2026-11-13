@@ -10,9 +10,10 @@ import { readCommits, restoreFrozenStateFromLog, SUMMARY_HEADINGS } from "../src
 import type { ConversationMessage, StreamRequest } from "../src/llm/types.js";
 import { StateGraph } from "../src/state-graph.js";
 import { estimateTokens } from "../src/token-estimate.js";
+import * as compaction from "../src/compaction.js";
 import type { Event } from "../src/types.js";
 
-const api = () => import("../src/compaction.js");
+const api = async () => compaction;
 
 const roots: string[] = [];
 const logs: EventLog[] = [];

@@ -21,6 +21,7 @@ import {
   summaryCapTokens,
   type CompactionCommit,
   type FrozenState,
+  type SummaryInstructionOptions,
 } from "./frozen-summary.js";
 import type { ConversationMessage, ProviderUsage, StreamRequest, ToolDefinition } from "./llm/types.js";
 import { estimateTokens } from "./token-estimate.js";
@@ -196,8 +197,9 @@ export function materializeHistory(state: FrozenState, source: CanonicalEventSou
     }
     const tail = turns.slice(cut + 1).flatMap((turn) => turn.records.map((record, index): CanonicalRecord => {
       const eventId = turn.eventIds[index];
-      return record.kind === "tool_result" && stubs.has(eventId)
-        ? { ...record, message: { ...record.message, text: stubs.get(eventId)! } }
+      const replacement = stubs.get(eventId);
+      return record.kind === "tool_result" && replacement !== undefined
+        ? { ...record, message: { ...record.message, text: replacement } }
         : record;
     }));
     return { ok: true, messages: [
@@ -583,13 +585,13 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
     : allTurns.findIndex((t) => t.completed && t.eventIds.at(-1) === state.boundaryEventId);
   const activeTurns = allTurns.slice(cutIndex + 1);
 
-  if (activeTurns.length === 0) {
+  const inFlightTurn = activeTurns.at(-1);
+  if (!inFlightTurn) {
     if (initialFill.fits) return { status: "unchanged_fits", state, fill: initialFill };
     return capacityError("request_exceeds_capacity", "The request frame and summary exceed usable context capacity.").error;
   }
 
   const completedTurns = activeTurns.slice(0, -1);
-  const inFlightTurn = activeTurns.at(-1)!;
   const activeResultIds = new Set(collectToolResults(activeTurns).map((c) => c.eventId));
 
   // Existing stubs pointing into active (unfolded) turns.
@@ -732,8 +734,9 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
     const inFlightMinMap = new Map(maxStubbedInFlight.stubSet.map((s) => [s.eventId, s.stubText]));
     const inFlightMinRecords = inFlightTurn.records.map((record, idx): CanonicalRecord => {
       const eid = inFlightTurn.eventIds[idx];
-      return record.kind === "tool_result" && inFlightMinMap.has(eid)
-        ? { ...record, message: { ...record.message, text: inFlightMinMap.get(eid)! } }
+      const replacement = inFlightMinMap.get(eid);
+      return record.kind === "tool_result" && replacement !== undefined
+        ? { ...record, message: { ...record.message, text: replacement } }
         : record;
     });
     const inFlightMinMessages = emitCanonicalTranscript(inFlightMinRecords);
@@ -753,8 +756,9 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
         const tailRecords = tailSlice.flatMap((turn) =>
           turn.records.map((record, idx): CanonicalRecord => {
             const eid = turn.eventIds[idx];
-            return record.kind === "tool_result" && baseActiveStubs.has(eid)
-              ? { ...record, message: { ...record.message, text: baseActiveStubs.get(eid)! } }
+            const replacement = baseActiveStubs.get(eid);
+            return record.kind === "tool_result" && replacement !== undefined
+              ? { ...record, message: { ...record.message, text: replacement } }
               : record;
           }),
         );
@@ -770,16 +774,21 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
       const foldedTurns = completedTurns.slice(0, foldedCount).map((turn): CompactionTurn => {
         const records = turn.records.map((record, idx): CanonicalRecord => {
           const eid = turn.eventIds[idx];
-          return record.kind === "tool_result" && step1StubMap.has(eid)
-            ? { ...record, message: { ...record.message, text: step1StubMap.get(eid)! } }
+          const replacement = step1StubMap.get(eid);
+          return record.kind === "tool_result" && replacement !== undefined
+            ? { ...record, message: { ...record.message, text: replacement } }
             : record;
         });
         const emittedCount = records.filter((r) => ["user_input", "wrap_up", "assistant", "tool_result"].includes(r.kind)).length;
         return { ...turn, records, messages: emitCanonicalTranscript(records).slice(0, emittedCount) };
       });
       const retainedTurns = [...completedTurns.slice(foldedCount), inFlightTurn];
-      const newBoundaryEventId = foldedTurns.at(-1)!.eventIds.at(-1)!;
-      const cutDescription = `through canonical event ${newBoundaryEventId} (end of turn ${foldedTurns.at(-1)!.turnId})`;
+      const lastFoldedTurn = foldedTurns.at(-1);
+      const newBoundaryEventId = lastFoldedTurn?.eventIds.at(-1);
+      if (!lastFoldedTurn || !newBoundaryEventId) {
+        throw new Error("Expected at least one folded turn with a boundary event id.");
+      }
+      const cutDescription = `through canonical event ${newBoundaryEventId} (end of turn ${lastFoldedTurn.turnId})`;
 
       // Drop any stubs pointing into foldedTurns; retain only stubs in retainedTurns.
       const retainedResultIds = new Set(collectToolResults(retainedTurns).map((c) => c.eventId));
@@ -791,12 +800,12 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
       // Build and run the summary request (same-model if it fits, else batch fallback).
       const liveMessages = input.liveRequest.messages.length > 0 ? input.liveRequest.messages : initialMat.messages;
       const liveForSummary: StreamRequest = { ...input.liveRequest, messages: liveMessages };
-      const instructionOptions = {
+      const instructionOptions: SummaryInstructionOptions = {
         cutDescription,
         capTokens,
-        ...(state.summary !== null ? { previousSummary: state.summary } : {}),
-        ...(input.stateObjects !== undefined ? { stateObjects: input.stateObjects } : {}),
       };
+      if (state.summary !== null) instructionOptions.previousSummary = state.summary;
+      if (input.stateObjects !== undefined) instructionOptions.stateObjects = input.stateObjects;
       const instruction = buildSummaryInstruction(instructionOptions);
       let instructionSha256 = createHash("sha256").update(instruction).digest("hex");
       const sameModelReq = buildSameModelSummaryRequest(liveForSummary, instruction);
