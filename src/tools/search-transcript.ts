@@ -108,7 +108,7 @@ function extractRecordTexts(record: CanonicalRecord): {
 export function indexSessionTranscript(
   eventLog: Pick<EventLog, "readAll">,
 ): { entries: IndexedTranscriptEntry[]; currentResetEpoch: string; canonicalTranscriptAvailable: boolean } {
-  // includeCanonical is used on feat/search-transcript; includeInternal on feat/compaction-core.
+  // requests unfiltered events; the option name differs across event-log versions
   const rawOptions = { includeCanonical: true, includeInternal: true };
   const events = eventLog.readAll(rawOptions);
   let currentResetEpoch = SESSION_START_EPOCH;
