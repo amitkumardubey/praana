@@ -96,12 +96,13 @@ describe("file memory paths", () => {
       const warnings = [{ scope: "project", reason: expect.stringContaining("cannot resolve project root: ELOOP") }];
       const global = { scope: "global" as const, name: "portable", type: "user" as const, description: "Global survives a missing project root", body: "Global only" };
       expect(await store.write(global)).toMatchObject({ ok: true, scope: "global", created: true });
-      expect(await store.read({ name: "portable" })).toMatchObject({ ok: true, memory: { name: "portable", scope: "global" }, skippedScopes: warnings });
+      expect(await store.read({ name: "portable" })).toMatchObject({ ok: false, error: expect.stringMatching(/explicit scope/i), skippedScopes: warnings });
       expect(await store.read({ name: "portable", scope: "global" })).toMatchObject({ ok: true, memory: { scope: "global" } });
       expect(await store.list()).toMatchObject({ ok: true, entries: [{ name: "portable", scope: "global" }], skippedScopes: warnings });
       expect(await store.list({ scope: "global" })).toMatchObject({ ok: true, entries: [{ name: "portable" }] });
       expect(await store.recall({ query: "Global" })).toMatchObject({ ok: true, matches: [{ name: "portable", scope: "global" }], skippedScopes: warnings });
-      expect(await store.recall({ name: "portable" })).toMatchObject({ ok: true, memory: { scope: "global" }, skippedScopes: warnings });
+      expect(await store.recall({ name: "portable" })).toMatchObject({ ok: false, error: expect.stringMatching(/explicit scope/i), skippedScopes: warnings });
+      expect(await store.recall({ name: "portable", scope: "global" })).toMatchObject({ ok: true, memory: { scope: "global" } });
       expect(await store.buildMemoryIndex()).toMatchObject({ ok: true, total: 1, skippedScopes: warnings });
       expect(await store.refreshIndexFile("global")).toEqual({ ok: true });
       expect(await fs.readFile(join(home, ".praana/memory/MEMORY.md"), "utf8")).toContain("[portable](portable.md)");

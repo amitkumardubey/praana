@@ -202,20 +202,18 @@ export function createFileMemoryStore(options: StoreOptions) {
 
   async function read(input: { scope?: MemoryScope; name: string }): Promise<({ ok: true; memory: Memory & { scope: MemoryScope } } & ScopeWarnings) | ResultError> {
     if (!validName(input.name)) return { ok: false, error: "Invalid memory name" };
-    const requested = input.scope ? [input.scope] : scopes;
-    const skippedScopes: SkippedScope[] = [];
-    for (const scope of requested) {
-      try {
-        const dir = await directory(scope, false);
-        const memory = dir && await readFile(dir, input.name);
-        if (memory) return { ok: true, memory: { ...memory, scope }, ...scopeWarnings(skippedScopes) };
-      } catch (error) {
-        if (input.scope) return errorResult(error);
-        skippedScopes.push({ scope, reason: errorResult(error).error });
-      }
+    const scanned = await visitScopes(input.scope, async (scope) => {
+      const dir = await directory(scope, false);
+      const memory = dir && await readFile(dir, input.name);
+      return memory ? { ...memory, scope } : null;
+    });
+    const warnings = scopeWarnings(scanned.skippedScopes ?? []);
+    if (!input.scope && scanned.skippedScopes?.length) {
+      return { ok: false, error: `Cannot resolve "${input.name}" safely because a scope scan failed; pass an explicit scope to read: ${scanned.skippedScopes.map(({ scope, reason }) => `${scope}: ${reason}`).join("; ")}`, ...warnings };
     }
-    if (skippedScopes.length === requested.length) return { ok: false, error: skippedScopes.map(({ scope, reason }) => `${scope}: ${reason}`).join("; "), ...scopeWarnings(skippedScopes) };
-    return { ok: false, error: "Memory not found", ...scopeWarnings(skippedScopes) };
+    if (!scanned.ok) return scanned;
+    const memory = scanned.values.find((memory) => memory !== null);
+    return memory ? { ok: true, memory, ...warnings } : { ok: false, error: "Memory not found", ...warnings };
   }
 
   async function remove(input: { scope?: MemoryScope; name: string }): Promise<({ ok: true; skipped?: SkippedScope[] } & ScopeWarnings) | ResultError> {
@@ -282,9 +280,9 @@ export function createFileMemoryStore(options: StoreOptions) {
     return { ok: true, ...scopeWarnings(data.skippedScopes ?? []), ...renderMemoryIndex({ entries: indexEntries(data.entries) }) };
   }
   const indexEntries = (entries: ListEntry[]): IndexEntry[] => entries.map((entry) => ({ ...entry, file: `${entry.scope}/${entry.name}.md` }));
-  async function recall(input: { query?: string; name?: string }): Promise<({ ok: true; memory: ScopedMemory } & ScopeWarnings) | ({ ok: true; matches: RecallMatch[] } & ScopeWarnings) | ResultError> {
+  async function recall(input: { query?: string; name?: string; scope?: MemoryScope }): Promise<({ ok: true; memory: ScopedMemory } & ScopeWarnings) | ({ ok: true; matches: RecallMatch[] } & ScopeWarnings) | ResultError> {
     if ((input.query !== undefined) === (input.name !== undefined)) return { ok: false, error: "Provide exactly one of query or name" };
-    if (input.name !== undefined) return read({ name: input.name });
+    if (input.name !== undefined) return read({ name: input.name, scope: input.scope });
     if (typeof input.query !== "string") return { ok: false, error: "Query must be a string" };
     const invalid = validateQueryPolicy(input.query);
     if (invalid) return { ok: false, error: invalid };

@@ -32,6 +32,48 @@ test("recall name prefers project, supports incognito and refuses invalid names"
   for (const name of ["../escape", "Upper", "memory", "con", "missing"]) expect((await store.recall({ name })).ok).toBe(false);
 });
 
+for (const lookup of ["read", "recall"] as const) {
+  test.each([
+    ["project", "EACCES"], ["global", "EACCES"],
+    ["project", "unsafe"], ["global", "unsafe"], ["project", "unresolved"],
+  ] as const)(`${lookup} requires an explicit scope after a %s lookup fails (%s)`, async (badScope, failure) => {
+    const { store, options, dirs, home } = await setup();
+    const memory = { name: "shared", type: "user" as const, description: "Scope-specific preference" };
+    for (const scope of ["global", "project"] as const) {
+      expect((await store.write({ ...memory, scope, body: `Searchable ${scope} preference` })).ok).toBe(true);
+    }
+    expect(await store[lookup]({ name: "shared" })).toMatchObject({ ok: true, memory: { scope: "project" } });
+    let cwd = options.cwd;
+    if (failure === "unsafe") {
+      await fs.rename(dirs[badScope], `${dirs[badScope]}-saved`);
+      await fs.symlink(`${dirs[badScope]}-saved`, dirs[badScope]);
+    } else if (failure === "unresolved") {
+      cwd = join(home, "loop");
+      await fs.symlink(cwd, cwd);
+    }
+    let stats = 0;
+    const unreadable = join(dirs[badScope], "shared.md");
+    const seam = new Proxy(fs, { get(target, key) {
+      if (key !== "lstat") return Reflect.get(target, key);
+      return async (...args: Parameters<typeof fs.lstat>) => {
+        stats++;
+        if (failure === "EACCES" && args[0] === unreadable) throw Object.assign(new Error(`EACCES: permission denied, lstat '${unreadable}'`), { code: "EACCES" });
+        return fs.lstat(...args);
+      };
+    } });
+    const failing = createFileMemoryStore({ ...options, cwd, fs: seam });
+    const reason = failure === "EACCES" ? unreadable : failure === "unsafe" ? dirs[badScope] : "cannot resolve project root: ELOOP";
+    const warnings = [{ scope: badScope, reason: expect.stringContaining(reason) }];
+    expect(await failing[lookup]({ name: "shared" })).toMatchObject({ ok: false, error: expect.stringMatching(/explicit scope/i), skippedScopes: warnings });
+    const goodScope = badScope === "project" ? "global" : "project";
+    expect(await failing[lookup]({ name: "shared", scope: goodScope })).toMatchObject({ ok: true, memory: { scope: goodScope, body: `Searchable ${goodScope} preference` } });
+    expect(await failing[lookup]({ name: "shared", scope: badScope })).toMatchObject({ ok: false, error: expect.stringContaining(reason) });
+    expect(await failing.recall({ query: "Searchable" })).toMatchObject({ ok: true, matches: [{ name: "shared", scope: goodScope }], skippedScopes: warnings });
+    expect(stats).toBeGreaterThan(0);
+    expect(await fs.exists(join(dirs[goodScope], "shared.md"))).toBe(true);
+  });
+}
+
 test("query ranks name above description above body; deterministic date/name ties and top five", async () => {
   const { store, put } = await setup();
   await put("body-new", { body: "ORBIT", updated: "2026-05-02" });
