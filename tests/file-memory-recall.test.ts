@@ -161,6 +161,35 @@ test("by-name operations report every scope failure instead of unusable explicit
   expect(await fs.exists(join(dirs.global, "shared.md"))).toBe(true);
 });
 
+test("unscoped lookups scan project first, so only its failed scan refuses", async () => {
+  const { options, dirs, put } = await setup();
+  await put("shared", { body: "project copy" }, "project");
+  await put("shared", { body: "global copy" });
+  const order: string[] = [];
+  const seam = new Proxy(fs, { get(target, key) {
+    if (key !== "lstat") return Reflect.get(target, key);
+    return async (...args: Parameters<typeof fs.lstat>) => { order.push(String(args[0])); return fs.lstat(...args); };
+  } });
+  const store = createFileMemoryStore({ ...options, fs: seam });
+  expect(await store.read({ name: "shared" })).toMatchObject({ ok: true, memory: { scope: "project" } });
+  const firstScan = (scope: "project" | "global") => order.findIndex((path) => path.startsWith(dirs[scope]));
+  expect(firstScan("project")).toBeGreaterThanOrEqual(0);
+  expect(firstScan("project")).toBeLessThan(firstScan("global"));
+  // A failed leading scan could still hold the answer, so an unscoped lookup refuses.
+  expect(await failingOn(options, join(dirs.project, "shared.md")).read({ name: "shared" })).toMatchObject({
+    ok: false, error: expect.stringMatching(/explicit scope/i), skippedScopes: [{ scope: "project" }],
+  });
+  // A failed trailing scan cannot outrank the project scope, so it only warns.
+  expect(await failingOn(options, join(dirs.global, "shared.md")).read({ name: "shared" })).toMatchObject({
+    ok: true, memory: { scope: "project" }, skippedScopes: [{ scope: "global" }],
+  });
+  // A removal must rule out every scope, so the same trailing failure refuses it.
+  expect(await failingOn(options, join(dirs.global, "shared.md")).remove({ name: "shared" })).toMatchObject({
+    ok: false, error: expect.stringMatching(/explicit scope/i), skippedScopes: [{ scope: "global" }],
+  });
+  expect(await fs.exists(join(dirs.project, "shared.md"))).toBe(true);
+});
+
 test("query ranks name above description above body; deterministic date/name ties and top five", async () => {
   const { store, put } = await setup();
   await put("body-new", { body: "ORBIT", updated: "2026-05-02" });

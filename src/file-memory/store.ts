@@ -26,21 +26,30 @@ const incognitoRefusal = (blocked: "writes" | "removal"): ResultError => ({ ok: 
 const scopeWarnings = (skippedScopes: SkippedScope[]): ScopeWarnings => skippedScopes.length ? { skippedScopes } : {};
 const reasonText = (skippedScopes: SkippedScope[]) => skippedScopes.map(({ scope, reason }) => `${scope}: ${reason}`).join("; ");
 /** Every unscoped by-name operation refuses through here, so `read`, `recall` and
- * `remove` share one message shape and one precedence rule: `blocking` names the
- * scopes whose failed scan could still change the answer. */
+ * `remove` share one message shape and one precedence rule. */
 function refuseUnlessExplicit(
-  request: { scope?: MemoryScope },
+  unscoped: boolean,
   skippedScopes: SkippedScope[] | undefined,
-  blocking: MemoryScope[],
+  rule: "answer" | "removal",
   advice: (reasons: string) => string,
 ): ResultError | undefined {
-  if (request.scope) return undefined;
+  if (!unscoped) return undefined;
   const skipped = skippedScopes ?? [];
+  const blocking = blockingScopes(skipped, rule);
   const failed = skipped.filter(({ scope }) => blocking.includes(scope));
   return failed.length ? { ok: false, error: advice(reasonText(failed)), ...scopeWarnings(skipped) } : undefined;
 }
 type ListEntry = Omit<Memory, "body"> & { scope: MemoryScope; age: number; stale: boolean };
+/** Precedence order: the first scope that holds the name answers an unscoped by-name lookup,
+ * so only a failed scan ahead of the first clean one can still change that answer, while a
+ * removal must rule out every scope. Both blocking sets derive from this one order. */
 const scopes: MemoryScope[] = ["project", "global"];
+const blockingScopes = (skippedScopes: SkippedScope[], rule: "answer" | "removal"): MemoryScope[] => {
+  if (rule === "removal") return scopes;
+  const failed = new Set(skippedScopes.map(({ scope }) => scope));
+  const clean = scopes.findIndex((scope) => !failed.has(scope));
+  return clean < 0 ? scopes : scopes.slice(0, clean);
+};
 const missing = (error: unknown) => (error as NodeJS.ErrnoException)?.code === "ENOENT";
 const errorResult = (error: unknown): ResultError => ({ ok: false, error: error instanceof Error ? error.message : String(error) });
 const inside = (parent: string, child: string) => { const p = relative(parent, child); return p === "" || (!p.startsWith(`..${sep}`) && p !== ".." && !isAbsolute(p)); };
@@ -229,7 +238,7 @@ export function createFileMemoryStore(options: StoreOptions) {
     // Every scope failed, so no explicit scope could succeed either.
     if (!scanned.ok) return scanned;
     // Project takes precedence, so only a failed project scan can hide the answer.
-    const refusal = refuseUnlessExplicit(input, scanned.skippedScopes, ["project"], (reasons) => `Cannot resolve "${input.name}" safely because a scope scan failed; pass an explicit scope to read: ${reasons}`);
+    const refusal = refuseUnlessExplicit(!input.scope, scanned.skippedScopes, "answer", (reasons) => `Cannot resolve "${input.name}" safely because a scope scan failed; pass an explicit scope to read: ${reasons}`);
     if (refusal) return refusal;
     const memory = scanned.values.find((memory) => memory !== null);
     if (memory) return { ok: true, memory, ...warnings };
@@ -266,7 +275,7 @@ export function createFileMemoryStore(options: StoreOptions) {
       if (!scanned.ok) return scanned;
       const warnings = scopeWarnings(scanned.skippedScopes ?? []);
       // A failed scan cannot rule out a same-named memory in that scope, so an unscoped delete is unsafe.
-      const refusal = refuseUnlessExplicit(input, scanned.skippedScopes, scopes, (reasons) => `Cannot rule out another "${input.name}" memory because a scope scan failed; pass an explicit scope to delete: ${reasons}`);
+      const refusal = refuseUnlessExplicit(!input.scope, scanned.skippedScopes, "removal", (reasons) => `Cannot rule out another "${input.name}" memory because a scope scan failed; pass an explicit scope to delete: ${reasons}`);
       if (refusal) return refusal;
       const found = scanned.values.filter((match) => match !== null);
       if (found.length > 1) return { ok: false, error: "Memory exists in both project and global scopes; specify scope", ...warnings };
