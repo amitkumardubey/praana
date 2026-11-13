@@ -1,4 +1,5 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
+import * as tokenEstimator from "../src/token-estimate.js";
 import { buildTurns, type CompactionTurn } from "../src/compaction.js";
 import { buildSummaryInstruction, checkSummary, SUMMARY_HEADINGS } from "../src/frozen-summary.js";
 import type { BatchSummaryAttempt, BatchSummaryPlan, SummaryResult } from "../src/compaction-requests.js";
@@ -210,6 +211,55 @@ test("batch planning remeasures native messages rather than trusting stale per-t
   const normal = await plan(turns);
   const stale = await plan(turns.map(turn => ({ ...turn, estimatedTokens: 0 })));
   expect(stale.batches).toEqual(normal.batches);
+});
+
+test("batch planning estimates each turn incrementally with linear estimator calls", async () => {
+  const { planBatchSummaries } = await api();
+  const measure = (count: number, window: number) => {
+    const turns = foldedTurns(count, 10);
+    const estimate = spyOn(tokenEstimator, "estimateTokens");
+    try {
+      expect(planBatchSummaries(live(), turns, { ...options, contextWindowTokens: window }).status).toBe("planned");
+      return estimate.mock.calls.length;
+    } finally {
+      estimate.mockRestore();
+    }
+  };
+  const small = measure(30, 1000000);
+  const large = measure(60, 1000000);
+  expect(large).toBeLessThanOrEqual(7 * 60 + 4);
+  expect(large).toBeLessThanOrEqual(2 * small + 4);
+  expect(measure(60, 2000)).toBeLessThanOrEqual(7 * 60 + 4);
+});
+
+test("incremental batch plans match an independently measured greedy partition", async () => {
+  const { buildBatchSummaryRequest } = await api();
+  for (const turns of [foldedTurns(9), foldedTurns(20, 100), foldedTurns(15, 900)]) {
+    const planned = await plan(turns);
+    const expected: { turnIds: number[]; budgetedInputTokens: number }[] = [];
+    let pending: CompactionTurn[] = [];
+    let admitted = 0;
+    const measure = (candidate: CompactionTurn[]) => {
+      const last = candidate.at(-1)!;
+      const cutDescription = `through canonical event ${last.eventIds.at(-1)!} (end of turn ${last.turnId})`;
+      const request = buildBatchSummaryRequest(live(), { messages: candidate.flatMap(turn => turn.messages) }, {
+        ...options, cutDescription, previousSummary: expected.length ? "" : options.previousSummary,
+      });
+      return tokens(request) + (expected.length ? 6 * options.capTokens + 1 : 0);
+    };
+    for (const turn of turns) {
+      let next = measure([...pending, turn]);
+      if (pending.length && next > options.contextWindowTokens - options.effectiveMaxTokens) {
+        expected.push({ turnIds: pending.map(turn => turn.turnId), budgetedInputTokens: admitted });
+        pending = [];
+        next = measure([turn]);
+      }
+      pending.push(turn);
+      admitted = next;
+    }
+    expected.push({ turnIds: pending.map(turn => turn.turnId), budgetedInputTokens: admitted });
+    expect(planned.batches.map(({ turnIds, budgetedInputTokens }) => ({ turnIds, budgetedInputTokens }))).toEqual(expected);
+  }
 });
 
 test("previous-summary allowance covers worst-case JSON escaping at the raw markdown cap", async () => {

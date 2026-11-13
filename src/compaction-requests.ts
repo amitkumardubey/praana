@@ -1,4 +1,4 @@
-import { requestFill, type CapacityErrorOutcome, type CompactionTurn, type RequestFill } from "./compaction.js";
+import { estimateMessageTokens, requestFill, type CapacityErrorOutcome, type CompactionTurn, type RequestFill } from "./compaction.js";
 import { buildRepairInstruction, buildSummaryInstruction, checkSummary, type SummaryFailure, type SummaryInstructionOptions } from "./frozen-summary.js";
 import type { ConversationMessage, ProviderUsage, StreamRequest, ToolCall } from "./llm/types.js";
 import { serializeToolResult } from "./llm/serialize.js";
@@ -92,12 +92,16 @@ function validateSummaryCap(capTokens: number): void {
   }
 }
 
+function cutDescription(turn: CompactionTurn): string {
+  return `through canonical event ${turn.eventIds.at(-1)!} (end of turn ${turn.turnId})`;
+}
+
 function summaryBatch(turns: readonly CompactionTurn[]): SummaryBatch {
   const last = turns.at(-1)!;
   const boundaryEventId = last.eventIds.at(-1)!;
   return {
     turnIds: turns.map(turn => turn.turnId), eventIds: turns.flatMap(turn => turn.eventIds), boundaryEventId,
-    cutDescription: `through canonical event ${boundaryEventId} (end of turn ${last.turnId})`,
+    cutDescription: cutDescription(last),
     messages: turns.flatMap(turn => turn.messages), budgetedInputTokens: 0,
   };
 }
@@ -122,43 +126,41 @@ export function planBatchSummaries(
   }
   const batches: SummaryBatch[] = [];
   let pending: CompactionTurn[] = [];
+  let pendingTokens = 0;
+  let admittedTokens = 0;
+  const flush = () => batches.push({ ...summaryBatch(pending), budgetedInputTokens: admittedTokens });
   for (const turn of foldedTurns) {
-    let batch = summaryBatch([...pending, turn]);
-    const measure = (candidate: SummaryBatch) => {
-      const first = batches.length === 0;
-      const request = buildBatchSummaryRequest(live, candidate, {
-        ...options, cutDescription: candidate.cutDescription,
-        previousSummary: first ? options.previousSummary : "",
+    // Each transcript message is rendered and estimated exactly once. Only the
+    // instruction/frame is measured per candidate, since its cut text can vary.
+    const turnTokens = turn.messages.reduce((sum, message) => sum + estimateMessageTokens(renderBatchMessage(message)), 0);
+    const measureFrame = () => {
+      const request = buildBatchSummaryRequest(live, { messages: [] }, {
+        ...options, cutDescription: cutDescription(turn),
+        previousSummary: batches.length ? "" : options.previousSummary,
       });
-      const measured = requestFill(request, request.messages, options.contextWindowTokens, options);
-      if (measured.ok) candidate.budgetedInputTokens = measured.fill.inputTokens + (first ? 0 : 6 * options.capTokens + 1);
-      return measured;
+      return requestFill(request, request.messages, options.contextWindowTokens, options);
     };
-    let measured = measure(batch);
+    const allowance = () => batches.length ? 6 * options.capTokens + 1 : 0;
+    let measured = measureFrame();
     if (!measured.ok) return measured.error;
-    if (batch.budgetedInputTokens > measured.fill.usableTokens && pending.length) {
-      // The previous candidate was admitted in the preceding iteration.
-      const previous = summaryBatch(pending);
-      const priorMeasurement = measure(previous);
-      if (!priorMeasurement.ok) return priorMeasurement.error;
-      batches.push(previous);
+    let budgetedTokens = pendingTokens + turnTokens + measured.fill.inputTokens + allowance();
+    if (budgetedTokens > measured.fill.usableTokens && pending.length) {
+      flush();
       pending = [];
-      batch = summaryBatch([turn]);
-      measured = measure(batch);
+      pendingTokens = 0;
+      measured = measureFrame();
       if (!measured.ok) return measured.error;
+      budgetedTokens = turnTokens + measured.fill.inputTokens + allowance();
     }
-    if (batch.budgetedInputTokens > measured.fill.usableTokens) {
+    if (budgetedTokens > measured.fill.usableTokens) {
       return { status: "not_foldable", reason: "oversized_turn", turnId: turn.turnId,
         message: `Turn ${turn.turnId} cannot fit a summary batch without splitting; try stubbing or report a capacity outcome.` };
     }
     pending.push(turn);
+    pendingTokens += turnTokens;
+    admittedTokens = budgetedTokens;
   }
-  const last = summaryBatch(pending);
-  const request = buildBatchSummaryRequest(live, last, { ...options, cutDescription: last.cutDescription, previousSummary: batches.length ? "" : options.previousSummary });
-  const measured = requestFill(request, request.messages, options.contextWindowTokens, options);
-  if (!measured.ok) return measured.error;
-  last.budgetedInputTokens = measured.fill.inputTokens + (batches.length ? 6 * options.capTokens + 1 : 0);
-  batches.push(last);
+  flush();
   return { status: "planned", plan: { template: live, options: { ...options }, batches, maxCalls: 2 * batches.length } };
 }
 
