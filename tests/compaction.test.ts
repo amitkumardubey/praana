@@ -780,6 +780,78 @@ test("capacity cases produce expected typed outcomes and never admit an oversize
   }
 });
 
+test("does not return capacity_error when summary allowance overflows but request fits unchanged, after stubbing, or after folding", async () => {
+  const { runCompaction } = await api();
+
+  // 1. Unchanged request fits (0.80 <= ratio <= 1.0), folding is not needed/possible, and adding summaryAllowanceTokens overflows usable capacity.
+  {
+    const { log } = openLog();
+    addTurn(log, 1, { inputText: "Small" });
+    addTurn(log, 2, { inputText: "In-flight " + "x".repeat(3780) });
+    // usable = 1000; turn1 + turn2 ~ 983 tokens (fits, ratio ~ 0.983 >= 0.80); turn2 (~961) + minSummaryMessage (59) = 1020 > 1000.
+    const outcome = await runCompaction({
+      log,
+      liveRequest: baseLiveRequest(),
+      contextWindowTokens: 1200,
+      options: { effectiveMaxTokens: 200, tailTurns: 0 },
+      runSummary: async () => {
+        throw new Error("Summary should not be needed when no valid summary can fit alongside the in-flight turn");
+      },
+    });
+    expect(outcome.status).toBe("unchanged_fits");
+    if (outcome.status !== "unchanged_fits") throw new Error(JSON.stringify(outcome));
+    expect(outcome.fill.fits).toBe(true);
+    expect(outcome.state.generation).toBe(0);
+  }
+
+  // 2. Request exceeds capacity initially, but folding completed turns into a summary that is smaller than the worst-case cap allowance fits.
+  {
+    const { log } = openLog();
+    addTurn(log, 1, { inputText: "Completed turn 1 " + "a".repeat(900) });
+    addTurn(log, 2, { inputText: "In-flight " + "b".repeat(3350) });
+    // usable = 1000; turn1 (~250) + turn2 (~865) = 1115 > 1000 (!initialFill.fits).
+    // turn2 (~865) + summaryAllowance (152) = 1017 > 1000, but turn2 (~865) + actual summary (~74) = 939 <= 1000.
+    const outcome = await runCompaction({
+      log,
+      liveRequest: baseLiveRequest(),
+      contextWindowTokens: 1200,
+      options: { effectiveMaxTokens: 200, tailTurns: 0 },
+      runSummary: async () => summaryResp(validSummary("Compact summary.")),
+    });
+    expect(outcome.status).toBe("rewritten");
+    if (outcome.status !== "rewritten") throw new Error(JSON.stringify(outcome));
+    expect(outcome.fill.fits).toBe(true);
+    expect(outcome.state.boundaryEventId).toBe("t1-final");
+  }
+
+  // 3. Initial request fits (ratio >= 0.80) and in-flight turn has tool results within stubKeepRecent;
+  // pre-check must consider maximal in-flight stubbing (keepRecent=1) rather than stopping at stubKeepRecent.
+  {
+    const { log } = openLog();
+    addTurn(log, 1, { inputText: "Completed turn 1 " + "a".repeat(200) });
+    addTurn(log, 2, {
+      inputText: "In-flight with stubbable results",
+      toolResults: [
+        { id: "if-1", text: "R1:".repeat(550) },
+        { id: "if-2", text: "R2:".repeat(550) },
+        { id: "if-3", text: "ok" },
+      ],
+    });
+    const outcome = await runCompaction({
+      log,
+      liveRequest: baseLiveRequest(),
+      contextWindowTokens: 1200,
+      options: { effectiveMaxTokens: 200, tailTurns: 0, stubKeepRecent: 3, stubMinTokens: 100 },
+      planStubs: (c) => c.map((x) => ({ eventId: x.eventId, stubText: "stub" })),
+      runSummary: async () => summaryResp(validSummary("Folded turn 1.")),
+    });
+    expect(outcome.status).toBe("rewritten");
+    if (outcome.status !== "rewritten") throw new Error(JSON.stringify(outcome));
+    expect(outcome.fill.fits).toBe(true);
+    expect(outcome.state.boundaryEventId).toBe("t1-final");
+  }
+});
+
 test("cancellation with controlled promises prevents every commit across primary, repair, late resolution, stubs-only, and epoch change", async () => {
   const { runCompaction } = await api();
 

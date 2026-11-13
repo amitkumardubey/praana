@@ -729,24 +729,38 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
 
   // --- STEP 2: Choose the tail, then fold once (only when completedTurns.length > 0) ---
   let summaryFailureReason: string | undefined;
-  let foldNotPossible = false;
 
   if (completedTurns.length > 0) {
     const capTokens = summaryCapTokens(initialFill.usableTokens);
-    const minValidSummaryTokens = estimateTokens(SUMMARY_HEADINGS.map((h) => `### ${h}`).join("\n\n") + "\nok");
+    const minValidSummary = SUMMARY_HEADINGS.map((h) => `### ${h}`).join("\n\n") + "\nok";
+    const minValidSummaryTokens = estimateTokens(minValidSummary);
+    const minSummaryMessageTokens = estimateMessageTokens(renderSummaryMessage(minValidSummary));
     const summaryAllowanceTokens = estimateMessageTokens(renderSummaryMessage("")) + capTokens;
 
-    // Pre-check Step 4 bound: can the in-flight turn (even after maximum Step 3 stubbing) + frame + summary allowance fit usable capacity?
-    const maxStubbedInFlight = runInFlightStubbing(state.boundaryEventId, state.summary, null, new Map());
-    if (maxStubbedInFlight.cancelled) return { status: "cancelled", state };
+    // Pre-check whether the in-flight turn (after maximal Step 3 stubbing down to keepRecent=1) + frame + minimum valid summary can fit usable capacity.
+    const inFlightMinMap = new Map(baseActiveStubs);
+    const inFlightCandidates = collectToolResults([inFlightTurn]);
+    const unstubbedInFlightMessages = emitCanonicalTranscript(applyStubs(inFlightTurn, inFlightMinMap));
+    let minInFlightTokens = estimateRequestTokens(frame, unstubbedInFlightMessages);
+    if (minInFlightTokens + minSummaryMessageTokens > initialFill.usableTokens && inFlightCandidates.length > 1) {
+      const eligibleOldInFlight = inFlightCandidates
+        .slice(0, -1)
+        .filter((c) => !inFlightMinMap.has(c.eventId) && c.estimatedTokens >= opts.stubMinTokens);
+      if (eligibleOldInFlight.length > 0) {
+        if (signal?.aborted) return { status: "cancelled", state };
+        const plannedMin = applyStubPlanner(planStubs, eligibleOldInFlight, {
+          phase: "in_flight",
+          minTokens: opts.stubMinTokens,
+          keepRecent: 1,
+        });
+        if (signal?.aborted) return { status: "cancelled", state };
+        for (const entry of plannedMin) inFlightMinMap.set(entry.eventId, entry.stubText);
+        const inFlightMinMessages = emitCanonicalTranscript(applyStubs(inFlightTurn, inFlightMinMap));
+        minInFlightTokens = estimateRequestTokens(frame, inFlightMinMessages);
+      }
+    }
 
-    const inFlightMinMap = new Map(maxStubbedInFlight.stubSet.map((s) => [s.eventId, s.stubText]));
-    const inFlightMinMessages = emitCanonicalTranscript(applyStubs(inFlightTurn, inFlightMinMap));
-    const minTailTokensWithAllowance = estimateRequestTokens(frame, inFlightMinMessages) + summaryAllowanceTokens;
-
-    if (capTokens < minValidSummaryTokens || minTailTokensWithAllowance > initialFill.usableTokens) {
-      foldNotPossible = true;
-    } else {
+    if (capTokens >= minValidSummaryTokens && minInFlightTokens + minSummaryMessageTokens <= initialFill.usableTokens) {
       // Shrink completed turns in the tail from Math.min(tailTurns, completedTurns.length) down to 0
       // until frame + summary allowance + tail fits the target.
       let chosenKeepCompleted = 0;
@@ -855,9 +869,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
           effectiveMaxTokens: opts.effectiveMaxTokens,
         });
         if (planned.status === "capacity_error") return planned;
-        if (planned.status === "not_foldable") {
-          foldNotPossible = true;
-        } else {
+        if (planned.status !== "not_foldable") {
           const attempts: BatchSummaryAttempt[] = [];
           const usages: (Partial<ProviderUsage> | null | undefined)[] = [];
           while (true) {
@@ -926,19 +938,17 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
           postFoldState = { ...postFoldState, stubSet: finalStubSet };
         }
 
-        if (!postFoldFill.fits) {
-          return capacityError("request_exceeds_capacity", "The in-flight turn exceeds usable context capacity even after folding and stubbing.").error;
+        if (postFoldFill.fits) {
+          const committed = tryCommitRewrite(
+            input.log,
+            state,
+            { formatVersion: 1, ...postFoldState },
+            signal,
+          );
+          if (committed.status === "cancelled") return { status: "cancelled", state };
+          if (committed.status === "commit_uncertain") return committed;
+          return { status: "rewritten", state: committed.state, fill: postFoldFill };
         }
-
-        const committed = tryCommitRewrite(
-          input.log,
-          state,
-          { formatVersion: 1, ...postFoldState },
-          signal,
-        );
-        if (committed.status === "cancelled") return { status: "cancelled", state };
-        if (committed.status === "commit_uncertain") return committed;
-        return { status: "rewritten", state: committed.state, fill: postFoldFill };
       }
     }
   }
@@ -970,7 +980,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
   }
 
   // --- STEP 4: Unchanged fits or terminal capacity error ---
-  if (initialFill.fits && !foldNotPossible) {
+  if (initialFill.fits) {
     return { status: "unchanged_fits", state, fill: initialFill };
   }
 
