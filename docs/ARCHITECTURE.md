@@ -315,6 +315,7 @@ Defined in `src/tools/` using Zod 4 schemas and converted to JSON Schema (draft-
 
 ### Shared tools (classic and engine mode)
 - `search_session_log(query, kinds?, limit?)` — keyword search over the current session event log
+- `search_transcript(query?, id?, include_previous_resets?, limit?, context_messages?, offset?, max_chars?)` — BM25 + case-insensitive substring search over canonical session transcript messages (including compacted or stubbed turns; scoped to the current reset epoch by default, with `include_previous_resets=true` for cross-`/clear` access) and full/ranged message fetch by ID
 
 ### System Tools (`src/tools/system.ts`)
 - `shell(command, timeout?)` — executes a bash command with timeout (default: 30s); optional sandbox allowlist via `[shell]`

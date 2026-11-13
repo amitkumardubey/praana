@@ -1,0 +1,325 @@
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { CanonicalRecord } from "../src/canonical-transcript.js";
+import { isLoopExempt } from "../src/circuit/loop-gate.js";
+import { EventLog } from "../src/event-log.js";
+import { StateGraph } from "../src/state-graph.js";
+import { summarizeArgs } from "../src/tool-summary.js";
+import { createAllTools, describeTools } from "../src/tools/index.js";
+import * as searchTranscriptModule from "../src/tools/search-transcript.js";
+import { toolIcon } from "../src/ui/tui/tool-icons.js";
+
+const api = async () => searchTranscriptModule;
+
+const roots: string[] = [];
+const logs: EventLog[] = [];
+afterEach(() => {
+  for (const log of logs.splice(0)) log.close();
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+function openLog(sessionId = "sess-pr3") {
+  const root = mkdtempSync(join(tmpdir(), "praana-search-transcript-"));
+  roots.push(root);
+  const log = new EventLog(sessionId, root);
+  logs.push(log);
+  return { root, log, sessionId };
+}
+
+function addCanonical(log: EventLog, id: string, record: CanonicalRecord): void {
+  log.append({
+    event_id: id,
+    kind: "canonical_message",
+    actor: "kernel",
+    payload: { ...record },
+  });
+}
+
+function addCompactionBoundary(log: EventLog, id: string, generation: number, boundaryEventId: string): void {
+  log.append({
+    event_id: id,
+    kind: "system_note",
+    actor: "kernel",
+    payload: {
+      type: "compaction_boundary",
+      generation,
+      boundaryEventId,
+    },
+  });
+}
+
+function addResetBoundary(log: EventLog, id: string): void {
+  log.append({
+    event_id: id,
+    kind: "system_note",
+    actor: "kernel",
+    payload: {
+      type: "reset_boundary",
+      command: "/clear",
+    },
+  });
+}
+
+describe("search_transcript tool (PR3)", () => {
+  test("recovers a unique fact folded across two compactions and after session reload", async () => {
+    const { createSearchTranscriptTool } = await api();
+    const { root, log, sessionId } = openLog();
+
+    // Turn 1: contains a unique fact that will be folded by compaction 1
+    addCanonical(log, "msg-u1", {
+      formatVersion: 1,
+      kind: "user_input",
+      turnId: 1,
+      message: { text: "Investigate the database port and token." },
+    });
+    addCanonical(log, "msg-a1", {
+      formatVersion: 1,
+      kind: "assistant",
+      turnId: 1,
+      message: {
+        text: "Checking config",
+        toolCalls: [{ id: "c1", name: "read_file", args: { path: "config.toml" } }],
+      },
+    });
+    addCanonical(log, "msg-r1", {
+      formatVersion: 1,
+      kind: "tool_result",
+      turnId: 1,
+      message: {
+        callId: "c1",
+        toolName: "read_file",
+        text: "DB_PORT=15432\nUNIQUE_FACT_OMEGA_98765=enabled_strict_wal_mode",
+        isError: false,
+      },
+    });
+    addCanonical(log, "msg-a1-final", {
+      formatVersion: 1,
+      kind: "assistant",
+      turnId: 1,
+      message: { text: "Found DB_PORT 15432." },
+    });
+
+    // Compaction 1 folds turn 1
+    addCompactionBoundary(log, "compact-1", 1, "msg-a1-final");
+
+    // Turn 2: later folded by compaction 2
+    addCanonical(log, "msg-u2", {
+      formatVersion: 1,
+      kind: "user_input",
+      turnId: 2,
+      message: { text: "Now check Redis timeout." },
+    });
+    addCanonical(log, "msg-a2-final", {
+      formatVersion: 1,
+      kind: "assistant",
+      turnId: 2,
+      message: { text: "Redis timeout is 5000ms." },
+    });
+
+    // Compaction 2 folds turn 2
+    addCompactionBoundary(log, "compact-2", 2, "msg-a2-final");
+
+    // Turn 3: active tail
+    addCanonical(log, "msg-u3", {
+      formatVersion: 1,
+      kind: "user_input",
+      turnId: 3,
+      message: { text: "Summarize everything." },
+    });
+
+    const { search_transcript } = createSearchTranscriptTool({ eventLog: log });
+    const searchRes = await search_transcript.execute({
+      query: "UNIQUE_FACT_OMEGA_98765",
+    });
+
+    expect(searchRes.ok).toBe(true);
+    if (!searchRes.ok || !("matches" in searchRes)) throw new Error("Expected matches");
+    expect(searchRes.matches.length).toBeGreaterThanOrEqual(1);
+    expect(searchRes.matches[0]?.id).toBe("msg-r1");
+    expect(searchRes.matches[0]?.resetEpoch).toBe("session_start");
+    expect(searchRes.matches[0]?.snippet).toContain("UNIQUE_FACT_OMEGA_98765=enabled_strict_wal_mode");
+
+    // Close and reload the session EventLog from disk (simulating session reload / resume)
+    log.close();
+    const reloadedLog = new EventLog(sessionId, root);
+    logs.push(reloadedLog);
+    const reloadedTool = createSearchTranscriptTool({ eventLog: reloadedLog }).search_transcript;
+
+    const afterReload = await reloadedTool.execute({
+      query: "enabled_strict_wal_mode",
+    });
+    expect(afterReload.ok).toBe(true);
+    if (!afterReload.ok || !("matches" in afterReload)) throw new Error("Expected matches after reload");
+    expect(afterReload.matches[0]?.id).toBe("msg-r1");
+    expect(afterReload.matches[0]?.snippet).toContain("UNIQUE_FACT_OMEGA_98765");
+  });
+
+  test("hides pre-/clear messages by default and returns them only with include_previous_resets=true", async () => {
+    const { createSearchTranscriptTool } = await api();
+    const { log } = openLog();
+
+    addCanonical(log, "pre-clear-msg", {
+      formatVersion: 1,
+      kind: "user_input",
+      turnId: 1,
+      message: { text: "PRE_CLEAR_SECRET_CODEWORD_COBALT_42" },
+    });
+
+    addResetBoundary(log, "reset-epoch-1");
+
+    addCanonical(log, "post-clear-msg", {
+      formatVersion: 1,
+      kind: "user_input",
+      turnId: 2,
+      message: { text: "POST_CLEAR_ACTIVE_TOPIC_EMERALD_99" },
+    });
+
+    const { search_transcript } = createSearchTranscriptTool({ eventLog: log });
+
+    // Default search only searches current reset_epoch ("reset-epoch-1")
+    const defaultSearch = await search_transcript.execute({
+      query: "PRE_CLEAR_SECRET_CODEWORD_COBALT_42",
+    });
+    expect(defaultSearch.ok).toBe(true);
+    if (!defaultSearch.ok || !("matches" in defaultSearch)) throw new Error("Expected search result");
+    expect(defaultSearch.matches).toEqual([]);
+    expect(defaultSearch.resetEpoch).toBe("reset-epoch-1");
+
+    // Default fetch by ID of a pre-clear message is also refused without include_previous_resets=true
+    const defaultFetch = await search_transcript.execute({
+      id: "pre-clear-msg",
+    });
+    expect(defaultFetch.ok).toBe(false);
+    if (!defaultFetch.ok) {
+      expect(defaultFetch.error).toContain("include_previous_resets");
+    }
+
+    // Opt-in cross-reset search finds the pre-clear message and reports its resetEpoch
+    const crossResetSearch = await search_transcript.execute({
+      query: "PRE_CLEAR_SECRET_CODEWORD_COBALT_42",
+      include_previous_resets: true,
+    });
+    expect(crossResetSearch.ok).toBe(true);
+    if (!crossResetSearch.ok || !("matches" in crossResetSearch)) throw new Error("Expected matches");
+    expect(crossResetSearch.matches).toHaveLength(1);
+    expect(crossResetSearch.matches[0]?.id).toBe("pre-clear-msg");
+    expect(crossResetSearch.matches[0]?.resetEpoch).toBe("session_start");
+
+    // Opt-in cross-reset fetch by ID succeeds
+    const crossResetFetch = await search_transcript.execute({
+      id: "pre-clear-msg",
+      include_previous_resets: true,
+    });
+    expect(crossResetFetch.ok).toBe(true);
+    if (!crossResetFetch.ok || !("message" in crossResetFetch)) throw new Error("Expected message");
+    expect(crossResetFetch.message.id).toBe("pre-clear-msg");
+    expect(crossResetFetch.message.resetEpoch).toBe("session_start");
+    expect(crossResetFetch.message.content).toContain("PRE_CLEAR_SECRET_CODEWORD_COBALT_42");
+  });
+
+  test("stubbed messages remain searchable and fetchable with bounded snippets, full content retrieval, and surrounding context", async () => {
+    const { createSearchTranscriptTool } = await api();
+    const { log } = openLog();
+
+    addCanonical(log, "u-1", {
+      formatVersion: 1,
+      kind: "user_input",
+      turnId: 1,
+      message: { text: "Run the full test suite" },
+    });
+    addCanonical(log, "a-1", {
+      formatVersion: 1,
+      kind: "assistant",
+      turnId: 1,
+      message: {
+        text: "Executing bun test",
+        toolCalls: [{ id: "tc-1", name: "shell", args: { command: "bun test" } }],
+      },
+    });
+
+    const longLines = Array.from(
+      { length: 120 },
+      (_, i) => `line-${i + 1}: ${i === 60 ? "STUBBED_FINDING_NEEDLE_XYZ in module foo/bar.ts:144" : "padding_output_token ".repeat(6)}`,
+    ).join("\n") + '\n... [elided 80 lines / 3200 bytes; full output stored in artifact art_deadbeef1234 — call retrieve_artifact("art_deadbeef1234") to inspect] ...';
+
+    addCanonical(log, "res-stubbed-1", {
+      formatVersion: 1,
+      kind: "tool_result",
+      turnId: 1,
+      message: {
+        callId: "tc-1",
+        toolName: "shell",
+        text: longLines,
+        isError: true,
+      },
+    });
+    addCanonical(log, "a-2", {
+      formatVersion: 1,
+      kind: "assistant",
+      turnId: 1,
+      message: { text: "The test failed on line 61." },
+    });
+
+    const { search_transcript } = createSearchTranscriptTool({ eventLog: log });
+
+    // Search finds the needle inside the canonical tool_result even if prompt assembly later stubs res-stubbed-1
+    const searchRes = await search_transcript.execute({
+      query: "foo/bar.ts:144",
+    });
+    expect(searchRes.ok).toBe(true);
+    if (!searchRes.ok || !("matches" in searchRes)) throw new Error("Expected matches");
+    expect(searchRes.matches[0]?.id).toBe("res-stubbed-1");
+    expect(searchRes.matches[0]?.snippet).toContain("STUBBED_FINDING_NEEDLE_XYZ");
+    expect(searchRes.matches[0]?.snippet.length).toBeLessThanOrEqual(360);
+    expect(searchRes.matches[0]?.truncated).toBe(true);
+    expect(searchRes.matches[0]?.artifactId).toBe("art_deadbeef1234");
+
+    // Fetch full content by ID with surrounding context messages
+    const fetched = await search_transcript.execute({
+      id: "res-stubbed-1",
+      context_messages: 1,
+      offset: 59,
+      max_chars: 500,
+    });
+    expect(fetched.ok).toBe(true);
+    if (!fetched.ok || !("message" in fetched)) throw new Error("Expected fetched message");
+    expect(fetched.message.id).toBe("res-stubbed-1");
+    expect(fetched.message.artifactId).toBe("art_deadbeef1234");
+    expect(fetched.message.content).toContain("line-61: STUBBED_FINDING_NEEDLE_XYZ");
+    expect(fetched.message.before?.map((m: { id: string }) => m.id)).toEqual(["a-1"]);
+    expect(fetched.message.after?.map((m: { id: string }) => m.id)).toEqual(["a-2"]);
+  });
+
+  test("registers search_transcript in createAllTools, describeTools, loop-gate READ_TOOLS, tool-summary, and tool-icons", async () => {
+    const { log } = openLog();
+    const stateGraph = new StateGraph();
+
+    for (const classicMode of [true, false]) {
+      const tools = createAllTools({
+        eventLog: log,
+        stateGraph,
+        memoryStore: null,
+        memoryEnabled: false,
+        incognito: false,
+        contextEngine: null,
+        cwd: process.cwd(),
+        skills: [],
+        skillRuntime: null,
+        classicMode,
+      });
+      expect("search_transcript" in tools).toBe(true);
+      expect("search_turn_events" in tools).toBe(false); // contextEngine is null here; search_transcript still works!
+
+      const descriptions = describeTools({ contextEngineEnabled: !classicMode, classicMode });
+      expect(descriptions.some((d) => d.startsWith("search_transcript("))).toBe(true);
+    }
+
+    expect(isLoopExempt("search_transcript", { query: "test" })).toBe(true);
+    expect(summarizeArgs("search_transcript", { query: "needle" })).toBe("needle");
+    expect(summarizeArgs("search_transcript", { id: "msg-r1" })).toBe("msg-r1");
+    expect(toolIcon("search_transcript", true)).toBe("⌂");
+    expect(toolIcon("search_transcript", false)).toBe("st");
+  });
+});

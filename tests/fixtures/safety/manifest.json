@@ -16,7 +16,7 @@
     "legacy-ts/tool-results/success-redacted.json": "d296499d3f2905d7a689ebd37c55a26ca8c4dc130dc1e831ae8cf2776741362b"
   },
   "oracle_sha256_by_file": {
-    "src/circuit/loop-gate.ts": "404e4656303b2d3e9a319f70df0e4778fb1b4431fe86470af7b0ce9e5cd1416d",
+    "src/circuit/loop-gate.ts": "cf740b46713915eb7bc868a2e23f3c5e8b58b65da584b7341629e803d72f7533",
     "src/hooks/block-result.ts": "20214cf0f1dd570185925a34020bebe3e258ab868ad918a9a1f5414b1f518373",
     "src/hooks/handlers/circuit.ts": "f7114873dd02e822604a2c3e3c6ff22000a35afccc2cfa1d971575458a429244",
     "src/hooks/handlers/lsp.ts": "3d6b47544834069efb2541a3c8f851b4ed3d21f92fb32e14bc51101435438515",

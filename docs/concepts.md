@@ -182,7 +182,7 @@ PRAANA's tool surface is small and deliberately shared across modes. The goal: e
 | Git | `git_status`, `git_diff`, `git_commit`, `git_branches`, `git_log` (structured JSON; prefer over `shell git …`). `git_commit` is blocked in plan mode. Large diffs are lossless artifacts with stub cards — retrieve via `retrieve_artifact` | Both |
 | File mutation | `write_file`, `edit_file`, `batch_write`, `batch_edit` (concurrent batches OK; same-path mutators fail). Missing/unread `edit_file` is fail-fast with fuzzy suggestions (#577). Opt-in `[verify]` (issue #576) attaches syntax / scoped tsc / affected-test results on the same tool result | Both |
 | Shell | `shell` (with optional sandbox allowlist; timeout kills the process group). First-token PATH / cwd checked before execute (#577) | Both |
-| Session search | `search_session_log` (in-session events) | Both |
+| Session search | `search_session_log` (in-session events), `search_transcript` (BM25 + substring over canonical transcript messages across compactions/stubs, plus fetch by ID) | Both |
 | Cognitive Memory | `recall`, `remember`, `forget_memory` | Both |
 | Adaptive Context | `create_task`, `decide`, `add_constraint`, `add_note`, `hydrate`, `soft_unload`, `hard_unload`, `list_state` | Engine |
 | Context engine | `retrieve_artifact`, `context_summary`, `search_turn_events`, `event_lineage` | Engine |
