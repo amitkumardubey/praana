@@ -1522,10 +1522,43 @@ for (const status of ["cancelled", "capacity_error"] as const) {
   });
 }
 
-test("unchanged_fits carries reason for fold_not_possible, fold_insufficient, and nothing_to_stub, and marks discarded summaries", async () => {
+test("unchanged_fits requires a diagnostic reason in its public type", () => {
+  const source = readFileSync(new URL("../src/compaction.ts", import.meta.url), "utf8");
+  expect(/status: "unchanged_fits";[^\n]*reason: UnchangedFitsReason/.test(source)).toBe(true);
+});
+
+for (const decline of ["empty", "ineligible"] as const) {
+  test(`unchanged_fits reports planner_declined for ${decline} plans`, async () => {
+    const { log } = openLog();
+    addTurn(log, 1, {
+      inputText: "u".repeat(200),
+      toolResults: [{ id: "older", text: "X".repeat(1400) }, { id: "newest", text: "Y".repeat(1400) }],
+    });
+    const outcome = await compaction.runCompaction({
+      log, liveRequest: baseLiveRequest(), contextWindowTokens: 1100,
+      options: { effectiveMaxTokens: 100, stubKeepRecent: 1, stubMinTokens: 100 },
+      planStubs: (candidates) => decline === "empty" ? [] : [
+        { eventId: "unknown", stubText: "s" },
+        ...candidates.map((c) => ({ eventId: c.eventId, stubText: "larger".repeat(2000) })),
+      ],
+    });
+    expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "planner_declined" });
+  });
+}
+
+test("unchanged_fits reports no_eligible_results without an active turn", async () => {
+  const { log } = openLog();
+  const outcome = await compaction.runCompaction({
+    log, liveRequest: baseLiveRequest(), frame: { systemPrompt: "X".repeat(3600) },
+    contextWindowTokens: 1100, options: { effectiveMaxTokens: 100 },
+  });
+  expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "no_eligible_results" });
+});
+
+test("unchanged_fits carries reason for fold_not_possible, fold_insufficient, and no_eligible_results, and marks discarded summaries", async () => {
   const { runCompaction } = await api();
 
-  // 1. nothing_to_stub: single in-flight turn above trigger with no eligible tool results.
+  // 1. no_eligible_results: single in-flight turn above trigger with no eligible tool results.
   {
     const { log } = openLog();
     addTurn(log, 1, { inputText: "x".repeat(3600) });
@@ -1537,7 +1570,7 @@ test("unchanged_fits carries reason for fold_not_possible, fold_insufficient, an
     });
     expect(outcome.status).toBe("unchanged_fits");
     if (outcome.status !== "unchanged_fits") throw new Error(JSON.stringify(outcome));
-    expect(outcome.reason).toBe("nothing_to_stub");
+    expect(outcome.reason).toBe("no_eligible_results");
     expect(outcome.summaryDiscarded).toBeUndefined();
   }
 

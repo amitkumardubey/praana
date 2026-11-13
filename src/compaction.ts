@@ -301,7 +301,7 @@ export function shouldRewrite(fill: RequestFill, options: Partial<CompactionOpti
   return fill.ratio >= threshold;
 }
 
-export type UnchangedFitsReason = "fold_not_possible" | "fold_insufficient" | "nothing_to_stub";
+export type UnchangedFitsReason = "fold_not_possible" | "fold_insufficient" | "no_eligible_results" | "planner_declined";
 
 /** Contracts for rewrite orchestration; defining outcomes does not execute or commit a rewrite. */
 export type CompactionOutcome =
@@ -312,7 +312,7 @@ export type CompactionOutcome =
   /** A stubs-only commit: one generation increment, existing summary/boundary preserved. */
   | { status: "stubbed"; state: FrozenState; fill: RequestFill; summaryDiscarded?: true }
   /** No useful change, but the unchanged request fits usable capacity. */
-  | { status: "unchanged_fits"; state: FrozenState; fill: RequestFill; reason?: UnchangedFitsReason; summaryDiscarded?: true }
+  | { status: "unchanged_fits"; state: FrozenState; fill: RequestFill; reason: UnchangedFitsReason; summaryDiscarded?: true }
   /** Summary failure/timeout; previous state retained and the unchanged request fits. */
   | { status: "summary_failed_fits"; state: FrozenState; fill: RequestFill; reason: string }
   /** Nothing committed by this run. State is pre-race; callers must re-restore from the log before continuing. */
@@ -602,6 +602,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
   const opts = resolveOptions(rawOptions);
   const targetRatio = opts.contextLimitRatio - opts.postRewriteMargin;
   const planStubs = input.planStubs ?? defaultPlanStubs;
+  let sawEligibleResults = false;
   const runSummary = input.runSummary ?? defaultRunSummary;
   const materialize = input.materialize ?? materializeHistory;
 
@@ -630,7 +631,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
 
   const inFlightTurn = activeTurns.at(-1);
   if (!inFlightTurn) {
-    if (initialFill.fits) return { status: "unchanged_fits", state, fill: initialFill, reason: "nothing_to_stub" };
+    if (initialFill.fits) return { status: "unchanged_fits", state, fill: initialFill, reason: "no_eligible_results" };
     return capacityError("request_exceeds_capacity", "The request frame and summary exceed usable context capacity.").error;
   }
 
@@ -697,6 +698,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
       const olderSlice = inFlightCandidates.slice(0, Math.max(0, inFlightCandidates.length - keepRecent));
       const eligible = olderSlice.filter((c) => !stubMap.has(c.eventId) && c.estimatedTokens >= opts.stubMinTokens);
       if (eligible.length > 0) {
+        sawEligibleResults = true;
         if (signal?.aborted) return { cancelled: true };
         const planned = applyStubPlanner(planStubs, eligible, {
           phase: "in_flight",
@@ -736,6 +738,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
       (c) => !step1StubMap.has(c.eventId) && c.estimatedTokens >= opts.stubMinTokens,
     );
     if (staleEligible.length > 0) {
+      sawEligibleResults = true;
       if (signal?.aborted) return { status: "cancelled", state, reason: "aborted" };
       const plannedStale = applyStubPlanner(planStubs, staleEligible, {
         phase: "stale",
@@ -778,7 +781,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
 
   // --- STEP 2: Choose the tail, then fold once (only when completedTurns.length > 0) ---
   let summaryFailureReason: string | undefined;
-  let unchangedReason: UnchangedFitsReason = "nothing_to_stub";
+  let unchangedReason: UnchangedFitsReason | undefined;
   let summaryDiscarded = false;
 
   if (completedTurns.length > 0) {
@@ -798,6 +801,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
         .slice(0, -1)
         .filter((c) => !inFlightMinMap.has(c.eventId) && c.estimatedTokens >= opts.stubMinTokens);
       if (eligibleOldInFlight.length > 0) {
+        sawEligibleResults = true;
         if (signal?.aborted) return { status: "cancelled", state, reason: "aborted" };
         const plannedMin = applyStubPlanner(planStubs, eligibleOldInFlight, {
           phase: "in_flight",
@@ -1048,7 +1052,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
       status: "unchanged_fits",
       state,
       fill: initialFill,
-      reason: unchangedReason,
+      reason: unchangedReason ?? (sawEligibleResults ? "planner_declined" : "no_eligible_results"),
     };
     if (summaryDiscarded) outcome.summaryDiscarded = true;
     return outcome;
