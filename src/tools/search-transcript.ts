@@ -53,7 +53,8 @@ function extractArtifactId(text: string): string | undefined {
 
 function extractRecordTexts(record: CanonicalRecord): {
   text: string;
-  searchText: string;
+  parts?: string[];
+  excludedParts?: number[];
   toolName?: string;
   callId?: string;
   isError?: boolean;
@@ -63,27 +64,24 @@ function extractRecordTexts(record: CanonicalRecord): {
     case "user_input":
     case "wrap_up": {
       const text = record.message.text;
-      return { text, searchText: text, artifactId: extractArtifactId(text) };
+      return { text, artifactId: extractArtifactId(text) };
     }
     case "assistant": {
       const parts: string[] = [];
       if (record.message.text) parts.push(record.message.text);
       if (record.message.thinking) parts.push(record.message.thinking);
-      const searchParts = [...parts];
+      const excludedParts: number[] = [];
       for (const tc of record.message.toolCalls ?? []) {
-        const callText = `${tc.name}(${JSON.stringify(tc.args)})`;
-        parts.push(callText);
-        if (tc.name !== "search_transcript") searchParts.push(callText);
+        if (tc.name === "search_transcript") excludedParts.push(parts.length);
+        parts.push(`${tc.name}(${JSON.stringify(tc.args)})`);
       }
       const text = parts.join("\n");
-      return { text, searchText: searchParts.join("\n"), artifactId: extractArtifactId(text) };
+      return { text, parts, excludedParts, artifactId: extractArtifactId(text) };
     }
     case "tool_result": {
       const text = record.message.text;
-      const searchText = `${record.message.toolName} ${record.message.callId}\n${text}`;
       return {
         text,
-        searchText,
         toolName: record.message.toolName,
         callId: record.message.callId,
         isError: record.message.isError,
@@ -94,12 +92,12 @@ function extractRecordTexts(record: CanonicalRecord): {
     case "snapshot":
     case "summary": {
       const text = JSON.stringify(record.message);
-      return { text, searchText: text, artifactId: extractArtifactId(text) };
+      return { text, artifactId: extractArtifactId(text) };
     }
     default: {
       const exhaustive: never = record;
       const text = JSON.stringify(exhaustive);
-      return { text, searchText: text };
+      return { text };
     }
   }
 }
@@ -115,6 +113,7 @@ export function indexSessionTranscript(
   const entries: IndexedTranscriptEntry[] = [];
   // null marks a call key with multiple pending canonical results.
   const artifactResults = new Map<string, IndexedTranscriptEntry | null>();
+  const assistantParts = new Map<IndexedTranscriptEntry, { parts: string[]; excludedParts: number[] }>();
   let epochPosition = 0;
 
   for (let i = 0; i < events.length; i++) {
@@ -141,8 +140,7 @@ export function indexSessionTranscript(
           ? (result as { artifact_id: string }).artifact_id
           : extractArtifactId(text);
         if (outputArtifactId === entry.artifactId) {
-          entry.text = redactSecrets(text) as string;
-          entry.searchText = `${entry.toolName} ${entry.callId}\n${entry.text}`;
+          entry.text = text;
           entry.unrecoveredStub = extractArtifactId(text) !== undefined;
         }
       }
@@ -175,9 +173,8 @@ export function indexSessionTranscript(
       turnId: record.turnId,
       kind: record.kind,
       unrecoveredStub: record.kind === "tool_result" && extracted.artifactId !== undefined,
-      // Redact complete text before any snippet, line range, or preview is cut.
-      text: redactSecrets(extracted.text) as string,
-      searchText: redactSecrets(extracted.searchText) as string,
+      text: extracted.text,
+      searchText: "",
       timestamp: ev.timestamp,
       epochPosition,
       logPosition: i,
@@ -187,11 +184,27 @@ export function indexSessionTranscript(
     if (extracted.isError !== undefined) entry.isError = extracted.isError;
     if (extracted.artifactId !== undefined) entry.artifactId = extracted.artifactId;
     entries.push(entry);
+    if (extracted.parts && extracted.excludedParts) {
+      assistantParts.set(entry, { parts: extracted.parts, excludedParts: extracted.excludedParts });
+    }
     if (entry.kind === "tool_result" && entry.callId && entry.toolName !== "retrieve_artifact") {
       const key = JSON.stringify([entry.toolName, entry.callId]);
       artifactResults.set(key, artifactResults.has(key) ? null : entry);
     }
     epochPosition++;
+  }
+
+  // Recover first, then redact each entry once before any snippet/range is cut.
+  for (const entry of entries) {
+    const split = assistantParts.get(entry);
+    const redacted = redactSecrets({
+      parts: split?.parts ?? [entry.text],
+      prefix: entry.kind === "tool_result" ? `${entry.toolName} ${entry.callId}\n` : "",
+    }) as { parts: string[]; prefix: string };
+    entry.text = redacted.parts.join("\n");
+    entry.searchText = redacted.prefix + redacted.parts
+      .filter((_, index) => !split?.excludedParts.includes(index))
+      .join("\n");
   }
 
   return { entries, currentResetEpoch, canonicalTranscriptAvailable };

@@ -10,6 +10,7 @@ import { ContextEngine } from "../src/context-engine/index.js";
 import * as nativeLlm from "../src/llm/index.js";
 import type { StreamEvent } from "../src/llm/types.js";
 import * as oauth from "../src/oauth.js";
+import * as secrets from "../src/redact/secrets.js";
 import { Session } from "../src/session.js";
 import * as toolRegistry from "../src/tools/index.js";
 import { runTurn } from "../src/turn.js";
@@ -244,6 +245,39 @@ describe("search_transcript tool (PR3)", () => {
     if (!result.ok || result.mode !== "search") throw new Error("Expected search");
     expect(result.matches[0]?.id).toBe("source");
     expect(result.matches[0]?.artifactId).toBe("art_abcdef123456");
+  });
+
+  test("redacts each entry exactly once per run, including recovered output", async () => {
+    const { log } = openLog();
+    const token = `ghp_${"Z".repeat(40)}`;
+    const records: CanonicalRecord[] = [
+      { formatVersion: 1, kind: "user_input", turnId: 1, message: { text: `needle ${token}` } },
+      {
+        formatVersion: 1, kind: "assistant", turnId: 1,
+        message: { text: "needle", thinking: token, toolCalls: [{ id: "call", name: "shell", args: { command: `echo ${token}` } }] },
+      },
+      {
+        formatVersion: 1, kind: "tool_result", turnId: 1,
+        message: { callId: "call", toolName: "shell", text: "[artifact: art_redact | shell: inspect]", isError: false },
+      },
+      { formatVersion: 1, kind: "notice", turnId: 1, message: { text: `needle ${token}` } },
+    ];
+    records.forEach((record, i) => addCanonical(log, `redact-${i}`, record));
+    log.append({
+      kind: "tool_result", actor: "tool",
+      payload: { toolCallId: "call", tool: "shell", result: { artifact_id: "art_redact", content: `needle ${token}` } },
+    });
+    const originalRedact = secrets.redactSecrets;
+    const redact = spyOn(secrets, "redactSecrets").mockImplementation((value) => originalRedact(value));
+    const tool = searchTranscriptModule.createSearchTranscriptTool({ eventLog: log }).search_transcript;
+    for (const args of [{ query: "needle" }, { id: "redact-2", context_messages: 1 }]) {
+      redact.mockClear();
+      const result = await tool.execute(args);
+      expect(result.ok).toBe(true);
+      expect(redact).toHaveBeenCalledTimes(records.length);
+      expect(JSON.stringify(result)).not.toContain(token);
+      expect(JSON.stringify(result)).toContain("[REDACTED:github-token]");
+    }
   });
 
   test("redacts complete tokens before either edge of a search snippet is sliced", async () => {
