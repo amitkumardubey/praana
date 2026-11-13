@@ -2,11 +2,12 @@ import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readFullSessionCanonicalRecords, type CanonicalRecord } from "../src/canonical-transcript.js";
+import { CanonicalWriter, readFullSessionCanonicalRecords, type CanonicalRecord } from "../src/canonical-transcript.js";
 import { loadConfig } from "../src/config.js";
 import { buildClassicSystemFrame } from "../src/compile-classic.js";
 import { buildSystemFrame } from "../src/compiler.js";
 import { ContextEngine } from "../src/context-engine/index.js";
+import { buildArtifactCard } from "../src/context-engine/summarize.js";
 import * as nativeLlm from "../src/llm/index.js";
 import type { StreamEvent } from "../src/llm/types.js";
 import * as oauth from "../src/oauth.js";
@@ -47,6 +48,16 @@ function addCanonical(log: EventLog, id: string, record: CanonicalRecord): void 
     actor: "kernel",
     payload: { ...record },
   });
+}
+
+async function writeCanonicalToolResult(log: EventLog, tool: string, toolCallId: string, promptResultText: string): Promise<string> {
+  const writer = new CanonicalWriter(log, (error) => { throw error; });
+  const turnId = await writer.startTurn("Inspect output");
+  await writer.assistant(turnId, {
+    role: "assistant", content: "", toolCalls: [{ id: toolCallId, name: tool, args: {} }],
+  });
+  await writer.result(turnId, toolCallId, tool, promptResultText, false);
+  return log.readAll({ includeCanonical: true }).at(-1)!.event_id;
 }
 
 function addCompactionBoundary(log: EventLog, id: string, generation: number, boundaryEventId: string): void {
@@ -273,7 +284,7 @@ describe("search_transcript tool (PR3)", () => {
 
   test("keeps recovered source output ahead of later cards for the same artifact", async () => {
     const { log } = openLog();
-    const card = '[artifact: art_abcdef123456 | read_file: needle.txt | 1,000 tokens raw]';
+    const card = buildArtifactCard("art_abcdef123456", "read_file", "needle.txt", 1000);
     for (const id of ["source", "repeat"]) {
       addCanonical(log, id, {
         formatVersion: 1,
@@ -288,8 +299,12 @@ describe("search_transcript tool (PR3)", () => {
           toolCallId: id,
           tool: "read_file",
           result: id === "source"
-            ? { artifact_id: "art_abcdef123456", content: `needle.txt ${"ordinary output ".repeat(200)}` }
-            : { content: card, skipped_disk: true },
+            ? { ok: true, content: `needle.txt ${"ordinary output ".repeat(200)}` }
+            : {
+              ok: true, content: card, artifact_id: "art_abcdef123456", original_turn: 1,
+              warning: 'Already read turn 1 — use retrieve_artifact("art_abcdef123456") or search_turn_events',
+              skipped_disk: true,
+            },
         },
       });
     }
@@ -318,7 +333,7 @@ describe("search_transcript tool (PR3)", () => {
     records.forEach((record, i) => addCanonical(log, `redact-${i}`, record));
     log.append({
       kind: "tool_result", actor: "tool",
-      payload: { toolCallId: "call", tool: "shell", result: { artifact_id: "art_redact", content: `needle ${token}` } },
+      payload: { toolCallId: "call", tool: "shell", result: `needle ${token}` },
     });
     const originalRedact = secrets.redactSecrets;
     const redact = spyOn(secrets, "redactSecrets").mockImplementation((value) => originalRedact(value));
@@ -384,7 +399,7 @@ describe("search_transcript tool (PR3)", () => {
     expect(full.message.totalChars).toBe(full.message.content.length);
   });
 
-  test("does not recover untagged engine output behind an artifact card after reload", async () => {
+  test("recovers raw engine output behind an artifact card after reload", async () => {
     const { root, log, sessionId } = openLog();
     log.close();
     const config = loadConfig();
@@ -430,13 +445,14 @@ describe("search_transcript tool (PR3)", () => {
       const tool = searchTranscriptModule.createSearchTranscriptTool({ eventLog: reloaded }).search_transcript;
       const search = await tool.execute({ query: needle });
       if (!search.ok || search.mode !== "search") throw new Error("Expected search");
-      expect(search.matches).toEqual([]);
+      expect(search.matches).toHaveLength(1);
       const indexed = searchTranscriptModule.indexSessionTranscript(reloaded).entries;
       const entry = indexed.find((entry) => entry.kind === "tool_result")!;
       const fetched = await tool.execute({ id: entry.id });
       if (!fetched.ok || fetched.mode !== "fetch") throw new Error("Expected fetch");
       expect(fetched.message.artifactId).toMatch(/^art_/);
-      expect(fetched.message.content).toBe(result!.message.text);
+      expect(search.matches[0]?.id).toBe(entry.id);
+      expect(fetched.message.content).toBe(JSON.stringify(raw));
     } finally {
       engine.close();
     }
@@ -444,7 +460,7 @@ describe("search_transcript tool (PR3)", () => {
 
   test("leaves both artifact entries unchanged when a call id is reused before pairing", async () => {
     const { log } = openLog();
-    const card = "[artifact: art_shared | shell: inspect]";
+    const card = buildArtifactCard("art_shared", "shell", "inspect", 1000);
     for (const id of ["first", "second"]) {
       addCanonical(log, id, {
         formatVersion: 1,
@@ -456,7 +472,7 @@ describe("search_transcript tool (PR3)", () => {
     log.append({
       kind: "tool_result",
       actor: "tool",
-      payload: { toolCallId: "reused", tool: "shell", result: { artifact_id: "art_shared", content: "unrelated needle" } },
+      payload: { toolCallId: "reused", tool: "shell", result: "unrelated needle" },
     });
     const entries = searchTranscriptModule.indexSessionTranscript(log).entries;
     expect(entries.map((entry) => entry.text)).toEqual([card, card]);
@@ -464,7 +480,7 @@ describe("search_transcript tool (PR3)", () => {
 
   test("keeps an empty-call-id entry unchanged instead of pairing or dropping it", async () => {
     const { log } = openLog();
-    const card = "[artifact: art_missing | shell: inspect]";
+    const card = buildArtifactCard("art_missing", "shell", "inspect", 1000);
     addCanonical(log, "missing-call", {
       formatVersion: 1,
       kind: "tool_result",
@@ -474,40 +490,57 @@ describe("search_transcript tool (PR3)", () => {
     log.append({
       kind: "tool_result",
       actor: "tool",
-      payload: { toolCallId: "", tool: "shell", result: { artifact_id: "art_missing", content: "unrelated needle" } },
+      payload: { toolCallId: "", tool: "shell", result: "unrelated needle" },
     });
     const entries = searchTranscriptModule.indexSessionTranscript(log).entries;
     expect(entries.map((entry) => ({ id: entry.id, callId: entry.callId, text: entry.text })))
       .toEqual([{ id: "missing-call", callId: "", text: card }]);
   });
 
-  test.each(["art_other", undefined])("does not recover paired output with artifact id %s", async (artifactId) => {
+  test.each(["raw string needle", { ok: true, content: "raw object needle" }])("recovers raw paired output without an artifact id: %j", async (result) => {
     const { log } = openLog();
-    const card = "[artifact: art_expected | shell: inspect]";
-    addCanonical(log, "card", {
-      formatVersion: 1,
-      kind: "tool_result",
-      turnId: 1,
-      message: { callId: "call", toolName: "shell", text: card, isError: false },
-    });
-    log.append({
-      kind: "tool_result",
-      actor: "tool",
-      payload: { toolCallId: "call", tool: "shell", result: { artifact_id: artifactId, content: "unrelated needle" } },
-    });
-    const entries = searchTranscriptModule.indexSessionTranscript(log).entries;
-    expect(entries.map((entry) => entry.text)).toEqual([card]);
+    const tool = "echo";
+    const toolCallId = "call";
+    const artifactId = "art_expected";
+    const promptResultText = buildArtifactCard(artifactId, tool, "inspect", 1000);
+    const id = await writeCanonicalToolResult(log, tool, toolCallId, promptResultText);
+    log.append({ kind: "tool_result", actor: "tool", payload: { toolCallId, tool, result } });
+    const entry = searchTranscriptModule.indexSessionTranscript(log).entries.find((entry) => entry.id === id)!;
+    const text = typeof result === "string" ? result : JSON.stringify(result);
+    expect(entry.text).toBe(text);
+    expect(entry.artifactId).toBe(artifactId);
+    expect(entry.unrecoveredStub).toBe(false);
+    const searchTool = searchTranscriptModule.createSearchTranscriptTool({ eventLog: log }).search_transcript;
+    const search = await searchTool.execute({ query: "needle" });
+    if (!search.ok || search.mode !== "search") throw new Error("Expected search");
+    expect(search.matches.map((match) => match.id)).toEqual([id]);
+    const fetched = await searchTool.execute({ id });
+    if (!fetched.ok || fetched.mode !== "fetch") throw new Error("Expected fetch");
+    expect(fetched.message.content).toBe(text);
+    expect(fetched.message.artifactId).toBe(artifactId);
+  });
+
+  test("never pairs retrieve_artifact results", async () => {
+    const { log } = openLog();
+    const tool = "retrieve_artifact";
+    const toolCallId = "retrieve";
+    const card = buildArtifactCard("art_retrieved", "read_file", "inspect", 1000);
+    const id = await writeCanonicalToolResult(log, tool, toolCallId, card);
+    const result = { ok: true, id: "art_retrieved", content: card };
+    log.append({ kind: "tool_result", actor: "tool", payload: { toolCallId, tool, result } });
+    const entry = searchTranscriptModule.indexSessionTranscript(log).entries.find((entry) => entry.id === id)!;
+    expect(entry.text).toBe(card);
   });
 
   test("only recovers paired source results within the same reset epoch", async () => {
     for (const scenario of ["wrong-tool", "wrong-call", "repeat-read", "reset"] as const) {
       const { log } = openLog();
-      const card = '[artifact: art_abcdef123456 | shell: inspect | 1,000 tokens raw]';
+      const card = buildArtifactCard("art_abcdef123456", "read_file", "inspect", 1000);
       addCanonical(log, "card", {
         formatVersion: 1,
         kind: "tool_result",
         turnId: 1,
-        message: { callId: "call", toolName: "shell", text: card, isError: false },
+        message: { callId: "call", toolName: "read_file", text: card, isError: false },
       });
       if (scenario === "reset") addResetBoundary(log, "reset");
       log.append({
@@ -515,8 +548,14 @@ describe("search_transcript tool (PR3)", () => {
         actor: "tool",
         payload: {
           toolCallId: scenario === "wrong-call" ? "other" : "call",
-          tool: scenario === "wrong-tool" ? "read_file" : "shell",
-          result: { artifact_id: "art_abcdef123456", content: "unrelated needle", skipped_disk: scenario === "repeat-read" },
+          tool: scenario === "wrong-tool" ? "shell" : "read_file",
+          result: scenario === "repeat-read"
+            ? {
+              ok: true, content: card, artifact_id: "art_abcdef123456", original_turn: 1,
+              warning: 'Already read turn 1 — use retrieve_artifact("art_abcdef123456") or search_turn_events',
+              skipped_disk: true,
+            }
+            : { ok: true, content: "unrelated needle" },
         },
       });
       const tool = searchTranscriptModule.createSearchTranscriptTool({ eventLog: log }).search_transcript;

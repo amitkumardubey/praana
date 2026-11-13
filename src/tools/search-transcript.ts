@@ -131,14 +131,8 @@ export function indexSessionTranscript(
         (result as { skipped_disk?: unknown }).skipped_disk === true;
       if (entry?.artifactId && result !== undefined && !skippedDisk) {
         const text = typeof result === "string" ? result : JSON.stringify(result);
-        const outputArtifactId = result !== null && typeof result === "object" &&
-          typeof (result as { artifact_id?: unknown }).artifact_id === "string"
-          ? (result as { artifact_id: string }).artifact_id
-          : extractArtifactId(text);
-        if (outputArtifactId === entry.artifactId) {
-          entry.text = text;
-          entry.unrecoveredStub = extractArtifactId(text) !== undefined;
-        }
+        entry.text = text;
+        entry.unrecoveredStub = extractArtifactId(text) !== undefined;
       }
       artifactResults.delete(key);
       continue;
@@ -376,7 +370,7 @@ export function createSearchTranscriptTool(ctx: {
         "or fetch full/ranged content and neighbors by ID. Searches the current reset epoch by default; " +
         "set include_previous_resets=true to search or fetch across /clear. " +
         "Search excludes assistant messages calling search_transcript and search_transcript results (ID fetch still works). " +
-        "Artifact-backed results use paired logged output only with a matching artifact ID; matches retain artifactId. " +
+        "Artifact-backed results use logged output paired by tool and call ID in the same reset epoch; matches retain artifactId. " +
         "If the session has no canonical transcript, use search_session_log instead.",
       parameters: searchTranscriptParameters,
       execute: async (rawArgs: SearchTranscriptArgs): Promise<SearchTranscriptResult> => {
