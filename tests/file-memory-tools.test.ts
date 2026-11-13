@@ -85,8 +85,19 @@ test("recall tool forwards an explicit scope for by-name lookups after a failed 
   expect(probes).toContain(unreadable);
   expect(unscoped).toMatchObject({ ok: false, error: expect.stringMatching(/explicit scope/i), skippedScopes: [{ scope: "project", reason: expect.stringContaining(unreadable) }] });
   expect(await tools.recall.execute({ name: "portable", scope: "global" })).toMatchObject({ ok: true, memory: { name: "portable", scope: "global" } });
-  expect(tools.recall.description).toMatch(/scope/);
   refused(await tools.recall.execute({ query: "coffee", scope: "global" }));
+});
+
+test("recall advertises scope only for the refused unscoped lookup case", async () => {
+  const { tools } = await setup();
+  // The old wording claimed every failed scan required a scope; only a refused lookup does.
+  expect(tools.recall.description).toContain("required only when an unscoped lookup is refused because the project scan failed");
+  expect(tools.recall.description).toContain("a failed global scan still returns a project hit with a warning");
+  expect(tools.recall.description).not.toContain("required after a failed scope scan");
+  const schema = tools.recall.parameters as { safeParse: (input: unknown) => { success: boolean } };
+  expect(schema.safeParse({ name: "coffee", scope: "project" }).success).toBe(true);
+  expect(schema.safeParse({ name: "coffee", scope: "elsewhere" }).success).toBe(false);
+  expect(schema.safeParse({ query: "coffee", scope: "project" }).success).toBe(false);
 });
 
 test("incognito blocks tool mutations but permits recall", async () => {
