@@ -49,7 +49,7 @@ describe("file memory paths", () => {
     }
   });
 
-  test.skipIf(process.platform === "win32" || process.getuid?.() === 0)("unresolvable EACCES root reports the path from every operation without throwing at construction", async () => {
+  test.skipIf(process.platform === "win32" || process.getuid?.() === 0)("unresolvable EACCES root keeps global memory usable and reports the root from project operations", async () => {
     const home = await fs.mkdtemp(join(tmpdir(), "paths-denied-"));
     const obstacle = join(home, "denied"), root = join(obstacle, "repo");
     try {
@@ -60,27 +60,68 @@ describe("file memory paths", () => {
       expect(observed).toBe("EACCES");
       expect(() => createFileMemoryStore({ home, cwd: root, findRoot: (cwd) => cwd })).not.toThrow();
       const store = createFileMemoryStore({ home, cwd: root, findRoot: (cwd) => cwd });
+      const warnings = [{ scope: "project", reason: expect.stringContaining(root) }];
+      expect(await store.write({ scope: "global", name: "blocked", type: "user", description: "Root unavailable", body: "No guessing" })).toMatchObject({ ok: true, scope: "global" });
+      expect(await store.list()).toMatchObject({ ok: true, entries: [{ name: "blocked", scope: "global" }], skippedScopes: warnings });
+      expect(await store.recall({ query: "guessing" })).toMatchObject({ ok: true, matches: [{ name: "blocked", scope: "global" }], skippedScopes: warnings });
+      expect(await store.buildMemoryIndex()).toMatchObject({ ok: true, total: 1, skippedScopes: warnings });
+      expect(await store.refreshIndexFile("global")).toEqual({ ok: true });
       const results = [
-        await store.write({ scope: "global", name: "blocked", type: "user", description: "Root unavailable", body: "No guessing" }),
-        await store.read({ scope: "global", name: "blocked" }),
-        await store.remove({ name: "blocked" }),
-        await store.recall({ name: "blocked" }),
-        await store.recall({ query: "blocked" }),
-        await store.list(),
-        await store.list({ scope: "global" }),
-        await store.buildMemoryIndex(),
-        await store.refreshIndexFile("global"),
+        await store.write({ scope: "project", name: "blocked", type: "user", description: "Root unavailable", body: "No guessing" }),
+        await store.read({ scope: "project", name: "blocked" }),
+        await store.list({ scope: "project" }),
+        await store.remove({ scope: "project", name: "blocked" }),
       ];
       for (const result of results) {
         expect(result).toMatchObject({ ok: false });
         expect((result as { error: string }).error).toContain("cannot resolve project root: EACCES");
         expect((result as { error: string }).error).toContain(root);
       }
-      expect(await fs.exists(join(home, ".praana"))).toBe(false);
+      expect(await fs.exists(join(home, ".praana/memory/blocked.md"))).toBe(true);
+      expect(await fs.exists(join(home, ".praana/projects"))).toBe(false);
     } finally {
       await fs.chmod(obstacle, 0o700);
       await fs.rm(home, { recursive: true, force: true });
     }
+  });
+
+  test("unresolved project root leaves global memory usable and names the skipped project scope", async () => {
+    const home = await fs.mkdtemp(join(tmpdir(), "paths-rootless-"));
+    const loop = join(home, "loop");
+    try {
+      await fs.symlink(loop, loop);
+      const make = () => createFileMemoryStore({ home, cwd: loop, findRoot: (cwd) => cwd, now: () => new Date("2026-05-01T00:00:00Z") });
+      expect(() => make()).not.toThrow();
+      const store = make();
+      const warnings = [{ scope: "project", reason: expect.stringContaining("cannot resolve project root: ELOOP") }];
+      const global = { scope: "global" as const, name: "portable", type: "user" as const, description: "Global survives a missing project root", body: "Global only" };
+      expect(await store.write(global)).toMatchObject({ ok: true, scope: "global", created: true });
+      expect(await store.read({ name: "portable" })).toMatchObject({ ok: true, memory: { name: "portable", scope: "global" }, skippedScopes: warnings });
+      expect(await store.read({ name: "portable", scope: "global" })).toMatchObject({ ok: true, memory: { scope: "global" } });
+      expect(await store.list()).toMatchObject({ ok: true, entries: [{ name: "portable", scope: "global" }], skippedScopes: warnings });
+      expect(await store.list({ scope: "global" })).toMatchObject({ ok: true, entries: [{ name: "portable" }] });
+      expect(await store.recall({ query: "Global" })).toMatchObject({ ok: true, matches: [{ name: "portable", scope: "global" }], skippedScopes: warnings });
+      expect(await store.recall({ name: "portable" })).toMatchObject({ ok: true, memory: { scope: "global" }, skippedScopes: warnings });
+      expect(await store.buildMemoryIndex()).toMatchObject({ ok: true, total: 1, skippedScopes: warnings });
+      expect(await store.refreshIndexFile("global")).toEqual({ ok: true });
+      expect(await fs.readFile(join(home, ".praana/memory/MEMORY.md"), "utf8")).toContain("[portable](portable.md)");
+      const projectResults = [
+        await store.write({ ...global, scope: "project" }),
+        await store.read({ name: "portable", scope: "project" }),
+        await store.list({ scope: "project" }),
+        await store.remove({ name: "portable", scope: "project" }),
+        await store.refreshIndexFile("project"),
+      ];
+      for (const result of projectResults) {
+        expect(result).toMatchObject({ ok: false });
+        expect((result as { error: string }).error).toContain("cannot resolve project root: ELOOP");
+      }
+      expect(await store.remove({ name: "portable" })).toMatchObject({ ok: false, error: expect.stringMatching(/explicit scope/i) });
+      expect(await fs.exists(join(home, ".praana/memory/portable.md"))).toBe(true);
+      expect(await store.remove({ name: "portable", scope: "global" })).toEqual({ ok: true });
+      expect(await fs.exists(join(home, ".praana/memory/portable.md"))).toBe(false);
+      expect(await fs.exists(join(home, ".praana/projects"))).toBe(false);
+    } finally { await fs.rm(home, { recursive: true, force: true }); }
   });
 
   test("project identity refuses a real symlink loop instead of guessing", async () => {

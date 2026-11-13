@@ -32,16 +32,18 @@ const inside = (parent: string, child: string) => { const p = relative(parent, c
 export function createFileMemoryStore(options: StoreOptions) {
   const fs = options.fs ?? nodeFs;
   const home = resolve(options.home);
-  let dirs: Record<MemoryScope, string> | undefined;
+  const globalDirectory = join(home, ".praana", "memory");
+  // Only the project scope depends on resolving a root; global memory must survive that failure.
+  let projectDirectory: string | undefined;
   let rootError: ResultError | undefined;
-  try { dirs = memoryDirectories(home, projectKey(options.cwd, options.findRoot)); }
+  try { projectDirectory = memoryDirectories(home, projectKey(options.cwd, options.findRoot)).project; }
   catch (error) { rootError = errorResult(error); }
   const now = options.now ?? (() => new Date());
 
   async function directory(scope: MemoryScope, create: boolean): Promise<string | null> {
-    if (rootError) throw new Error(rootError.error);
-    if (!dirs) throw new Error("Project root unavailable");
     if (!scopes.includes(scope)) throw new Error("Invalid scope");
+    const target = scope === "global" ? globalDirectory : projectDirectory;
+    if (!target) throw new Error(rootError?.error ?? "Project root unavailable");
     // The user controls .praana and its ancestors; only descendants are untrusted.
     const base = join(home, ".praana");
     let root: string;
@@ -57,7 +59,7 @@ export function createFileMemoryStore(options: StoreOptions) {
       root = await fs.realpath(base);
     }
     if (!(await fs.stat(root)).isDirectory()) throw new Error("Unsafe .praana root");
-    const path = join(root, relative(base, dirs[scope]));
+    const path = join(root, relative(base, target));
     let current = root;
     for (const part of relative(root, path).split(sep)) {
       current = join(current, part);
@@ -165,7 +167,6 @@ export function createFileMemoryStore(options: StoreOptions) {
   }
 
   async function write(input: MemoryInput & { scope: MemoryScope }): Promise<{ ok: true; name: string; scope: MemoryScope; created: boolean } | ResultError> {
-    if (rootError) return rootError;
     if (options.incognito) return { ok: false, error: "Incognito mode prevents writes" };
     try {
       const allowed = new Set(["scope", "type", "name", "description", "body"]);
@@ -199,21 +200,25 @@ export function createFileMemoryStore(options: StoreOptions) {
     } catch (error) { return errorResult(error); }
   }
 
-  async function read(input: { scope?: MemoryScope; name: string }): Promise<{ ok: true; memory: Memory & { scope: MemoryScope } } | ResultError> {
-    if (rootError) return rootError;
+  async function read(input: { scope?: MemoryScope; name: string }): Promise<({ ok: true; memory: Memory & { scope: MemoryScope } } & ScopeWarnings) | ResultError> {
     if (!validName(input.name)) return { ok: false, error: "Invalid memory name" };
-    try {
-      for (const scope of input.scope ? [input.scope] : scopes) {
+    const requested = input.scope ? [input.scope] : scopes;
+    const skippedScopes: SkippedScope[] = [];
+    for (const scope of requested) {
+      try {
         const dir = await directory(scope, false);
         const memory = dir && await readFile(dir, input.name);
-        if (memory) return { ok: true, memory: { ...memory, scope } };
+        if (memory) return { ok: true, memory: { ...memory, scope }, ...scopeWarnings(skippedScopes) };
+      } catch (error) {
+        if (input.scope) return errorResult(error);
+        skippedScopes.push({ scope, reason: errorResult(error).error });
       }
-      return { ok: false, error: "Memory not found" };
-    } catch (error) { return errorResult(error); }
+    }
+    if (skippedScopes.length === requested.length) return { ok: false, error: skippedScopes.map(({ scope, reason }) => `${scope}: ${reason}`).join("; "), ...scopeWarnings(skippedScopes) };
+    return { ok: false, error: "Memory not found", ...scopeWarnings(skippedScopes) };
   }
 
   async function remove(input: { scope?: MemoryScope; name: string }): Promise<({ ok: true; skipped?: SkippedScope[] } & ScopeWarnings) | ResultError> {
-    if (rootError) return rootError;
     if (options.incognito) return { ok: false, error: "Incognito mode prevents removal" };
     if (!validName(input.name)) return { ok: false, error: "Invalid memory name" };
     try {
@@ -254,7 +259,6 @@ export function createFileMemoryStore(options: StoreOptions) {
   }
 
   async function list(input: { scope?: MemoryScope } = {}): Promise<({ ok: true; entries: ListEntry[]; skipped: number } & ScopeWarnings) | ({ entries: ListEntry[]; skipped: number } & ResultError)> {
-    if (rootError) return { ...rootError, entries: [], skipped: 0 };
     try {
       const result: ListEntry[] = [];
       let skipped = 0;
@@ -278,8 +282,7 @@ export function createFileMemoryStore(options: StoreOptions) {
     return { ok: true, ...scopeWarnings(data.skippedScopes ?? []), ...renderMemoryIndex({ entries: indexEntries(data.entries) }) };
   }
   const indexEntries = (entries: ListEntry[]): IndexEntry[] => entries.map((entry) => ({ ...entry, file: `${entry.scope}/${entry.name}.md` }));
-  async function recall(input: { query?: string; name?: string }): Promise<{ ok: true; memory: ScopedMemory } | ({ ok: true; matches: RecallMatch[] } & ScopeWarnings) | ResultError> {
-    if (rootError) return rootError;
+  async function recall(input: { query?: string; name?: string }): Promise<({ ok: true; memory: ScopedMemory } & ScopeWarnings) | ({ ok: true; matches: RecallMatch[] } & ScopeWarnings) | ResultError> {
     if ((input.query !== undefined) === (input.name !== undefined)) return { ok: false, error: "Provide exactly one of query or name" };
     if (input.name !== undefined) return read({ name: input.name });
     if (typeof input.query !== "string") return { ok: false, error: "Query must be a string" };
