@@ -67,11 +67,14 @@ function extractRecordTexts(record: CanonicalRecord): {
       const parts: string[] = [];
       if (record.message.text) parts.push(record.message.text);
       if (record.message.thinking) parts.push(record.message.thinking);
+      const searchParts = [...parts];
       for (const tc of record.message.toolCalls ?? []) {
-        parts.push(`${tc.name}(${JSON.stringify(tc.args)})`);
+        const callText = `${tc.name}(${JSON.stringify(tc.args)})`;
+        parts.push(callText);
+        if (tc.name !== "search_transcript") searchParts.push(callText);
       }
       const text = parts.join("\n");
-      return { text, searchText: text, artifactId: extractArtifactId(text) };
+      return { text, searchText: searchParts.join("\n"), artifactId: extractArtifactId(text) };
     }
     case "tool_result": {
       const text = record.message.text;
@@ -409,12 +412,13 @@ export function createSearchTranscriptTool(ctx: {
         const queryTokens = tokenize(query);
         const lowerQuery = query.toLowerCase();
         const queryTerms = lowerQuery.split(/\s+/).filter((t) => t.length > 0);
-        const docTokenLists = scopedEntries.map((e) => tokenize(e.searchText));
+        const searchableEntries = scopedEntries.filter((e) => e.toolName !== "search_transcript");
+        const docTokenLists = searchableEntries.map((e) => tokenize(e.searchText));
         const stats = buildBM25StatsFromTokens(docTokenLists);
 
         const scored: { entry: IndexedTranscriptEntry; score: number }[] = [];
-        for (let i = 0; i < scopedEntries.length; i++) {
-          const entry = scopedEntries[i];
+        for (let i = 0; i < searchableEntries.length; i++) {
+          const entry = searchableEntries[i];
           const docTokens = docTokenLists[i];
           if (!entry || !docTokens) continue;
 

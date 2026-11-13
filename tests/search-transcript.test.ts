@@ -63,6 +63,39 @@ function addResetBoundary(log: EventLog, id: string): void {
 }
 
 describe("search_transcript tool (PR3)", () => {
+  test("does not search its own calls or results but still fetches them by id", async () => {
+    const { log } = openLog();
+    addCanonical(log, "user-needle", {
+      formatVersion: 1,
+      kind: "user_input",
+      turnId: 1,
+      message: { text: "needle" },
+    });
+    for (const id of ["earlier-search", "in-flight-search"]) {
+      addCanonical(log, id, {
+        formatVersion: 1,
+        kind: "assistant",
+        turnId: 1,
+        message: { text: "", toolCalls: [{ id, name: "search_transcript", args: { query: "needle" } }] },
+      });
+    }
+    addCanonical(log, "search-result", {
+      formatVersion: 1,
+      kind: "tool_result",
+      turnId: 1,
+      message: { callId: "earlier-search", toolName: "search_transcript", text: "needle", isError: false },
+    });
+    const tool = searchTranscriptModule.createSearchTranscriptTool({ eventLog: log }).search_transcript;
+    const result = await tool.execute({ query: "needle" });
+    if (!result.ok || result.mode !== "search") throw new Error("Expected search");
+    expect(result.matches.map((m) => m.id)).toEqual(["user-needle"]);
+    for (const id of ["earlier-search", "in-flight-search", "search-result"]) {
+      const fetched = await tool.execute({ id });
+      if (!fetched.ok || fetched.mode !== "fetch") throw new Error("Expected fetch");
+      expect(fetched.message.content).toContain("needle");
+    }
+  });
+
   test("recovers a unique fact folded across two compactions and after session reload", async () => {
     const { createSearchTranscriptTool } = await api();
     const { root, log, sessionId } = openLog();
