@@ -169,7 +169,8 @@ function assertRecord(value: unknown, index: number): asserts value is Canonical
 
 export type CanonicalEventSource = readonly Event[] | Pick<EventLog, "readAll">;
 
-function resolveRawEvents(source: CanonicalEventSource): readonly Event[] {
+/** Raw events of a log (internal kinds included) or an already-read array. */
+export function resolveRawEvents(source: CanonicalEventSource): readonly Event[] {
   return "readAll" in source ? source.readAll({ includeInternal: true }) : source;
 }
 

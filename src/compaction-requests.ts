@@ -114,7 +114,7 @@ function validateSummaryCap(capTokens: number): void {
   }
 }
 
-function cutDescription(turn: CompactionTurn): string {
+export function cutDescription(turn: CompactionTurn): string {
   return `through canonical event ${turn.eventIds.at(-1)!} (end of turn ${turn.turnId})`;
 }
 

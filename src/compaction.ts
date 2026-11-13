@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { CanonicalTranscriptError, CanonicalValidator, emitCanonicalTranscript, readCanonicalEntries, type CanonicalEventSource, type CanonicalRecord } from "./canonical-transcript.js";
+import { CanonicalTranscriptError, CanonicalValidator, emitCanonicalTranscript, readCanonicalEntries, resolveRawEvents, type CanonicalEventSource, type CanonicalRecord } from "./canonical-transcript.js";
 import {
   buildSameModelSummaryRequest,
   buildSummaryRepairRequest,
+  cutDescription,
   nextBatchSummaryRequest,
   planBatchSummaries,
   summaryResponseHasToolCalls,
@@ -25,7 +26,7 @@ import {
 } from "./frozen-summary.js";
 import type { ConversationMessage, ProviderUsage, StreamRequest, ToolDefinition } from "./llm/types.js";
 import { estimateTokens } from "./token-estimate.js";
-import type { Event, StateObject } from "./types.js";
+import type { StateObject } from "./types.js";
 
 export const DEFAULT_CONTEXT_LIMIT_RATIO = 0.80;
 export const DEFAULT_TAIL_TURNS = 4;
@@ -112,8 +113,24 @@ export interface CompactionTurn {
   estimatedTokens: number;
 }
 
-function resolveRawEvents(source: CanonicalEventSource): readonly Event[] {
-  return "readAll" in source ? source.readAll({ includeInternal: true }) : source;
+/** Emit one turn's messages; a terminal pending batch is not repaired, so only recorded messages are returned. */
+function emitTurnMessages(records: readonly CanonicalRecord[]): ConversationMessage[] {
+  const emittedCount = records.filter((record) => ["user_input", "wrap_up", "assistant", "tool_result"].includes(record.kind)).length;
+  return emitCanonicalTranscript(records).slice(0, emittedCount);
+}
+
+/** A turn's records with the given stub texts substituted for their tool results (no mutation). */
+function applyStubs(turn: CompactionTurn, stubs: ReadonlyMap<string, string>): CanonicalRecord[] {
+  return turn.records.map((record, index): CanonicalRecord => {
+    const replacement = stubs.get(turn.eventIds[index]);
+    return record.kind === "tool_result" && replacement !== undefined
+      ? { ...record, message: { ...record.message, text: replacement } }
+      : record;
+  });
+}
+
+function toStubSet(stubs: ReadonlyMap<string, string>): StubEntry[] {
+  return Array.from(stubs, ([eventId, stubText]) => ({ eventId, stubText }));
 }
 
 function groupTurns(source: CanonicalEventSource): CompactionTurn[] {
@@ -136,9 +153,7 @@ function turnView(source: CanonicalEventSource, options: { estimate?: boolean } 
   const validator = new CanonicalValidator();
   for (const turn of turns) {
     for (const record of turn.records) validator.accept(record);
-    const emittedCount = turn.records.filter((record) => ["user_input", "wrap_up", "assistant", "tool_result"].includes(record.kind)).length;
-    // The strict emitter repairs a terminal pending batch; estimates cover recorded bytes only.
-    turn.messages = emitCanonicalTranscript(turn.records).slice(0, emittedCount);
+    turn.messages = emitTurnMessages(turn.records);
     if (options.estimate !== false) turn.estimatedTokens = turn.messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
   }
   return turns;
@@ -195,13 +210,7 @@ export function materializeHistory(state: FrozenState, source: CanonicalEventSou
       }
       stubs.set(stub.eventId, stub.stubText);
     }
-    const tail = turns.slice(cut + 1).flatMap((turn) => turn.records.map((record, index): CanonicalRecord => {
-      const eventId = turn.eventIds[index];
-      const replacement = stubs.get(eventId);
-      return record.kind === "tool_result" && replacement !== undefined
-        ? { ...record, message: { ...record.message, text: replacement } }
-        : record;
-    }));
+    const tail = turns.slice(cut + 1).flatMap((turn) => applyStubs(turn, stubs));
     return { ok: true, messages: [
       ...(state.summary === null ? [] : [renderSummaryMessage(state.summary)]),
       ...emitCanonicalTranscript(tail),
@@ -579,7 +588,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
     return { status: "noop", state, fill: initialFill };
   }
 
-  const allTurns = buildTurns(events);
+  const allTurns = buildTurns(events, { estimate: false });
   const cutIndex = state.boundaryEventId === null
     ? -1
     : allTurns.findIndex((t) => t.completed && t.eventIds.at(-1) === state.boundaryEventId);
@@ -622,14 +631,14 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
       generation: state.generation + 1,
       boundaryEventId,
       summary,
-      stubSet: Array.from(stubMap, ([eventId, stubText]) => ({ eventId, stubText })),
+      stubSet: toStubSet(stubMap),
       summaryRequest,
     });
     let currentFill = measureCandidate(buildState());
     if (inFlightCandidates.length <= 1) {
       return {
         cancelled: false,
-        stubSet: Array.from(stubMap, ([eventId, stubText]) => ({ eventId, stubText })),
+        stubSet: toStubSet(stubMap),
         fill: currentFill,
         changed: stubMap.size !== startingStubs.size,
       };
@@ -663,7 +672,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
 
     return {
       cancelled: false,
-      stubSet: Array.from(stubMap, ([eventId, stubText]) => ({ eventId, stubText })),
+      stubSet: toStubSet(stubMap),
       fill: currentFill,
       changed,
     };
@@ -695,7 +704,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
   }
 
   if (step1AddedStubs) {
-    const step1StubSet = Array.from(step1StubMap, ([eventId, stubText]) => ({ eventId, stubText }));
+    const step1StubSet = toStubSet(step1StubMap);
     const step1Candidate: FrozenState = {
       resetEpoch: state.resetEpoch,
       generation: state.generation + 1,
@@ -732,14 +741,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
     if (maxStubbedInFlight.cancelled) return { status: "cancelled", state };
 
     const inFlightMinMap = new Map(maxStubbedInFlight.stubSet.map((s) => [s.eventId, s.stubText]));
-    const inFlightMinRecords = inFlightTurn.records.map((record, idx): CanonicalRecord => {
-      const eid = inFlightTurn.eventIds[idx];
-      const replacement = inFlightMinMap.get(eid);
-      return record.kind === "tool_result" && replacement !== undefined
-        ? { ...record, message: { ...record.message, text: replacement } }
-        : record;
-    });
-    const inFlightMinMessages = emitCanonicalTranscript(inFlightMinRecords);
+    const inFlightMinMessages = emitCanonicalTranscript(applyStubs(inFlightTurn, inFlightMinMap));
     const minTailTokensWithAllowance = estimateRequestTokens(frame, inFlightMinMessages) + summaryAllowanceTokens;
 
     if (capTokens < minValidSummaryTokens || minTailTokensWithAllowance > initialFill.usableTokens) {
@@ -753,15 +755,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
         const foldedCount = completedTurns.length - keep;
         if (foldedCount <= 0) continue;
         const tailSlice = [...completedTurns.slice(foldedCount), inFlightTurn];
-        const tailRecords = tailSlice.flatMap((turn) =>
-          turn.records.map((record, idx): CanonicalRecord => {
-            const eid = turn.eventIds[idx];
-            const replacement = baseActiveStubs.get(eid);
-            return record.kind === "tool_result" && replacement !== undefined
-              ? { ...record, message: { ...record.message, text: replacement } }
-              : record;
-          }),
-        );
+        const tailRecords = tailSlice.flatMap((turn) => applyStubs(turn, baseActiveStubs));
         const tailMessages = emitCanonicalTranscript(tailRecords);
         const prospectiveTokens = estimateRequestTokens(frame, tailMessages) + summaryAllowanceTokens;
         if (prospectiveTokens <= initialFill.usableTokens && prospectiveTokens / initialFill.usableTokens <= targetRatio) {
@@ -772,15 +766,8 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
 
       const foldedCount = completedTurns.length - chosenKeepCompleted;
       const foldedTurns = completedTurns.slice(0, foldedCount).map((turn): CompactionTurn => {
-        const records = turn.records.map((record, idx): CanonicalRecord => {
-          const eid = turn.eventIds[idx];
-          const replacement = step1StubMap.get(eid);
-          return record.kind === "tool_result" && replacement !== undefined
-            ? { ...record, message: { ...record.message, text: replacement } }
-            : record;
-        });
-        const emittedCount = records.filter((r) => ["user_input", "wrap_up", "assistant", "tool_result"].includes(r.kind)).length;
-        return { ...turn, records, messages: emitCanonicalTranscript(records).slice(0, emittedCount) };
+        const records = applyStubs(turn, step1StubMap);
+        return { ...turn, records, messages: emitTurnMessages(records) };
       });
       const retainedTurns = [...completedTurns.slice(foldedCount), inFlightTurn];
       const lastFoldedTurn = foldedTurns.at(-1);
@@ -788,7 +775,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
       if (!lastFoldedTurn || !newBoundaryEventId) {
         throw new Error("Expected at least one folded turn with a boundary event id.");
       }
-      const cutDescription = `through canonical event ${newBoundaryEventId} (end of turn ${lastFoldedTurn.turnId})`;
+      const cutText = cutDescription(lastFoldedTurn);
 
       // Drop any stubs pointing into foldedTurns; retain only stubs in retainedTurns.
       const retainedResultIds = new Set(collectToolResults(retainedTurns).map((c) => c.eventId));
@@ -801,7 +788,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
       const liveMessages = input.liveRequest.messages.length > 0 ? input.liveRequest.messages : initialMat.messages;
       const liveForSummary: StreamRequest = { ...input.liveRequest, messages: liveMessages };
       const instructionOptions: SummaryInstructionOptions = {
-        cutDescription,
+        cutDescription: cutText,
         capTokens,
       };
       if (state.summary !== null) instructionOptions.previousSummary = state.summary;
@@ -909,12 +896,12 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
 
       if (acceptedSummary !== undefined) {
         const summaryRequestMeta: NonNullable<FrozenState["summaryRequest"]> = {
-          cutDescription,
+          cutDescription: cutText,
           capTokens,
           instructionSha256,
           usage: acceptedUsage,
         };
-        let finalStubSet = Array.from(retainedStubMap, ([eventId, stubText]) => ({ eventId, stubText }));
+        let finalStubSet = toStubSet(retainedStubMap);
         let postFoldState: FrozenState = {
           resetEpoch: state.resetEpoch,
           generation: state.generation + 1,
