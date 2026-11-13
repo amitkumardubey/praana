@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { realpathSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { findGitRoot } from "../git-context.js";
 
 export type MemoryScope = "global" | "project";
@@ -24,6 +24,7 @@ export function globalMemoryDirectory(home: string): string {
 }
 
 export function memoryDirectories(home: string, key: string): Record<MemoryScope, string> {
-  const base = join(resolve(home), ".praana");
-  return { global: globalMemoryDirectory(home), project: join(base, "projects", key, "memory") };
+  // One resolution of `home` feeds both scopes.
+  const global = globalMemoryDirectory(home);
+  return { global, project: join(dirname(global), "projects", key, "memory") };
 }

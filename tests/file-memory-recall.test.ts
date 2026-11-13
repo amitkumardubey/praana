@@ -62,12 +62,12 @@ for (const lookup of ["read", "recall"] as const) {
       cwd = join(home, "loop");
       await fs.symlink(cwd, cwd);
     }
-    let stats = 0;
     const unreadable = join(dirs[badScope], "shared.md");
+    const probes: string[] = [];
     const seam = new Proxy(fs, { get(target, key) {
       if (key !== "lstat") return Reflect.get(target, key);
       return async (...args: Parameters<typeof fs.lstat>) => {
-        stats++;
+        probes.push(String(args[0]));
         if (failure === "EACCES" && args[0] === unreadable) throw Object.assign(new Error(`EACCES: permission denied, lstat '${unreadable}'`), { code: "EACCES" });
         return fs.lstat(...args);
       };
@@ -86,6 +86,9 @@ for (const lookup of ["read", "recall"] as const) {
     expect(await failing[lookup]({ name: "shared", scope: goodScope })).toMatchObject({ ok: true, memory: { scope: goodScope, body: `Searchable ${goodScope} preference` } });
     expect(await failing[lookup]({ name: "shared", scope: badScope })).toMatchObject({ ok: false, error: expect.stringContaining(reason) });
     expect(await failing.recall({ query: "Searchable" })).toMatchObject({ ok: true, matches: [{ name: "shared", scope: goodScope }], skippedScopes: warnings });
+    // The scan must reach the failing scope; any lstat at all would satisfy a bare counter.
+    if (failure === "unresolved") expect(probes.filter((path) => path.startsWith(dirs.project))).toEqual([]);
+    else expect(probes).toContain(failure === "EACCES" ? unreadable : dirs[badScope]);
     expect(await fs.exists(join(dirs[goodScope], "shared.md"))).toBe(true);
   });
 }
