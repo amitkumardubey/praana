@@ -1030,4 +1030,66 @@ console.log(JSON.stringify(res));
     expect(openExclusiveCalls).toBe(0);
     expect(renameCalls).toBe(0);
   });
+
+  test("writeDocumentAtomic and writeCorruptBackup close each fd exactly once even when close throws", async () => {
+    const { updateSettingsDocument, replaceSettingsDocument, createSettingsFs } = await storeApi();
+    const baseFs = createSettingsFs();
+
+    // 1. writeDocumentAtomic (via updateSettingsDocument)
+    writeFileSync(settingsPath, '{"thinking":true}\n', "utf-8");
+    const atomicWriteFds = new Set<number>();
+    let atomicCloseCalls = 0;
+    const atomicCloseThrowFs = createSettingsFs({
+      openExclusive(p, mode) {
+        const fd = baseFs.openExclusive(p, mode);
+        atomicWriteFds.add(fd);
+        return fd;
+      },
+      close(fd) {
+        if (atomicWriteFds.has(fd)) {
+          atomicCloseCalls++;
+          if (atomicCloseCalls === 1) {
+            baseFs.close(fd);
+            throw new Error("injected atomic close failure");
+          }
+          return;
+        }
+        baseFs.close(fd);
+      },
+    });
+    const atomicRes = updateSettingsDocument({ debug: true }, { fs: atomicCloseThrowFs });
+    expect(atomicRes.ok).toBe(false);
+    expect(atomicCloseCalls).toBe(1);
+    expect(readdirSync(homeDir).filter((f) => f.includes(".tmp-"))).toEqual([]);
+
+    // 2. writeCorruptBackup (via replaceSettingsDocument on a corrupt file)
+    writeFileSync(settingsPath, "{corrupt-bytes", "utf-8");
+    const backupWriteFds = new Set<number>();
+    let backupCloseCalls = 0;
+    const backupCloseThrowFs = createSettingsFs({
+      openExclusive(p, mode) {
+        const fd = baseFs.openExclusive(p, mode);
+        backupWriteFds.add(fd);
+        return fd;
+      },
+      close(fd) {
+        if (backupWriteFds.has(fd)) {
+          backupCloseCalls++;
+          if (backupCloseCalls === 1) {
+            baseFs.close(fd);
+            throw new Error("injected backup close failure");
+          }
+          return;
+        }
+        baseFs.close(fd);
+      },
+    });
+    const backupRes = replaceSettingsDocument(
+      { ...DEFAULT_USER_SETTINGS },
+      { fs: backupCloseThrowFs, backupCorrupt: true },
+    );
+    expect(backupRes.ok).toBe(false);
+    expect(backupCloseCalls).toBe(1);
+    expect(readdirSync(homeDir).filter((f) => f.includes(".corrupt-"))).toEqual([]);
+  });
 });

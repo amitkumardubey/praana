@@ -332,6 +332,50 @@ export function readSettingsDocument(options?: SettingsStoreOptions): ReadSettin
   return readSettingsDocumentWithBytes(path, fs).result;
 }
 
+function writeExclusiveFile(
+  filePath: string,
+  bytes: Buffer,
+  fs: SettingsFs,
+  afterClose?: () => void,
+): { ok: true } | { ok: false; error: string } {
+  let fd: number;
+  try {
+    fd = fs.openExclusive(filePath, 0o600);
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+
+  let closed = false;
+  try {
+    fs.write(fd, bytes);
+    fs.fsync(fd);
+    closed = true;
+    fs.close(fd);
+    try {
+      fs.chmod(filePath, 0o600);
+    } catch {
+      // Ignore chmod failure on platforms without POSIX mode semantics.
+    }
+    afterClose?.();
+    return { ok: true };
+  } catch (err) {
+    if (!closed) {
+      closed = true;
+      try {
+        fs.close(fd);
+      } catch {
+        // best-effort close
+      }
+    }
+    try {
+      fs.unlink(filePath);
+    } catch {
+      // best-effort temp cleanup
+    }
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 function writeDocumentAtomic(
   path: string,
   doc: Record<string, unknown>,
@@ -356,43 +400,11 @@ function writeDocumentAtomic(
   const base = basename(path);
   const tmpPath = join(dir, `.${base}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`);
 
-  let fd: number;
-  try {
-    fd = fs.openExclusive(tmpPath, 0o600);
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
-
-  let closed = false;
-  try {
-    fs.write(fd, bytes);
-    fs.fsync(fd);
-    fs.close(fd);
-    closed = true;
-    try {
-      fs.chmod(tmpPath, 0o600);
-    } catch {
-      // Ignore chmod failure on platforms without POSIX mode semantics.
-    }
+  return writeExclusiveFile(tmpPath, bytes, fs, () => {
     // The renamed inode is the 0600 temp file, so no second chmod is needed.
     fs.rename(tmpPath, path);
     fs.fsyncDir(dir); // best effort: the default implementation swallows its own errors
-    return { ok: true };
-  } catch (err) {
-    if (!closed) {
-      try {
-        fs.close(fd);
-      } catch {
-        // best-effort close
-      }
-    }
-    try {
-      fs.unlink(tmpPath);
-    } catch {
-      // best-effort temp cleanup
-    }
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
+  });
 }
 
 const SETTINGS_LOCK_WAIT_MS = 2_000;
@@ -554,42 +566,11 @@ function writeCorruptBackup(
   bytes: Buffer,
   fs: SettingsFs,
 ): { ok: true } | { ok: false; error: string } {
-  let fd: number;
-  try {
-    fd = fs.openExclusive(backupPath, 0o600);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: `Failed to back up corrupt settings file (${path}): ${msg}` };
+  const res = writeExclusiveFile(backupPath, bytes, fs);
+  if (!res.ok) {
+    return { ok: false, error: `Failed to back up corrupt settings file (${path}): ${res.error}` };
   }
-
-  let closed = false;
-  try {
-    fs.write(fd, bytes);
-    fs.fsync(fd);
-    fs.close(fd);
-    closed = true;
-    try {
-      fs.chmod(backupPath, 0o600);
-    } catch {
-      // Ignore chmod failure on platforms without POSIX mode semantics.
-    }
-    return { ok: true };
-  } catch (err) {
-    if (!closed) {
-      try {
-        fs.close(fd);
-      } catch {
-        // best-effort close
-      }
-    }
-    try {
-      fs.unlink(backupPath);
-    } catch {
-      // best-effort cleanup
-    }
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: `Failed to back up corrupt settings file (${path}): ${msg}` };
-  }
+  return res;
 }
 
 function backupCorruptFile(
