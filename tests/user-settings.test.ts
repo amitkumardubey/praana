@@ -291,32 +291,40 @@ describe("user-settings", () => {
     expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual(concurrentDoc);
   });
 
-  it("loadUserSettings reports corrupt warning (not Could not create) when file becomes corrupt before lock", () => {
+  it("loadUserSettings reports corrupt warning with underlying error text when file becomes corrupt before lock", () => {
     const settingsPath = getUserSettingsPath();
     const baseFs = createSettingsFs();
-    let lstatCalls = 0;
 
-    const interleavingFs = createSettingsFs({
-      lstat(p) {
-        if (p === settingsPath) {
-          lstatCalls++;
-          if (lstatCalls === 1) {
-            try {
-              return baseFs.lstat(p);
-            } catch (err) {
-              writeFileSync(settingsPath, "{corrupt-from-other-process", "utf-8");
-              throw err;
+    for (const { bytes, expectedDetail } of [
+      { bytes: "[1, 2, 3]", expectedDetail: "root must be a JSON object" },
+      { bytes: Buffer.from([0x7b, 0xff, 0xfe, 0x7d]), expectedDetail: "not valid UTF-8" },
+    ]) {
+      rmSync(settingsPath, { force: true });
+      let lstatCalls = 0;
+      const interleavingFs = createSettingsFs({
+        lstat(p) {
+          if (p === settingsPath) {
+            lstatCalls++;
+            if (lstatCalls === 1) {
+              try {
+                return baseFs.lstat(p);
+              } catch (err) {
+                writeFileSync(settingsPath, bytes);
+                throw err;
+              }
             }
           }
-        }
-        return baseFs.lstat(p);
-      },
-    });
+          return baseFs.lstat(p);
+        },
+      });
 
-    const loaded = loadUserSettings({ fs: interleavingFs });
-    expect(loaded.createdDefaults).toBeUndefined();
-    expect(loaded.warning).toContain("Corrupt settings file");
-    expect(loaded.warning).not.toContain("Could not create settings file");
-    expect(loaded.settings).toEqual(DEFAULT_USER_SETTINGS);
+      const loaded = loadUserSettings({ fs: interleavingFs });
+      expect(loaded.createdDefaults).toBeUndefined();
+      expect(loaded.warning).toContain("Corrupt settings file");
+      expect(loaded.warning).toContain(expectedDetail);
+      expect(loaded.warning).not.toContain("Could not create settings file");
+      expect(loaded.warning).not.toContain("it already exists");
+      expect(loaded.settings).toEqual(DEFAULT_USER_SETTINGS);
+    }
   });
 });

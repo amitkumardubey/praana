@@ -1192,9 +1192,13 @@ console.log(JSON.stringify(res));
     });
     const backups = () => readdirSync(homeDir).filter((f) => f.includes(".corrupt-"));
 
-    // ok: the existing document is returned unchanged and nothing is written.
+    // ok: the existing document is returned unchanged and nothing is written (bytes, inode, mtime intact).
     const existingDoc = { thinking: false, custom_key: "keep" };
-    writeFileSync(settingsPath, JSON.stringify(existingDoc, null, 2) + "\n", "utf-8");
+    const existingBytes = '{"thinking":false,"custom_key":"keep"}\n';
+    writeFileSync(settingsPath, existingBytes, "utf-8");
+    const fixedTime = new Date(1_700_000_000_000);
+    utimesSync(settingsPath, fixedTime, fixedTime);
+    const statBefore = statSync(settingsPath);
     const existing = updateSettingsDocument(
       { thinking: true },
       { fs: spyFs, baseDefaultsIfMissing: { ...DEFAULT_USER_SETTINGS }, createOnly: true },
@@ -1205,9 +1209,13 @@ console.log(JSON.stringify(res));
       expect(existing.doc).toEqual(existingDoc);
     }
     expect(writes).toBe(0);
+    expect(readFileSync(settingsPath, "utf-8")).toBe(existingBytes);
+    const statAfter = statSync(settingsPath);
+    expect(statAfter.ino).toBe(statBefore.ino);
+    expect(statAfter.mtimeMs).toBe(statBefore.mtimeMs);
 
-    // corrupt: error with the state, no write and no backup even when onCorrupt is set.
-    const corruptBytes = "{corrupt-create-only";
+    // corrupt: error with the state and underlying read error (no unreachable fallback), no write and no backup even when onCorrupt is set.
+    const corruptBytes = "[1, 2, 3]";
     writeFileSync(settingsPath, corruptBytes, "utf-8");
     const corruptRes = updateSettingsDocument(
       { ...DEFAULT_USER_SETTINGS },
@@ -1221,7 +1229,8 @@ console.log(JSON.stringify(res));
     expect(corruptRes.ok).toBe(false);
     if (!corruptRes.ok) {
       expect(corruptRes.state).toBe("corrupt");
-      expect(corruptRes.error).toContain("Corrupt settings file");
+      expect(corruptRes.error).toContain("root must be a JSON object");
+      expect(corruptRes.error).not.toContain("it already exists");
     }
     expect(writes).toBe(0);
     expect(backups()).toEqual([]);

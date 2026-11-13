@@ -81,7 +81,9 @@ export function loadUserSettings(options?: SettingsStoreOptions): LoadUserSettin
       if (written.state === "corrupt") {
         return {
           settings,
-          warning: `Corrupt settings file (${path}); using defaults`,
+          warning: written.error.startsWith("Corrupt settings file")
+            ? `${written.error}; using defaults`
+            : `Corrupt settings file (${path}): ${written.error}; using defaults`,
         };
       }
       if (written.state === "unreadable") {
@@ -111,7 +113,7 @@ export function loadUserSettings(options?: SettingsStoreOptions): LoadUserSettin
   if (read.state === "unreadable") {
     return {
       settings: { ...DEFAULT_USER_SETTINGS },
-      warning: `Could not read settings file (${path}): ${read.error ?? "unreadable"}`,
+      warning: `Could not read settings file (${path}): ${read.error}`,
     };
   }
 

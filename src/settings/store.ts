@@ -220,11 +220,11 @@ export interface SettingsStoreOptions {
   fs?: SettingsFs;
 }
 
-export interface ReadSettingsDocumentResult {
-  doc: Record<string, unknown>;
-  state: SettingsReadState;
-  error?: string;
-}
+export type ReadSettingsDocumentResult =
+  | { doc: Record<string, unknown>; state: "missing"; error?: undefined }
+  | { doc: Record<string, unknown>; state: "ok"; error?: undefined }
+  | { doc: Record<string, unknown>; state: "corrupt"; error: string }
+  | { doc: Record<string, unknown>; state: "unreadable"; error: string };
 
 /** Default location of the settings document. */
 export function settingsFilePath(): string {
@@ -562,7 +562,7 @@ export function updateSettingsDocument(
     if (current.state === "unreadable") {
       return {
         ok: false,
-        error: current.error ?? `Cannot update unreadable settings file (${path})`,
+        error: current.error,
         state: current.state,
       };
     }
@@ -574,7 +574,7 @@ export function updateSettingsDocument(
       }
       return {
         ok: false,
-        error: current.error ?? `Cannot create settings file (${path}): it already exists`,
+        error: current.error,
         state: current.state,
       };
     }
@@ -584,7 +584,7 @@ export function updateSettingsDocument(
       if (options?.onCorrupt !== "backup-and-reset-legacy") {
         return {
           ok: false,
-          error: current.error ?? `Cannot update corrupt settings file (${path})`,
+          error: current.error,
           state: current.state,
         };
       }
@@ -699,7 +699,7 @@ export function replaceSettingsDocument(
     if (current.state === "unreadable") {
       return {
         ok: false,
-        error: current.error ?? `Cannot replace unreadable settings file (${path})`,
+        error: current.error,
       };
     }
 
