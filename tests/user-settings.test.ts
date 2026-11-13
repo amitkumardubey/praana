@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
 import { mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -160,9 +160,14 @@ describe("user-settings", () => {
     expect(created.settings.auto_update).toBe(false);
   });
 
-  it("resetUserSettings keeps a file repaired before the locked read and creates no backup", () => {
+  it("resetUserSettings keeps a file repaired before the locked read and creates no backup", async () => {
     const settingsPath = getUserSettingsPath();
     const lockPath = join(root, APP_HOME_DIR, ".settings.json.lock.db");
+    // Pre-create the lock file from an earlier call so the test cannot rely on
+    // `!existsSync(lockPath)` to distinguish locked from unlocked reads.
+    expect(saveUserSettings({ ...DEFAULT_USER_SETTINGS }).ok).toBe(true);
+    expect(existsSync(lockPath)).toBe(true);
+
     const repairedDoc = {
       thinking: false,
       default_model: { provider: "anthropic", model: "claude-sonnet-4-20250514" },
@@ -171,6 +176,23 @@ describe("user-settings", () => {
     };
     writeFileSync(settingsPath, "{corrupt-before-repair", "utf-8");
 
+    const lockMod = await import("../src/credential-lock.js");
+    const realAcquireSync = lockMod.acquireSync;
+    let lockHeld = false;
+    const lockSpy = spyOn(lockMod, "acquireSync").mockImplementation((p, opts) => {
+      const lock = realAcquireSync(p, opts);
+      lockHeld = true;
+      return {
+        release() {
+          try {
+            lock.release();
+          } finally {
+            lockHeld = false;
+          }
+        },
+      };
+    });
+
     const baseFs = createSettingsFs();
     let readCount = 0;
     let lockedReadCount = 0;
@@ -178,7 +200,7 @@ describe("user-settings", () => {
       readBounded(p, maxBytes) {
         if (p === settingsPath) {
           readCount++;
-          if (!existsSync(lockPath)) {
+          if (!lockHeld) {
             // Unlocked pre-read observes corrupt bytes, then another process repairs the file before the locked read.
             const bytes = baseFs.readBounded(p, maxBytes);
             writeFileSync(settingsPath, JSON.stringify(repairedDoc, null, 2) + "\n", "utf-8");
@@ -192,21 +214,26 @@ describe("user-settings", () => {
       },
     });
 
-    const reset = resetUserSettings({ fs: interleavingFs });
-    expect(reset.ok).toBe(true);
-    // Exactly one read, taken inside the lock: no unlocked read can make the corrupt
-    // decision stale.
-    expect(readCount).toBe(1);
-    expect(lockedReadCount).toBe(1);
-    const homeDir = join(root, APP_HOME_DIR);
-    expect(readdirSync(homeDir).filter((f) => f.startsWith("settings.json.corrupt-"))).toEqual([]);
-    const onDisk = JSON.parse(readFileSync(settingsPath, "utf-8"));
-    expect(onDisk.custom_key).toBe("preserve-me");
-    expect(onDisk.default_model).toEqual(repairedDoc.default_model);
-    expect(onDisk.config_overrides).toEqual(repairedDoc.config_overrides);
-    // The reset still applies the legacy defaults on top of the repaired document.
-    expect(onDisk.thinking).toBe(DEFAULT_USER_SETTINGS.thinking);
-    expect(onDisk.theme).toBe(DEFAULT_USER_SETTINGS.theme);
+    try {
+      const reset = resetUserSettings({ fs: interleavingFs });
+      expect(reset.ok).toBe(true);
+      expect(lockHeld).toBe(false);
+      // Exactly one read, taken inside the lock: no unlocked read can make the corrupt
+      // decision stale.
+      expect(readCount).toBe(1);
+      expect(lockedReadCount).toBe(1);
+      const homeDir = join(root, APP_HOME_DIR);
+      expect(readdirSync(homeDir).filter((f) => f.startsWith("settings.json.corrupt-"))).toEqual([]);
+      const onDisk = JSON.parse(readFileSync(settingsPath, "utf-8"));
+      expect(onDisk.custom_key).toBe("preserve-me");
+      expect(onDisk.default_model).toEqual(repairedDoc.default_model);
+      expect(onDisk.config_overrides).toEqual(repairedDoc.config_overrides);
+      // The reset still applies the legacy defaults on top of the repaired document.
+      expect(onDisk.thinking).toBe(DEFAULT_USER_SETTINGS.thinking);
+      expect(onDisk.theme).toBe(DEFAULT_USER_SETTINGS.theme);
+    } finally {
+      lockSpy.mockRestore();
+    }
   });
 
   it("resetUserSettings backs up exactly one corrupt file and writes the legacy defaults", () => {
