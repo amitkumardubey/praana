@@ -894,6 +894,8 @@ test("does not return capacity_error when summary allowance overflows but reques
     if (outcome.status !== "unchanged_fits") throw new Error(JSON.stringify(outcome));
     expect(outcome.fill.fits).toBe(true);
     expect(outcome.state.generation).toBe(0);
+    expect(outcome.reason).toBe("fold_not_possible");
+    expect(outcome.summaryDiscarded).toBeUndefined();
   }
 
   // 2. Request exceeds capacity initially, but folding completed turns into a summary that is smaller than the worst-case cap allowance fits.
@@ -1446,9 +1448,78 @@ test("materialises each distinct state at most once per run (bounded by 3 + 2 * 
       runSummary: async () => summaryResp(validSummary("S".repeat(280))),
     });
     expect(outcome.status).toBe("stubbed");
+    expect(outcome.summaryDiscarded).toBe(true);
     expect(bothPathCalls).toBe(bothPathKeys.size);
     expect(bothPathCalls).toBe(3 + 2 * stubKeepRecent);
     expect(bothPathCalls).toBeGreaterThan(3 + stubKeepRecent);
+  }
+});
+
+test("unchanged_fits carries reason for fold_not_possible, fold_insufficient, and nothing_to_stub, and marks discarded summaries", async () => {
+  const { runCompaction } = await api();
+
+  // 1. nothing_to_stub: single in-flight turn above trigger with no eligible tool results.
+  {
+    const { log } = openLog();
+    addTurn(log, 1, { inputText: "x".repeat(3600) });
+    const outcome = await runCompaction({
+      log,
+      liveRequest: baseLiveRequest(),
+      contextWindowTokens: 1100,
+      options: { effectiveMaxTokens: 100 },
+    });
+    expect(outcome.status).toBe("unchanged_fits");
+    if (outcome.status !== "unchanged_fits") throw new Error(JSON.stringify(outcome));
+    expect(outcome.reason).toBe("nothing_to_stub");
+    expect(outcome.summaryDiscarded).toBeUndefined();
+  }
+
+  // 2. fold_not_possible (batch planner returns not_foldable when a single completed turn exceeds batch capacity).
+  {
+    const { log } = openLog();
+    addTurn(log, 1, { inputText: "Completed turn " + "a".repeat(3700) });
+    addTurn(log, 2, { inputText: "Small tail" });
+    const outcome = await runCompaction({
+      log,
+      liveRequest: baseLiveRequest(),
+      contextWindowTokens: 1200,
+      options: { effectiveMaxTokens: 200, tailTurns: 0 },
+      runSummary: async () => {
+        throw new Error("Should not summarize when completed turn is not_foldable");
+      },
+    });
+    expect(outcome.status).toBe("unchanged_fits");
+    if (outcome.status !== "unchanged_fits") throw new Error(JSON.stringify(outcome));
+    expect(outcome.reason).toBe("fold_not_possible");
+    expect(outcome.summaryDiscarded).toBeUndefined();
+  }
+
+  // 3. fold_insufficient: summary is generated within capTokens, but post-fold request exceeds usable capacity and is dropped.
+  {
+    const { log } = openLog();
+    addTurn(log, 1, { inputText: "Tiny completed turn" });
+    addTurn(log, 2, { inputText: "In-flight " + "y".repeat(4400) });
+    // usable = 1200 (capTokens = 150); turn1 (~20) + turn2 (~1115) = 1135 <= 1200 (fits, ratio ~ 0.946 >= 0.80).
+    // Pre-check: turn2 (~1115) + minSummaryMessage (~59) = 1174 <= 1200 (passes).
+    // Returned summary (~130 tokens <= 150) renders to ~148 tokens; turn2 + summary = 1263 > 1200 (dropped).
+    let summaryCalls = 0;
+    const outcome = await runCompaction({
+      log,
+      liveRequest: baseLiveRequest(),
+      contextWindowTokens: 1400,
+      options: { effectiveMaxTokens: 200, tailTurns: 0 },
+      runSummary: async () => {
+        summaryCalls++;
+        return summaryResp(validSummary("D".repeat(380)));
+      },
+    });
+    expect(summaryCalls).toBe(1);
+    expect(outcome.status).toBe("unchanged_fits");
+    if (outcome.status !== "unchanged_fits") throw new Error(JSON.stringify(outcome));
+    expect(outcome.reason).toBe("fold_insufficient");
+    expect(outcome.summaryDiscarded).toBe(true);
+    expect(outcome.state.generation).toBe(0);
+    expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
   }
 });
 

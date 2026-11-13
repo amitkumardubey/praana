@@ -240,15 +240,26 @@ export interface CapacityErrorOutcome {
   status: "capacity_error";
   kind: CapacityErrorKind;
   message: string;
+  summaryDiscarded?: true;
 }
 
 export type RequestFillResult = { ok: true; fill: RequestFill } | { ok: false; error: CapacityErrorOutcome };
 
-function capacityError(kind: CapacityErrorKind, detail: string): { ok: false; error: CapacityErrorOutcome } {
+function capacityError(
+  kind: CapacityErrorKind,
+  detail: string,
+  summaryDiscarded?: boolean,
+): { ok: false; error: CapacityErrorOutcome } {
   const guidance = kind === "invalid_capacity"
     ? "Correct the configuration or model catalog entry before continuing."
     : "Use /clear or a larger-context model before continuing.";
-  return { ok: false, error: { status: "capacity_error", kind, message: `${detail} ${guidance}` } };
+  const error: CapacityErrorOutcome = {
+    status: "capacity_error",
+    kind,
+    message: `${detail} ${guidance}`,
+  };
+  if (summaryDiscarded) error.summaryDiscarded = true;
+  return { ok: false, error };
 }
 
 /**
@@ -290,6 +301,8 @@ export function shouldRewrite(fill: RequestFill, options: Partial<CompactionOpti
   return fill.ratio >= threshold;
 }
 
+export type UnchangedFitsReason = "fold_not_possible" | "fold_insufficient" | "nothing_to_stub";
+
 /** Contracts for rewrite orchestration; defining outcomes does not execute or commit a rewrite. */
 export type CompactionOutcome =
   /** Below the trigger; no state change. */
@@ -297,9 +310,9 @@ export type CompactionOutcome =
   /** A committed summary rewrite, with exactly one generation increment. */
   | { status: "rewritten"; state: FrozenState; fill: RequestFill }
   /** A stubs-only commit: one generation increment, existing summary/boundary preserved. */
-  | { status: "stubbed"; state: FrozenState; fill: RequestFill }
+  | { status: "stubbed"; state: FrozenState; fill: RequestFill; summaryDiscarded?: true }
   /** No useful change, but the unchanged request fits usable capacity. */
-  | { status: "unchanged_fits"; state: FrozenState; fill: RequestFill }
+  | { status: "unchanged_fits"; state: FrozenState; fill: RequestFill; reason?: UnchangedFitsReason; summaryDiscarded?: true }
   /** Summary failure/timeout; previous state retained and the unchanged request fits. */
   | { status: "summary_failed_fits"; state: FrozenState; fill: RequestFill; reason: string }
   /** Nothing committed; state is the previously restored state. */
@@ -617,7 +630,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
 
   const inFlightTurn = activeTurns.at(-1);
   if (!inFlightTurn) {
-    if (initialFill.fits) return { status: "unchanged_fits", state, fill: initialFill };
+    if (initialFill.fits) return { status: "unchanged_fits", state, fill: initialFill, reason: "nothing_to_stub" };
     return capacityError("request_exceeds_capacity", "The request frame and summary exceed usable context capacity.").error;
   }
 
@@ -767,6 +780,8 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
 
   // --- STEP 2: Choose the tail, then fold once (only when completedTurns.length > 0) ---
   let summaryFailureReason: string | undefined;
+  let unchangedReason: UnchangedFitsReason = "nothing_to_stub";
+  let summaryDiscarded = false;
 
   if (completedTurns.length > 0) {
     const capTokens = summaryCapTokens(initialFill.usableTokens);
@@ -798,7 +813,9 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
       }
     }
 
-    if (capTokens >= minValidSummaryTokens && minInFlightTokens + minSummaryMessageTokens <= initialFill.usableTokens) {
+    if (capTokens < minValidSummaryTokens || minInFlightTokens + minSummaryMessageTokens > initialFill.usableTokens) {
+      unchangedReason = "fold_not_possible";
+    } else {
       // Shrink completed turns in the tail from Math.min(tailTurns, completedTurns.length) down to 0
       // until frame + summary allowance + tail fits the target.
       let chosenKeepCompleted = 0;
@@ -907,7 +924,9 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
           effectiveMaxTokens: opts.effectiveMaxTokens,
         });
         if (planned.status === "capacity_error") return planned;
-        if (planned.status !== "not_foldable") {
+        if (planned.status === "not_foldable") {
+          unchangedReason = "fold_not_possible";
+        } else {
           const attempts: BatchSummaryAttempt[] = [];
           const usages: (Partial<ProviderUsage> | null | undefined)[] = [];
           while (true) {
@@ -987,6 +1006,8 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
           if (committed.status === "commit_rejected" || committed.status === "commit_uncertain") return committed;
           return { status: "rewritten", state: committed.state, fill: postFoldFill };
         }
+        summaryDiscarded = true;
+        unchangedReason = "fold_insufficient";
       }
     }
   }
@@ -1014,12 +1035,25 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
     const committed = tryCommitRewrite(input.log, state, stubCommit, signal);
     if (committed.status === "cancelled") return { status: "cancelled", state };
     if (committed.status === "commit_rejected" || committed.status === "commit_uncertain") return committed;
-    return { status: "stubbed", state: committed.state, fill: step3Result.fill };
+    const outcome: CompactionOutcome = {
+      status: "stubbed",
+      state: committed.state,
+      fill: step3Result.fill,
+    };
+    if (summaryDiscarded) outcome.summaryDiscarded = true;
+    return outcome;
   }
 
   // --- STEP 4: Unchanged fits or terminal capacity error ---
   if (initialFill.fits) {
-    return { status: "unchanged_fits", state, fill: initialFill };
+    const outcome: CompactionOutcome = {
+      status: "unchanged_fits",
+      state,
+      fill: initialFill,
+      reason: unchangedReason,
+    };
+    if (summaryDiscarded) outcome.summaryDiscarded = true;
+    return outcome;
   }
 
   return capacityError(
@@ -1027,5 +1061,6 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
     summaryFailureReason
       ? `Summary generation failed (${summaryFailureReason}) and the request exceeds usable context capacity.`
       : "The in-flight turn and request frame exceed usable context capacity.",
+    summaryDiscarded,
   ).error;
 }
