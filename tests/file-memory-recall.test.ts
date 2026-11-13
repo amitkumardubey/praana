@@ -130,6 +130,33 @@ for (const lookup of ["read", "recall"] as const) {
   });
 }
 
+test("by-name operations report every scope failure instead of unusable explicit-scope advice", async () => {
+  const { options, dirs, put } = await setup();
+  await put("shared", { body: "global copy" }); await put("shared", { body: "project copy" }, "project");
+  const failed = new Set([join(dirs.project, "shared.md"), join(dirs.global, "shared.md")]);
+  const seam = new Proxy(fs, { get(target, key) {
+    if (key !== "lstat") return Reflect.get(target, key);
+    return async (...args: Parameters<typeof fs.lstat>) => {
+      if (failed.has(String(args[0]))) throw Object.assign(new Error(`EACCES: permission denied, lstat '${args[0]}'`), { code: "EACCES" });
+      return fs.lstat(...args);
+    };
+  } });
+  const store = createFileMemoryStore({ ...options, fs: seam });
+  const results = [await store.read({ name: "shared" }), await store.recall({ name: "shared" }), await store.remove({ name: "shared" })];
+  for (const result of results) {
+    if (result.ok) throw new Error("Expected every scope failure to be reported");
+    expect(result.error).not.toMatch(/explicit scope/i);
+    expect(result.error).toContain(`project: EACCES: permission denied, lstat '${join(dirs.project, "shared.md")}'`);
+    expect(result.error).toContain(`global: EACCES: permission denied, lstat '${join(dirs.global, "shared.md")}'`);
+    expect(result.skippedScopes?.map(({ scope }) => scope)).toEqual(["project", "global"]);
+  }
+  // read, recall and remove share one message construction, so they cannot drift.
+  expect(results[1]).toEqual(results[0]);
+  expect(results[2]).toEqual(results[0]);
+  expect(await fs.exists(join(dirs.project, "shared.md"))).toBe(true);
+  expect(await fs.exists(join(dirs.global, "shared.md"))).toBe(true);
+});
+
 test("query ranks name above description above body; deterministic date/name ties and top five", async () => {
   const { store, put } = await setup();
   await put("body-new", { body: "ORBIT", updated: "2026-05-02" });

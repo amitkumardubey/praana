@@ -21,6 +21,21 @@ type SkippedScope = { scope: MemoryScope; reason: string };
 type ScopeWarnings = { skippedScopes?: SkippedScope[] };
 type ResultError = { ok: false; error: string; similar?: Array<{ name: string; description: string }> } & ScopeWarnings;
 const scopeWarnings = (skippedScopes: SkippedScope[]): ScopeWarnings => skippedScopes.length ? { skippedScopes } : {};
+const reasonText = (skippedScopes: SkippedScope[]) => skippedScopes.map(({ scope, reason }) => `${scope}: ${reason}`).join("; ");
+/** Every unscoped by-name operation refuses through here, so `read`, `recall` and
+ * `remove` share one message shape and one precedence rule: `blocking` names the
+ * scopes whose failed scan could still change the answer. */
+function refuseUnlessExplicit(
+  request: { scope?: MemoryScope },
+  skippedScopes: SkippedScope[] | undefined,
+  blocking: MemoryScope[],
+  advice: (reasons: string) => string,
+): ResultError | undefined {
+  if (request.scope) return undefined;
+  const skipped = skippedScopes ?? [];
+  const failed = skipped.filter(({ scope }) => blocking.includes(scope));
+  return failed.length ? { ok: false, error: advice(reasonText(failed)), ...scopeWarnings(skipped) } : undefined;
+}
 type ListEntry = Omit<Memory, "body"> & { scope: MemoryScope; age: number; stale: boolean };
 const scopes: MemoryScope[] = ["project", "global"];
 const missing = (error: unknown) => (error as NodeJS.ErrnoException)?.code === "ENOENT";
@@ -136,7 +151,7 @@ export function createFileMemoryStore(options: StoreOptions) {
       try { values.push(await visit(scope)); }
       catch (error) { skippedScopes.push({ scope, reason: errorResult(error).error }); }
     }
-    if (!values.length) return { ok: false as const, error: skippedScopes.map(({ scope, reason }) => `${scope}: ${reason}`).join("; "), skippedScopes };
+    if (!values.length) return { ok: false as const, error: reasonText(skippedScopes), skippedScopes };
     return { ok: true as const, values, ...scopeWarnings(skippedScopes) };
   }
 
@@ -208,16 +223,16 @@ export function createFileMemoryStore(options: StoreOptions) {
       return memory ? { ...memory, scope } : null;
     });
     const warnings = scopeWarnings(scanned.skippedScopes ?? []);
-    // Project takes precedence, so only a failed project scan can hide the answer.
-    if (!input.scope && scanned.skippedScopes?.some(({ scope }) => scope === "project")) {
-      return { ok: false, error: `Cannot resolve "${input.name}" safely because a scope scan failed; pass an explicit scope to read: ${(scanned.skippedScopes ?? []).map(({ scope, reason }) => `${scope}: ${reason}`).join("; ")}`, ...warnings };
-    }
+    // Every scope failed, so no explicit scope could succeed either.
     if (!scanned.ok) return scanned;
+    // Project takes precedence, so only a failed project scan can hide the answer.
+    const refusal = refuseUnlessExplicit(input, scanned.skippedScopes, ["project"], (reasons) => `Cannot resolve "${input.name}" safely because a scope scan failed; pass an explicit scope to read: ${reasons}`);
+    if (refusal) return refusal;
     const memory = scanned.values.find((memory) => memory !== null);
     if (memory) return { ok: true, memory, ...warnings };
     // A clean project miss falls through to the global result, including its own failure.
     const globalFailure = scanned.skippedScopes?.find(({ scope }) => scope === "global");
-    if (globalFailure) return { ok: false, error: `global: ${globalFailure.reason}`, ...warnings };
+    if (globalFailure) return { ok: false, error: reasonText([globalFailure]), ...warnings };
     return { ok: false, error: "Memory not found", ...warnings };
   }
 
@@ -248,9 +263,8 @@ export function createFileMemoryStore(options: StoreOptions) {
       if (!scanned.ok) return scanned;
       const warnings = scopeWarnings(scanned.skippedScopes ?? []);
       // A failed scan cannot rule out a same-named memory in that scope, so an unscoped delete is unsafe.
-      if (!input.scope && scanned.skippedScopes?.length) {
-        return { ok: false, error: `Cannot rule out another "${input.name}" memory because a scope scan failed; pass an explicit scope to delete: ${scanned.skippedScopes.map(({ scope, reason }) => `${scope}: ${reason}`).join("; ")}`, ...warnings };
-      }
+      const refusal = refuseUnlessExplicit(input, scanned.skippedScopes, scopes, (reasons) => `Cannot rule out another "${input.name}" memory because a scope scan failed; pass an explicit scope to delete: ${reasons}`);
+      if (refusal) return refusal;
       const found = scanned.values.filter((match) => match !== null);
       if (found.length > 1) return { ok: false, error: "Memory exists in both project and global scopes; specify scope", ...warnings };
       const match = found[0];
