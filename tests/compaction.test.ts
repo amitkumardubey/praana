@@ -1242,13 +1242,19 @@ test("compaction modules import nothing from src/memory/ or checkpoint.ts", asyn
 });
 
 test("materialises each distinct state at most once per run (bounded by 3 + stubKeepRecent) with identical outcomes", async () => {
-  const { runCompaction, materializeHistory } = await api();
-  const stateKey = (s: FrozenState) => JSON.stringify([
-    s.resetEpoch,
-    s.boundaryEventId,
-    s.summary,
-    [...s.stubSet].map((x) => [x.eventId, x.stubText]).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)),
-  ]);
+  const { runCompaction, materializeHistory, requestFill, stateCacheKey } = await api();
+  const baseKeyState: FrozenState = {
+    resetEpoch: "epoch-1",
+    generation: 1,
+    boundaryEventId: "t1-final",
+    summary: validSummary("First summary"),
+    stubSet: [{ eventId: "r1", stubText: "stub" }],
+    summaryRequest: null,
+  };
+  expect(stateCacheKey(baseKeyState)).not.toBe(stateCacheKey({ ...baseKeyState, summary: validSummary("Different summary") }));
+  expect(stateCacheKey(baseKeyState)).not.toBe(stateCacheKey({ ...baseKeyState, resetEpoch: "epoch-2" }));
+  expect(stateCacheKey(baseKeyState)).not.toBe(stateCacheKey({ ...baseKeyState, boundaryEventId: "t2-final" }));
+  expect(stateCacheKey(baseKeyState)).not.toBe(stateCacheKey({ ...baseKeyState, stubSet: [] }));
 
   let seed = 0x7f4a7c15;
   const rand = (max: number) => {
@@ -1256,6 +1262,8 @@ test("materialises each distinct state at most once per run (bounded by 3 + stub
     return seed % max;
   };
 
+  let totalCachedCalls = 0;
+  let totalUncachedCalls = 0;
   for (let scenario = 0; scenario < 100; scenario++) {
     const buildScenarioEvents = (): Event[] => {
       const evs: Event[] = [];
@@ -1327,6 +1335,7 @@ test("materialises each distinct state at most once per run (bounded by 3 + stub
 
     let calls = 0;
     const seenKeys = new Set<string>();
+    const cachedFills = new Map<string, compaction.RequestFill>();
     let summaryCallsA = 0;
     const outcomeA = await runCompaction({
       log: makeLog(eventsA),
@@ -1336,8 +1345,15 @@ test("materialises each distinct state at most once per run (bounded by 3 + stub
       planStubs: (candidates) => candidates.map((c) => ({ eventId: c.eventId, stubText: `[stub:${c.eventId}]` })),
       materialize: (s, src) => {
         calls++;
-        seenKeys.add(stateKey(s));
-        return materializeHistory(s, src);
+        totalCachedCalls++;
+        const key = stateCacheKey(s);
+        seenKeys.add(key);
+        const mat = materializeHistory(s, src);
+        if (mat.ok) {
+          const fill = requestFill({}, mat.messages, windowTokens, { effectiveMaxTokens });
+          if (fill.ok) cachedFills.set(key, fill.fill);
+        }
+        return mat;
       },
       runSummary: async () => {
         summaryCallsA++;
@@ -1347,15 +1363,25 @@ test("materialises each distinct state at most once per run (bounded by 3 + stub
       },
     });
 
-    // Reference uncached run (fresh wrapper per call) must produce identical outcome and log events.
+    // Reference uncached run must bypass the memoization cache and produce identical outcome, fills, and log events.
     let summaryCallsB = 0;
+    const uncachedFills = new Map<string, compaction.RequestFill>();
     const outcomeB = await runCompaction({
       log: makeLog(eventsB),
       liveRequest: baseLiveRequest(),
       contextWindowTokens: windowTokens,
       options: { effectiveMaxTokens, tailTurns, stubKeepRecent, stubMinTokens },
+      bypassMaterializeCache: true,
       planStubs: (candidates) => candidates.map((c) => ({ eventId: c.eventId, stubText: `[stub:${c.eventId}]` })),
-      materialize: (s, src) => materializeHistory(s, src),
+      materialize: (s, src) => {
+        totalUncachedCalls++;
+        const mat = materializeHistory(s, src);
+        if (mat.ok) {
+          const fill = requestFill({}, mat.messages, windowTokens, { effectiveMaxTokens });
+          if (fill.ok) uncachedFills.set(stateCacheKey(s), fill.fill);
+        }
+        return mat;
+      },
       runSummary: async () => {
         summaryCallsB++;
         if (mode === 4) return summaryResp("invalid summary");
@@ -1366,10 +1392,23 @@ test("materialises each distinct state at most once per run (bounded by 3 + stub
 
     expect(outcomeA).toEqual(outcomeB);
     expect(eventsA).toEqual(eventsB);
+    for (const [key, cachedFill] of cachedFills) {
+      expect(uncachedFills.get(key)).toEqual(cachedFill);
+    }
+    if ("fill" in outcomeA && "state" in outcomeA) {
+      const oracleMat = materializeHistory(outcomeA.state, eventsA);
+      expect(oracleMat.ok).toBe(true);
+      if (!oracleMat.ok) throw oracleMat.error;
+      const oracleFill = requestFill({}, oracleMat.messages, windowTokens, { effectiveMaxTokens });
+      expect(oracleFill.ok).toBe(true);
+      if (!oracleFill.ok) throw new Error(JSON.stringify(oracleFill));
+      expect(outcomeA.fill).toEqual(oracleFill.fill);
+    }
     // Each distinct state is materialised at most once, and total calls are bounded by 3 + stubKeepRecent.
     expect(calls).toBe(seenKeys.size);
     expect(calls).toBeLessThanOrEqual(3 + stubKeepRecent);
   }
+  expect(totalUncachedCalls).toBeGreaterThan(totalCachedCalls);
 });
 
 test("seeded 500-scenario randomized test maintains all ladder, boundary, capacity, generation and INV-1 invariants", async () => {

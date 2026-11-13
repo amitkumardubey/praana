@@ -347,6 +347,7 @@ export interface RunCompactionInput {
   planStubs?: StubPlanner;
   runSummary?: SummaryRunner;
   materialize?: (state: FrozenState, source: CanonicalEventSource) => MaterializationResult;
+  bypassMaterializeCache?: boolean;
 }
 
 function defaultPlanStubs(candidates: readonly StubCandidate[]): readonly StubEntry[] {
@@ -437,6 +438,20 @@ function applyStubPlanner(
     accepted.push({ eventId: entry.eventId, stubText: entry.stubText });
   }
   return accepted;
+}
+
+export function stateCacheKey(s: FrozenState): string {
+  return JSON.stringify([
+    s.resetEpoch,
+    s.boundaryEventId,
+    s.summary,
+    [...s.stubSet]
+      .map((entry) => [entry.eventId, entry.stubText])
+      .sort((a, b) => {
+        if (a[0] < b[0]) return -1;
+        return a[0] > b[0] ? 1 : 0;
+      }),
+  ]);
 }
 
 function mergeUsage(usages: readonly (Partial<ProviderUsage> | null | undefined)[]): Partial<ProviderUsage> | null {
@@ -619,12 +634,6 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
   // Materialize each distinct (resetEpoch, boundaryEventId, summary, stubSet) state at most once per run:
   // 1 initial state + at most 1 Step 1 stale-stub state + at most 1 Step 2 post-fold state +
   // at most stubKeepRecent Step 3 in-flight stub states (at most 3 + stubKeepRecent materialisations per run).
-  const stateCacheKey = (s: FrozenState): string => JSON.stringify([
-    s.resetEpoch,
-    s.boundaryEventId,
-    s.summary,
-    [...s.stubSet].map((entry) => [entry.eventId, entry.stubText]).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)),
-  ]);
   const measuredByState = new Map<string, RequestFill>([
     [stateCacheKey(state), initialFill],
     [stateCacheKey({ ...state, stubSet: toStubSet(baseActiveStubs) }), initialFill],
@@ -632,13 +641,15 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
 
   const measureCandidate = (candidateState: FrozenState): RequestFill => {
     const key = stateCacheKey(candidateState);
-    const cached = measuredByState.get(key);
-    if (cached) return cached;
+    if (!input.bypassMaterializeCache) {
+      const cached = measuredByState.get(key);
+      if (cached) return cached;
+    }
     const mat = materialize(candidateState, events);
     if (!mat.ok) throw mat.error;
     const measured = requestFill(frame, mat.messages, input.contextWindowTokens, opts);
     if (!measured.ok) throw new Error(measured.error.message);
-    measuredByState.set(key, measured.fill);
+    if (!input.bypassMaterializeCache) measuredByState.set(key, measured.fill);
     return measured.fill;
   };
 
