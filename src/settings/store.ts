@@ -144,7 +144,7 @@ export function createSettingsFs(
       const openFn = readSeam?.open ?? openSync;
       const fstatFn = readSeam?.fstat ?? fstatSync;
       const readFn = readSeam?.read ?? readSync;
-      const closeFn = readSeam?.close ?? overrides.close ?? closeSync;
+      const closeFn = readSeam?.close ?? closeSync;
       const flags =
         constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
       const fd = openFn(path, flags);

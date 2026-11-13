@@ -1092,4 +1092,35 @@ console.log(JSON.stringify(res));
     expect(backupCloseCalls).toBe(1);
     expect(readdirSync(homeDir).filter((f) => f.includes(".corrupt-"))).toEqual([]);
   });
+
+  test("readBounded uses readSeam.close or closeSync and never invokes write-path overrides.close", async () => {
+    const { readSettingsDocument, updateSettingsDocument, replaceSettingsDocument, createSettingsFs } =
+      await storeApi();
+    const baseFs = createSettingsFs();
+
+    writeFileSync(settingsPath, '{"thinking":true}\n', "utf-8");
+
+    let overrideCloseCalls = 0;
+    const spyFs = createSettingsFs({
+      close(fd) {
+        overrideCloseCalls++;
+        return baseFs.close(fd);
+      },
+    });
+
+    // Read-only call must never invoke overrides.close
+    expect(readSettingsDocument({ fs: spyFs }).state).toBe("ok");
+    expect(overrideCloseCalls).toBe(0);
+
+    // Update performs 1 read + 1 atomic write -> only 1 write-path close
+    expect(updateSettingsDocument({ debug: true }, { fs: spyFs }).ok).toBe(true);
+    expect(overrideCloseCalls).toBe(1);
+
+    // Replace on corrupt performs 1 read + 1 backup write + 1 atomic write -> only 2 write-path closes
+    writeFileSync(settingsPath, "{corrupt", "utf-8");
+    expect(replaceSettingsDocument({ ...DEFAULT_USER_SETTINGS }, { fs: spyFs, backupCorrupt: true }).ok).toBe(
+      true,
+    );
+    expect(overrideCloseCalls).toBe(3);
+  });
 });
