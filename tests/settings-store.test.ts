@@ -17,7 +17,7 @@ import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { APP_HOME_DIR } from "../src/app-identity.js";
 import { resolveActiveModelAndProvider } from "../src/llm/resolver.js";
-import { createTestLogger, getAppLogger, setAppLogger } from "../src/logger.js";
+import { createTestLogger, getAppLogger, PraanaLogger, setAppLogger } from "../src/logger.js";
 import {
   DEFAULT_USER_SETTINGS,
   getUserSettingsPath,
@@ -1554,6 +1554,90 @@ console.log(JSON.stringify(res));
       expect(lines[0]).toContain("injected unlink failure");
     } finally {
       setAppLogger(previousLogger);
+    }
+  });
+
+  test("a throwing logger warn on lock.release failure does not replace the committed result", async () => {
+    const { updateSettingsDocument } = await storeApi();
+    const lockMod = await import("../src/credential-lock.js");
+    const realAcquireSync = lockMod.acquireSync;
+    const warnSpy = spyOn(PraanaLogger.prototype, "warn").mockImplementation(() => {
+      throw new Error("injected logger warn failure");
+    });
+    const lockSpy = spyOn(lockMod, "acquireSync").mockImplementation((p: string, opts: { waitMs: number }) => {
+      const lock = realAcquireSync(p, opts);
+      return {
+        release() {
+          lock.release();
+          throw new Error("injected release failure");
+        },
+      };
+    });
+
+    try {
+      const updated = updateSettingsDocument({ thinking: false });
+      expect(updated.ok).toBe(true);
+      if (updated.ok) expect(updated.doc.thinking).toBe(false);
+      expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual({ thinking: false });
+    } finally {
+      lockSpy.mockRestore();
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("a throwing logger warn on directory fsync failure does not replace the committed rename", async () => {
+    const { replaceSettingsDocument, createSettingsFs } = await storeApi();
+    const warnSpy = spyOn(PraanaLogger.prototype, "warn").mockImplementation(() => {
+      throw new Error("injected logger warn failure");
+    });
+
+    try {
+      const fsyncFailFs = createSettingsFs({
+        fsyncDir() {
+          throw new Error("injected fsyncDir failure");
+        },
+      });
+      const replaced = replaceSettingsDocument({ ...DEFAULT_USER_SETTINGS }, { fs: fsyncFailFs });
+      expect(replaced.ok).toBe(true);
+      if (replaced.ok) expect(replaced.doc).toEqual(DEFAULT_USER_SETTINGS);
+      expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual(DEFAULT_USER_SETTINGS);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  test("a throwing logger warn on failed corrupt backup unlink does not mask the write error", async () => {
+    const { updateSettingsDocument, createSettingsFs } = await storeApi();
+    const baseFs = createSettingsFs();
+    const warnSpy = spyOn(PraanaLogger.prototype, "warn").mockImplementation(() => {
+      throw new Error("injected logger warn failure");
+    });
+
+    try {
+      writeFileSync(settingsPath, "{corrupt-logger-warn-fail", "utf-8");
+      const unlinkFailFs = createSettingsFs({
+        rename() {
+          throw new Error("injected rename failure");
+        },
+        unlink(p) {
+          if (p.includes(".corrupt-")) {
+            throw new Error("injected unlink failure");
+          }
+          return baseFs.unlink(p);
+        },
+      });
+      const failedUpdate = updateSettingsDocument(
+        { ...DEFAULT_USER_SETTINGS },
+        {
+          fs: unlinkFailFs,
+          baseDefaultsIfMissing: { ...DEFAULT_USER_SETTINGS },
+          onCorrupt: "backup-and-reset-legacy",
+        },
+      );
+      expect(failedUpdate.ok).toBe(false);
+      if (!failedUpdate.ok) expect(failedUpdate.error).toContain("injected rename failure");
+    } finally {
+      warnSpy.mockRestore();
     }
   });
 });

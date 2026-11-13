@@ -377,6 +377,25 @@ function writeExclusiveFile(
   }
 }
 
+function logBestEffortFailure(
+  operation: string,
+  message: string,
+  details: Record<string, unknown>,
+  cause: unknown,
+): void {
+  try {
+    const msg = cause instanceof Error ? cause.message : String(cause);
+    getAppLogger()
+      .child("config")
+      .warn(`${message}: ${msg}`, {
+        details: { ...details, operation },
+        cause: cause instanceof Error ? cause : undefined,
+      });
+  } catch {
+    // Best-effort logging must never mask the primary operation result.
+  }
+}
+
 function writeDocumentAtomic(
   path: string,
   doc: Record<string, unknown>,
@@ -415,11 +434,12 @@ function writeDocumentAtomic(
       fs.fsyncDir(dir);
     } catch (err) {
       // Ignore: durability of the directory entry is not something the caller can act on.
-      const msg = err instanceof Error ? err.message : String(err);
-      getAppLogger().child("config").warn(`Failed to fsync settings directory (${dir}) for ${path}: ${msg}`, {
-        details: { path, dir, operation: "fsyncSettingsDir" },
-        cause: err instanceof Error ? err : undefined,
-      });
+      logBestEffortFailure(
+        "fsyncSettingsDir",
+        `Failed to fsync settings directory (${dir}) for ${path}`,
+        { path, dir },
+        err,
+      );
     }
   });
 }
@@ -454,11 +474,12 @@ function withSettingsLock<T>(
       lock.release();
     } catch (err) {
       // Best effort: a release failure must not replace a committed result with an exception.
-      const msg = err instanceof Error ? err.message : String(err);
-      getAppLogger().child("config").warn(`Failed to release settings lock (${lockPath}): ${msg}`, {
-        details: { path: lockPath, settingsPath: path, operation: "releaseSettingsLock" },
-        cause: err instanceof Error ? err : undefined,
-      });
+      logBestEffortFailure(
+        "releaseSettingsLock",
+        `Failed to release settings lock (${lockPath})`,
+        { path: lockPath, settingsPath: path },
+        err,
+      );
     }
   }
 }
@@ -676,11 +697,12 @@ function discardCorruptBackup(backupPath: string, fs: SettingsFs): void {
     fs.unlink(backupPath);
   } catch (err) {
     // Ignore: the write error is the result the caller needs.
-    const msg = err instanceof Error ? err.message : String(err);
-    getAppLogger().child("config").warn(`Failed to remove discarded corrupt settings backup (${backupPath}): ${msg}`, {
-      details: { path: backupPath, operation: "discardCorruptBackup" },
-      cause: err instanceof Error ? err : undefined,
-    });
+    logBestEffortFailure(
+      "discardCorruptBackup",
+      `Failed to remove discarded corrupt settings backup (${backupPath})`,
+      { path: backupPath },
+      err,
+    );
   }
 }
 
