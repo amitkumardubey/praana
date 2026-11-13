@@ -148,7 +148,8 @@ export function createSettingsFs(overrides: Partial<SettingsFs> = {}): SettingsF
           chunks.push(bytesRead === toRead ? buf : buf.subarray(0, bytesRead));
           total += bytesRead;
         }
-        return chunks.length === 1 ? chunks[0]! : Buffer.concat(chunks, total);
+        const firstChunk = chunks[0];
+        return chunks.length === 1 && firstChunk !== undefined ? firstChunk : Buffer.concat(chunks, total);
       } finally {
         closeSync(fd);
       }

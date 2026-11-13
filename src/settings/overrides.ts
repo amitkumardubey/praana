@@ -107,6 +107,10 @@ function validateOverrideValue(
       }
       return { ok: true, value: list };
     }
+    default: {
+      const exhaustive: never = spec;
+      throw new Error(`Unhandled override spec: ${JSON.stringify(exhaustive)}`);
+    }
   }
 }
 
@@ -172,11 +176,12 @@ function toPlainTree(node: Record<string, unknown>): Record<string, unknown> {
   for (const key of Object.keys(node)) {
     if (FORBIDDEN_SEGMENTS.has(key)) continue;
     const val = node[key];
-    const converted = typeof val === "object" && val !== null && !Array.isArray(val)
-      ? toPlainTree(val as Record<string, unknown>)
-      : Array.isArray(val)
-        ? [...val]
-        : val;
+    let converted: unknown = val;
+    if (typeof val === "object" && val !== null && !Array.isArray(val)) {
+      converted = toPlainTree(val as Record<string, unknown>);
+    } else if (Array.isArray(val)) {
+      converted = [...val];
+    }
     Object.defineProperty(out, key, {
       value: converted,
       writable: true,

@@ -13,6 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import { APP_HOME_DIR } from "../src/app-identity.js";
 import { resolveActiveModelAndProvider } from "../src/llm/resolver.js";
 import {
@@ -221,7 +222,7 @@ describe("settings store (S1a)", () => {
     const files = readdirSync(homeDir);
     const backups = files.filter((f) => f.startsWith("settings.json.corrupt-"));
     expect(backups).toHaveLength(1);
-    const backupFile = join(homeDir, backups[0]!);
+    const backupFile = join(homeDir, backups[0] ?? "");
     expect(readFileSync(backupFile, "utf-8")).toBe(corruptBytes);
     if (process.platform !== "win32") {
       expect(statSync(backupFile).mode & 0o777).toBe(0o600);
@@ -438,8 +439,9 @@ describe("settings store (S1a)", () => {
     const scratchDir = join( process.env.HOME ?? tmpdir(), ".cache", "settings-scratch");
     mkdirSync(scratchDir, { recursive: true });
     const workerScript = join(scratchDir, `settings-worker-${process.pid}.ts`);
-    const storeModulePath = join(dirname(import.meta.dir), "src", "settings", "store.ts");
-    const userSettingsModulePath = join(dirname(import.meta.dir), "src", "user-settings.ts");
+    const testDir = dirname(fileURLToPath(import.meta.url));
+    const storeModulePath = join(dirname(testDir), "src", "settings", "store.ts");
+    const userSettingsModulePath = join(dirname(testDir), "src", "user-settings.ts");
 
     writeFileSync(
       workerScript,
