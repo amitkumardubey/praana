@@ -1124,6 +1124,77 @@ console.log(JSON.stringify(res));
     expect(overrideCloseCalls).toBe(3);
   });
 
+  test("createOnly never modifies an existing file in any read state", async () => {
+    const { updateSettingsDocument, createSettingsFs } = await storeApi();
+    const baseFs = createSettingsFs();
+    let writes = 0;
+    const spyFs = createSettingsFs({
+      openExclusive(p, mode) {
+        writes++;
+        return baseFs.openExclusive(p, mode);
+      },
+    });
+    const backups = () => readdirSync(homeDir).filter((f) => f.includes(".corrupt-"));
+
+    // ok: the existing document is returned unchanged and nothing is written.
+    const existingDoc = { thinking: false, custom_key: "keep" };
+    writeFileSync(settingsPath, JSON.stringify(existingDoc, null, 2) + "\n", "utf-8");
+    const existing = updateSettingsDocument(
+      { thinking: true },
+      { fs: spyFs, baseDefaultsIfMissing: { ...DEFAULT_USER_SETTINGS }, createOnly: true },
+    );
+    expect(existing.ok).toBe(true);
+    if (existing.ok) {
+      expect(existing.created).toBe(false);
+      expect(existing.doc).toEqual(existingDoc);
+    }
+    expect(writes).toBe(0);
+
+    // corrupt: error with the state, no write and no backup even when onCorrupt is set.
+    const corruptBytes = "{corrupt-create-only";
+    writeFileSync(settingsPath, corruptBytes, "utf-8");
+    const corruptRes = updateSettingsDocument(
+      { ...DEFAULT_USER_SETTINGS },
+      {
+        fs: spyFs,
+        baseDefaultsIfMissing: { ...DEFAULT_USER_SETTINGS },
+        createOnly: true,
+        onCorrupt: "backup-and-reset-legacy",
+      },
+    );
+    expect(corruptRes.ok).toBe(false);
+    if (!corruptRes.ok) {
+      expect(corruptRes.state).toBe("corrupt");
+      expect(corruptRes.error).toContain("Corrupt settings file");
+    }
+    expect(writes).toBe(0);
+    expect(backups()).toEqual([]);
+    expect(readFileSync(settingsPath, "utf-8")).toBe(corruptBytes);
+
+    // unreadable: error with the state, no write and no backup.
+    rmSync(settingsPath, { force: true });
+    mkdirSync(settingsPath);
+    const unreadableRes = updateSettingsDocument(
+      { ...DEFAULT_USER_SETTINGS },
+      { fs: spyFs, createOnly: true, onCorrupt: "backup-and-reset-legacy" },
+    );
+    expect(unreadableRes.ok).toBe(false);
+    if (!unreadableRes.ok) expect(unreadableRes.state).toBe("unreadable");
+    expect(writes).toBe(0);
+    expect(backups()).toEqual([]);
+    expect(lstatSync(settingsPath).isDirectory()).toBe(true);
+    rmSync(settingsPath, { recursive: true, force: true });
+
+    // missing: still creates the file and reports created: true.
+    const created = updateSettingsDocument(
+      {},
+      { fs: spyFs, baseDefaultsIfMissing: { ...DEFAULT_USER_SETTINGS }, createOnly: true },
+    );
+    expect(created.ok).toBe(true);
+    if (created.ok) expect(created.created).toBe(true);
+    expect(writes).toBe(1);
+  });
+
   test("a failed replacement write removes the corrupt backup it just created and keeps the corrupt file", async () => {
     const { updateSettingsDocument, replaceSettingsDocument, createSettingsFs } = await storeApi();
     const corruptBytes = "{corrupt-needs-backup";

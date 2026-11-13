@@ -546,6 +546,18 @@ export function updateSettingsDocument(
       };
     }
 
+    // `createOnly` must never modify an existing file, whatever its state: no write, no backup.
+    if (options?.createOnly && current.state !== "missing") {
+      if (current.state === "ok") {
+        return { ok: true, doc: { ...current.doc }, created: false };
+      }
+      return {
+        ok: false,
+        error: current.error ?? `Cannot create settings file (${path}): it already exists`,
+        state: current.state,
+      };
+    }
+
     let backupPath: string | undefined;
     if (current.state === "corrupt") {
       if (options?.onCorrupt !== "backup-and-reset-legacy") {
@@ -562,7 +574,7 @@ export function updateSettingsDocument(
 
     if (current.state === "ok") {
       const hasPatchChanges = Object.keys(patch).some((key) => patch[key] !== undefined);
-      if (options?.createOnly || !hasPatchChanges) {
+      if (!hasPatchChanges) {
         return { ok: true, doc: { ...current.doc }, created: false };
       }
     }
