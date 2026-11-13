@@ -88,6 +88,38 @@ test("batch requests discard the live prefix and tools but keep model and all tr
   expect(JSON.stringify(source)).toBe(before);
 });
 
+test("batch plan template retains only model and transport fields without live messages, tools, system, signal or credentials", async () => {
+  const { planBatchSummaries, nextBatchSummaryRequest } = await api();
+  const source: StreamRequest = {
+    ...live(),
+    baseUrlOverride: true,
+    compat: { maxTokensField: "max_completion_tokens" },
+    api: "openai-completions",
+    strictStreamEnd: true,
+    apiKey: "secret-api-key",
+    bearerToken: "secret-bearer-token",
+  };
+  const result = planBatchSummaries(source, foldedTurns(2, 200), options);
+  expect(result.status).toBe("planned");
+  if (result.status !== "planned") throw new Error("Expected planned");
+  const template = result.plan.template;
+  expect(template).not.toBe(source);
+  expect(template.messages).toEqual([]);
+  expect(template.messages).not.toBe(source.messages);
+  for (const forbidden of ["systemPrompt", "tools", "signal", "maxTokens", "apiKey", "bearerToken"] as const) {
+    expect(template).not.toHaveProperty(forbidden);
+  }
+  for (const kept of ["model", "provider", "reasoningEffort", "temperature", "baseUrl", "baseUrlOverride", "headers", "compat", "region", "api", "query", "endpointUrl", "strictStreamEnd"] as const) {
+    expect(template[kept]).toEqual(source[kept]);
+  }
+  const next = nextBatchSummaryRequest(result.plan, []);
+  expect(next.status).toBe("request");
+  if (next.status !== "request") throw new Error("Expected request");
+  expect(next.request).not.toHaveProperty("signal");
+  expect(next.request).not.toHaveProperty("apiKey");
+  expect(next.request).not.toHaveProperty("bearerToken");
+});
+
 test("batch transcript text is deterministic, bounds tool results and is included in the input budget", async () => {
   const { buildBatchSummaryRequest } = await api();
   const turns = foldedTurns(1, MAX_TOOL_RESULT_CHARS + 1000);

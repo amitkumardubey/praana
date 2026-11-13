@@ -72,6 +72,25 @@ function renderBatchMessage(message: ConversationMessage): ConversationMessage {
   return { role: "user", content: lines.join("\n") };
 }
 
+function batchTemplate(live: StreamRequest): StreamRequest {
+  const template: StreamRequest = { model: live.model, provider: live.provider, messages: [] };
+  if (live.reasoningEffort !== undefined) template.reasoningEffort = live.reasoningEffort;
+  if (live.temperature !== undefined) template.temperature = live.temperature;
+  if (live.baseUrl !== undefined) template.baseUrl = live.baseUrl;
+  if (live.baseUrlOverride !== undefined) template.baseUrlOverride = live.baseUrlOverride;
+  if (live.headers !== undefined) template.headers = { ...live.headers };
+  if (live.compat !== undefined) template.compat = { ...live.compat };
+  if (live.region !== undefined) template.region = live.region;
+  if (live.api !== undefined) template.api = live.api;
+  if (live.query !== undefined) template.query = { ...live.query };
+  if (live.endpointUrl !== undefined) template.endpointUrl = live.endpointUrl;
+  if (live.strictStreamEnd !== undefined) template.strictStreamEnd = live.strictStreamEnd;
+  if (live.streamEndCheck !== undefined) template.streamEndCheck = live.streamEndCheck;
+  if (live.connectTimeoutMs !== undefined) template.connectTimeoutMs = live.connectTimeoutMs;
+  if (live.idleTimeoutMs !== undefined) template.idleTimeoutMs = live.idleTimeoutMs;
+  return template;
+}
+
 /**
  * A separate compact request, not a continuation of the cached live prefix.
  * Transport/model settings survive; the live system, tools and history do not.
@@ -124,6 +143,7 @@ export function planBatchSummaries(
   if (!foldedTurns.length || foldedTurns.some(turn => !turn.completed || !turn.eventIds.length) || new Set(ids).size !== ids.length) {
     throw new RangeError("Supply nonempty, completed folded turns with unique canonical event ids in log order.");
   }
+  const template = batchTemplate(live);
   const batches: SummaryBatch[] = [];
   let pending: CompactionTurn[] = [];
   let pendingTokens = 0;
@@ -134,7 +154,7 @@ export function planBatchSummaries(
     // instruction/frame is measured per candidate, since its cut text can vary.
     const turnTokens = turn.messages.reduce((sum, message) => sum + estimateMessageTokens(renderBatchMessage(message)), 0);
     const measureFrame = () => {
-      const request = buildBatchSummaryRequest(live, { messages: [] }, {
+      const request = buildBatchSummaryRequest(template, { messages: [] }, {
         ...options, cutDescription: cutDescription(turn),
         previousSummary: batches.length ? "" : options.previousSummary,
       });
@@ -161,7 +181,7 @@ export function planBatchSummaries(
     admittedTokens = budgetedTokens;
   }
   flush();
-  return { status: "planned", plan: { template: live, options: { ...options }, batches, maxCalls: 2 * batches.length } };
+  return { status: "planned", plan: { template, options: { ...options }, batches, maxCalls: 2 * batches.length } };
 }
 
 export interface SummaryAttemptFailure {
