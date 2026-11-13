@@ -1,0 +1,3 @@
+[
+  {"query":"fixture docs option","authoritative_url":"https://example.org/docs","expected_domains":["example.org"],"answer_snippets":["fixture option"],"niche":"docs","verified_at":"2026-01-01"}
+]
