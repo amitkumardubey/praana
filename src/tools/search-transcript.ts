@@ -35,6 +35,7 @@ export interface IndexedTranscriptEntry {
   callId?: string;
   isError?: boolean;
   artifactId?: string;
+  unrecoveredStub: boolean;
   text: string;
   searchText: string;
   timestamp: number;
@@ -106,7 +107,7 @@ function extractRecordTexts(record: CanonicalRecord): {
 export function indexSessionTranscript(
   eventLog: Pick<EventLog, "readAll">,
 ): { entries: IndexedTranscriptEntry[]; currentResetEpoch: string } {
-  // Request unfiltered events with either event-log reader API.
+  // includeCanonical is used on feat/search-transcript; includeInternal on feat/compaction-core.
   const rawOptions = { includeCanonical: true, includeInternal: true };
   const events = eventLog.readAll(rawOptions);
   let currentResetEpoch = SESSION_START_EPOCH;
@@ -135,6 +136,7 @@ export function indexSessionTranscript(
         const text = typeof result === "string" ? result : JSON.stringify(result);
         entry.text = redactSecrets(text) as string;
         entry.searchText = `${entry.toolName} ${entry.callId}\n${entry.text}`;
+        entry.unrecoveredStub = false;
       }
       artifactResults.delete(key);
       continue;
@@ -154,6 +156,7 @@ export function indexSessionTranscript(
       resetEpoch: currentResetEpoch,
       turnId: record.turnId,
       kind: record.kind,
+      unrecoveredStub: record.kind === "tool_result" && extracted.artifactId !== undefined,
       // Redact complete text before any snippet, line range, or preview is cut.
       text: redactSecrets(extracted.text) as string,
       searchText: redactSecrets(extracted.searchText) as string,
@@ -455,18 +458,16 @@ export function createSearchTranscriptTool(ctx: {
           for (const term of queryTerms) {
             if (lowerDoc.includes(term)) termSubCount++;
           }
-          const score = bm25 + exactSub + termSubCount * 1.5;
-          if (score > 0) {
-            scored.push({ entry, score });
+          const relevance = bm25 + exactSub + termSubCount * 1.5;
+          if (relevance > 0) {
+            // Prefer source output without hiding strongly matching cards or ID lookups.
+            const penalty = entry.unrecoveredStub ? Math.min(2, relevance / 2) : 0;
+            scored.push({ entry, score: relevance - penalty });
           }
         }
 
-        // Recovered source output retains artifactId, but is not a card/stub.
-        // Prefer it over shorter references to the same output.
         scored.sort(
-          (a, b) => Number(extractArtifactId(a.entry.text) !== undefined) -
-            Number(extractArtifactId(b.entry.text) !== undefined) ||
-            b.score - a.score || b.entry.logPosition - a.entry.logPosition,
+          (a, b) => b.score - a.score || b.entry.logPosition - a.entry.logPosition,
         );
 
         const limit = args.limit ?? 10;

@@ -156,6 +156,55 @@ describe("search_transcript tool (PR3)", () => {
     expect(limited.matches[0]?.id).toBe("original");
   });
 
+  test("keeps a strongly matching artifact card ahead of weak partial matches", async () => {
+    const { log } = openLog();
+    addCanonical(log, "best-card", {
+      formatVersion: 1,
+      kind: "tool_result",
+      turnId: 1,
+      message: {
+        callId: "card-call",
+        toolName: "shell",
+        text: "[artifact: art_best | shell: cobalt migration failure | 1,000 tokens raw]",
+        isError: false,
+      },
+    });
+    for (let i = 0; i < 12; i++) {
+      addCanonical(log, `weak-${i}`, {
+        formatVersion: 1,
+        kind: "user_input",
+        turnId: 1,
+        message: { text: `cobalt ${"unrelated padding ".repeat(20)}` },
+      });
+    }
+    const tool = searchTranscriptModule.createSearchTranscriptTool({ eventLog: log }).search_transcript;
+    const result = await tool.execute({ query: "cobalt migration failure", limit: 1 });
+    if (!result.ok || result.mode !== "search") throw new Error("Expected search");
+    expect(result.matches.map((match) => match.id)).toEqual(["best-card"]);
+    const byArtifact = await tool.execute({ query: "art_best", limit: 1 });
+    if (!byArtifact.ok || byArtifact.mode !== "search") throw new Error("Expected search");
+    expect(byArtifact.matches.map((match) => match.id)).toEqual(["best-card"]);
+  });
+
+  test("does not demote user text that quotes an artifact card", async () => {
+    const { log } = openLog();
+    for (const [id, text] of [
+      ["quoted", "needle [artifact: art_x"],
+      ["longer", `needle ${"ordinary output ".repeat(200)}`],
+    ]) {
+      addCanonical(log, id!, {
+        formatVersion: 1,
+        kind: "user_input",
+        turnId: 1,
+        message: { text: text! },
+      });
+    }
+    const tool = searchTranscriptModule.createSearchTranscriptTool({ eventLog: log }).search_transcript;
+    const result = await tool.execute({ query: "needle", limit: 1 });
+    if (!result.ok || result.mode !== "search") throw new Error("Expected search");
+    expect(result.matches.map((match) => match.id)).toEqual(["quoted"]);
+  });
+
   test("keeps recovered source output ahead of later cards for the same artifact", async () => {
     const { log } = openLog();
     const card = '[artifact: art_abcdef123456 | read_file: needle.txt | 1,000 tokens raw]';
