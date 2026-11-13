@@ -1269,6 +1269,12 @@ test("compaction modules import nothing from src/memory/ or checkpoint.ts and do
   expect(compactionSource).not.toMatch(/from\s*["']\.\/compaction\.js["']/);
 });
 
+test("cache implementation details are not public API", () => {
+  expect(compaction).not.toHaveProperty("stateCacheKey");
+  const source = readFileSync(new URL("../src/compaction.ts", import.meta.url), "utf8");
+  expect(source.includes("bypassMaterializeCache")).toBe(false);
+});
+
 async function runWithFreshFillOracle(input: compaction.RunCompactionInput & { frame: compaction.RequestFrame }) {
   const { materializeHistory, requestFill } = compaction;
   const source = structuredClone(input.log.readAll({ includeInternal: true }));

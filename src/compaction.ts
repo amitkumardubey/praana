@@ -359,7 +359,6 @@ export interface RunCompactionInput {
   planStubs?: StubPlanner;
   runSummary?: SummaryRunner;
   materialize?: (state: FrozenState, source: CanonicalEventSource) => MaterializationResult;
-  bypassMaterializeCache?: boolean;
 }
 
 function defaultPlanStubs(candidates: readonly StubCandidate[]): readonly StubEntry[] {
@@ -452,7 +451,7 @@ function applyStubPlanner(
   return accepted;
 }
 
-export function stateCacheKey(s: FrozenState): string {
+function stateCacheKey(s: FrozenState): string {
   return JSON.stringify([
     s.resetEpoch,
     s.boundaryEventId,
@@ -655,15 +654,13 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
 
   const measureCandidate = (candidateState: FrozenState): RequestFill => {
     const key = stateCacheKey(candidateState);
-    if (!input.bypassMaterializeCache) {
-      const cached = measuredByState.get(key);
-      if (cached) return cached;
-    }
+    const cached = measuredByState.get(key);
+    if (cached) return cached;
     const mat = materialize(candidateState, events);
     if (!mat.ok) throw mat.error;
     const measured = requestFill(frame, mat.messages, input.contextWindowTokens, opts);
     if (!measured.ok) throw new Error(measured.error.message);
-    if (!input.bypassMaterializeCache) measuredByState.set(key, measured.fill);
+    measuredByState.set(key, measured.fill);
     return measured.fill;
   };
 
