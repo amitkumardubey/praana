@@ -239,6 +239,10 @@ export function createFileMemoryStore(options: StoreOptions) {
       });
       if (!scanned.ok) return scanned;
       const warnings = scopeWarnings(scanned.skippedScopes ?? []);
+      // A failed scan cannot rule out a same-named memory in that scope, so an unscoped delete is unsafe.
+      if (!input.scope && scanned.skippedScopes?.length) {
+        return { ok: false, error: `Cannot rule out another "${input.name}" memory because a scope scan failed; pass an explicit scope to delete: ${scanned.skippedScopes.map(({ scope, reason }) => `${scope}: ${reason}`).join("; ")}`, ...warnings };
+      }
       const found = scanned.values.filter((match) => match !== null);
       if (found.length > 1) return { ok: false, error: "Memory exists in both project and global scopes; specify scope", ...warnings };
       const match = found[0];

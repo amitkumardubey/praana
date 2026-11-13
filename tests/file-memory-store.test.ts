@@ -64,7 +64,34 @@ describe("file memory store", () => {
     expect(onlyStray.ok).toBe(false);
     if (!onlyStray.ok) expect(onlyStray.error).toMatch(/regular.*non-symlink/);
   });
-  test.each(["project", "global"] as const)("skips an unsafe %s directory while removing the other scope's memory", async (badScope) => {
+  test.each(["project", "global"] as const)("refuses unscoped removal when the %s scope scan failed and deletes nothing", async (badScope) => {
+    const { home } = await setup();
+    const dirs = memoryDirectories(home, projectKey(home, (cwd) => cwd));
+    const goodScope = badScope === "project" ? "global" : "project";
+    const store = createFileMemoryStore({ home, cwd: home, findRoot: (cwd) => cwd });
+    for (const scope of ["global", "project"] as const) expect((await store.write({ ...input, scope })).ok).toBe(true);
+    const unreadable = join(dirs[badScope], "coffee.md");
+    const seam = new Proxy(fs, { get(target, key) {
+      if (key !== "lstat") return Reflect.get(target, key);
+      return async (...args: Parameters<typeof fs.lstat>) => {
+        if (args[0] === unreadable) throw Object.assign(new Error(`EACCES: permission denied, lstat '${unreadable}'`), { code: "EACCES" });
+        return fs.lstat(...args);
+      };
+    } });
+    const failing = createFileMemoryStore({ home, cwd: home, fs: seam, findRoot: (cwd) => cwd });
+    const result = await failing.remove({ name: "coffee" });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toMatch(/explicit scope/i);
+      expect(result.error).toContain(badScope);
+    }
+    for (const scope of ["global", "project"] as const) expect(await fs.exists(join(dirs[scope], "coffee.md"))).toBe(true);
+    expect((await failing.remove({ name: "coffee", scope: goodScope })).ok).toBe(true);
+    expect(await fs.exists(join(dirs[goodScope], "coffee.md"))).toBe(false);
+    expect(await fs.exists(join(dirs[badScope], "coffee.md"))).toBe(true);
+  });
+
+  test.each(["project", "global"] as const)("refuses unscoped removal when the %s directory is unsafe", async (badScope) => {
     const { home, store } = await setup();
     const dirs = memoryDirectories(home, projectKey(home, (cwd) => cwd));
     const goodScope = badScope === "project" ? "global" : "project";
@@ -76,7 +103,9 @@ describe("file memory store", () => {
     const explicit = await store.remove({ name: "coffee", scope: badScope });
     expect(explicit).toMatchObject({ ok: false, error: expect.stringContaining(dirs[badScope]) });
     const result = await store.remove({ name: "coffee" });
-    expect(result).toMatchObject({ ok: true, skippedScopes: [{ scope: badScope, reason: expect.stringContaining(dirs[badScope]) }] });
+    expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/explicit scope/i) });
+    expect(await fs.exists(join(dirs[goodScope], "coffee.md"))).toBe(true);
+    expect(await store.remove({ name: "coffee", scope: goodScope })).toMatchObject({ ok: true });
     expect(await fs.exists(join(dirs[goodScope], "coffee.md"))).toBe(false);
     expect(await fs.readdir(outside)).toEqual([]);
   });

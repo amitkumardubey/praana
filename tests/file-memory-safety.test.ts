@@ -133,7 +133,9 @@ test.skipIf(process.platform === "win32" || process.getuid?.() === 0)("unavailab
     const warnings = [{ scope: "project", reason: expect.stringContaining("EACCES") }];
     expect(await store.list()).toMatchObject({ ok: true, entries: [{ name: "alpha", scope: "global" }], skippedScopes: warnings });
     expect(await store.recall({ query: "complete" })).toMatchObject({ ok: true, matches: [{ name: "alpha", scope: "global" }], skippedScopes: warnings });
-    expect(await store.remove({ name: "alpha" })).toMatchObject({ ok: true, skippedScopes: warnings });
+    expect(await store.remove({ name: "alpha" })).toMatchObject({ ok: false, error: expect.stringMatching(/explicit scope/i), skippedScopes: warnings });
+    expect(await fs.exists(join(dirs.global, "alpha.md"))).toBe(true);
+    expect(await store.remove({ name: "alpha", scope: "global" })).toMatchObject({ ok: true });
   } finally { await fs.chmod(dirs.project, 0o700); }
 });
 
