@@ -206,10 +206,14 @@ describe("settings store", () => {
     expect(saveUserSettings(DEFAULT_USER_SETTINGS).ok).toBe(false);
     expect(readFileSync(settingsPath, "utf-8")).toBe(corruptBytes);
 
-    // If backup copyFile fails, original corrupt file is untouched and reset returns error.
+    // If backup write fails, original corrupt file is untouched and reset returns error.
+    const defaultFsForBackup = createSettingsFs();
     const failingBackupFs = createSettingsFs({
-      copyFile() {
-        throw new Error("backup disk full");
+      openExclusive(p, mode) {
+        if (p.includes(".corrupt-")) {
+          throw new Error("backup disk full");
+        }
+        return defaultFsForBackup.openExclusive(p, mode);
       },
     });
     const failedReset = replaceSettingsDocument({ ...DEFAULT_USER_SETTINGS }, { fs: failingBackupFs, backupCorrupt: true });
@@ -733,5 +737,173 @@ for (let i = 0; i < 50; i++) {
 
     const legacyLoaded = loadUserSettings();
     expect(legacyLoaded.settings.thinking).toBe(false);
+  });
+
+  test("corrupt backup is created exclusively with 0600 mode (no copyFile + post-chmod window)", async () => {
+    const { createSettingsFs, replaceSettingsDocument } = await storeApi();
+    const defaultFs = createSettingsFs();
+
+    const corruptBytes = "{corrupt-secret-content";
+    writeFileSync(settingsPath, corruptBytes, { mode: 0o644 });
+    if (process.platform !== "win32") {
+      chmodSync(settingsPath, 0o644);
+    }
+
+    let copyFileCalled = false;
+    let backupOpenMode: number | undefined;
+    let backupModeDuringWrite: number | undefined;
+    let backupWrittenBytes: Buffer | undefined;
+
+    const spyFs = createSettingsFs({
+      copyFile(src, dest) {
+        copyFileCalled = true;
+        return defaultFs.copyFile(src, dest);
+      },
+      openExclusive(p, mode) {
+        if (p.includes(".corrupt-")) {
+          backupOpenMode = mode;
+        }
+        return defaultFs.openExclusive(p, mode);
+      },
+      write(fd, data) {
+        const files = readdirSync(homeDir).filter((f) => f.startsWith("settings.json.corrupt-"));
+        if (files.length === 1 && backupModeDuringWrite === undefined) {
+          backupModeDuringWrite = statSync(join(homeDir, files[0] ?? "")).mode & 0o777;
+          backupWrittenBytes = Buffer.from(data);
+        }
+        return defaultFs.write(fd, data);
+      },
+    });
+
+    const res = replaceSettingsDocument({ ...DEFAULT_USER_SETTINGS }, { fs: spyFs, backupCorrupt: true });
+    expect(res.ok).toBe(true);
+    expect(copyFileCalled).toBe(false);
+    expect(backupOpenMode).toBe(0o600);
+    expect(backupWrittenBytes?.toString("utf-8")).toBe(corruptBytes);
+    if (process.platform !== "win32") {
+      expect(backupModeDuringWrite).toBe(0o600);
+      if (res.ok && res.backupPath) {
+        expect(statSync(res.backupPath).mode & 0o777).toBe(0o600);
+      }
+    }
+  });
+
+  test("readBounded / readSettingsDocument rejects real FIFO without blocking even when lstat reports a regular file", async () => {
+    if (process.platform === "win32") return;
+    const mkfifo = Bun.spawnSync(["mkfifo", settingsPath]);
+    if (mkfifo.exitCode !== 0) return;
+
+    const { readSettingsDocument } = await storeApi();
+    // Direct read sees FIFO at lstat and returns unreadable.
+    expect(readSettingsDocument().state).toBe("unreadable");
+
+    // Simulated TOCTOU race: lstat claims regular file, underlying path is a real FIFO.
+    const testDir = dirname(fileURLToPath(import.meta.url));
+    const storeModulePath = join(dirname(testDir), "src", "settings", "store.ts");
+    const scratchDir = join(process.env.HOME ?? tmpdir(), ".cache", "settings-scratch");
+    mkdirSync(scratchDir, { recursive: true });
+    const fifoScript = join(scratchDir, `settings-fifo-race-${process.pid}.ts`);
+
+    writeFileSync(
+      fifoScript,
+      `
+import type { Stats } from "node:fs";
+import { createSettingsFs, readSettingsDocument } from ${JSON.stringify(storeModulePath)};
+
+const settingsPath = process.argv[2];
+const raceFs = createSettingsFs({
+  lstat() {
+    return {
+      isSymbolicLink: () => false,
+      isDirectory: () => false,
+      isFile: () => true,
+    } as unknown as Stats;
+  },
+});
+const res = readSettingsDocument({ path: settingsPath, fs: raceFs });
+console.log(JSON.stringify(res));
+`,
+      "utf-8",
+    );
+
+    try {
+      const proc = Bun.spawn(["bun", fifoScript, settingsPath], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const timeoutMs = 1_000;
+      const outcome = await Promise.race([
+        proc.exited.then((code) => ({ kind: "exit" as const, code })),
+        Bun.sleep(timeoutMs).then(() => ({ kind: "timeout" as const })),
+      ]);
+      if (outcome.kind === "timeout") {
+        proc.kill();
+        await proc.exited;
+      }
+      expect(outcome.kind).toBe("exit");
+      if (outcome.kind === "exit") {
+        expect(outcome.code).toBe(0);
+        const stdout = await new Response(proc.stdout).text();
+        const parsed = JSON.parse(stdout.trim()) as { state: string };
+        expect(parsed.state).toBe("unreadable");
+      }
+    } finally {
+      rmSync(fifoScript, { force: true });
+    }
+  });
+
+  test("readSettingsDocument opens with O_NOFOLLOW | O_NONBLOCK and rejects FIFO-like fd via injectable fs", async () => {
+    const { constants } = await import("node:fs");
+    const { createSettingsFs, readSettingsDocument } = await storeApi();
+
+    let observedFlags = 0;
+    let readCalled = false;
+    let closedFd: number | undefined;
+    const fakeFd = 4242;
+
+    const fifoRaceFs = createSettingsFs(
+      {
+        lstat() {
+          return {
+            isSymbolicLink: () => false,
+            isDirectory: () => false,
+            isFile: () => true,
+          } as unknown as import("node:fs").Stats;
+        },
+      },
+      {
+        open(_p, flags) {
+          observedFlags = flags;
+          return fakeFd;
+        },
+        fstat(fd) {
+          expect(fd).toBe(fakeFd);
+          return {
+            isDirectory: () => false,
+            isFile: () => false,
+            isFIFO: () => true,
+          } as unknown as import("node:fs").Stats;
+        },
+        read() {
+          readCalled = true;
+          return 0;
+        },
+        close(fd) {
+          closedFd = fd;
+        },
+      },
+    );
+
+    const res = readSettingsDocument({ path: settingsPath, fs: fifoRaceFs });
+    expect(res.state).toBe("unreadable");
+    expect(res.error).toMatch(/not a regular file/i);
+    if (constants.O_NOFOLLOW !== undefined) {
+      expect((observedFlags & constants.O_NOFOLLOW) !== 0).toBe(true);
+    }
+    if (constants.O_NONBLOCK !== undefined) {
+      expect((observedFlags & constants.O_NONBLOCK) !== 0).toBe(true);
+    }
+    expect(readCalled).toBe(false);
+    expect(closedFd).toBe(fakeFd);
   });
 });
