@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import * as self from "./compaction.js";
 import { CanonicalTranscriptError, CanonicalValidator, emitCanonicalTranscript, readCanonicalEntries, resolveRawEvents, type CanonicalEventSource, type CanonicalRecord } from "./canonical-transcript.js";
 import {
   buildSameModelSummaryRequest,
@@ -345,6 +346,7 @@ export interface RunCompactionInput {
   options?: Partial<CompactionOptions>;
   planStubs?: StubPlanner;
   runSummary?: SummaryRunner;
+  materialize?: (state: FrozenState, source: CanonicalEventSource) => MaterializationResult;
 }
 
 function defaultPlanStubs(candidates: readonly StubCandidate[]): readonly StubEntry[] {
@@ -582,13 +584,14 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
   const targetRatio = opts.contextLimitRatio - opts.postRewriteMargin;
   const planStubs = input.planStubs ?? defaultPlanStubs;
   const runSummary = input.runSummary ?? defaultRunSummary;
+  const materialize = input.materialize ?? ((s, src) => self.materializeHistory(s, src));
 
   const events = input.log.readAll({ includeInternal: true });
   const restored = restoreFrozenState(events);
   if (!restored.ok) throw restored.error;
   const state = restored.state;
 
-  const initialMat = materializeHistory(state, events);
+  const initialMat = materialize(state, events);
   if (!initialMat.ok) throw initialMat.error;
 
   const initialMeasured = requestFill(frame, initialMat.messages, input.contextWindowTokens, opts);
@@ -621,11 +624,29 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
     if (activeResultIds.has(stub.eventId)) baseActiveStubs.set(stub.eventId, stub.stubText);
   }
 
+  // Materialize each distinct (resetEpoch, boundaryEventId, summary, stubSet) state at most once per run:
+  // 1 initial state + at most 1 Step 1 stale-stub state + at most 1 Step 2 post-fold state +
+  // at most stubKeepRecent Step 3 in-flight stub states (at most 3 + stubKeepRecent materialisations per run).
+  const stateCacheKey = (s: FrozenState): string => JSON.stringify([
+    s.resetEpoch,
+    s.boundaryEventId,
+    s.summary,
+    [...s.stubSet].map((entry) => [entry.eventId, entry.stubText]).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)),
+  ]);
+  const measuredByState = new Map<string, RequestFill>([
+    [stateCacheKey(state), initialFill],
+    [stateCacheKey({ ...state, stubSet: toStubSet(baseActiveStubs) }), initialFill],
+  ]);
+
   const measureCandidate = (candidateState: FrozenState): RequestFill => {
-    const mat = materializeHistory(candidateState, events);
+    const key = stateCacheKey(candidateState);
+    const cached = measuredByState.get(key);
+    if (cached) return cached;
+    const mat = materialize(candidateState, events);
     if (!mat.ok) throw mat.error;
     const measured = requestFill(frame, mat.messages, input.contextWindowTokens, opts);
     if (!measured.ok) throw new Error(measured.error.message);
+    measuredByState.set(key, measured.fill);
     return measured.fill;
   };
 
@@ -669,13 +690,15 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
           keepRecent,
         });
         if (signal?.aborted) return { cancelled: true };
+        let stepChanged = false;
         for (const entry of planned) {
           if (stubMap.get(entry.eventId) !== entry.stubText) {
             stubMap.set(entry.eventId, entry.stubText);
             changed = true;
+            stepChanged = true;
           }
         }
-        currentFill = measureCandidate(buildState());
+        if (stepChanged) currentFill = measureCandidate(buildState());
       }
       // Keep the most recent stubKeepRecent results verbatim whenever that already fits usable capacity;
       // only shrink keepRecent toward 1 under hard capacity pressure (!currentFill.fits).

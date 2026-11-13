@@ -1213,6 +1213,137 @@ test("compaction modules import nothing from src/memory/ or checkpoint.ts", asyn
   }
 });
 
+test("materialises each distinct state at most once per run (bounded by 3 + stubKeepRecent) with identical outcomes", async () => {
+  const { runCompaction, materializeHistory } = await api();
+  const stateKey = (s: FrozenState) => JSON.stringify([
+    s.resetEpoch,
+    s.boundaryEventId,
+    s.summary,
+    [...s.stubSet].map((x) => [x.eventId, x.stubText]).sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)),
+  ]);
+
+  let seed = 0x7f4a7c15;
+  const rand = (max: number) => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed % max;
+  };
+
+  for (let scenario = 0; scenario < 100; scenario++) {
+    const buildScenarioEvents = (): Event[] => {
+      const evs: Event[] = [];
+      let localSeed = (seed + scenario * 9973) >>> 0;
+      const localRand = (max: number) => {
+        localSeed = (Math.imul(localSeed, 1664525) + 1013904223) >>> 0;
+        return localSeed % max;
+      };
+      const turns = 1 + localRand(7);
+      for (let t = 1; t <= turns; t++) {
+        const p = `m${scenario}-t${t}`;
+        evs.push({
+          event_id: `${p}-in`,
+          session_id: "s",
+          timestamp: evs.length + 1,
+          kind: "canonical_message",
+          actor: "kernel",
+          payload: { formatVersion: 1, kind: "user_input", turnId: t, message: { text: "u".repeat(20 + localRand(400)) } },
+        });
+        const rc = localRand(6);
+        for (let r = 0; r < rc; r++) {
+          const cid = `${p}-c${r}`;
+          evs.push({
+            event_id: `${p}-a${r}`,
+            session_id: "s",
+            timestamp: evs.length + 1,
+            kind: "canonical_message",
+            actor: "kernel",
+            payload: { formatVersion: 1, kind: "assistant", turnId: t, message: { text: "call", toolCalls: [{ id: cid, name: "shell", args: { r } }] } },
+          });
+          evs.push({
+            event_id: `${p}-r${r}`,
+            session_id: "s",
+            timestamp: evs.length + 1,
+            kind: "canonical_message",
+            actor: "kernel",
+            payload: { formatVersion: 1, kind: "tool_result", turnId: t, message: { callId: cid, toolName: "shell", text: "r".repeat(40 + localRand(800)), isError: false } },
+          });
+        }
+        evs.push({
+          event_id: `${p}-done`,
+          session_id: "s",
+          timestamp: evs.length + 1,
+          kind: "canonical_message",
+          actor: "kernel",
+          payload: { formatVersion: 1, kind: "assistant", turnId: t, message: { text: "a".repeat(20 + localRand(200)) } },
+        });
+      }
+      return evs;
+    };
+
+    const windowTokens = 600 + rand(2400);
+    const effectiveMaxTokens = 100 + rand(300);
+    const tailTurns = rand(5);
+    const stubKeepRecent = 1 + rand(3);
+    const stubMinTokens = 50 + rand(150);
+    const mode = rand(5);
+
+    const eventsA = buildScenarioEvents();
+    const eventsB = buildScenarioEvents();
+    const makeLog = (evs: Event[]) => ({
+      readAll() { return evs; },
+      append(partial: Omit<Event, "event_id" | "session_id" | "timestamp">) {
+        const ev: Event = { ...partial, event_id: `ev-${scenario}-${evs.length}`, session_id: "s", timestamp: evs.length + 1 };
+        evs.push(ev);
+        return ev;
+      },
+    });
+
+    let calls = 0;
+    const seenKeys = new Set<string>();
+    let summaryCallsA = 0;
+    const outcomeA = await runCompaction({
+      log: makeLog(eventsA),
+      liveRequest: baseLiveRequest(),
+      contextWindowTokens: windowTokens,
+      options: { effectiveMaxTokens, tailTurns, stubKeepRecent, stubMinTokens },
+      planStubs: (candidates) => candidates.map((c) => ({ eventId: c.eventId, stubText: `[stub:${c.eventId}]` })),
+      materialize: (s, src) => {
+        calls++;
+        seenKeys.add(stateKey(s));
+        return materializeHistory(s, src);
+      },
+      runSummary: async () => {
+        summaryCallsA++;
+        if (mode === 4) return summaryResp("invalid summary");
+        if (mode === 3 && summaryCallsA % 2 === 1) return summaryResp("needs repair");
+        return summaryResp(validSummary(`Scenario ${scenario}`));
+      },
+    });
+
+    // Reference uncached run (fresh wrapper per call) must produce identical outcome and log events.
+    let summaryCallsB = 0;
+    const outcomeB = await runCompaction({
+      log: makeLog(eventsB),
+      liveRequest: baseLiveRequest(),
+      contextWindowTokens: windowTokens,
+      options: { effectiveMaxTokens, tailTurns, stubKeepRecent, stubMinTokens },
+      planStubs: (candidates) => candidates.map((c) => ({ eventId: c.eventId, stubText: `[stub:${c.eventId}]` })),
+      materialize: (s, src) => materializeHistory(s, src),
+      runSummary: async () => {
+        summaryCallsB++;
+        if (mode === 4) return summaryResp("invalid summary");
+        if (mode === 3 && summaryCallsB % 2 === 1) return summaryResp("needs repair");
+        return summaryResp(validSummary(`Scenario ${scenario}`));
+      },
+    });
+
+    expect(outcomeA).toEqual(outcomeB);
+    expect(eventsA).toEqual(eventsB);
+    // Each distinct state is materialised at most once, and total calls are bounded by 3 + stubKeepRecent.
+    expect(calls).toBe(seenKeys.size);
+    expect(calls).toBeLessThanOrEqual(3 + stubKeepRecent);
+  }
+});
+
 test("seeded 500-scenario randomized test maintains all ladder, boundary, capacity, generation and INV-1 invariants", async () => {
   const { runCompaction, materializeHistory } = await api();
   let seed = 0x7f4a7c15;
