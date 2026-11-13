@@ -1523,6 +1523,112 @@ test("unchanged_fits carries reason for fold_not_possible, fold_insufficient, an
   }
 });
 
+test("custom planStubs entries outside the eligible set are ignored in both Step 2 pre-check and runInFlightStubbing", async () => {
+  const { runCompaction } = await api();
+  const { appendCommit } = await import("../src/frozen-summary.js");
+
+  // 1. Step 2 pre-check: custom planner attempts to stub already-stubbed id, newest id, and unknown id.
+  // If newest (if-3, ~750 tokens) were accepted by pre-check, minInFlightTokens would drop enough to pass pre-check and call runSummary.
+  // Because ineligible ids are ignored, only if-2 is stubbed, pre-check fails, and runSummary is never called.
+  {
+    const { log } = openLog();
+    addTurn(log, 1, { inputText: "Completed turn 1" });
+    addTurn(log, 2, {
+      inputText: "In-flight turn 2",
+      toolResults: [
+        { id: "if-1", text: "A".repeat(400) },
+        { id: "if-2", text: "B".repeat(400) },
+        { id: "if-3", text: "N".repeat(2800) },
+      ],
+    });
+    expect(appendCommit(log, {
+      formatVersion: 1,
+      resetEpoch: "session_start",
+      generation: 1,
+      boundaryEventId: null,
+      summary: null,
+      stubSet: [{ eventId: "if-1", stubText: "already-stubbed" }],
+      summaryRequest: null,
+    })).toEqual({ status: "committed" });
+
+    let summaryCalls = 0;
+    const preCheckCandidates: string[][] = [];
+    const outcome = await runCompaction({
+      log,
+      liveRequest: baseLiveRequest(),
+      contextWindowTokens: 1125,
+      options: { effectiveMaxTokens: 200, tailTurns: 0, stubKeepRecent: 1, stubMinTokens: 50 },
+      planStubs: (candidates) => {
+        preCheckCandidates.push(candidates.map((c) => c.eventId));
+        return [
+          ...candidates.map((c) => ({ eventId: c.eventId, stubText: "s" })),
+          { eventId: "if-1", stubText: "overwrite" },
+          { eventId: "if-3", stubText: "s" },
+          { eventId: "unknown-id", stubText: "s" },
+        ];
+      },
+      runSummary: async () => {
+        summaryCalls++;
+        return summaryResp();
+      },
+    });
+    expect(summaryCalls).toBe(0);
+    expect(preCheckCandidates[0]).toEqual(["if-2"]);
+    expect(outcome.status).toBe("stubbed");
+    if (outcome.status !== "stubbed") throw new Error(JSON.stringify(outcome));
+    expect(outcome.state.stubSet).toEqual([
+      { eventId: "if-1", stubText: "already-stubbed" },
+      { eventId: "if-2", stubText: "s" },
+    ]);
+  }
+
+  // 2. runInFlightStubbing: custom planner attempts to overwrite already-stubbed id, stub newest id, and add unknown id.
+  {
+    const { log } = openLog();
+    addTurn(log, 1, {
+      inputText: "Single turn",
+      toolResults: [
+        { id: "r1", text: "A".repeat(400) },
+        { id: "r2", text: "B".repeat(1600) },
+        { id: "r3", text: "N".repeat(200) },
+      ],
+    });
+    expect(appendCommit(log, {
+      formatVersion: 1,
+      resetEpoch: "session_start",
+      generation: 1,
+      boundaryEventId: null,
+      summary: null,
+      stubSet: [{ eventId: "r1", stubText: "already-stubbed" }],
+      summaryRequest: null,
+    })).toEqual({ status: "committed" });
+
+    const seenCandidates: string[][] = [];
+    const outcome = await runCompaction({
+      log,
+      liveRequest: baseLiveRequest(),
+      contextWindowTokens: 800,
+      options: { effectiveMaxTokens: 200, stubKeepRecent: 1, stubMinTokens: 50 },
+      planStubs: (candidates) => {
+        seenCandidates.push(candidates.map((c) => c.eventId));
+        return [
+          ...candidates.map((c) => ({ eventId: c.eventId, stubText: "s" })),
+          { eventId: "r1", stubText: "overwrite" },
+          { eventId: "r3", stubText: "s" },
+          { eventId: "bogus-id", stubText: "s" },
+        ];
+      },
+    });
+    expect(seenCandidates).toEqual([["r2"]]);
+    expect(outcome.status).toBe("stubbed");
+    if (outcome.status !== "stubbed") throw new Error(JSON.stringify(outcome));
+    expect(outcome.state.stubSet).toEqual([
+      { eventId: "r1", stubText: "already-stubbed" },
+      { eventId: "r2", stubText: "s" },
+    ]);
+  }
+});
+
 test("seeded 500-scenario randomized test maintains all ladder, boundary, capacity, generation and INV-1 invariants", async () => {
   const { runCompaction, materializeHistory } = await api();
   let seed = 0x7f4a7c15;
