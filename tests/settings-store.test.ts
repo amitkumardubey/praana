@@ -9,6 +9,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -978,5 +979,55 @@ console.log(JSON.stringify(res));
       expect(resetValid.doc.custom_key).toBe("keep");
       expect(resetValid.doc.thinking).toBe(true);
     }
+  });
+
+  test("updateSettingsDocument with an empty patch on an existing valid file does not write or change mtime", async () => {
+    const { updateSettingsDocument, createSettingsFs } = await storeApi();
+    const baseFs = createSettingsFs();
+
+    const initialDoc = { thinking: false, custom_key: "keep" };
+    writeFileSync(settingsPath, JSON.stringify(initialDoc, null, 2) + "\n", "utf-8");
+    const fixedTime = new Date(1_700_000_000_000);
+    utimesSync(settingsPath, fixedTime, fixedTime);
+    const mtimeBefore = statSync(settingsPath).mtimeMs;
+
+    let openExclusiveCalls = 0;
+    let renameCalls = 0;
+    const spyFs = createSettingsFs({
+      openExclusive(p, mode) {
+        openExclusiveCalls++;
+        return baseFs.openExclusive(p, mode);
+      },
+      rename(oldPath, newPath) {
+        renameCalls++;
+        return baseFs.rename(oldPath, newPath);
+      },
+    });
+
+    const resEmpty = updateSettingsDocument({}, { fs: spyFs });
+    expect(resEmpty.ok).toBe(true);
+    if (resEmpty.ok) {
+      expect(resEmpty.doc).toEqual(initialDoc);
+      expect(resEmpty.created).toBe(false);
+    }
+    expect(openExclusiveCalls).toBe(0);
+    expect(renameCalls).toBe(0);
+    expect(statSync(settingsPath).mtimeMs).toBe(mtimeBefore);
+
+    const resUndefinedOnly = updateSettingsDocument({ thinking: undefined }, { fs: spyFs });
+    expect(resUndefinedOnly.ok).toBe(true);
+    if (resUndefinedOnly.ok) {
+      expect(resUndefinedOnly.doc).toEqual(initialDoc);
+      expect(resUndefinedOnly.created).toBe(false);
+    }
+    expect(openExclusiveCalls).toBe(0);
+    expect(renameCalls).toBe(0);
+    expect(statSync(settingsPath).mtimeMs).toBe(mtimeBefore);
+
+    // Empty patch still fails on a corrupt file.
+    writeFileSync(settingsPath, "{corrupt", "utf-8");
+    expect(updateSettingsDocument({}, { fs: spyFs }).ok).toBe(false);
+    expect(openExclusiveCalls).toBe(0);
+    expect(renameCalls).toBe(0);
   });
 });

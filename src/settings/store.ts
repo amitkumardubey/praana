@@ -509,8 +509,11 @@ export function updateSettingsDocument(
       backupPath = backedUp.backupPath;
     }
 
-    if (current.state === "ok" && options?.createOnly) {
-      return { ok: true, doc: { ...current.doc }, created: false };
+    if (current.state === "ok") {
+      const hasPatchChanges = Object.keys(patch).some((key) => patch[key] !== undefined);
+      if (options?.createOnly || !hasPatchChanges) {
+        return { ok: true, doc: { ...current.doc }, created: false };
+      }
     }
 
     const nextDoc: Record<string, unknown> =
