@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { realpathSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -26,7 +27,7 @@ test("SIGKILL assertions reject successful exits and other signals", () => {
 });
 
 test.each([true, false])("SIGKILL at temp-written-before-rename preserves the target (existing=%s)", async (existing) => {
-  const home = await fs.mkdtemp(join(tmpdir(), "memory-kill-")); homes.push(home);
+  const home = realpathSync(await fs.mkdtemp(join(tmpdir(), "memory-kill-"))); homes.push(home);
   const store = createFileMemoryStore({ home, cwd: home, findRoot: (cwd) => cwd });
   if (existing) expect((await store.write(old)).ok).toBe(true);
   const dir = join(home, ".praana/memory"), target = join(dir, "victim.md");

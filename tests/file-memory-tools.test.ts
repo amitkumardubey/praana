@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { realpathSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +10,7 @@ import { memoryDirectories, projectKey } from "../src/file-memory/paths.js";
 const homes: string[] = [];
 afterEach(async () => { for (const home of homes.splice(0)) await fs.rm(home, { recursive: true, force: true }); });
 async function setup() {
-  const home = await fs.mkdtemp(join(tmpdir(), "memory-tools-")); homes.push(home);
+  const home = realpathSync(await fs.mkdtemp(join(tmpdir(), "memory-tools-"))); homes.push(home);
   const options = { home, cwd: home, findRoot: (cwd: string) => cwd };
   const store = createFileMemoryStore(options);
   return { home, options, store, tools: createFileMemoryTools(store) };

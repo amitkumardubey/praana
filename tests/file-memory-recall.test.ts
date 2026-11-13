@@ -1,4 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
+import { realpathSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +12,7 @@ import { rankMemories } from "../src/file-memory/recall.js";
 const homes: string[] = [];
 afterEach(async () => { for (const home of homes.splice(0)) await fs.rm(home, { recursive: true, force: true }); });
 async function setup() {
-  const home = await fs.mkdtemp(join(tmpdir(), "recall-")); homes.push(home);
+  const home = realpathSync(await fs.mkdtemp(join(tmpdir(), "recall-"))); homes.push(home);
   const cwd = join(home, "current");
   const options = { home, cwd, findRoot: (cwd: string) => cwd, now: () => new Date("2026-05-01T00:00:00Z") };
   const dirs = memoryDirectories(home, projectKey(cwd, options.findRoot));

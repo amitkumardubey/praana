@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { realpathSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -9,7 +10,7 @@ import { spawnMemoryChild } from "./helpers/file-memory-process.js";
 
 const homes: string[] = [];
 afterEach(async () => { for (const home of homes.splice(0)) await fs.rm(home, { recursive: true, force: true }); });
-async function tempHome() { const home = await fs.mkdtemp(join(tmpdir(), "memory-isolation-")); homes.push(home); return home; }
+async function tempHome() { const home = realpathSync(await fs.mkdtemp(join(tmpdir(), "memory-isolation-"))); homes.push(home); return home; }
 const contained = (home: string, path: string) => { const rel = relative(home, path); return isAbsolute(path) && !isAbsolute(rel) && rel !== ".." && !rel.startsWith(`..${sep}`); };
 const entry = { scope: "global" as const, type: "user" as const, name: "isolated", description: "Isolated filesystem fixture", body: "Complete searchable content" };
 

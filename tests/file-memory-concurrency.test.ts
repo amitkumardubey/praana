@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { realpathSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,7 +10,7 @@ import { readRemainingText, spawnBarrierMemoryChild, waitForLine } from "./helpe
 const homes: string[] = [];
 afterEach(async () => { for (const home of homes.splice(0)) await fs.rm(home, { recursive: true, force: true }); });
 async function setup() {
-  const home = await fs.mkdtemp(join(tmpdir(), "memory-concurrency-")); homes.push(home);
+  const home = realpathSync(await fs.mkdtemp(join(tmpdir(), "memory-concurrency-"))); homes.push(home);
   const options = { home, cwd: home, findRoot: (cwd: string) => cwd, now: () => new Date("2026-05-01T00:00:00Z") };
   return { home, options, store: createFileMemoryStore(options) };
 }

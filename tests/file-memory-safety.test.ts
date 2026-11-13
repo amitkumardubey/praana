@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { realpathSync } from "node:fs";
 import * as fs from "node:fs/promises";
 import { join, relative, isAbsolute } from "node:path";
 import { tmpdir } from "node:os";
@@ -6,7 +7,7 @@ import { createFileMemoryStore } from "../src/file-memory/store.js";
 
 const homes: string[] = [];
 afterEach(async () => { for (const home of homes.splice(0)) await fs.rm(home, { recursive: true, force: true }); });
-async function homeDir() { const home = await fs.mkdtemp(join(tmpdir(), "safety-")); homes.push(home); return home; }
+async function homeDir() { const home = realpathSync(await fs.mkdtemp(join(tmpdir(), "safety-"))); homes.push(home); return home; }
 const entry = { scope: "global" as const, type: "user" as const, name: "alpha", description: "Distinct detail", body: "Old complete content" };
 const make = (home: string, seam?: typeof fs) => createFileMemoryStore({ home, cwd: home, fs: seam, findRoot: (cwd) => cwd, now: () => new Date("2026-01-01T00:00:00Z") });
 
