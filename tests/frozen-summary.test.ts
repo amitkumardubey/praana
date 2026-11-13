@@ -499,6 +499,21 @@ test("append rejects invalid input and propagates read errors without writing", 
   expect(append).not.toHaveBeenCalled();
 });
 
+for (const field of ["stubSet", "summaryRequest"] as const) {
+  test(`append rejects a throwing ${field} getter before reading or writing the log`, async () => {
+    const { appendCommit } = await api();
+    const commit = data();
+    Object.defineProperty(commit, field, { get() { throw new Error(`unreadable ${field}`); } });
+    const log = {
+      readAll(): Event[] { throw new Error("Invalid input must not read the log"); },
+      append(): Event { throw new Error("Invalid input must not write the log"); },
+    };
+    expect(appendCommit(log, commit)).toMatchObject({
+      status: "rejected", error: { code: "invalid_commit", eventIndex: -1, message: expect.stringContaining(`unreadable ${field}`) },
+    });
+  });
+}
+
 test("append helper writes exactly one event, without canonical instruction or response records", async () => {
   const { appendCommit, restoreFrozenState } = await api();
   const { log } = openLog();
