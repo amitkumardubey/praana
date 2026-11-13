@@ -201,7 +201,7 @@ const WORKING_MEMORY_TOOL_DESCRIPTIONS = [
 
 const SHARED_TOOL_DESCRIPTIONS = [
   "search_session_log(query, kinds?, limit?) — Search current session event log (not Cognitive Memory recall)",
-  "search_transcript(query?, id?, include_previous_resets?, limit?, context_messages?, offset?, max_chars?) — Search canonical session transcript (BM25 + substring, including compacted/stubbed turns) or fetch full message content by ID",
+  "search_transcript(query?, id?, include_previous_resets?, limit?, context_messages?, offset?, max_chars?) — Search canonical session records (BM25 + substring), including compacted/stubbed turns; current reset epoch by default, include_previous_resets=true crosses /clear. Fetch full/ranged content and neighbors by ID. Search excludes search_transcript calls/results; artifact-backed results use paired logged output when available",
   "read_and_summarize(path) — Read file and return structured summary (exports, imports, metrics)",
   "recall(query, mode?, kinds?) — Search Cognitive Memory",
   "remember(content, kind?, certainty?, scope?) — Store in Cognitive Memory (kinds: fact, preference, decision, pattern, mistake, constraint)",

@@ -342,9 +342,10 @@ export function createSearchTranscriptTool(ctx: {
   return {
     search_transcript: defineTool({
       description:
-        "Search canonical message records in this session's transcript (BM25 + case-insensitive substring; no regex) " +
-        "or fetch a message's full content and surrounding context by ID. Includes messages folded by compaction or " +
-        "replaced by stubs. Searches the current reset epoch by default; set include_previous_resets=true to search across /clear.",
+        "Search canonical session records (BM25 + case-insensitive substring; no regex), including compacted/stubbed turns, " +
+        "or fetch full/ranged content and neighbors by ID. Searches the current reset epoch by default; " +
+        "set include_previous_resets=true to search or fetch across /clear. Search excludes search_transcript calls/results. " +
+        "Artifact-backed results use paired logged output when available; matches retain artifactId.",
       parameters: searchTranscriptParameters,
       execute: async (rawArgs: SearchTranscriptArgs): Promise<SearchTranscriptResult> => {
         const parsed = searchTranscriptParameters.safeParse(rawArgs ?? {});

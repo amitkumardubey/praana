@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, mock, spyOn, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readFullSessionCanonicalRecords, type CanonicalRecord } from "../src/canonical-transcript.js";
 import { loadConfig } from "../src/config.js";
+import { buildClassicSystemFrame } from "../src/compile-classic.js";
+import { buildSystemFrame } from "../src/compiler.js";
 import { ContextEngine } from "../src/context-engine/index.js";
 import * as nativeLlm from "../src/llm/index.js";
 import type { StreamEvent } from "../src/llm/types.js";
@@ -497,6 +499,38 @@ describe("search_transcript tool (PR3)", () => {
     expect(fetched.message.content).toContain("line-61: STUBBED_FINDING_NEEDLE_XYZ");
     expect(fetched.message.before?.map((m: { id: string }) => m.id)).toEqual(["a-1"]);
     expect(fetched.message.after?.map((m: { id: string }) => m.id)).toEqual(["a-2"]);
+  });
+
+  test("describes canonical transcript scope and reset defaults in both prompts and tool descriptions", () => {
+    const { log } = openLog();
+    const description = searchTranscriptModule.createSearchTranscriptTool({ eventLog: log }).search_transcript.description;
+    const texts = [
+      buildClassicSystemFrame("/project", "session", []),
+      buildSystemFrame("/project", "session", [], undefined, null, true),
+      ...[true, false].map((classicMode) => describeTools({ classicMode, contextEngineEnabled: !classicMode })
+        .find((line) => line.startsWith("search_transcript("))!),
+      `search_transcript: ${description}`,
+    ];
+    for (const text of texts) {
+      expect(text).toContain("search_transcript");
+      expect(text).toMatch(/canonical.*records/i);
+      expect(text).toMatch(/compact(?:ed|ion).*stub/i);
+      expect(text).toContain("current reset epoch");
+      expect(text).toContain("by default");
+      expect(text).toContain("include_previous_resets");
+    }
+  });
+
+  test("documents transcript recovery beyond the prompt window and the default reset scope", () => {
+    for (const path of ["docs/ARCHITECTURE.md", "docs/concepts.md"]) {
+      const text = readFileSync(join(import.meta.dir, "..", path), "utf8");
+      const toolLine = text.split("\n").find((line) => line.includes("search_transcript") && /canonical/i.test(line));
+      expect(toolLine).toMatch(/compact(?:ed|ion).*stub/i);
+      expect(toolLine).toContain("current reset epoch");
+      expect(toolLine).toContain("by default");
+      expect(toolLine).toContain("include_previous_resets");
+      expect(text).not.toContain("information only survives if the checkpoint captured it");
+    }
   });
 
   test("registers search_transcript in createAllTools, describeTools, loop-gate READ_TOOLS, tool-summary, and tool-icons", async () => {
