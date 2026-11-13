@@ -963,7 +963,7 @@ test("cancellation with controlled promises prevents every commit across primary
     planStubs: () => { throw new Error("Must not stub when already aborted"); },
     runSummary: async () => { throw new Error("Must not summarize when already aborted"); },
   });
-  expect(res1.status).toBe("cancelled");
+  expect(res1).toMatchObject({ status: "cancelled", reason: "aborted" });
   expect(readCommits(log1.readAll({ includeInternal: true }))).toHaveLength(0);
 
   // 2. Aborted during primary summary (controlled promise rejects or resolves late).
@@ -1042,8 +1042,6 @@ test("cancellation with controlled promises prevents every commit across primary
     const { log } = openLog();
     addTurn(log, 1, { inputText: "Turn 1 " + "a".repeat(6000) });
     addTurn(log, 2, { inputText: "Turn 2" });
-    const restored = restoreFrozenStateFromLog(log);
-    if (!restored.ok) throw restored.error;
     const readSpy = spyOn(log, "readAll");
     const res = await runCompaction({
       log,
@@ -1057,7 +1055,7 @@ test("cancellation with controlled promises prevents every commit across primary
     });
     expect(res.status).toBe("cancelled");
     if (res.status !== "cancelled") throw new Error(JSON.stringify(res));
-    expect(res.state).toEqual(restored.state);
+    expect(res.reason).toBe("reset");
     expect(readSpy).toHaveBeenCalledTimes(2); // initial restore and appendCommit validation only
     readSpy.mockRestore();
     expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
@@ -1106,8 +1104,6 @@ test("commit_rejected is returned with reason when replay or validation rejects 
     const { log } = openLog();
     addTurn(log, 1, { inputText: "Turn 1 " + "a".repeat(6000) });
     addTurn(log, 2, { inputText: "Turn 2" });
-    const restored = restoreFrozenStateFromLog(log);
-    if (!restored.ok) throw restored.error;
     let winner: compaction.CompactionOutcome | undefined;
 
     const outcome = await runCompaction({
@@ -1130,7 +1126,7 @@ test("commit_rejected is returned with reason when replay or validation rejects 
     expect(winner?.status).toBe("rewritten");
     expect(outcome.status).toBe("cancelled");
     if (outcome.status !== "cancelled") throw new Error(JSON.stringify(outcome));
-    expect(outcome.state).toEqual(restored.state);
+    expect(outcome.reason).toBe("superseded");
     expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(1);
   }
 

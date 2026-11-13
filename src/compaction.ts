@@ -315,8 +315,8 @@ export type CompactionOutcome =
   | { status: "unchanged_fits"; state: FrozenState; fill: RequestFill; reason?: UnchangedFitsReason; summaryDiscarded?: true }
   /** Summary failure/timeout; previous state retained and the unchanged request fits. */
   | { status: "summary_failed_fits"; state: FrozenState; fill: RequestFill; reason: string }
-  /** Nothing committed; state is the previously restored state. */
-  | { status: "cancelled"; state: FrozenState }
+  /** Nothing committed by this run. State is pre-race; callers must re-restore from the log before continuing. */
+  | { status: "cancelled"; state: FrozenState; reason: "aborted" | "superseded" | "reset" }
   /** Replay or commit validation rejected the rewrite before append; nothing committed. */
   | { status: "commit_rejected"; state: FrozenState; reason: string; error: FrozenSummaryError }
   /** Do not assume the previous state: reload raw events and restore before continuing. */
@@ -551,16 +551,16 @@ function tryCommitRewrite(
   signal: AbortSignal | undefined,
 ):
   | { status: "committed"; state: FrozenState }
-  | { status: "cancelled" }
+  | { status: "cancelled"; reason: "aborted" | "superseded" | "reset" }
   | { status: "commit_rejected"; state: FrozenState; reason: string; error: FrozenSummaryError }
   | { status: "commit_uncertain"; error: unknown } {
-  if (signal?.aborted) return { status: "cancelled" };
+  if (signal?.aborted) return { status: "cancelled", reason: "aborted" };
   const appended = appendCommit(log, commit);
   if (appended.status === "commit_uncertain") return { status: "commit_uncertain", error: appended.error };
   if (appended.status === "rejected") {
     if (appended.error.eventIndex === appended.candidateEventIndex &&
         (appended.error.code === "invalid_generation" || appended.error.code === "invalid_epoch")) {
-      return { status: "cancelled" };
+      return { status: "cancelled", reason: appended.error.code === "invalid_generation" ? "superseded" : "reset" };
     }
     return { status: "commit_rejected", state: initialState, reason: appended.error.message, error: appended.error };
   }
@@ -618,7 +618,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
   if (!initialMeasured.ok) return initialMeasured.error;
   const initialFill = initialMeasured.fill;
 
-  if (signal?.aborted) return { status: "cancelled", state };
+  if (signal?.aborted) return { status: "cancelled", state, reason: "aborted" };
   if (!shouldRewrite(initialFill, opts) && initialFill.fits) {
     return { status: "noop", state, fill: initialFill };
   }
@@ -739,13 +739,13 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
       (c) => !step1StubMap.has(c.eventId) && c.estimatedTokens >= opts.stubMinTokens,
     );
     if (staleEligible.length > 0) {
-      if (signal?.aborted) return { status: "cancelled", state };
+      if (signal?.aborted) return { status: "cancelled", state, reason: "aborted" };
       const plannedStale = applyStubPlanner(planStubs, staleEligible, {
         phase: "stale",
         minTokens: opts.stubMinTokens,
         keepRecent: opts.stubKeepRecent,
       });
-      if (signal?.aborted) return { status: "cancelled", state };
+      if (signal?.aborted) return { status: "cancelled", state, reason: "aborted" };
       for (const entry of plannedStale) {
         if (step1StubMap.get(entry.eventId) !== entry.stubText) {
           step1StubMap.set(entry.eventId, entry.stubText);
@@ -773,7 +773,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
         { formatVersion: 1, ...step1Candidate },
         signal,
       );
-      if (committed.status === "cancelled") return { status: "cancelled", state };
+      if (committed.status === "cancelled") return { ...committed, state };
       if (committed.status === "commit_rejected" || committed.status === "commit_uncertain") return committed;
       return { status: "stubbed", state: committed.state, fill: step1Fill };
     }
@@ -801,13 +801,13 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
         .slice(0, -1)
         .filter((c) => !inFlightMinMap.has(c.eventId) && c.estimatedTokens >= opts.stubMinTokens);
       if (eligibleOldInFlight.length > 0) {
-        if (signal?.aborted) return { status: "cancelled", state };
+        if (signal?.aborted) return { status: "cancelled", state, reason: "aborted" };
         const plannedMin = applyStubPlanner(planStubs, eligibleOldInFlight, {
           phase: "in_flight",
           minTokens: opts.stubMinTokens,
           keepRecent: 1,
         });
-        if (signal?.aborted) return { status: "cancelled", state };
+        if (signal?.aborted) return { status: "cancelled", state, reason: "aborted" };
         for (const entry of plannedMin) inFlightMinMap.set(entry.eventId, entry.stubText);
         const inFlightMinMessages = emitCanonicalTranscript(applyStubs(inFlightTurn, inFlightMinMap));
         minInFlightTokens = estimateRequestTokens(frame, inFlightMinMessages);
@@ -874,7 +874,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
 
       if (sameModelFill.fill.fits) {
         const primaryCall = await invokeSummarizer(runSummary, sameModelReq, signal, opts.summaryTimeoutMs);
-        if (primaryCall.status === "cancelled") return { status: "cancelled", state };
+        if (primaryCall.status === "cancelled") return { status: "cancelled", state, reason: "aborted" };
         if (primaryCall.status === "failed") {
           summaryFailureReason = primaryCall.reason;
         } else {
@@ -901,7 +901,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
                 summaryFailureReason = "summary repair request exceeds capacity";
               } else {
                 const repairCall = await invokeSummarizer(runSummary, repairBuilt.request, signal, opts.summaryTimeoutMs);
-                if (repairCall.status === "cancelled") return { status: "cancelled", state };
+                if (repairCall.status === "cancelled") return { status: "cancelled", state, reason: "aborted" };
                 if (repairCall.status === "failed") {
                   summaryFailureReason = repairCall.reason;
                 } else {
@@ -949,7 +949,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
               }
             }
             const call = await invokeSummarizer(runSummary, step.request, signal, opts.summaryTimeoutMs);
-            if (call.status === "cancelled") return { status: "cancelled", state };
+            if (call.status === "cancelled") return { status: "cancelled", state, reason: "aborted" };
             if (call.status === "failed") {
               summaryFailureReason = call.reason;
               break;
@@ -990,7 +990,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
             summaryRequestMeta,
             retainedStubMap,
           );
-          if (inFlightStubbed.cancelled) return { status: "cancelled", state };
+          if (inFlightStubbed.cancelled) return { status: "cancelled", state, reason: "aborted" };
           finalStubSet = inFlightStubbed.stubSet;
           postFoldFill = inFlightStubbed.fill;
           postFoldState = { ...postFoldState, stubSet: finalStubSet };
@@ -1003,7 +1003,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
             { formatVersion: 1, ...postFoldState },
             signal,
           );
-          if (committed.status === "cancelled") return { status: "cancelled", state };
+          if (committed.status === "cancelled") return { ...committed, state };
           if (committed.status === "commit_rejected" || committed.status === "commit_uncertain") return committed;
           return { status: "rewritten", state: committed.state, fill: postFoldFill };
         }
@@ -1020,7 +1020,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
 
   // --- STEP 3: Stub inside the in-flight turn (first-turn overflow, not_foldable fallback, or summary-failure rescue when !initialFill.fits) ---
   const step3Result = runInFlightStubbing(state.boundaryEventId, state.summary, null, step1StubMap);
-  if (step3Result.cancelled) return { status: "cancelled", state };
+  if (step3Result.cancelled) return { status: "cancelled", state, reason: "aborted" };
   const stubsChanged = step1AddedStubs || step3Result.changed;
 
   if (stubsChanged && step3Result.fill.fits) {
@@ -1034,7 +1034,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
       summaryRequest: null,
     };
     const committed = tryCommitRewrite(input.log, state, stubCommit, signal);
-    if (committed.status === "cancelled") return { status: "cancelled", state };
+    if (committed.status === "cancelled") return { ...committed, state };
     if (committed.status === "commit_rejected" || committed.status === "commit_uncertain") return committed;
     const outcome: CompactionOutcome = {
       status: "stubbed",
