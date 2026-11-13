@@ -15,6 +15,7 @@ import {
   appendCommit,
   buildSummaryInstruction,
   checkSummary,
+  FrozenSummaryError,
   renderSummaryMessage,
   restoreFrozenState,
   SESSION_START_EPOCH,
@@ -303,6 +304,8 @@ export type CompactionOutcome =
   | { status: "summary_failed_fits"; state: FrozenState; fill: RequestFill; reason: string }
   /** Nothing committed; state is the previously restored state. */
   | { status: "cancelled"; state: FrozenState }
+  /** Replay or commit validation rejected the rewrite before append; nothing committed. */
+  | { status: "commit_rejected"; state: FrozenState; reason: string; error: FrozenSummaryError }
   /** Do not assume the previous state: reload raw events and restore before continuing. */
   | { status: "commit_uncertain"; error: unknown }
   | CapacityErrorOutcome;
@@ -517,19 +520,28 @@ function tryCommitRewrite(
   initialState: FrozenState,
   commit: Omit<CompactionCommit, "prefix">,
   signal: AbortSignal | undefined,
-): { status: "committed"; state: FrozenState } | { status: "cancelled" } | { status: "commit_uncertain"; error: unknown } {
+):
+  | { status: "committed"; state: FrozenState }
+  | { status: "cancelled" }
+  | { status: "commit_rejected"; state: FrozenState; reason: string; error: FrozenSummaryError }
+  | { status: "commit_uncertain"; error: unknown } {
   if (signal?.aborted) return { status: "cancelled" };
-  const latestEvents = log.readAll({ includeInternal: true });
-  const resetIdx = findLastResetBoundaryIndex([...latestEvents]);
-  const latestEpoch = resetIdx < 0 ? SESSION_START_EPOCH : latestEvents[resetIdx].event_id;
-  if (latestEpoch !== initialState.resetEpoch) return { status: "cancelled" };
-  const latestRestored = restoreFrozenState(latestEvents);
-  if (!latestRestored.ok || latestRestored.state.generation !== initialState.generation) {
-    return { status: "cancelled" };
+  try {
+    const latestEvents = log.readAll({ includeInternal: true });
+    const resetIdx = findLastResetBoundaryIndex([...latestEvents]);
+    const latestEpoch = resetIdx < 0 ? SESSION_START_EPOCH : latestEvents[resetIdx].event_id;
+    if (latestEpoch !== initialState.resetEpoch) return { status: "cancelled" };
+  } catch (error) {
+    const err = error instanceof FrozenSummaryError
+      ? error
+      : new FrozenSummaryError("invalid_commit", -1, `cannot validate commit: ${error instanceof Error ? error.message : String(error)}`);
+    return { status: "commit_rejected", state: initialState, reason: err.message, error: err };
   }
   const appended = appendCommit(log, commit);
   if (appended.status === "commit_uncertain") return { status: "commit_uncertain", error: appended.error };
-  if (appended.status === "rejected") return { status: "cancelled" };
+  if (appended.status === "rejected") {
+    return { status: "commit_rejected", state: initialState, reason: appended.error.message, error: appended.error };
+  }
   return {
     status: "committed",
     state: {
@@ -722,7 +734,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
         signal,
       );
       if (committed.status === "cancelled") return { status: "cancelled", state };
-      if (committed.status === "commit_uncertain") return committed;
+      if (committed.status === "commit_rejected" || committed.status === "commit_uncertain") return committed;
       return { status: "stubbed", state: committed.state, fill: step1Fill };
     }
   }
@@ -946,7 +958,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
             signal,
           );
           if (committed.status === "cancelled") return { status: "cancelled", state };
-          if (committed.status === "commit_uncertain") return committed;
+          if (committed.status === "commit_rejected" || committed.status === "commit_uncertain") return committed;
           return { status: "rewritten", state: committed.state, fill: postFoldFill };
         }
       }
@@ -975,7 +987,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
     };
     const committed = tryCommitRewrite(input.log, state, stubCommit, signal);
     if (committed.status === "cancelled") return { status: "cancelled", state };
-    if (committed.status === "commit_uncertain") return committed;
+    if (committed.status === "commit_rejected" || committed.status === "commit_uncertain") return committed;
     return { status: "stubbed", state: committed.state, fill: step3Result.fill };
   }
 

@@ -2,7 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import * as tokenEstimator from "../src/token-estimate.js";
 import { CanonicalTranscriptError, emitCanonicalTranscript, type CanonicalRecord } from "../src/canonical-transcript.js";
 import type { ConversationMessage } from "../src/llm/types.js";
-import { buildCommitEvent, restoreFrozenState, SESSION_START_EPOCH, type FrozenState } from "../src/frozen-summary.js";
+import { buildCommitEvent, FrozenSummaryError, restoreFrozenState, SESSION_START_EPOCH, type FrozenState } from "../src/frozen-summary.js";
 import { estimateTokens } from "../src/token-estimate.js";
 import type { Event } from "../src/types.js";
 import type { CompactionOutcome } from "../src/compaction.js";
@@ -554,6 +554,7 @@ test("outcome contracts discriminate every terminal status without implementing 
     { status: "noop", state, fill }, { status: "rewritten", state: { ...state, generation: 1 }, fill },
     { status: "stubbed", state: { ...state, generation: 1 }, fill }, { status: "unchanged_fits", state, fill },
     { status: "summary_failed_fits", state, fill, reason: "summary timed out" }, { status: "cancelled", state },
+    { status: "commit_rejected", state, reason: "invalid_generation", error: new FrozenSummaryError("invalid_generation", 1, "generation mismatch") },
     { status: "commit_uncertain", error: new Error("fsync failed") },
     { status: "capacity_error", kind: "request_exceeds_capacity", message: "Use /clear or a larger-context model." },
   ];
@@ -562,6 +563,7 @@ test("outcome contracts discriminate every terminal status without implementing 
       case "noop": case "rewritten": case "stubbed": case "unchanged_fits": return `${outcome.status}:${outcome.state.generation}:${outcome.fill.fits}`;
       case "summary_failed_fits": return outcome.reason;
       case "cancelled": return `cancelled:${outcome.state.generation}`;
+      case "commit_rejected": return `commit_rejected:${outcome.error.code}:${outcome.reason}`;
       case "commit_uncertain": return String(outcome.error);
       case "capacity_error": return `${outcome.kind}:${outcome.message}`;
       default: {
@@ -572,6 +574,6 @@ test("outcome contracts discriminate every terminal status without implementing 
   }
   expect(outcomes.map(label)).toEqual([
     "noop:0:true", "rewritten:1:true", "stubbed:1:true", "unchanged_fits:0:true", "summary timed out", "cancelled:0",
-    "Error: fsync failed", "request_exceeds_capacity:Use /clear or a larger-context model.",
+    "commit_rejected:invalid_generation:invalid_generation", "Error: fsync failed", "request_exceeds_capacity:Use /clear or a larger-context model.",
   ]);
 });

@@ -1089,6 +1089,122 @@ test("commit_uncertain is returned without retry when append throws, and reopeni
   expect(restored.state.summary).toContain("Durable before fsync threw.");
 });
 
+test("commit_rejected is returned with reason when replay or validation rejects a commit before append", async () => {
+  const { runCompaction } = await api();
+
+  // 1. Replay rejects commit in Step 2 (e.g. boundary event disappeared or concurrent commit advanced generation in same epoch).
+  {
+    const { log } = openLog();
+    addTurn(log, 1, { inputText: "Turn 1 " + "a".repeat(6000) });
+    addTurn(log, 2, { inputText: "Turn 2" });
+    const { appendCommit } = await import("../src/frozen-summary.js");
+
+    const outcome = await runCompaction({
+      log,
+      liveRequest: baseLiveRequest(),
+      contextWindowTokens: 2100,
+      options: { effectiveMaxTokens: 200, tailTurns: 0 },
+      runSummary: async () => {
+        // Concurrent commit in the same epoch advances generation to 1 while summary is running.
+        appendCommit(log, {
+          formatVersion: 1,
+          resetEpoch: "session_start",
+          generation: 1,
+          boundaryEventId: "t1-final",
+          summary: validSummary("Concurrent commit."),
+          stubSet: [],
+          summaryRequest: {
+            cutDescription: "through turn 1 (t1-final)",
+            capTokens: 237,
+            instructionSha256: "a".repeat(64),
+            usage: null,
+          },
+        });
+        return summaryResp(validSummary("Conflicting summary."));
+      },
+    });
+
+    expect(outcome.status).toBe("commit_rejected");
+    if (outcome.status !== "commit_rejected") throw new Error(JSON.stringify(outcome));
+    expect(outcome.reason).toContain("generation");
+    expect(outcome.error.code).toBe("invalid_generation");
+    expect(outcome.state.generation).toBe(0);
+    expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(1);
+  }
+
+  // 2. Replay rejects commit when boundary event is missing on validation readAll (e.g. torn/truncated log).
+  {
+    const events: Event[] = [];
+    const { log } = openLog();
+    addTurn(log, 1, { inputText: "Turn 1 " + "a".repeat(6000) });
+    addTurn(log, 2, { inputText: "Turn 2" });
+    events.push(...log.readAll({ includeInternal: true }));
+    let stripBoundaryOnValidation = false;
+    const customLog = {
+      readAll() {
+        return stripBoundaryOnValidation ? events.filter((e) => e.event_id !== "t1-final") : events;
+      },
+      append(ev: Omit<Event, "event_id" | "session_id" | "timestamp">) {
+        throw new Error(`Should not append rejected commit: ${JSON.stringify(ev)}`);
+      },
+    };
+
+    const outcome = await runCompaction({
+      log: customLog,
+      liveRequest: baseLiveRequest(),
+      contextWindowTokens: 2100,
+      options: { effectiveMaxTokens: 200, tailTurns: 0 },
+      runSummary: async () => {
+        stripBoundaryOnValidation = true;
+        return summaryResp(validSummary("Summary referencing missing boundary."));
+      },
+    });
+
+    expect(outcome.status).toBe("commit_rejected");
+    if (outcome.status !== "commit_rejected") throw new Error(JSON.stringify(outcome));
+    expect(outcome.reason).toContain("boundary");
+    expect(outcome.error.code).toBe("invalid_boundary");
+  }
+
+  // 3. Replay rejects stubs-only commit in Step 3 when stubbed tool result is missing on validation readAll.
+  {
+    const { log } = openLog();
+    addTurn(log, 1, {
+      inputText: "Stubs-only rejection",
+      toolResults: [
+        { id: "r1", text: "X".repeat(4000) },
+        { id: "r2", text: "Y".repeat(100) },
+      ],
+    });
+    const events = log.readAll({ includeInternal: true });
+    let stripStubTarget = false;
+    const customLog = {
+      readAll() {
+        return stripStubTarget ? events.filter((e) => e.event_id !== "r1") : events;
+      },
+      append(ev: Omit<Event, "event_id" | "session_id" | "timestamp">) {
+        throw new Error(`Should not append rejected stub commit: ${JSON.stringify(ev)}`);
+      },
+    };
+
+    const outcome = await runCompaction({
+      log: customLog,
+      liveRequest: baseLiveRequest(),
+      contextWindowTokens: 1000,
+      options: { effectiveMaxTokens: 100, stubKeepRecent: 1 },
+      planStubs: (candidates) => {
+        stripStubTarget = true;
+        return candidates.map((c) => ({ eventId: c.eventId, stubText: "stub" }));
+      },
+    });
+
+    expect(outcome.status).toBe("commit_rejected");
+    if (outcome.status !== "commit_rejected") throw new Error(JSON.stringify(outcome));
+    expect(outcome.reason).toContain("stub");
+    expect(outcome.error.code).toBe("invalid_stub");
+  }
+});
+
 test("compaction modules import nothing from src/memory/ or checkpoint.ts", async () => {
   await api();
   for (const rel of ["../src/compaction.ts", "../src/compaction-requests.ts"]) {
