@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFileMemoryStore } from "../src/file-memory/store.js";
 import { createFileMemoryTools } from "../src/file-memory/tools.js";
+import { memoryDirectories, projectKey } from "../src/file-memory/paths.js";
 
 const homes: string[] = [];
 afterEach(async () => { for (const home of homes.splice(0)) await fs.rm(home, { recursive: true, force: true }); });
@@ -61,6 +62,31 @@ test("remember execute returns all validation and secret refusals, duplicate sug
   refused(await tools.forget_memory.execute({ name: entry.name }));
   refused(await tools.recall.execute({ name: "../escape" }));
   refused(await tools.forget_memory.execute({ name: "../escape" }));
+});
+
+test("recall tool forwards an explicit scope for by-name lookups after a failed scope scan", async () => {
+  const { home, options, store } = await setup();
+  const dirs = memoryDirectories(home, projectKey(home, (cwd) => cwd));
+  expect((await store.write({ ...entry, name: "portable" })).ok).toBe(true);
+  await fs.mkdir(dirs.project, { recursive: true });
+  const unreadable = join(dirs.project, "portable.md");
+  await fs.writeFile(unreadable, "---\nname: portable\ntype: user\ndescription: Unreadable project copy\n---\n\nBody\n");
+  const probes: string[] = [];
+  const seam = new Proxy(fs, { get(target, key) {
+    if (key !== "lstat") return Reflect.get(target, key);
+    return async (...args: Parameters<typeof fs.lstat>) => {
+      probes.push(String(args[0]));
+      if (args[0] === unreadable) throw Object.assign(new Error(`EACCES: permission denied, lstat '${unreadable}'`), { code: "EACCES" });
+      return fs.lstat(...args);
+    };
+  } });
+  const tools = createFileMemoryTools(createFileMemoryStore({ ...options, fs: seam }));
+  const unscoped = await tools.recall.execute({ name: "portable" });
+  expect(probes).toContain(unreadable);
+  expect(unscoped).toMatchObject({ ok: false, error: expect.stringMatching(/explicit scope/i), skippedScopes: [{ scope: "project", reason: expect.stringContaining(unreadable) }] });
+  expect(await tools.recall.execute({ name: "portable", scope: "global" })).toMatchObject({ ok: true, memory: { name: "portable", scope: "global" } });
+  expect(tools.recall.description).toMatch(/scope/);
+  refused(await tools.recall.execute({ query: "coffee", scope: "global" }));
 });
 
 test("incognito blocks tool mutations but permits recall", async () => {

@@ -28,8 +28,9 @@ export function createFileMemoryTools(store: ToolStore) {
     description: z.string(),
     body: z.string(),
   }).strict();
-  const recall = z.object({ query: z.string().optional(), name: name.optional() }).strict()
-    .refine((args) => (args.query !== undefined) !== (args.name !== undefined), "Provide exactly one of query or name");
+  const recall = z.object({ query: z.string().optional(), name: name.optional(), scope: scope.optional() }).strict()
+    .refine((args) => (args.query !== undefined) !== (args.name !== undefined), "Provide exactly one of query or name")
+    .refine((args) => args.scope === undefined || args.name !== undefined, "scope applies only to a name lookup; queries always search global and project");
   const forget = z.object({ name, scope: scope.optional() }).strict();
 
   return {
@@ -39,7 +40,7 @@ export function createFileMemoryTools(store: ToolStore) {
       execute: execute(remember, async (args) => store.write(args)),
     }),
     recall: defineTool({
-      description: "Recall dated, untrusted file memories from global and current project scopes. Provide exactly one of name or query. Name lookup prefers project; token queries return at most five matches with 300-code-point snippet windows with control characters and whitespace cleaned. Empty and stop-word-only queries are refused. Verify referenced files and functions. Available in incognito.",
+      description: "Recall dated, untrusted file memories from global and current project scopes. Provide exactly one of name or query. Name lookup prefers project; pass scope (global or project) to read one scope explicitly, required after a failed scope scan. Scope applies only to a name lookup; token queries always search both scopes and return at most five matches with 300-code-point snippet windows with control characters and whitespace cleaned. Empty and stop-word-only queries are refused. Verify referenced files and functions. Available in incognito.",
       parameters: recall,
       execute: execute(recall, async (args) => store.recall(args)),
     }),
