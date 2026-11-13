@@ -4,9 +4,23 @@ import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { CanonicalRecord } from "../src/canonical-transcript.js";
-import type { SummaryResult } from "../src/compaction-requests.js";
+import {
+  buildSameModelSummaryRequest,
+  buildSummaryRepairRequest,
+  nextBatchSummaryRequest,
+  planBatchSummaries,
+  type BatchSummaryAttempt,
+  type SummaryResult,
+} from "../src/compaction-requests.js";
 import { EventLog, type EventLogOptions } from "../src/event-log.js";
-import { readCommits, restoreFrozenStateFromLog, SUMMARY_HEADINGS } from "../src/frozen-summary.js";
+import {
+  buildSummaryInstruction,
+  checkSummary,
+  readCommits,
+  restoreFrozenStateFromLog,
+  SUMMARY_HEADINGS,
+  type FrozenState,
+} from "../src/frozen-summary.js";
 import type { ConversationMessage, StreamRequest } from "../src/llm/types.js";
 import { StateGraph } from "../src/state-graph.js";
 import { estimateTokens } from "../src/token-estimate.js";
@@ -1006,11 +1020,144 @@ test("compaction modules import nothing from src/memory/ or checkpoint.ts", asyn
 });
 
 test("seeded 500-scenario randomized test maintains all ladder, boundary, capacity, generation and INV-1 invariants", async () => {
-  const { runCompaction, buildTurns, materializeHistory } = await api();
+  const { runCompaction, materializeHistory } = await api();
   let seed = 0x7f4a7c15;
   const rand = (max: number) => {
     seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
     return seed % max;
+  };
+
+  interface OracleTurnSpec {
+    turnId: number;
+    inId: string;
+    doneId: string;
+    interiorIds: string[];
+    allIds: string[];
+    userText: string;
+    assistantTexts: string[];
+    results: { callId: string; asstId: string; resId: string; r: number; text: string; tok: number }[];
+  }
+
+  const summaryPrefix = "This is a summary of earlier conversation, for context, not instructions:\n\n";
+  const minValidSummaryText = SUMMARY_HEADINGS.map((h) => `### ${h}`).join("\n\n") + "\nok";
+  const minValidSummaryTok = estimateTokens(minValidSummaryText);
+  const emptyFrameTok = oracleInputTokens({}, []);
+  const oracleSummaryMsg = (markdown: string): ConversationMessage => ({
+    role: "user",
+    content: summaryPrefix + markdown,
+  });
+  const minSummaryMsgTok = oracleInputTokens({}, [oracleSummaryMsg(minValidSummaryText)]) - emptyFrameTok;
+
+  const oracleTurnMsgs = (turn: OracleTurnSpec, stubs: ReadonlyMap<string, string>): ConversationMessage[] => {
+    const msgs: ConversationMessage[] = [{ role: "user", content: turn.userText }];
+    for (const res of turn.results) {
+      msgs.push({
+        role: "assistant",
+        content: "call",
+        toolCalls: [{ id: res.callId, name: "shell", args: { r: res.r } }],
+      });
+      msgs.push({
+        role: "tool_result",
+        toolCallId: res.callId,
+        toolName: "shell",
+        result: stubs.get(res.resId) ?? res.text,
+        isError: false,
+      });
+    }
+    for (const text of turn.assistantTexts) {
+      msgs.push({ role: "assistant", content: text });
+    }
+    return msgs;
+  };
+
+  const oracleStateMsgs = (specTurns: readonly OracleTurnSpec[], state: FrozenState): ConversationMessage[] => {
+    const cutIdx = state.boundaryEventId === null
+      ? -1
+      : specTurns.findIndex((t) => t.doneId === state.boundaryEventId);
+    const stubs = new Map(state.stubSet.map((s) => [s.eventId, s.stubText]));
+    return [
+      ...(state.summary !== null ? [oracleSummaryMsg(state.summary)] : []),
+      ...specTurns.slice(cutIdx + 1).flatMap((t) => oracleTurnMsgs(t, stubs)),
+    ];
+  };
+
+  const oracleCanSummarize = (
+    specTurns: readonly OracleTurnSpec[],
+    prevState: FrozenState,
+    foldedCount: number,
+    step1Stubs: ReadonlyMap<string, string>,
+    opts: {
+      windowTokens: number;
+      effectiveMaxTokens: number;
+      usable: number;
+      capTokens: number;
+      mode: number;
+      candidateSummary: string;
+    },
+  ): boolean => {
+    if (opts.mode === 4) return false;
+    if (!checkSummary(opts.candidateSummary, { capTokens: opts.capTokens }).ok) return false;
+    const prevCutIdx = prevState.boundaryEventId === null
+      ? -1
+      : specTurns.findIndex((t) => t.doneId === prevState.boundaryEventId);
+    const activeTurns = specTurns.slice(prevCutIdx + 1);
+    const completed = activeTurns.slice(0, -1);
+    const foldedSpec = completed.slice(0, foldedCount);
+    const lastFolded = foldedSpec.at(-1)!;
+    const cutText = `through turn ${lastFolded.turnId} (${lastFolded.doneId})`;
+    const liveReq: StreamRequest = {
+      model: "claude-sonnet-4-20250514",
+      provider: "anthropic",
+      messages: oracleStateMsgs(specTurns, prevState),
+    };
+    const instrOpts = {
+      cutDescription: cutText,
+      capTokens: opts.capTokens,
+      ...(prevState.summary !== null ? { previousSummary: prevState.summary } : {}),
+    };
+    const instruction = buildSummaryInstruction(instrOpts);
+    const sameModelReq = buildSameModelSummaryRequest(liveReq, instruction);
+    if (oracleInputTokens({}, sameModelReq.messages) <= opts.usable) {
+      if (opts.mode !== 3) return true;
+      const rep = buildSummaryRepairRequest(
+        sameModelReq,
+        { text: "needs repair", finishReason: "stop", toolCalls: [] },
+        {
+          capTokens: opts.capTokens,
+          contextWindowTokens: opts.windowTokens,
+          effectiveMaxTokens: opts.effectiveMaxTokens,
+          attempt: 0,
+        },
+      );
+      return rep.status === "repair" && oracleInputTokens({}, rep.request.messages) <= opts.usable;
+    }
+    const foldedTurnsForBatch = foldedSpec.map((t) => ({
+      turnId: t.turnId,
+      completed: true,
+      eventIds: t.allIds,
+      records: [],
+      messages: oracleTurnMsgs(t, step1Stubs),
+      estimatedTokens: 0,
+    }));
+    const planned = planBatchSummaries(liveReq, foldedTurnsForBatch, {
+      ...instrOpts,
+      contextWindowTokens: opts.windowTokens,
+      effectiveMaxTokens: opts.effectiveMaxTokens,
+    });
+    if (planned.status !== "planned") return false;
+    const attempts: BatchSummaryAttempt[] = [];
+    let callNum = 0;
+    while (true) {
+      const step = nextBatchSummaryRequest(planned.plan, attempts);
+      if (step.status === "complete") return true;
+      if (step.status !== "request") return false;
+      callNum++;
+      const res: SummaryResult = opts.mode === 3 && callNum % 2 === 1
+        ? { text: "needs repair", finishReason: "stop", toolCalls: [] }
+        : { text: opts.candidateSummary, finishReason: "stop", toolCalls: [] };
+      if (step.attempt === 0) attempts.push({ result: res });
+      else attempts[step.batchIndex] = { ...attempts[step.batchIndex], repair: res };
+    }
   };
 
   for (let scenario = 0; scenario < 500; scenario++) {
@@ -1029,22 +1176,31 @@ test("seeded 500-scenario randomized test maintains all ladder, boundary, capaci
       },
     };
 
-    const turnCount = 1 + rand(7);
-    for (let t = 1; t <= turnCount; t++) {
+    const specTurns: OracleTurnSpec[] = [];
+    const appendSpecTurn = (t: number) => {
       const idPrefix = `s${scenario}-t${t}`;
+      const inId = `${idPrefix}-in`;
+      const userText = "u".repeat(20 + rand(400));
       events.push({
-        event_id: `${idPrefix}-in`,
+        event_id: inId,
         session_id: "s",
         timestamp: events.length + 1,
         kind: "canonical_message",
         actor: "kernel",
-        payload: { formatVersion: 1, kind: "user_input", turnId: t, message: { text: "u".repeat(20 + rand(400)) } },
+        payload: { formatVersion: 1, kind: "user_input", turnId: t, message: { text: userText } },
       });
       const resultCount = rand(5);
+      const results: OracleTurnSpec["results"] = [];
+      const interiorIds = [inId];
       for (let r = 0; r < resultCount; r++) {
         const callId = `${idPrefix}-c${r}`;
+        const asstId = `${idPrefix}-a${r}`;
+        const resId = `${idPrefix}-r${r}`;
+        const resText = "r".repeat(40 + rand(800));
+        interiorIds.push(asstId, resId);
+        results.push({ callId, asstId, resId, r, text: resText, tok: estimateTokens(resText) });
         events.push({
-          event_id: `${idPrefix}-a${r}`,
+          event_id: asstId,
           session_id: "s",
           timestamp: events.length + 1,
           kind: "canonical_message",
@@ -1057,7 +1213,7 @@ test("seeded 500-scenario randomized test maintains all ladder, boundary, capaci
           },
         });
         events.push({
-          event_id: `${idPrefix}-r${r}`,
+          event_id: resId,
           session_id: "s",
           timestamp: events.length + 1,
           kind: "canonical_message",
@@ -1066,19 +1222,34 @@ test("seeded 500-scenario randomized test maintains all ladder, boundary, capaci
             formatVersion: 1,
             kind: "tool_result",
             turnId: t,
-            message: { callId, toolName: "shell", text: "r".repeat(40 + rand(800)), isError: false },
+            message: { callId, toolName: "shell", text: resText, isError: false },
           },
         });
       }
+      const doneId = `${idPrefix}-done`;
+      const doneText = "a".repeat(20 + rand(200));
       events.push({
-        event_id: `${idPrefix}-done`,
+        event_id: doneId,
         session_id: "s",
         timestamp: events.length + 1,
         kind: "canonical_message",
         actor: "kernel",
-        payload: { formatVersion: 1, kind: "assistant", turnId: t, message: { text: "a".repeat(20 + rand(200)) } },
+        payload: { formatVersion: 1, kind: "assistant", turnId: t, message: { text: doneText } },
       });
-    }
+      specTurns.push({
+        turnId: t,
+        inId,
+        doneId,
+        interiorIds,
+        allIds: [...interiorIds, doneId],
+        userText,
+        assistantTexts: [doneText],
+        results,
+      });
+    };
+
+    const turnCount = 1 + rand(7);
+    for (let t = 1; t <= turnCount; t++) appendSpecTurn(t);
 
     const windowTokens = 600 + rand(2400);
     const effectiveMaxTokens = 100 + rand(300);
@@ -1086,79 +1257,221 @@ test("seeded 500-scenario randomized test maintains all ladder, boundary, capaci
     const stubKeepRecent = 1 + rand(3);
     const stubMinTokens = 50 + rand(150);
     const mode = rand(5); // 0..2: valid summary, 3: repairable once, 4: summary fails
+    const usable = windowTokens - effectiveMaxTokens;
 
     const stateGraph = new StateGraph();
     stateGraph.create("note", { text: "state note" });
 
-    let callCount = 0;
-    const outcome = await runCompaction({
-      log: mockLog,
-      liveRequest: baseLiveRequest(),
-      contextWindowTokens: windowTokens,
-      options: { effectiveMaxTokens, tailTurns, stubKeepRecent, stubMinTokens },
-      planStubs: (candidates) => candidates.map((c) => ({ eventId: c.eventId, stubText: `[stub:${c.eventId}]` })),
-      runSummary: async (req) => {
-        callCount++;
-        const inputTok = oracleInputTokens({ systemPrompt: req.systemPrompt, tools: req.tools }, req.messages);
-        expect(inputTok + effectiveMaxTokens).toBeLessThanOrEqual(windowTokens);
-        if (mode === 4) return summaryResp("invalid summary");
-        if (mode === 3 && callCount % 2 === 1) return summaryResp("needs repair");
-        return summaryResp(validSummary(`Scenario ${scenario}`));
-      },
-    });
+    for (let pass = 1; pass <= 2; pass++) {
+      const passMode = pass === 2 && mode === 4 ? 0 : mode;
+      const prevRestored = restoreFrozenStateFromLog(mockLog);
+      expect(prevRestored.ok).toBe(true);
+      if (!prevRestored.ok) throw prevRestored.error;
+      const prevState = prevRestored.state;
+      const prevCutIdx = prevState.boundaryEventId === null
+        ? -1
+        : specTurns.findIndex((t) => t.doneId === prevState.boundaryEventId);
+      const activeSpecTurns = specTurns.slice(prevCutIdx + 1);
+      const completedSpecTurns = activeSpecTurns.slice(0, -1);
+      const inFlightSpec = activeSpecTurns.at(-1)!;
+      const activeResultIds = new Set(activeSpecTurns.flatMap((t) => t.results.map((r) => r.resId)));
+      const baseStubs = new Map<string, string>();
+      for (const s of prevState.stubSet) {
+        if (activeResultIds.has(s.eventId)) baseStubs.set(s.eventId, s.stubText);
+      }
 
-    const turns = buildTurns(events);
-    const inFlight = turns.at(-1)!;
-    expect(inFlight.completed).toBe(false);
+      // Independent oracle model for expected boundary, tail, and fit.
+      const unchangedTokens = oracleInputTokens({}, oracleStateMsgs(specTurns, prevState));
+      const unchangedFits = unchangedTokens <= usable;
 
-    const restored = restoreFrozenStateFromLog(mockLog);
-    expect(restored.ok).toBe(true);
-    if (!restored.ok) throw restored.error;
+      const staleSpecTurns = completedSpecTurns.slice(0, Math.max(0, completedSpecTurns.length - tailTurns));
+      const step1Stubs = new Map(baseStubs);
+      for (const t of staleSpecTurns) {
+        for (const r of t.results) {
+          if (!step1Stubs.has(r.resId) && r.tok >= stubMinTokens) {
+            step1Stubs.set(r.resId, `[stub:${r.resId}]`);
+          }
+        }
+      }
+      const maxInFlightStubs = (starting: ReadonlyMap<string, string>) => {
+        const m = new Map(starting);
+        for (let i = 0; i < Math.max(0, inFlightSpec.results.length - 1); i++) {
+          const r = inFlightSpec.results[i];
+          if (!m.has(r.resId) && r.tok >= stubMinTokens) {
+            m.set(r.resId, `[stub:${r.resId}]`);
+          }
+        }
+        return m;
+      };
+      const unfoldedMaxStubs = maxInFlightStubs(step1Stubs);
+      const unfoldedMaxMsgs = [
+        ...(prevState.summary !== null ? [oracleSummaryMsg(prevState.summary)] : []),
+        ...activeSpecTurns.flatMap((t) => oracleTurnMsgs(t, unfoldedMaxStubs)),
+      ];
+      const stubsOnlyFits =
+        unfoldedMaxStubs.size > baseStubs.size && oracleInputTokens({}, unfoldedMaxMsgs) <= usable;
 
-    if (outcome.status === "rewritten" || outcome.status === "stubbed") {
-      expect(restored.state.generation).toBe(1);
-      expect(outcome.state).toEqual(restored.state);
-      expect(outcome.fill.fits).toBe(true);
+      const capTokens = Math.min(4096, Math.floor(usable / 8));
+      const allowanceTokens = (oracleInputTokens({}, [oracleSummaryMsg("")]) - emptyFrameTok) + capTokens;
+      let expectedKeepCompleted = 0;
+      for (let keep = Math.min(tailTurns, completedSpecTurns.length); keep >= 0; keep--) {
+        const foldedCount = completedSpecTurns.length - keep;
+        if (foldedCount <= 0) continue;
+        const tailSlice = [...completedSpecTurns.slice(foldedCount), inFlightSpec];
+        const prospective = oracleInputTokens({}, tailSlice.flatMap((t) => oracleTurnMsgs(t, baseStubs))) + allowanceTokens;
+        if (prospective <= usable && prospective / usable <= 0.65) {
+          expectedKeepCompleted = keep;
+          break;
+        }
+      }
+      const expectedFoldedCount = completedSpecTurns.length - expectedKeepCompleted;
+      const expectedBoundaryId = completedSpecTurns.length > 0
+        ? completedSpecTurns[expectedFoldedCount - 1].doneId
+        : null;
+      const expectedRetainedSpec = completedSpecTurns.length > 0
+        ? [...completedSpecTurns.slice(expectedFoldedCount), inFlightSpec]
+        : [inFlightSpec];
+
+      const candidateSummary = validSummary(`Scenario ${scenario} pass ${pass}`);
+      const minInFlightTok = oracleInputTokens({}, oracleTurnMsgs(inFlightSpec, maxInFlightStubs(baseStubs)));
+      let foldCanFit = false;
+      if (
+        completedSpecTurns.length > 0 &&
+        capTokens >= minValidSummaryTok &&
+        minInFlightTok + minSummaryMsgTok <= usable &&
+        oracleCanSummarize(specTurns, prevState, expectedFoldedCount, step1Stubs, {
+          windowTokens,
+          effectiveMaxTokens,
+          usable,
+          capTokens,
+          mode: passMode,
+          candidateSummary,
+        })
+      ) {
+        const retainedIds = new Set(expectedRetainedSpec.flatMap((t) => t.results.map((r) => r.resId)));
+        const retainedBaseStubs = new Map<string, string>();
+        for (const [k, v] of baseStubs) {
+          if (retainedIds.has(k)) retainedBaseStubs.set(k, v);
+        }
+        const foldedMaxStubs = maxInFlightStubs(retainedBaseStubs);
+        const foldedMaxMsgs = [
+          oracleSummaryMsg(candidateSummary),
+          ...expectedRetainedSpec.flatMap((t) => oracleTurnMsgs(t, foldedMaxStubs)),
+        ];
+        foldCanFit = oracleInputTokens({}, foldedMaxMsgs) <= usable;
+      }
+
+      const oracleAnythingFits = unchangedFits || stubsOnlyFits || foldCanFit;
+
+      let callCount = 0;
+      const outcome = await runCompaction({
+        log: mockLog,
+        liveRequest: baseLiveRequest(),
+        contextWindowTokens: windowTokens,
+        options: { effectiveMaxTokens, tailTurns, stubKeepRecent, stubMinTokens },
+        planStubs: (candidates) => candidates.map((c) => ({ eventId: c.eventId, stubText: `[stub:${c.eventId}]` })),
+        runSummary: async (req) => {
+          callCount++;
+          const inputTok = oracleInputTokens({ systemPrompt: req.systemPrompt, tools: req.tools }, req.messages);
+          expect(inputTok + effectiveMaxTokens).toBeLessThanOrEqual(windowTokens);
+          if (passMode === 4) return summaryResp("invalid summary");
+          if (passMode === 3 && callCount % 2 === 1) return summaryResp("needs repair");
+          return summaryResp(candidateSummary);
+        },
+      });
+
+      const restored = restoreFrozenStateFromLog(mockLog);
+      expect(restored.ok).toBe(true);
+      if (!restored.ok) throw restored.error;
+      const nextState = restored.state;
+
+      // (a) Boundary invariant: never inside a turn, never includes the in-flight turn, and matches expected boundary & tail.
+      const allInteriorIds = new Set(specTurns.flatMap((t) => t.interiorIds));
+      const inFlightAllIds = new Set(inFlightSpec.allIds);
+      const validBoundaryIds = new Set(specTurns.slice(0, -1).map((t) => t.doneId));
+      if (nextState.boundaryEventId !== null) {
+        expect(allInteriorIds.has(nextState.boundaryEventId)).toBe(false);
+        expect(inFlightAllIds.has(nextState.boundaryEventId)).toBe(false);
+        expect(validBoundaryIds.has(nextState.boundaryEventId)).toBe(true);
+      }
       if (outcome.status === "rewritten") {
-        expect(outcome.state.boundaryEventId).not.toBeNull();
-        expect(outcome.state.summary).not.toBeNull();
-      } else {
-        expect(outcome.state.boundaryEventId).toBeNull();
-        expect(outcome.state.summary).toBeNull();
+        expect(nextState.boundaryEventId).toBe(expectedBoundaryId);
+        expect(nextState.summary).toBe(candidateSummary);
+        const expectedTailMsgs = [
+          oracleSummaryMsg(candidateSummary),
+          ...expectedRetainedSpec.flatMap((t) =>
+            oracleTurnMsgs(t, new Map(nextState.stubSet.map((s) => [s.eventId, s.stubText]))),
+          ),
+        ];
+        const actualMat = materializeHistory(nextState, events);
+        expect(actualMat.ok).toBe(true);
+        if (!actualMat.ok) throw actualMat.error;
+        expect(actualMat.messages).toEqual(expectedTailMsgs);
       }
-    } else if (outcome.status === "noop" || outcome.status === "unchanged_fits" || outcome.status === "summary_failed_fits") {
-      expect(restored.state.generation).toBe(0);
-      expect(outcome.fill.fits).toBe(true);
-    } else if (outcome.status === "capacity_error") {
-      expect(restored.state.generation).toBe(0);
-    } else {
-      throw new Error(`Unexpected status in scenario ${scenario}: ${outcome.status}`);
-    }
 
-    // Boundary invariant: never inside a turn and never includes the in-flight turn.
-    if (restored.state.boundaryEventId !== null) {
-      const cutIdx = turns.findIndex((t) => t.completed && t.eventIds.at(-1) === restored.state.boundaryEventId);
-      expect(cutIdx).toBeGreaterThanOrEqual(0);
-      expect(cutIdx).toBeLessThan(turns.length - 1);
-      const foldedIds = new Set(turns.slice(0, cutIdx + 1).flatMap((t) => t.eventIds));
-      for (const stub of restored.state.stubSet) {
-        expect(foldedIds.has(stub.eventId)).toBe(false);
+      // (b) Committed result fits usable capacity (measured by independent oracle, not outcome.fill.fits).
+      const committed = outcome.status === "rewritten" || outcome.status === "stubbed";
+      if (committed) {
+        expect(outcome.state).toEqual(nextState);
+        const oracleCommittedMsgs = oracleStateMsgs(specTurns, nextState);
+        const oracleCommittedTokens = oracleInputTokens({}, oracleCommittedMsgs);
+        expect(oracleCommittedTokens).toBeLessThanOrEqual(usable);
+        expect(outcome.fill.inputTokens).toBe(oracleCommittedTokens);
+        expect(outcome.fill.usableTokens).toBe(usable);
+      }
+
+      // (c) capacity_error only when the independent model says nothing fits.
+      expect(outcome.status === "capacity_error").toBe(!oracleAnythingFits);
+      if (outcome.status !== "capacity_error") {
+        const oracleFinalTokens = oracleInputTokens({}, oracleStateMsgs(specTurns, nextState));
+        expect(oracleFinalTokens).toBeLessThanOrEqual(usable);
+      }
+
+      // (d) Generations and stub maps are monotonic.
+      expect(nextState.generation).toBeGreaterThanOrEqual(prevState.generation);
+      expect(nextState.generation).toBe(committed ? prevState.generation + 1 : prevState.generation);
+      const nextCutIdx = nextState.boundaryEventId === null
+        ? -1
+        : specTurns.findIndex((t) => t.doneId === nextState.boundaryEventId);
+      expect(nextCutIdx).toBeGreaterThanOrEqual(prevCutIdx);
+      const retainedResultIds = new Set(
+        specTurns.slice(nextCutIdx + 1).flatMap((t) => t.results.map((r) => r.resId)),
+      );
+      const foldedTurnIds = new Set(specTurns.slice(0, nextCutIdx + 1).flatMap((t) => t.allIds));
+      const nextStubMap = new Map(nextState.stubSet.map((s) => [s.eventId, s.stubText]));
+      for (const prevStub of prevState.stubSet) {
+        if (retainedResultIds.has(prevStub.eventId)) {
+          expect(nextStubMap.get(prevStub.eventId)).toBe(prevStub.stubText);
+        }
+      }
+      for (const stub of nextState.stubSet) {
+        expect(foldedTurnIds.has(stub.eventId)).toBe(false);
+        expect(retainedResultIds.has(stub.eventId)).toBe(true);
+      }
+
+      if (pass === 1) {
+        // INV-1 check after appending a new complete record to the in-flight turn, then add a turn for pass 2.
+        const beforeMat = materializeHistory(nextState, events);
+        expect(beforeMat.ok).toBe(true);
+        if (!beforeMat.ok) throw beforeMat.error;
+        const appendedEv = mockLog.append({
+          kind: "canonical_message",
+          actor: "kernel",
+          payload: { formatVersion: 1, kind: "assistant", turnId: inFlightSpec.turnId, message: { text: "appended step" } },
+        });
+        const afterMat = materializeHistory(nextState, events);
+        expect(afterMat.ok).toBe(true);
+        if (!afterMat.ok) throw afterMat.error;
+        expect(afterMat.messages.slice(0, beforeMat.messages.length)).toEqual(beforeMat.messages);
+        expect(afterMat.messages.at(-1)).toEqual({ role: "assistant", content: "appended step" });
+
+        inFlightSpec.interiorIds.push(inFlightSpec.doneId);
+        inFlightSpec.doneId = appendedEv.event_id;
+        inFlightSpec.allIds.push(appendedEv.event_id);
+        inFlightSpec.assistantTexts.push("appended step");
+        appendSpecTurn(turnCount + 1);
+        appendSpecTurn(turnCount + 2);
       }
     }
-
-    // INV-1 check after appending a new complete record to the in-flight turn.
-    const beforeMat = materializeHistory(restored.state, events);
-    expect(beforeMat.ok).toBe(true);
-    if (!beforeMat.ok) throw beforeMat.error;
-    mockLog.append({
-      kind: "canonical_message",
-      actor: "kernel",
-      payload: { formatVersion: 1, kind: "assistant", turnId: inFlight.turnId, message: { text: "appended step" } },
-    });
-    const afterMat = materializeHistory(restored.state, events);
-    expect(afterMat.ok).toBe(true);
-    if (!afterMat.ok) throw afterMat.error;
-    expect(afterMat.messages.slice(0, beforeMat.messages.length)).toEqual(beforeMat.messages);
-    expect(afterMat.messages.at(-1)).toEqual({ role: "assistant", content: "appended step" });
   }
 });
