@@ -1124,7 +1124,7 @@ console.log(JSON.stringify(res));
     expect(overrideCloseCalls).toBe(3);
   });
 
-  test("bounded key scan handles deep nesting, throwing getters, toJSON, and scans final merged document before write", async () => {
+  test("bounded key scan handles deep nesting, throwing getters, and toJSON on caller input", async () => {
     const { updateSettingsDocument, replaceSettingsDocument, createSettingsFs } = await storeApi();
     const baseFs = createSettingsFs();
 
@@ -1191,12 +1191,45 @@ console.log(JSON.stringify(res));
     expect(openExclusiveCalls).toBe(0);
     expect(readFileSync(settingsPath, "utf-8")).toBe(baseline);
 
-    // 4. Final merged document scan catches forbidden key originating from disk before write
-    const diskForbidden = '{"constructor": {"polluted": 1}, "thinking": true}\n';
-    writeFileSync(settingsPath, diskForbidden, "utf-8");
-    const mergedForbiddenRes = updateSettingsDocument({ debug: true }, { fs: noWriteSpyFs });
-    expect(mergedForbiddenRes.ok).toBe(false);
-    expect(openExclusiveCalls).toBe(0);
-    expect(readFileSync(settingsPath, "utf-8")).toBe(diskForbidden);
+  });
+
+  test("keys that only exist on disk (nested constructor, 40-deep unknown) neither block updates/resets nor change", async () => {
+    const { updateSettingsDocument, readSettingsDocument } = await storeApi();
+
+    let deep: Record<string, unknown> = { leaf: "deep-value" };
+    for (let i = 0; i < 40; i++) deep = { nested: deep };
+    const diskDoc = {
+      thinking: true,
+      custom_constructor: { constructor: { polluted: "no" } },
+      custom_deep: deep,
+    };
+    writeFileSync(settingsPath, JSON.stringify(diskDoc, null, 2) + "\n", "utf-8");
+
+    // An unrelated field can still be updated; the disk-origin keys survive unchanged.
+    const updated = updateSettingsDocument({ debug: true });
+    expect(updated.ok).toBe(true);
+    const afterUpdate = readSettingsDocument();
+    expect(afterUpdate.state).toBe("ok");
+    expect(afterUpdate.doc.debug).toBe(true);
+    expect(afterUpdate.doc.custom_constructor).toEqual(diskDoc.custom_constructor);
+    expect(afterUpdate.doc.custom_deep).toEqual(deep);
+    expect(Object.getPrototypeOf(afterUpdate.doc)).toBe(Object.prototype);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+
+    // Reset also succeeds and leaves the disk-origin keys in place.
+    const reset = resetUserSettings();
+    expect(reset.ok).toBe(true);
+    const afterReset = readSettingsDocument();
+    expect(afterReset.doc.thinking).toBe(true);
+    expect(afterReset.doc.custom_constructor).toEqual(diskDoc.custom_constructor);
+    expect(afterReset.doc.custom_deep).toEqual(deep);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+
+    // Caller-supplied input is still scanned: a forbidden key in the patch is rejected.
+    const hostilePatch = JSON.parse('{"constructor": {"polluted": "yes"}}') as Record<string, unknown>;
+    const rejected = updateSettingsDocument(hostilePatch);
+    expect(rejected.ok).toBe(false);
+    if (!rejected.ok) expect(rejected.error).toContain("constructor");
+    expect(readSettingsDocument().doc.custom_constructor).toEqual(diskDoc.custom_constructor);
   });
 });

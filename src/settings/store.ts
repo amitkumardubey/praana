@@ -381,11 +381,11 @@ function writeDocumentAtomic(
   doc: Record<string, unknown>,
   fs: SettingsFs,
 ): { ok: true } | { ok: false; error: string } {
-  const docErr = validateSettingsObject(doc, "Settings document");
-  if (docErr) {
-    return { ok: false, error: docErr };
-  }
-
+  // Caller-supplied input is validated before it reaches the merge (`updateSettingsDocument`
+  // patch/base and `replaceSettingsDocument` input). The merged document is not re-scanned:
+  // keys that came from disk are own properties produced by `JSON.parse`, so they cannot
+  // pollute prototypes, and re-scanning them would make an otherwise valid file impossible
+  // to update or reset. Only the serialized size limit applies here.
   let serialized: string;
   try {
     serialized = JSON.stringify(doc, null, 2) + "\n";
