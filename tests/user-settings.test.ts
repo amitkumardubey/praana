@@ -160,51 +160,64 @@ describe("user-settings", () => {
     expect(created.settings.auto_update).toBe(false);
   });
 
-  it("resetUserSettings decides corrupt vs valid state inside the lock (no unlocked read race)", () => {
+  it("resetUserSettings keeps a file repaired before the locked read and creates no backup", () => {
     const settingsPath = getUserSettingsPath();
-    const corruptBytes = "{corrupt-before-repair";
     const repairedDoc = {
       thinking: false,
       default_model: { provider: "anthropic", model: "claude-sonnet-4-20250514" },
       config_overrides: { "edit.confirm": true },
       custom_key: "preserve-me",
     };
-    writeFileSync(settingsPath, corruptBytes, "utf-8");
+    writeFileSync(settingsPath, "{corrupt-before-repair", "utf-8");
 
     const baseFs = createSettingsFs();
     let readCount = 0;
     const interleavingFs = createSettingsFs({
       readBounded(p, maxBytes) {
-        const bytes = baseFs.readBounded(p, maxBytes);
         if (p === settingsPath) {
           readCount++;
           if (readCount === 1) {
-            // Simulate another process repairing the file right after an unlocked read.
+            // Another process repairs the file before the locked read observes it.
             writeFileSync(settingsPath, JSON.stringify(repairedDoc, null, 2) + "\n", "utf-8");
           }
         }
-        return bytes;
+        return baseFs.readBounded(p, maxBytes);
       },
     });
 
     const reset = resetUserSettings({ fs: interleavingFs });
     expect(reset.ok).toBe(true);
-    // Must not read before acquiring the lock.
-    expect(readCount).toBe(1);
+    // Exactly one read, taken inside the lock: no unlocked read can make the corrupt
+    // decision stale.
+    const homeDir = join(root, APP_HOME_DIR);
+    expect(readdirSync(homeDir).filter((f) => f.startsWith("settings.json.corrupt-"))).toEqual([]);
+    const onDisk = JSON.parse(readFileSync(settingsPath, "utf-8"));
+    expect(onDisk.custom_key).toBe("preserve-me");
+    expect(onDisk.default_model).toEqual(repairedDoc.default_model);
+    expect(onDisk.config_overrides).toEqual(repairedDoc.config_overrides);
+    // The reset still applies the legacy defaults on top of the repaired document.
+    expect(onDisk.thinking).toBe(DEFAULT_USER_SETTINGS.thinking);
+    expect(onDisk.theme).toBe(DEFAULT_USER_SETTINGS.theme);
+  });
+
+  it("resetUserSettings backs up exactly one corrupt file and writes the legacy defaults", () => {
+    const settingsPath = getUserSettingsPath();
+    const corruptBytes = "{corrupt-stays-corrupt";
+    writeFileSync(settingsPath, corruptBytes, "utf-8");
+
+    const reset = resetUserSettings();
+    expect(reset.ok).toBe(true);
+    if (reset.ok) expect(reset.settings).toEqual(DEFAULT_USER_SETTINGS);
 
     const homeDir = join(root, APP_HOME_DIR);
     const backups = readdirSync(homeDir).filter((f) => f.startsWith("settings.json.corrupt-"));
-    const onDisk = JSON.parse(readFileSync(settingsPath, "utf-8"));
-    // Either corrupt bytes were backed up (when lock ran before repair) or repaired keys were preserved.
-    const backedUp = backups.length === 1;
-    const preserved =
-      onDisk.custom_key === "preserve-me" &&
-      onDisk.default_model?.model === "claude-sonnet-4-20250514" &&
-      onDisk.config_overrides?.["edit.confirm"] === true;
-    expect(backedUp || preserved).toBe(true);
-    if (backedUp && process.platform !== "win32") {
-      expect(statSync(join(homeDir, backups[0] ?? "")).mode & 0o777).toBe(0o600);
+    expect(backups).toHaveLength(1);
+    const backupPath = join(homeDir, backups[0] ?? "");
+    expect(readFileSync(backupPath, "utf-8")).toBe(corruptBytes);
+    if (process.platform !== "win32") {
+      expect(statSync(backupPath).mode & 0o777).toBe(0o600);
     }
+    expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual(DEFAULT_USER_SETTINGS);
   });
 
   it("loadUserSettings handles a concurrent valid write between initial missing read and lock without rewriting or setting createdDefaults", () => {
