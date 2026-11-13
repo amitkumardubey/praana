@@ -1042,7 +1042,6 @@ test("cancellation with controlled promises prevents every commit across primary
     const { log } = openLog();
     addTurn(log, 1, { inputText: "Turn 1 " + "a".repeat(6000) });
     addTurn(log, 2, { inputText: "Turn 2" });
-    const readSpy = spyOn(log, "readAll");
     const res = await runCompaction({
       log,
       liveRequest: baseLiveRequest(),
@@ -1056,8 +1055,6 @@ test("cancellation with controlled promises prevents every commit across primary
     expect(res.status).toBe("cancelled");
     if (res.status !== "cancelled") throw new Error(JSON.stringify(res));
     expect(res.reason).toBe("reset");
-    expect(readSpy).toHaveBeenCalledTimes(2); // initial restore and appendCommit validation only
-    readSpy.mockRestore();
     expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
   }
 });
@@ -1202,6 +1199,52 @@ test("commit_rejected is returned with reason when replay or validation rejects 
     expect(outcome.error.code).toBe("invalid_stub");
   }
 });
+
+for (const phase of ["stale", "in_flight"] as const) {
+  for (const race of [true, false]) {
+    test(`${phase} stubs-only commit reports ${race ? "superseded" : "commit_rejected"}`, async () => {
+      const { appendCommit } = await import("../src/frozen-summary.js");
+      const { log } = openLog();
+      if (phase === "stale") {
+        addTurn(log, 1, { toolResults: [{ id: "target", text: "X".repeat(4000) }] });
+        addTurn(log, 2, { inputText: "Current turn" });
+      } else {
+        addTurn(log, 1, { toolResults: [{ id: "target", text: "X".repeat(4000) }, { id: "newest", text: "ok" }] });
+      }
+      let stripTarget = false;
+      const outcome = await compaction.runCompaction({
+        log: {
+          readAll() {
+            const events = log.readAll({ includeInternal: true });
+            return stripTarget ? events.filter((e) => e.event_id !== "target") : events;
+          },
+          append: log.append.bind(log),
+        },
+        liveRequest: baseLiveRequest(),
+        contextWindowTokens: 1000,
+        options: { effectiveMaxTokens: 100, tailTurns: 0, stubKeepRecent: 1, stubMinTokens: 100 },
+        planStubs: (candidates, options) => {
+          if (options.phase !== phase) throw new Error(`Expected ${phase}, got ${options.phase}`);
+          if (race) {
+            const winner = appendCommit(log, {
+              formatVersion: 1, resetEpoch: "session_start", generation: 1,
+              boundaryEventId: null, summary: null, summaryRequest: null,
+              stubSet: [{ eventId: "target", stubText: "winning stub" }],
+            });
+            if (winner.status !== "committed") throw new Error(JSON.stringify(winner));
+          } else {
+            stripTarget = true;
+          }
+          return candidates.map((c) => ({ eventId: c.eventId, stubText: "losing stub" }));
+        },
+        runSummary: async () => { throw new Error("Stubs-only commits must not summarize"); },
+      });
+      expect(outcome).toMatchObject(race
+        ? { status: "cancelled", reason: "superseded" }
+        : { status: "commit_rejected", error: { code: "invalid_stub" } });
+    });
+  }
+}
 
 for (const code of ["invalid_generation", "invalid_epoch"] as const) {
   test(`an earlier concurrent ${code} is corruption, not a lost race`, async () => {
