@@ -162,6 +162,7 @@ describe("user-settings", () => {
 
   it("resetUserSettings keeps a file repaired before the locked read and creates no backup", () => {
     const settingsPath = getUserSettingsPath();
+    const lockPath = join(root, APP_HOME_DIR, ".settings.json.lock.db");
     const repairedDoc = {
       thinking: false,
       default_model: { provider: "anthropic", model: "claude-sonnet-4-20250514" },
@@ -172,14 +173,20 @@ describe("user-settings", () => {
 
     const baseFs = createSettingsFs();
     let readCount = 0;
+    let lockedReadCount = 0;
     const interleavingFs = createSettingsFs({
       readBounded(p, maxBytes) {
         if (p === settingsPath) {
           readCount++;
-          if (readCount === 1) {
-            // Another process repairs the file before the locked read observes it.
+          if (!existsSync(lockPath)) {
+            // Unlocked pre-read observes corrupt bytes, then another process repairs the file before the locked read.
+            const bytes = baseFs.readBounded(p, maxBytes);
             writeFileSync(settingsPath, JSON.stringify(repairedDoc, null, 2) + "\n", "utf-8");
+            return bytes;
           }
+          // Locked read: the file was repaired before the lock was acquired.
+          lockedReadCount++;
+          writeFileSync(settingsPath, JSON.stringify(repairedDoc, null, 2) + "\n", "utf-8");
         }
         return baseFs.readBounded(p, maxBytes);
       },
@@ -189,6 +196,8 @@ describe("user-settings", () => {
     expect(reset.ok).toBe(true);
     // Exactly one read, taken inside the lock: no unlocked read can make the corrupt
     // decision stale.
+    expect(readCount).toBe(1);
+    expect(lockedReadCount).toBe(1);
     const homeDir = join(root, APP_HOME_DIR);
     expect(readdirSync(homeDir).filter((f) => f.startsWith("settings.json.corrupt-"))).toEqual([]);
     const onDisk = JSON.parse(readFileSync(settingsPath, "utf-8"));
@@ -218,6 +227,25 @@ describe("user-settings", () => {
       expect(statSync(backupPath).mode & 0o777).toBe(0o600);
     }
     expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual(DEFAULT_USER_SETTINGS);
+  });
+
+  it("resetUserSettings leaves no backup and keeps the corrupt file untouched when replacement write fails", () => {
+    const settingsPath = getUserSettingsPath();
+    const corruptBytes = "{corrupt-replacement-fails";
+    writeFileSync(settingsPath, corruptBytes, "utf-8");
+
+    const failRenameFs = createSettingsFs({
+      rename() {
+        throw new Error("injected rename failure");
+      },
+    });
+
+    const reset = resetUserSettings({ fs: failRenameFs });
+    expect(reset.ok).toBe(false);
+    const homeDir = join(root, APP_HOME_DIR);
+    expect(readdirSync(homeDir).filter((f) => f.startsWith("settings.json.corrupt-"))).toEqual([]);
+    expect(readdirSync(homeDir).filter((f) => f.includes(".tmp-"))).toEqual([]);
+    expect(readFileSync(settingsPath, "utf-8")).toBe(corruptBytes);
   });
 
   it("loadUserSettings handles a concurrent valid write between initial missing read and lock without rewriting or setting createdDefaults", () => {
