@@ -13,7 +13,7 @@ async function setup() {
   const store = createFileMemoryStore({ home, cwd: home, findRoot: (cwd) => cwd, now: () => new Date("2026-05-01T00:00:00Z") });
   return { home, store };
 }
-const fixture = (i: number, extra: Partial<IndexEntry> = {}): IndexEntry => ({ name: `n${String(i).padStart(3, "0")}`, description: "detail", type: "user", updated: "2026-05-01", scope: "global", age: 0, file: `global/n${String(i).padStart(3, "0")}.md`, ...extra });
+const fixture = (i: number, extra: Partial<IndexEntry> = {}): IndexEntry => ({ name: `n${String(i).padStart(3, "0")}`, description: "detail", type: "user", updated: "2026-05-01", scope: "global", age: 0, ...extra });
 const payload = (text: string) => text.slice(INDEX_PREFACE.length + 2);
 const line = (entry: IndexEntry) => `- [${entry.name}](${entry.scope}/${entry.name}.md) (${entry.type}, ${entry.age}d) ${entry.description}`;
 

@@ -3,7 +3,7 @@ import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, resolve, isAbsolute } from "node:path";
 import * as memoryModule from "../src/file-memory/store.js";
-import { buildMemoryIndex as renderIndex, type IndexEntry } from "../src/file-memory/index.js";
+import { buildMemoryIndex as renderIndex } from "../src/file-memory/index.js";
 
 const { createFileMemoryStore } = memoryModule;
 const homes: string[] = [];
@@ -16,7 +16,7 @@ async function setup() {
 const input = { scope: "global" as const, name: "coffee", description: "Morning preference", type: "user" as const, body: "Coffee" };
 const scopeIndex = async (store: ReturnType<typeof createFileMemoryStore>, scope: "global" | "project") => {
   const { entries } = await store.list({ scope });
-  return renderIndex({ entries: entries.map((entry): IndexEntry => ({ ...entry, file: `${entry.scope}/${entry.name}.md` })), links: "relative" }).text;
+  return renderIndex({ entries, links: "relative" }).text;
 };
 
 test("each scope's MEMORY.md links resolve relative to its own directory", async () => {

@@ -4,8 +4,8 @@ import { randomBytes } from "node:crypto";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { redactSecretsStrict } from "../redact/secrets.js";
 import { parseMemory, serializeMemory, validName, validateMemory, validateQueryPolicy, type Memory, type MemoryInput } from "./format.js";
-import { memoryDirectories, projectKey, type MemoryScope } from "./paths.js";
-import { buildMemoryIndex as renderMemoryIndex, type IndexEntry, type MemoryIndex } from "./index.js";
+import { globalMemoryDirectory, memoryDirectories, projectKey, type MemoryScope } from "./paths.js";
+import { buildMemoryIndex as renderMemoryIndex, type MemoryIndex } from "./index.js";
 import { rankMemories, type RecallMatch, type ScopedMemory } from "./recall.js";
 export { MEMORY_POLICY } from "./index.js";
 
@@ -32,7 +32,7 @@ const inside = (parent: string, child: string) => { const p = relative(parent, c
 export function createFileMemoryStore(options: StoreOptions) {
   const fs = options.fs ?? nodeFs;
   const home = resolve(options.home);
-  const globalDirectory = join(home, ".praana", "memory");
+  const globalDirectory = globalMemoryDirectory(home);
   // Only the project scope depends on resolving a root; global memory must survive that failure.
   let projectDirectory: string | undefined;
   let rootError: ResultError | undefined;
@@ -249,7 +249,7 @@ export function createFileMemoryStore(options: StoreOptions) {
       const found = scanned.values.filter((match) => match !== null);
       if (found.length > 1) return { ok: false, error: "Memory exists in both project and global scopes; specify scope", ...warnings };
       const match = found[0];
-      if (!match) return { ok: false, error: skipped.length ? `Only regular, non-symlink memory files can be removed; skipped ${skipped.map(({ scope }) => scope).join(", ")} scopes` : scanned.skippedScopes?.map(({ scope, reason }) => `${scope}: ${reason}`).join("; ") ?? "Memory not found", ...warnings };
+      if (!match) return { ok: false, error: skipped.length ? `Only regular, non-symlink memory files can be removed; skipped ${skipped.map(({ scope }) => scope).join(", ")} scopes` : "Memory not found", ...warnings };
       await fs.unlink(join(match.dir, `${input.name}.md`));
       await refreshIndexFile(match.scope);
       return { ok: true, ...warnings, ...(skipped.length ? { skipped } : {}) };
@@ -277,9 +277,8 @@ export function createFileMemoryStore(options: StoreOptions) {
   async function buildMemoryIndex(input: { scope?: MemoryScope } = {}): Promise<MemoryIndex & (({ ok: true } & ScopeWarnings) | ResultError)> {
     const data = await list(input);
     if (!data.ok) return { ...data, text: "", truncated: false, shown: 0, total: 0 };
-    return { ok: true, ...scopeWarnings(data.skippedScopes ?? []), ...renderMemoryIndex({ entries: indexEntries(data.entries) }) };
+    return { ok: true, ...scopeWarnings(data.skippedScopes ?? []), ...renderMemoryIndex({ entries: data.entries }) };
   }
-  const indexEntries = (entries: ListEntry[]): IndexEntry[] => entries.map((entry) => ({ ...entry, file: `${entry.scope}/${entry.name}.md` }));
   async function recall(input: { query?: string; name?: string; scope?: MemoryScope }): Promise<({ ok: true; memory: ScopedMemory } & ScopeWarnings) | ({ ok: true; matches: RecallMatch[] } & ScopeWarnings) | ResultError> {
     if ((input.query !== undefined) === (input.name !== undefined)) return { ok: false, error: "Provide exactly one of query or name" };
     if (input.name !== undefined) return read({ name: input.name, scope: input.scope });
@@ -306,7 +305,7 @@ export function createFileMemoryStore(options: StoreOptions) {
       const dir = await directory(scope, true);
       if (!dir) throw new Error("Memory directory unavailable");
       // The copy lives inside the scope directory, so its links are relative to it.
-      await atomicReplace(dir, "MEMORY.md", renderMemoryIndex({ entries: indexEntries(data.entries), links: "relative" }).text);
+      await atomicReplace(dir, "MEMORY.md", renderMemoryIndex({ entries: data.entries, links: "relative" }).text);
       return { ok: true };
     } catch (error) { return errorResult(error); }
   }

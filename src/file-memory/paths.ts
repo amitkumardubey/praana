@@ -19,7 +19,11 @@ export function projectKey(cwd: string, findRoot: (cwd: string) => string = find
   return `${slug}-${hash}`;
 }
 
+export function globalMemoryDirectory(home: string): string {
+  return join(resolve(home), ".praana", "memory");
+}
+
 export function memoryDirectories(home: string, key: string): Record<MemoryScope, string> {
   const base = join(resolve(home), ".praana");
-  return { global: join(base, "memory"), project: join(base, "projects", key, "memory") };
+  return { global: globalMemoryDirectory(home), project: join(base, "projects", key, "memory") };
 }
