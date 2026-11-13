@@ -381,6 +381,11 @@ function writeDocumentAtomic(
   doc: Record<string, unknown>,
   fs: SettingsFs,
 ): { ok: true } | { ok: false; error: string } {
+  const docErr = validateSettingsObject(doc, "Settings document");
+  if (docErr) {
+    return { ok: false, error: docErr };
+  }
+
   let serialized: string;
   try {
     serialized = JSON.stringify(doc, null, 2) + "\n";
@@ -438,39 +443,73 @@ function withSettingsLock<T>(
 }
 
 const FORBIDDEN_DOC_KEYS = ["__proto__", "constructor", "prototype"] as const;
+const MAX_SETTINGS_DEPTH = 32;
+const MAX_SCAN_NODES = 100_000;
 
-function findForbiddenOwnKey(value: unknown, visited = new Set<object>()): string | undefined {
-  if (typeof value !== "object" || value === null) return undefined;
-  if (visited.has(value)) return undefined;
-  visited.add(value);
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const hit = findForbiddenOwnKey(item, visited);
-      if (hit) return hit;
+function scanSettingsValue(
+  value: unknown,
+  ancestors = new Set<object>(),
+  depth = 0,
+  state = { nodes: 0 },
+): { forbiddenKey?: string; error?: string } {
+  if (typeof value !== "object" || value === null) return {};
+  if (depth > MAX_SETTINGS_DEPTH) {
+    return { error: `Settings object exceeds maximum nesting depth of ${MAX_SETTINGS_DEPTH}` };
+  }
+  if (ancestors.has(value)) {
+    return { error: "Settings object contains a circular reference" };
+  }
+  if (++state.nodes > MAX_SCAN_NODES) {
+    return { error: "Settings object exceeds maximum node count" };
+  }
+  ancestors.add(value);
+  try {
+    if (Array.isArray(value)) {
+      for (let i = 0; i < value.length; i++) {
+        const res = scanSettingsValue(value[i], ancestors, depth + 1, state);
+        if (res.forbiddenKey || res.error) return res;
+      }
+      return {};
     }
-    return undefined;
-  }
-  for (const key of FORBIDDEN_DOC_KEYS) {
-    if (Object.hasOwn(value, key)) {
-      return key;
+    if (!isPlainObject(value)) {
+      return { error: "Nested settings values must be plain objects or arrays" };
     }
+    for (const key of FORBIDDEN_DOC_KEYS) {
+      if (Object.hasOwn(value, key)) {
+        return { forbiddenKey: key };
+      }
+    }
+    if (Object.hasOwn(value, "toJSON") && typeof (value as { toJSON?: unknown }).toJSON === "function") {
+      return { error: 'Forbidden settings method "toJSON"' };
+    }
+    for (const key of Object.keys(value)) {
+      const res = scanSettingsValue((value as Record<string, unknown>)[key], ancestors, depth + 1, state);
+      if (res.forbiddenKey || res.error) return res;
+    }
+    return {};
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    ancestors.delete(value);
   }
-  for (const key of Object.keys(value)) {
-    const hit = findForbiddenOwnKey((value as Record<string, unknown>)[key], visited);
-    if (hit) return hit;
-  }
-  return undefined;
 }
 
 function validateSettingsObject(obj: unknown, label: string): string | undefined {
-  if (!isPlainObject(obj)) {
-    return `${label} must be a plain object`;
+  try {
+    if (!isPlainObject(obj)) {
+      return `${label} must be a plain object`;
+    }
+    const scan = scanSettingsValue(obj);
+    if (scan.error) {
+      return `${label}: ${scan.error}`;
+    }
+    if (scan.forbiddenKey) {
+      return `Forbidden settings key "${scan.forbiddenKey}"`;
+    }
+    return undefined;
+  } catch (err) {
+    return `${label} could not be validated: ${err instanceof Error ? err.message : String(err)}`;
   }
-  const forbiddenKey = findForbiddenOwnKey(obj);
-  if (forbiddenKey) {
-    return `Forbidden settings key "${forbiddenKey}"`;
-  }
-  return undefined;
 }
 
 export interface UpdateSettingsDocumentOptions extends SettingsStoreOptions {

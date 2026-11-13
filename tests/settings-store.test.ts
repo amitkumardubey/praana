@@ -1123,4 +1123,80 @@ console.log(JSON.stringify(res));
     );
     expect(overrideCloseCalls).toBe(3);
   });
+
+  test("bounded key scan handles deep nesting, throwing getters, toJSON, and scans final merged document before write", async () => {
+    const { updateSettingsDocument, replaceSettingsDocument, createSettingsFs } = await storeApi();
+    const baseFs = createSettingsFs();
+
+    const baseline = JSON.stringify({ thinking: true }, null, 2) + "\n";
+    writeFileSync(settingsPath, baseline, "utf-8");
+
+    let openExclusiveCalls = 0;
+    const noWriteSpyFs = createSettingsFs({
+      openExclusive(p, mode) {
+        openExclusiveCalls++;
+        return baseFs.openExclusive(p, mode);
+      },
+    });
+
+    // 1. 10,000-deep and 40-deep nested patches return { ok: false } without throwing and write nothing
+    let deep: Record<string, unknown> = { leaf: 1 };
+    for (let i = 0; i < 10_000; i++) {
+      deep = { nested: deep };
+    }
+    const deepUpdateRes = updateSettingsDocument({ deep }, { fs: noWriteSpyFs });
+    expect(deepUpdateRes.ok).toBe(false);
+    if (!deepUpdateRes.ok) {
+      expect(deepUpdateRes.error).toMatch(/depth/i);
+    }
+    const deepReplaceRes = replaceSettingsDocument({ deep }, { fs: noWriteSpyFs });
+    expect(deepReplaceRes.ok).toBe(false);
+
+    let depth40: Record<string, unknown> = { leaf: 1 };
+    for (let i = 0; i < 40; i++) {
+      depth40 = { nested: depth40 };
+    }
+    const depth40Res = updateSettingsDocument({ depth40 }, { fs: noWriteSpyFs });
+    expect(depth40Res.ok).toBe(false);
+    expect(openExclusiveCalls).toBe(0);
+    expect(readFileSync(settingsPath, "utf-8")).toBe(baseline);
+
+    // 2. Object with a throwing getter returns { ok: false } without throwing and writes nothing
+    const getterHost: Record<string, unknown> = {};
+    Object.defineProperty(getterHost, "evil", {
+      enumerable: true,
+      get() {
+        throw new Error("getter-boom");
+      },
+    });
+    const getterUpdateRes = updateSettingsDocument(getterHost, { fs: noWriteSpyFs });
+    expect(getterUpdateRes.ok).toBe(false);
+    const nestedGetterRes = updateSettingsDocument({ nested: getterHost }, { fs: noWriteSpyFs });
+    expect(nestedGetterRes.ok).toBe(false);
+    const getterReplaceRes = replaceSettingsDocument(getterHost, { fs: noWriteSpyFs });
+    expect(getterReplaceRes.ok).toBe(false);
+    expect(openExclusiveCalls).toBe(0);
+    expect(readFileSync(settingsPath, "utf-8")).toBe(baseline);
+
+    // 3. Object with toJSON returning forbidden key or throwing returns { ok: false } and writes nothing
+    const toJsonForbidden = {
+      nested: {
+        toJSON() {
+          return JSON.parse('{"__proto__": {"polluted": "yes"}}');
+        },
+      },
+    };
+    expect(updateSettingsDocument(toJsonForbidden, { fs: noWriteSpyFs }).ok).toBe(false);
+    expect(replaceSettingsDocument(toJsonForbidden, { fs: noWriteSpyFs }).ok).toBe(false);
+    expect(openExclusiveCalls).toBe(0);
+    expect(readFileSync(settingsPath, "utf-8")).toBe(baseline);
+
+    // 4. Final merged document scan catches forbidden key originating from disk before write
+    const diskForbidden = '{"constructor": {"polluted": 1}, "thinking": true}\n';
+    writeFileSync(settingsPath, diskForbidden, "utf-8");
+    const mergedForbiddenRes = updateSettingsDocument({ debug: true }, { fs: noWriteSpyFs });
+    expect(mergedForbiddenRes.ok).toBe(false);
+    expect(openExclusiveCalls).toBe(0);
+    expect(readFileSync(settingsPath, "utf-8")).toBe(diskForbidden);
+  });
 });
