@@ -36,6 +36,7 @@ export interface IndexedTranscriptEntry {
   isError?: boolean;
   artifactId?: string;
   unrecoveredStub: boolean;
+  searchable: boolean;
   text: string;
   searchText: string;
   timestamp: number;
@@ -53,8 +54,6 @@ function extractArtifactId(text: string): string | undefined {
 
 function extractRecordTexts(record: CanonicalRecord): {
   text: string;
-  parts?: string[];
-  excludedParts?: number[];
   toolName?: string;
   callId?: string;
   isError?: boolean;
@@ -70,13 +69,11 @@ function extractRecordTexts(record: CanonicalRecord): {
       const parts: string[] = [];
       if (record.message.text) parts.push(record.message.text);
       if (record.message.thinking) parts.push(record.message.thinking);
-      const excludedParts: number[] = [];
       for (const tc of record.message.toolCalls ?? []) {
-        if (tc.name === "search_transcript") excludedParts.push(parts.length);
         parts.push(`${tc.name}(${JSON.stringify(tc.args)})`);
       }
       const text = parts.join("\n");
-      return { text, parts, excludedParts, artifactId: extractArtifactId(text) };
+      return { text, artifactId: extractArtifactId(text) };
     }
     case "tool_result": {
       const text = record.message.text;
@@ -113,7 +110,6 @@ export function indexSessionTranscript(
   const entries: IndexedTranscriptEntry[] = [];
   // null marks a call key with multiple pending canonical results.
   const artifactResults = new Map<string, IndexedTranscriptEntry | null>();
-  const assistantParts = new Map<IndexedTranscriptEntry, { parts: string[]; excludedParts: number[] }>();
   let epochPosition = 0;
 
   for (let i = 0; i < events.length; i++) {
@@ -173,6 +169,9 @@ export function indexSessionTranscript(
       turnId: record.turnId,
       kind: record.kind,
       unrecoveredStub: record.kind === "tool_result" && extracted.artifactId !== undefined,
+      searchable: record.kind === "assistant"
+        ? !record.message.toolCalls?.some((call) => call.name === "search_transcript")
+        : record.kind !== "tool_result" || record.message.toolName !== "search_transcript",
       text: extracted.text,
       searchText: "",
       timestamp: ev.timestamp,
@@ -184,9 +183,6 @@ export function indexSessionTranscript(
     if (extracted.isError !== undefined) entry.isError = extracted.isError;
     if (extracted.artifactId !== undefined) entry.artifactId = extracted.artifactId;
     entries.push(entry);
-    if (extracted.parts && extracted.excludedParts) {
-      assistantParts.set(entry, { parts: extracted.parts, excludedParts: extracted.excludedParts });
-    }
     if (entry.kind === "tool_result" && entry.callId && entry.toolName !== "retrieve_artifact") {
       const key = JSON.stringify([entry.toolName, entry.callId]);
       artifactResults.set(key, artifactResults.has(key) ? null : entry);
@@ -196,15 +192,12 @@ export function indexSessionTranscript(
 
   // Recover first, then redact each entry once before any snippet/range is cut.
   for (const entry of entries) {
-    const split = assistantParts.get(entry);
     const redacted = redactSecrets({
-      parts: split?.parts ?? [entry.text],
+      text: entry.text,
       prefix: entry.kind === "tool_result" ? `${entry.toolName} ${entry.callId}\n` : "",
-    }) as { parts: string[]; prefix: string };
-    entry.text = redacted.parts.join("\n");
-    entry.searchText = redacted.prefix + redacted.parts
-      .filter((_, index) => !split?.excludedParts.includes(index))
-      .join("\n");
+    }) as { text: string; prefix: string };
+    entry.text = redacted.text;
+    entry.searchText = redacted.prefix + entry.text;
   }
 
   return { entries, currentResetEpoch, canonicalTranscriptAvailable };
@@ -381,7 +374,8 @@ export function createSearchTranscriptTool(ctx: {
       description:
         "Search canonical session records (BM25 + case-insensitive substring; no regex), including compacted/stubbed turns, " +
         "or fetch full/ranged content and neighbors by ID. Searches the current reset epoch by default; " +
-        "set include_previous_resets=true to search or fetch across /clear. Search excludes search_transcript calls/results. " +
+        "set include_previous_resets=true to search or fetch across /clear. " +
+        "Search excludes assistant messages calling search_transcript and search_transcript results (ID fetch still works). " +
         "Artifact-backed results use paired logged output only with a matching artifact ID; matches retain artifactId. " +
         "If the session has no canonical transcript, use search_session_log instead.",
       parameters: searchTranscriptParameters,
@@ -480,7 +474,7 @@ export function createSearchTranscriptTool(ctx: {
         const queryTokens = tokenize(query);
         const lowerQuery = query.toLowerCase();
         const queryTerms = lowerQuery.split(/\s+/).filter((t) => t.length > 0);
-        const searchableEntries = scopedEntries.filter((e) => e.toolName !== "search_transcript");
+        const searchableEntries = scopedEntries.filter((e) => e.searchable);
         const docTokenLists = searchableEntries.map((e) => tokenize(e.searchText));
         const stats = buildBM25StatsFromTokens(docTokenLists);
 

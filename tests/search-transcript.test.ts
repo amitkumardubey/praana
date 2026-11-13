@@ -140,6 +140,59 @@ describe("search_transcript tool (PR3)", () => {
     }
   });
 
+  test("indexes a single search eligibility flag without stripping self-call text", () => {
+    const { log } = openLog();
+    const records: [string, CanonicalRecord, boolean][] = [
+      ["user", { formatVersion: 1, kind: "user_input", turnId: 1, message: { text: "search_transcript needle" } }, true],
+      ["chat", { formatVersion: 1, kind: "assistant", turnId: 1, message: { text: "needle" } }, true],
+      ["call", {
+        formatVersion: 1, kind: "assistant", turnId: 1,
+        message: { text: "", toolCalls: [{ id: "search-call", name: "search_transcript", args: { query: "needle" } }] },
+      }, false],
+      ["result", {
+        formatVersion: 1, kind: "tool_result", turnId: 1,
+        message: { callId: "search-call", toolName: "search_transcript", text: "needle", isError: false },
+      }, false],
+      ["shell", {
+        formatVersion: 1, kind: "tool_result", turnId: 1,
+        message: { callId: "shell-call", toolName: "shell", text: "search_transcript needle", isError: false },
+      }, true],
+    ];
+    for (const [id, record] of records) addCanonical(log, id, record);
+    const entries = searchTranscriptModule.indexSessionTranscript(log).entries;
+    expect(entries).toHaveLength(records.length);
+    for (const [index, [, , searchable]] of records.entries()) {
+      expect(entries[index]).toHaveProperty("searchable", searchable);
+      expect(entries[index]!.searchText).toContain("needle");
+      expect(entries[index]!.searchText).toContain(entries[index]!.text);
+    }
+  });
+
+  test("excludes complete assistant messages calling search_transcript but still fetches them", async () => {
+    const { log } = openLog();
+    addCanonical(log, "user", { formatVersion: 1, kind: "user_input", turnId: 1, message: { text: "needle" } });
+    addCanonical(log, "mixed-call", {
+      formatVersion: 1, kind: "assistant", turnId: 1,
+      message: {
+        text: "narration needle",
+        thinking: "thinking needle",
+        toolCalls: [
+          { id: "search", name: "search_transcript", args: { query: "search needle" } },
+          { id: "shell", name: "shell", args: { command: "echo shell needle" } },
+        ],
+      },
+    });
+    const tool = searchTranscriptModule.createSearchTranscriptTool({ eventLog: log }).search_transcript;
+    const search = await tool.execute({ query: "needle" });
+    if (!search.ok || search.mode !== "search") throw new Error("Expected search");
+    expect(search.matches.map((match) => match.id)).toEqual(["user"]);
+    const fetched = await tool.execute({ id: "mixed-call" });
+    if (!fetched.ok || fetched.mode !== "fetch") throw new Error("Expected fetch");
+    for (const text of ["narration needle", "thinking needle", "search needle", "shell needle"]) {
+      expect(fetched.message.content).toContain(text);
+    }
+  });
+
   test("ranks artifact cards and elided stubs below original content while retaining artifact ids", async () => {
     const { log } = openLog();
     const artifactId = "art_abcdef123456";
