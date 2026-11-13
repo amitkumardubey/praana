@@ -222,7 +222,7 @@ describe("search_transcript tool (PR3)", () => {
           toolCallId: id,
           tool: "read_file",
           result: id === "source"
-            ? { content: `needle.txt ${"ordinary output ".repeat(200)}` }
+            ? { artifact_id: "art_abcdef123456", content: `needle.txt ${"ordinary output ".repeat(200)}` }
             : { content: card, skipped_disk: true },
         },
       });
@@ -285,7 +285,7 @@ describe("search_transcript tool (PR3)", () => {
     expect(full.message.totalChars).toBe(full.message.content.length);
   });
 
-  test("searches original tool output behind an engine-mode artifact card after reload", async () => {
+  test("does not recover untagged engine output behind an artifact card after reload", async () => {
     const { root, log, sessionId } = openLog();
     log.close();
     const config = loadConfig();
@@ -331,14 +331,73 @@ describe("search_transcript tool (PR3)", () => {
       const tool = searchTranscriptModule.createSearchTranscriptTool({ eventLog: reloaded }).search_transcript;
       const search = await tool.execute({ query: needle });
       if (!search.ok || search.mode !== "search") throw new Error("Expected search");
-      expect(search.matches).toHaveLength(1);
-      expect(search.matches[0]?.artifactId).toMatch(/^art_/);
-      const fetched = await tool.execute({ id: search.matches[0]!.id });
+      expect(search.matches).toEqual([]);
+      const indexed = searchTranscriptModule.indexSessionTranscript(reloaded).entries;
+      const entry = indexed.find((entry) => entry.kind === "tool_result")!;
+      const fetched = await tool.execute({ id: entry.id });
       if (!fetched.ok || fetched.mode !== "fetch") throw new Error("Expected fetch");
-      expect(fetched.message.content).toContain(needle);
+      expect(fetched.message.artifactId).toMatch(/^art_/);
+      expect(fetched.message.content).toBe(result!.message.text);
     } finally {
       engine.close();
     }
+  });
+
+  test("leaves both artifact entries unchanged when a call id is reused before pairing", async () => {
+    const { log } = openLog();
+    const card = "[artifact: art_shared | shell: inspect]";
+    for (const id of ["first", "second"]) {
+      addCanonical(log, id, {
+        formatVersion: 1,
+        kind: "tool_result",
+        turnId: 1,
+        message: { callId: "reused", toolName: "shell", text: card, isError: false },
+      });
+    }
+    log.append({
+      kind: "tool_result",
+      actor: "tool",
+      payload: { toolCallId: "reused", tool: "shell", result: { artifact_id: "art_shared", content: "unrelated needle" } },
+    });
+    const entries = searchTranscriptModule.indexSessionTranscript(log).entries;
+    expect(entries.map((entry) => entry.text)).toEqual([card, card]);
+  });
+
+  test("keeps an empty-call-id entry unchanged instead of pairing or dropping it", async () => {
+    const { log } = openLog();
+    const card = "[artifact: art_missing | shell: inspect]";
+    addCanonical(log, "missing-call", {
+      formatVersion: 1,
+      kind: "tool_result",
+      turnId: 1,
+      message: { callId: "", toolName: "shell", text: card, isError: false },
+    });
+    log.append({
+      kind: "tool_result",
+      actor: "tool",
+      payload: { toolCallId: "", tool: "shell", result: { artifact_id: "art_missing", content: "unrelated needle" } },
+    });
+    const entries = searchTranscriptModule.indexSessionTranscript(log).entries;
+    expect(entries.map((entry) => ({ id: entry.id, callId: entry.callId, text: entry.text })))
+      .toEqual([{ id: "missing-call", callId: "", text: card }]);
+  });
+
+  test.each(["art_other", undefined])("does not recover paired output with artifact id %s", async (artifactId) => {
+    const { log } = openLog();
+    const card = "[artifact: art_expected | shell: inspect]";
+    addCanonical(log, "card", {
+      formatVersion: 1,
+      kind: "tool_result",
+      turnId: 1,
+      message: { callId: "call", toolName: "shell", text: card, isError: false },
+    });
+    log.append({
+      kind: "tool_result",
+      actor: "tool",
+      payload: { toolCallId: "call", tool: "shell", result: { artifact_id: artifactId, content: "unrelated needle" } },
+    });
+    const entries = searchTranscriptModule.indexSessionTranscript(log).entries;
+    expect(entries.map((entry) => entry.text)).toEqual([card]);
   });
 
   test("only recovers paired source results within the same reset epoch", async () => {
@@ -358,7 +417,7 @@ describe("search_transcript tool (PR3)", () => {
         payload: {
           toolCallId: scenario === "wrong-call" ? "other" : "call",
           tool: scenario === "wrong-tool" ? "read_file" : "shell",
-          result: { content: "unrelated needle", skipped_disk: scenario === "repeat-read" },
+          result: { artifact_id: "art_abcdef123456", content: "unrelated needle", skipped_disk: scenario === "repeat-read" },
         },
       });
       const tool = searchTranscriptModule.createSearchTranscriptTool({ eventLog: log }).search_transcript;

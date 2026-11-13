@@ -112,7 +112,8 @@ export function indexSessionTranscript(
   const events = eventLog.readAll(rawOptions);
   let currentResetEpoch = SESSION_START_EPOCH;
   const entries: IndexedTranscriptEntry[] = [];
-  const artifactResults = new Map<string, IndexedTranscriptEntry>();
+  // null marks a call key with multiple pending canonical results.
+  const artifactResults = new Map<string, IndexedTranscriptEntry | null>();
   let epochPosition = 0;
 
   for (let i = 0; i < events.length; i++) {
@@ -132,24 +133,39 @@ export function indexSessionTranscript(
       const result = ev.payload.result;
       const skippedDisk = result !== null && typeof result === "object" &&
         (result as { skipped_disk?: unknown }).skipped_disk === true;
-      if (entry && result !== undefined && !skippedDisk) {
+      if (entry?.artifactId && result !== undefined && !skippedDisk) {
         const text = typeof result === "string" ? result : JSON.stringify(result);
-        entry.text = redactSecrets(text) as string;
-        entry.searchText = `${entry.toolName} ${entry.callId}\n${entry.text}`;
-        entry.unrecoveredStub = false;
+        const outputArtifactId = result !== null && typeof result === "object" &&
+          typeof (result as { artifact_id?: unknown }).artifact_id === "string"
+          ? (result as { artifact_id: string }).artifact_id
+          : extractArtifactId(text);
+        if (outputArtifactId === entry.artifactId) {
+          entry.text = redactSecrets(text) as string;
+          entry.searchText = `${entry.toolName} ${entry.callId}\n${entry.text}`;
+          entry.unrecoveredStub = extractArtifactId(text) !== undefined;
+        }
       }
       artifactResults.delete(key);
       continue;
     }
     if (ev.kind !== "canonical_message") continue;
+    // Historical writers used an empty call ID. Validate the rest of that
+    // record normally, but keep it fetchable without allowing result pairing.
+    const message = ev.payload.message;
+    const missingCallId = ev.payload.kind === "tool_result" && message !== null &&
+      typeof message === "object" && "callId" in message && message.callId === "";
+    const parseEvent = missingCallId
+      ? { ...ev, payload: { ...ev.payload, message: { ...message, callId: "unpaired" } } }
+      : ev;
     let parsedRecords: CanonicalRecord[];
     try {
-      parsedRecords = readFullSessionCanonicalRecords([ev]);
+      parsedRecords = readFullSessionCanonicalRecords([parseEvent]);
     } catch {
       continue;
     }
     const record = parsedRecords[0];
     if (!record) continue;
+    if (missingCallId && record.kind === "tool_result") record.message.callId = "";
     const extracted = extractRecordTexts(record);
     const entry: IndexedTranscriptEntry = {
       id: ev.event_id,
@@ -169,8 +185,9 @@ export function indexSessionTranscript(
     if (extracted.isError !== undefined) entry.isError = extracted.isError;
     if (extracted.artifactId !== undefined) entry.artifactId = extracted.artifactId;
     entries.push(entry);
-    if (entry.kind === "tool_result" && entry.artifactId && entry.toolName !== "retrieve_artifact") {
-      artifactResults.set(JSON.stringify([entry.toolName, entry.callId]), entry);
+    if (entry.kind === "tool_result" && entry.callId && entry.toolName !== "retrieve_artifact") {
+      const key = JSON.stringify([entry.toolName, entry.callId]);
+      artifactResults.set(key, artifactResults.has(key) ? null : entry);
     }
     epochPosition++;
   }
@@ -350,7 +367,7 @@ export function createSearchTranscriptTool(ctx: {
         "Search canonical session records (BM25 + case-insensitive substring; no regex), including compacted/stubbed turns, " +
         "or fetch full/ranged content and neighbors by ID. Searches the current reset epoch by default; " +
         "set include_previous_resets=true to search or fetch across /clear. Search excludes search_transcript calls/results. " +
-        "Artifact-backed results use paired logged output when available; matches retain artifactId.",
+        "Artifact-backed results use paired logged output only with a matching artifact ID; matches retain artifactId.",
       parameters: searchTranscriptParameters,
       execute: async (rawArgs: SearchTranscriptArgs): Promise<SearchTranscriptResult> => {
         const parsed = searchTranscriptParameters.safeParse(rawArgs ?? {});

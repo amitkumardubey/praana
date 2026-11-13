@@ -229,7 +229,7 @@ Each line is a single JSON line representing an `Event`:
 
 Writing uses `writeSync` followed by `fsyncSync` to guarantee durable persistence on every event. Rebuilding state on session resume replays `context_action` events.
 
-Agents use `search_transcript` for BM25 + case-insensitive substring search over canonical session records, including compacted/stubbed turns, or full/ranged content and neighbors by ID. It searches the current reset epoch by default; `include_previous_resets=true` permits access across earlier `/clear` epochs. Search excludes `search_transcript` calls/results (ID fetch still works). Artifact-backed results use the paired logged tool output when available and retain `artifactId`; artifact-only records may still require `retrieve_artifact` for the original bytes. `search_session_log` provides keyword AND/OR search over other session events. Neither tool is `recall`, which queries cross-session Cognitive Memory in SQLite.
+Agents use `search_transcript` for BM25 + case-insensitive substring search over canonical session records, including compacted/stubbed turns, or full/ranged content and neighbors by ID. It searches the current reset epoch by default; `include_previous_resets=true` permits access across earlier `/clear` epochs. Search excludes `search_transcript` calls/results (ID fetch still works). Artifact-backed results use paired logged tool output only when it carries the same artifact ID and retain `artifactId`; artifact-only records may still require `retrieve_artifact` for the original bytes. `search_session_log` provides keyword AND/OR search over other session events. Neither tool is `recall`, which queries cross-session Cognitive Memory in SQLite.
 
 ## Compiler
 
@@ -315,7 +315,7 @@ Defined in `src/tools/` using Zod 4 schemas and converted to JSON Schema (draft-
 
 ### Shared tools (classic and engine mode)
 - `search_session_log(query, kinds?, limit?)` — keyword search over the current session event log
-- `search_transcript(query?, id?, include_previous_resets?, limit?, context_messages?, offset?, max_chars?)` — BM25 + case-insensitive substring search over canonical session records, including compacted/stubbed turns; current reset epoch by default, with `include_previous_resets=true` for cross-`/clear` access. Full/ranged content and neighbors by ID; search excludes its own calls/results. Artifact-backed results use paired logged output when available and retain `artifactId`.
+- `search_transcript(query?, id?, include_previous_resets?, limit?, context_messages?, offset?, max_chars?)` — BM25 + case-insensitive substring search over canonical session records, including compacted/stubbed turns; current reset epoch by default, with `include_previous_resets=true` for cross-`/clear` access. Full/ranged content and neighbors by ID; search excludes its own calls/results. Artifact-backed results use paired logged output only when it carries the same artifact ID and retain `artifactId`.
 
 ### System Tools (`src/tools/system.ts`)
 - `shell(command, timeout?)` — executes a bash command with timeout (default: 30s); optional sandbox allowlist via `[shell]`
