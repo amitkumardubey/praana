@@ -2,13 +2,18 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { emitCanonicalTranscript, type CanonicalRecord } from "../src/canonical-transcript.js";
+import { emitCanonicalTranscript, readFullSessionCanonicalRecords, type CanonicalRecord } from "../src/canonical-transcript.js";
 import { loadConfig } from "../src/config.js";
 import { ArtifactStore } from "../src/context-engine/artifact-store.js";
 import { estimateTokens } from "../src/token-estimate.js";
+import {
+  applyStubsToCanonicalRecords,
+  DEFAULT_EXACT_BYTES_TOOLS,
+  planToolResultStubs,
+  planTurnBatchStubs,
+  shapeToolOutput,
+} from "../src/tool-output.js";
 import type { Event } from "../src/types.js";
-
-const api = () => import("../src/tool-output.js");
 
 const tempDirs: string[] = [];
 const stores: ArtifactStore[] = [];
@@ -18,8 +23,7 @@ afterEach(() => {
 });
 
 describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
-  test("shaper keeps head and tail under line/byte caps, states how much was cut and how to retrieve, and is deterministic", async () => {
-    const { shapeToolOutput } = await api();
+  test("shaper keeps head and tail under line/byte caps, states how much was cut and how to retrieve, and is deterministic", () => {
     const lines = Array.from({ length: 200 }, (_, i) => `line-${String(i + 1).padStart(3, "0")}: ${"output-data ".repeat(8)}`);
     const rawText = lines.join("\n");
 
@@ -71,9 +75,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     expect(second).toEqual(first);
   });
 
-  test("shaped output is never longer than the input and shaping is idempotent", async () => {
-    const { shapeToolOutput } = await api();
-
+  test("shaped output is never longer than the input and shaping is idempotent", () => {
     const samples = [
       "",
       "short output",
@@ -138,8 +140,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     }
   });
 
-  test("never shapes exact-bytes inputs (read_file, LSP diagnostics, retrieve_artifact, preserveExactBytes)", async () => {
-    const { shapeToolOutput, DEFAULT_EXACT_BYTES_TOOLS } = await api();
+  test("never shapes exact-bytes inputs (read_file, LSP diagnostics, retrieve_artifact, preserveExactBytes)", () => {
     const exactSourceFile = Array.from(
       { length: 300 },
       (_, i) => `export const line_${i + 1} = "exact indentation and trailing spaces   ";`,
@@ -182,8 +183,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     expect(custom.text).toBe(exactSourceFile);
   });
 
-  test("stores full original in ArtifactStore side file and recovers exact original via retrieve", async () => {
-    const { shapeToolOutput } = await api();
+  test("stores full original in ArtifactStore side file and recovers exact original via retrieve", () => {
     const dir = mkdtempSync(join(tmpdir(), "praana-tool-output-art-"));
     tempDirs.push(dir);
     const dbPath = join(dir, "context.db");
@@ -216,7 +216,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     // The middle line 126 was elided from the shaped view
     expect(shaped.text).not.toContain("FAIL: secret assertion error at src/foo.ts:99");
     // Full original is recoverable from the side file by artifactId
-    const retrieved = store.retrieve(shaped.artifactId!, 1);
+    const retrieved = store.retrieve(shaped.artifactId ?? "", 1);
     expect(retrieved).toEqual({ ok: true, content: fullLog });
     const ranged = store.retrieve(shaped.artifactId!, 1, { lineStart: 126, lineEnd: 126 });
     expect(ranged).toEqual({ ok: true, content: "[test 126] FAIL: secret assertion error at src/foo.ts:99" });
@@ -233,13 +233,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     expect(degraded.text).toContain("search_transcript");
   });
 
-  test("stale-result batch stubber preserves pairing, reproduces on replay, and fires once per trigger not per step", async () => {
-    const {
-      planToolResultStubs,
-      planTurnBatchStubs,
-      applyStubsToCanonicalRecords,
-    } = await api();
-
+  test("stale-result batch stubber preserves pairing, reproduces on replay, and fires once per trigger not per step", () => {
     // Build a multi-step canonical transcript with parallel tool calls and shaped results containing artifact IDs.
     const events: Event[] = [];
     const add = (id: string, record: CanonicalRecord) => {
@@ -329,7 +323,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
       expect(entry.stubText).toContain("search_transcript");
     }
     // res-1 carried artifact art_abc123def456, which is preserved in its one-line stub!
-    expect(stubSet[0]!.stubText).toContain("art_abc123def456");
+    expect(stubSet[0]?.stubText).toContain("art_abc123def456");
 
     // 3. Direct compatibility with compaction.ts StubPlanner contract (`planToolResultStubs`)
     const direct = planToolResultStubs(
@@ -358,7 +352,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     expect(direct.map((d) => d.eventId)).toEqual(["res-1"]);
 
     // 4. Pairing and replay: applying stubSet to canonical records preserves call/result pairing and reproduces identical bytes on replay.
-    const originalRecords = events.map((e) => e.payload as unknown as CanonicalRecord);
+    const originalRecords = readFullSessionCanonicalRecords(events);
     const beforeSnapshot = JSON.stringify(originalRecords);
 
     const replay1 = emitCanonicalTranscript(applyStubsToCanonicalRecords(events, stubSet));
@@ -374,20 +368,20 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
       role: "tool_result",
       toolCallId: "call-1",
       toolName: "shell",
-      result: stubSet[0]!.stubText,
+      result: stubSet[0]?.stubText ?? "",
       isError: false,
     });
     expect(toolResultMessages[1]).toEqual({
       role: "tool_result",
       toolCallId: "call-2",
       toolName: "shell",
-      result: stubSet[1]!.stubText,
+      result: stubSet[1]?.stubText ?? "",
       isError: true,
     });
     // The 3 most recent results (res-3, res-4, res-5) remain verbatim
     for (let i = 2; i < 5; i++) {
-      const msg = toolResultMessages[i]!;
-      if (msg.role === "tool_result") {
+      const msg = toolResultMessages[i];
+      if (msg && msg.role === "tool_result") {
         expect(msg.result).toBe(`Recent-${i + 1}:${"R".repeat(1600)}`);
       }
     }

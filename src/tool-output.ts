@@ -251,15 +251,16 @@ export function shapeToolOutput(input: ShapeToolOutputInput): ShapeToolOutputRes
     return unchanged();
   }
 
-  return {
+  const out: ShapeToolOutputResult = {
     text: shapedText,
     shaped: true,
-    ...(resolvedArtifactId ? { artifactId: resolvedArtifactId } : {}),
     rawTokens,
     shapedTokens: estimateTokens(shapedText),
     omittedLines,
     omittedBytes,
   };
+  if (resolvedArtifactId) out.artifactId = resolvedArtifactId;
+  return out;
 }
 
 export interface StubCandidate {
