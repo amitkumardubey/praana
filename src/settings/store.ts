@@ -35,6 +35,7 @@ import {
   parseConfigOverrides,
   type AcceptedOverrides,
   type RejectedOverride,
+  isPlainObject,
 } from "./overrides.js";
 
 export const USER_SETTINGS_KEYS = [
@@ -203,15 +204,16 @@ export interface ReadSettingsDocumentResult {
   error?: string;
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
-  const proto = Object.getPrototypeOf(value);
-  return proto === Object.prototype || proto === null;
+/** Default location of the settings document. */
+export function settingsFilePath(): string {
+  return appHomePath("settings.json");
 }
 
 function resolveSettingsPath(options?: SettingsStoreOptions): string {
-  return options?.path ?? appHomePath("settings.json");
+  return options?.path ?? settingsFilePath();
 }
+
+const UTF8_FATAL = new TextDecoder("utf-8", { fatal: true });
 
 export function readSettingsDocument(options?: SettingsStoreOptions): ReadSettingsDocumentResult {
   const path = resolveSettingsPath(options);
@@ -261,7 +263,7 @@ export function readSettingsDocument(options?: SettingsStoreOptions): ReadSettin
 
   let decoded: string;
   try {
-    decoded = new TextDecoder("utf-8", { fatal: true }).decode(rawBytes);
+    decoded = UTF8_FATAL.decode(rawBytes);
   } catch {
     return { doc: {}, state: "corrupt", error: `Settings file (${path}) is not valid UTF-8` };
   }
@@ -328,17 +330,9 @@ function writeDocumentAtomic(
     } catch {
       // Ignore chmod failure on platforms without POSIX mode semantics.
     }
+    // The renamed inode is the 0600 temp file, so no second chmod is needed.
     fs.rename(tmpPath, path);
-    try {
-      fs.chmod(path, 0o600);
-    } catch {
-      // Ignore chmod failure on platforms without POSIX mode semantics.
-    }
-    try {
-      fs.fsyncDir(dir);
-    } catch {
-      // Best-effort directory fsync after successful rename.
-    }
+    fs.fsyncDir(dir); // best effort: the default implementation swallows its own errors
     return { ok: true };
   } catch (err) {
     if (!closed) {
@@ -500,7 +494,8 @@ export function parseDefaultModel(raw: unknown): {
   };
 }
 
-function coerceLegacyBool(value: unknown): boolean | undefined {
+/** Accepts true/false, on/off, 1/0 (strings case-insensitive and trimmed) and the numbers 1/0. */
+export function coerceBoolean(value: unknown): boolean | undefined {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
     const v = value.trim().toLowerCase();
@@ -512,6 +507,44 @@ function coerceLegacyBool(value: unknown): boolean | undefined {
     if (value === 0) return false;
   }
   return undefined;
+}
+
+/**
+ * Validate the seven legacy keys of a settings document. Unknown keys are
+ * ignored; each invalid known key is reported with a reason and keeps its default.
+ */
+export function normalizeLegacySettings(
+  doc: Record<string, unknown>,
+): { settings: UserSettings; invalidKeys: InvalidKeyEntry[] } {
+  const settings: UserSettings = { ...DEFAULT_USER_SETTINGS };
+  const invalidKeys: InvalidKeyEntry[] = [];
+  for (const key of USER_SETTINGS_KEYS) {
+    const rawVal = doc[key];
+    if (rawVal === undefined) continue;
+    if (key === "thinking" || key === "incognito" || key === "debug" || key === "auto_update") {
+      const b = coerceBoolean(rawVal);
+      if (b === undefined) {
+        invalidKeys.push({ key, reason: `Invalid boolean value for ${key}` });
+      } else {
+        settings[key] = b;
+      }
+    } else if (key === "theme") {
+      if (typeof rawVal !== "string" || rawVal.trim().length === 0) {
+        invalidKeys.push({ key, reason: "theme must be a non-empty string" });
+      } else {
+        settings.theme = rawVal.trim();
+      }
+    } else {
+      const k = key as Extract<UserSettingsKey, "model" | "provider">;
+      if (typeof rawVal !== "string") {
+        invalidKeys.push({ key: k, reason: `${k} must be a string` });
+      } else {
+        settings[k] = rawVal.trim();
+      }
+    }
+  }
+
+  return { settings, invalidKeys };
 }
 
 export interface LoadSettingsFileResult {
@@ -553,47 +586,17 @@ export function loadSettingsFile(options?: SettingsStoreOptions): LoadSettingsFi
   const ignoredUnknownKeys: string[] = [];
   const warnings: string[] = [];
 
-  for (const key of USER_SETTINGS_KEYS) {
-    const rawVal = doc[key];
-    if (rawVal === undefined) continue;
-    if (key === "thinking" || key === "incognito" || key === "debug" || key === "auto_update") {
-      const b = coerceLegacyBool(rawVal);
-      if (b === undefined) {
-        invalidKeys.push({ key, reason: `Invalid boolean value for ${key}` });
-      } else {
-        settings[key] = b;
-      }
-    } else if (key === "theme") {
-      if (typeof rawVal !== "string" || rawVal.trim().length === 0) {
-        invalidKeys.push({ key, reason: "theme must be a non-empty string" });
-      } else {
-        settings.theme = rawVal.trim();
-      }
-    } else {
-      const k = key as Extract<UserSettingsKey, "model" | "provider">;
-      if (typeof rawVal !== "string") {
-        invalidKeys.push({ key: k, reason: `${k} must be a string` });
-      } else {
-        settings[k] = rawVal.trim();
-      }
-    }
-  }
+  const legacy = normalizeLegacySettings(doc);
+  const settingsFromDoc = legacy.settings;
+  invalidKeys.push(...legacy.invalidKeys);
 
   const dm = parseDefaultModel(doc.default_model);
   invalidKeys.push(...dm.errors);
 
-  let configOverrides: AcceptedOverrides = {};
-  let rejectedOverrides: RejectedOverride[] = [];
-  if (doc.config_overrides !== undefined) {
-    if (!isPlainObject(doc.config_overrides)) {
-      const reason = "config_overrides must be a plain object";
-      invalidKeys.push({ key: "config_overrides", reason });
-      rejectedOverrides.push({ path: "config_overrides", reason });
-    } else {
-      const parsedOverrides = parseConfigOverrides(doc.config_overrides);
-      configOverrides = parsedOverrides.accepted;
-      rejectedOverrides = parsedOverrides.rejected;
-    }
+  const { accepted: configOverrides, rejected: rejectedOverrides } = parseConfigOverrides(doc.config_overrides);
+  // A malformed `config_overrides` is also an invalid top-level key; it is warned about once, below.
+  for (const rej of rejectedOverrides) {
+    if (rej.path === "config_overrides") invalidKeys.push({ key: "config_overrides", reason: rej.reason });
   }
 
   for (const key of Object.keys(doc)) {
@@ -611,7 +614,7 @@ export function loadSettingsFile(options?: SettingsStoreOptions): LoadSettingsFi
   }
 
   return {
-    settings,
+    settings: settingsFromDoc,
     defaultModel: dm.value,
     configOverrides,
     invalidKeys,

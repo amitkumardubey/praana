@@ -7,9 +7,11 @@
  * only `/settings set` / `/settings reset` persist.
  */
 
-import { appHomePath } from "./app-identity.js";
 import {
+  coerceBoolean,
   DEFAULT_USER_SETTINGS,
+  normalizeLegacySettings,
+  settingsFilePath,
   readSettingsDocument,
   replaceSettingsDocument,
   updateSettingsDocument,
@@ -26,7 +28,7 @@ export {
 };
 
 export function getUserSettingsPath(): string {
-  return appHomePath("settings.json");
+  return settingsFilePath();
 }
 
 export function isUserSettingsKey(key: string): key is UserSettingsKey {
@@ -41,29 +43,6 @@ export interface LoadUserSettingsResult {
   createdDefaults?: boolean;
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function coerceBoolean(value: unknown): boolean | undefined {
-  if (typeof value === "boolean") return value;
-  if (typeof value === "string") {
-    const v = value.trim().toLowerCase();
-    if (v === "true" || v === "on" || v === "1") return true;
-    if (v === "false" || v === "off" || v === "0") return false;
-  }
-  if (typeof value === "number") {
-    if (value === 1) return true;
-    if (value === 0) return false;
-  }
-  return undefined;
-}
-
-function coerceString(value: unknown): string | undefined {
-  if (typeof value === "string") return value.trim();
-  return undefined;
-}
-
 /** Parse a CLI-style boolean token for `/settings set`. */
 export function parseSettingsBoolean(raw: string): boolean | undefined {
   return coerceBoolean(raw);
@@ -76,56 +55,11 @@ export function parseSettingsBoolean(raw: string): boolean | undefined {
 export function normalizeUserSettings(
   raw: unknown,
 ): { settings: UserSettings; invalid: boolean } {
-  const settings: UserSettings = { ...DEFAULT_USER_SETTINGS };
-  if (!isPlainObject(raw)) {
-    return { settings, invalid: true };
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return { settings: { ...DEFAULT_USER_SETTINGS }, invalid: true };
   }
-
-  let invalid = false;
-
-  const model = coerceString(raw.model);
-  if (raw.model !== undefined) {
-    if (model === undefined) invalid = true;
-    else settings.model = model;
-  }
-
-  const provider = coerceString(raw.provider);
-  if (raw.provider !== undefined) {
-    if (provider === undefined) invalid = true;
-    else settings.provider = provider;
-  }
-
-  const thinking = coerceBoolean(raw.thinking);
-  if (raw.thinking !== undefined) {
-    if (thinking === undefined) invalid = true;
-    else settings.thinking = thinking;
-  }
-
-  const incognito = coerceBoolean(raw.incognito);
-  if (raw.incognito !== undefined) {
-    if (incognito === undefined) invalid = true;
-    else settings.incognito = incognito;
-  }
-
-  const debug = coerceBoolean(raw.debug);
-  if (raw.debug !== undefined) {
-    if (debug === undefined) invalid = true;
-    else settings.debug = debug;
-  }
-
-  const theme = coerceString(raw.theme);
-  if (raw.theme !== undefined) {
-    if (theme === undefined || theme.length === 0) invalid = true;
-    else settings.theme = theme;
-  }
-
-  const autoUpdate = coerceBoolean(raw.auto_update);
-  if (raw.auto_update !== undefined) {
-    if (autoUpdate === undefined) invalid = true;
-    else settings.auto_update = autoUpdate;
-  }
-
-  return { settings, invalid };
+  const { settings, invalidKeys } = normalizeLegacySettings(raw as Record<string, unknown>);
+  return { settings, invalid: invalidKeys.length > 0 };
 }
 
 /**
@@ -183,15 +117,9 @@ export function loadUserSettings(): LoadUserSettingsResult {
  */
 export function saveUserSettings(settings: UserSettings): { ok: true } | { ok: false; error: string } {
   const { settings: normalized } = normalizeUserSettings(settings);
-  const patch: Record<string, unknown> = {
-    model: normalized.model,
-    provider: normalized.provider,
-    thinking: normalized.thinking,
-    incognito: normalized.incognito,
-    debug: normalized.debug,
-    theme: normalized.theme,
-    auto_update: normalized.auto_update,
-  };
+  const patch: Record<string, unknown> = Object.fromEntries(
+    USER_SETTINGS_KEYS.map((key) => [key, normalized[key]]),
+  );
   const updated = updateSettingsDocument(patch, {
     baseDefaultsIfMissing: { ...DEFAULT_USER_SETTINGS },
   });
@@ -228,8 +156,8 @@ export function updateUserSettings(
 
 /**
  * Reset only the seven legacy fields to defaults, preserving `default_model`,
- * `config_overrides`, and unknown keys (those have their own clear actions in
- * later slices). When the existing file is corrupt, backs it up to
+ * `config_overrides`, and unknown keys (those are cleared by their own actions).
+ * When the existing file is corrupt, backs it up to
  * `settings.json.corrupt-<timestamp>` (0600) first and then writes default
  * legacy fields. Never replaces an unreadable file.
  */

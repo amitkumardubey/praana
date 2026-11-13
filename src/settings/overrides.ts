@@ -2,7 +2,7 @@
  * Restricted ingestion of `config_overrides` from `settings.json`.
  *
  * This table is a stopgap for the v1 approved config keys and is replaced by
- * the settings registry in a subsequent slice. String-shape checks here (for
+ * a typed settings registry. String-shape checks here (for
  * example on `tools.web.allow_domains`) are not full domain/hostname
  * normalization, which remains in the config validators. Nothing in this
  * module merges overrides into the active config.
@@ -40,7 +40,8 @@ export const APPROVED_CONFIG_OVERRIDES: Readonly<Record<string, OverrideSpec>> =
 
 const FORBIDDEN_SEGMENTS = new Set(["__proto__", "constructor", "prototype"]);
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
+/** Plain JSON object: not null, not an array, prototype Object.prototype or null. */
+export function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const proto = Object.getPrototypeOf(value);
   return proto === Object.prototype || proto === null;

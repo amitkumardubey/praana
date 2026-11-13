@@ -27,7 +27,7 @@ import {
 
 const storeApi = () => import("../src/settings/store.js");
 
-describe("settings store (S1a)", () => {
+describe("settings store", () => {
   const originalPraanaHome = process.env.PRAANA_HOME;
   let root: string;
   let homeDir: string;
