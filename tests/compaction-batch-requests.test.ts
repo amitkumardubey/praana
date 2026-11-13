@@ -74,7 +74,9 @@ test("batch requests discard the live prefix and tools but keep model and all tr
   const planned = await plan();
   const batch = planned.batches[0];
   const request = buildBatchSummaryRequest(source, batch, { ...options, cutDescription: batch.cutDescription });
-  expect(request.messages.at(-1)).toEqual({ role: "user", content: buildSummaryInstruction({ ...options, cutDescription: batch.cutDescription }) });
+  expect(request.messages.at(-1)).toEqual({ role: "user", content: buildSummaryInstruction({ ...options, cutDescription: batch.cutDescription, tailVisible: false }) });
+  expect(JSON.stringify(request.messages.at(-1))).toContain("contains only the conversation to summarise");
+  expect(JSON.stringify(request.messages.at(-1))).not.toContain("retained tail is visible");
   expect(request.messages.every(message => message.role === "user" && typeof message.content === "string")).toBe(true);
   expect(request).not.toHaveProperty("systemPrompt");
   expect(request).not.toHaveProperty("tools");
@@ -151,7 +153,7 @@ test("chaining uses each checked whole summary as the next input, publishing onl
     expect(next).toMatchObject({ batchIndex: i, attempt: 0 });
     expect(next).not.toHaveProperty("summary");
     const instruction = next.request.messages.at(-1)!;
-    expect(instruction).toEqual({ role: "user", content: buildSummaryInstruction({ ...options, previousSummary: i ? attempts[i - 1].result.text : options.previousSummary, cutDescription: planned.batches[i].cutDescription }) });
+    expect(instruction).toEqual({ role: "user", content: buildSummaryInstruction({ ...options, previousSummary: i ? attempts[i - 1].result.text : options.previousSummary, cutDescription: planned.batches[i].cutDescription, tailVisible: false }) });
     expect(tokens(next.request) + options.effectiveMaxTokens).toBeLessThanOrEqual(options.contextWindowTokens);
     attempts.push({ result: response(summary(`Merged through batch ${i}.`)) });
   }
@@ -186,7 +188,7 @@ test("a successful repair replaces the whole block for the next batch", async ()
   expect(next).toMatchObject({ status: "request", batchIndex: 1, attempt: 0 });
   if (next.status !== "request") throw new Error("Expected next batch");
   const instruction = next.request.messages.at(-1)!;
-  expect(instruction).toEqual({ role: "user", content: buildSummaryInstruction({ ...options, previousSummary: repaired, cutDescription: planned.batches[1].cutDescription }) });
+  expect(instruction).toEqual({ role: "user", content: buildSummaryInstruction({ ...options, previousSummary: repaired, cutDescription: planned.batches[1].cutDescription, tailVisible: false }) });
   expect(JSON.stringify(next.request)).not.toContain("bad block");
 });
 

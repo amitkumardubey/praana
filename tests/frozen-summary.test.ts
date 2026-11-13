@@ -136,7 +136,11 @@ test("instruction rewrites the entire schema from previous summary and folded tu
   expect(instruction).not.toMatch(/### (Narrative|Findings|Fixed errors|Recent activity|Session stats)/i);
   const first = buildSummaryInstruction({ cutDescription: "first cut", capTokens: 256 });
   expect(first).toContain("first cut");
+  expect(first).toContain("retained tail is visible");
   expect(first).not.toContain("undefined");
+  const standalone = buildSummaryInstruction({ cutDescription: "standalone cut", capTokens: 256, tailVisible: false });
+  expect(standalone).toContain("contains only the conversation to summarise");
+  expect(standalone).not.toContain("retained tail is visible");
 });
 
 test("repair instruction allows exactly one attempt then keeps the previous boundary", async () => {

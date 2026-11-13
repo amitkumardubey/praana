@@ -102,7 +102,10 @@ export function buildBatchSummaryRequest(
   options: SummaryInstructionOptions & { effectiveMaxTokens: number },
 ): StreamRequest {
   const { systemPrompt: _system, tools: _tools, messages: _messages, ...transport } = live;
-  return buildSameModelSummaryRequest({ ...transport, maxTokens: options.effectiveMaxTokens, messages: batch.messages.map(renderBatchMessage) }, options);
+  return buildSameModelSummaryRequest(
+    { ...transport, maxTokens: options.effectiveMaxTokens, messages: batch.messages.map(renderBatchMessage) },
+    { ...options, tailVisible: options.tailVisible ?? false },
+  );
 }
 
 function validateSummaryCap(capTokens: number): void {
