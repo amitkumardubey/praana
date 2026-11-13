@@ -5,7 +5,7 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { redactSecretsStrict } from "../redact/secrets.js";
 import { parseMemory, serializeMemory, validName, validateMemory, validateQueryPolicy, type Memory, type MemoryInput } from "./format.js";
 import { memoryDirectories, projectKey, type MemoryScope } from "./paths.js";
-import { buildMemoryIndex as renderMemoryIndex, type MemoryIndex } from "./index.js";
+import { buildMemoryIndex as renderMemoryIndex, type IndexEntry, type MemoryIndex } from "./index.js";
 import { rankMemories, type RecallMatch, type ScopedMemory } from "./recall.js";
 export { MEMORY_POLICY } from "./index.js";
 
@@ -271,8 +271,9 @@ export function createFileMemoryStore(options: StoreOptions) {
   async function buildMemoryIndex(input: { scope?: MemoryScope } = {}): Promise<MemoryIndex & (({ ok: true } & ScopeWarnings) | ResultError)> {
     const data = await list(input);
     if (!data.ok) return { ...data, text: "", truncated: false, shown: 0, total: 0 };
-    return { ok: true, ...scopeWarnings(data.skippedScopes ?? []), ...renderMemoryIndex({ entries: data.entries.map((entry) => ({ ...entry, file: `${entry.scope}/${entry.name}.md` })) }) };
+    return { ok: true, ...scopeWarnings(data.skippedScopes ?? []), ...renderMemoryIndex({ entries: indexEntries(data.entries) }) };
   }
+  const indexEntries = (entries: ListEntry[]): IndexEntry[] => entries.map((entry) => ({ ...entry, file: `${entry.scope}/${entry.name}.md` }));
   async function recall(input: { query?: string; name?: string }): Promise<{ ok: true; memory: ScopedMemory } | ({ ok: true; matches: RecallMatch[] } & ScopeWarnings) | ResultError> {
     if (rootError) return rootError;
     if ((input.query !== undefined) === (input.name !== undefined)) return { ok: false, error: "Provide exactly one of query or name" };
@@ -294,11 +295,12 @@ export function createFileMemoryStore(options: StoreOptions) {
    * changes the result of an already-committed write or removal. Never read back. */
   async function refreshIndexFile(scope: MemoryScope): Promise<{ ok: true } | ResultError> {
     try {
-      const index = await buildMemoryIndex({ scope });
-      if (!index.ok) return errorResult(new Error(index.error));
+      const data = await list({ scope });
+      if (!data.ok) return errorResult(new Error(data.error));
       const dir = await directory(scope, true);
       if (!dir) throw new Error("Memory directory unavailable");
-      await atomicReplace(dir, "MEMORY.md", index.text);
+      // The copy lives inside the scope directory, so its links are relative to it.
+      await atomicReplace(dir, "MEMORY.md", renderMemoryIndex({ entries: indexEntries(data.entries), links: "relative" }).text);
       return { ok: true };
     } catch (error) { return errorResult(error); }
   }

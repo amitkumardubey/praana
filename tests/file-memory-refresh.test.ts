@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative, isAbsolute } from "node:path";
+import { join, relative, resolve, isAbsolute } from "node:path";
 import * as memoryModule from "../src/file-memory/store.js";
+import { buildMemoryIndex as renderIndex, type IndexEntry } from "../src/file-memory/index.js";
 
 const { createFileMemoryStore } = memoryModule;
 const homes: string[] = [];
@@ -13,11 +14,35 @@ async function setup() {
   return { options, store: createFileMemoryStore(options), dir: join(home, ".praana/memory") };
 }
 const input = { scope: "global" as const, name: "coffee", description: "Morning preference", type: "user" as const, body: "Coffee" };
+const scopeIndex = async (store: ReturnType<typeof createFileMemoryStore>, scope: "global" | "project") => {
+  const { entries } = await store.list({ scope });
+  return renderIndex({ entries: entries.map((entry): IndexEntry => ({ ...entry, file: `${entry.scope}/${entry.name}.md` })), links: "relative" }).text;
+};
+
+test("each scope's MEMORY.md links resolve relative to its own directory", async () => {
+  const { store, options } = await setup();
+  expect((await store.write(input)).ok).toBe(true);
+  expect((await store.write({ ...input, scope: "project", body: "Tea" })).ok).toBe(true);
+  const [key] = await fs.readdir(join(options.home, ".praana/projects"));
+  const dirs = { global: join(options.home, ".praana/memory"), project: join(options.home, ".praana/projects", key!, "memory") };
+  for (const scope of ["global", "project"] as const) {
+    const text = await fs.readFile(join(dirs[scope], "MEMORY.md"), "utf8");
+    const links = [...text.matchAll(/^- \[([^\]]+)\]\(([^)]+)\)/gm)];
+    expect(links).toHaveLength(1);
+    for (const [, name, target] of links) {
+      expect(target).toBe(`${name}.md`);
+      expect(await fs.exists(resolve(dirs[scope], target!))).toBe(true);
+    }
+  }
+  const prompt = await store.buildMemoryIndex();
+  expect(prompt.text).toContain("[coffee](global/coffee.md)");
+  expect(prompt.text).toContain("[coffee](project/coffee.md)");
+});
 
 test("write and remove refresh only the affected scope; copy is derived and never read", async () => {
   const { store, dir, options } = await setup();
   expect((await store.write(input)).ok).toBe(true);
-  expect(await fs.readFile(join(dir, "MEMORY.md"), "utf8")).toBe((await store.buildMemoryIndex({ scope: "global" })).text);
+  expect(await fs.readFile(join(dir, "MEMORY.md"), "utf8")).toBe(await scopeIndex(store, "global"));
   const project = { ...input, scope: "project" as const, body: "Tea" };
   expect((await store.write(project)).ok).toBe(true);
   const projects = join(options.home, ".praana/projects");
@@ -43,7 +68,7 @@ test("write and remove refresh only the affected scope; copy is derived and neve
   } });
   const reader = createFileMemoryStore({ ...options, fs: seam });
   expect((await reader.refreshIndexFile("global")).ok).toBe(true);
-  expect(await fs.readFile(join(dir, "MEMORY.md"), "utf8")).toBe((await reader.buildMemoryIndex({ scope: "global" })).text);
+  expect(await fs.readFile(join(dir, "MEMORY.md"), "utf8")).toBe(await scopeIndex(reader, "global"));
 });
 
 for (const stage of ["open", "sync", "rename"]) {
