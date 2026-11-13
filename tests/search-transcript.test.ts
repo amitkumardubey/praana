@@ -118,6 +118,27 @@ describe("search_transcript tool (PR3)", () => {
     expect(result.error).toContain("search_session_log");
   });
 
+  test.each([{ query: "malformed needle" }, { id: "malformed-user" }])("directs malformed-only canonical transcripts to search_session_log for %j", async (args) => {
+    const { log: source } = openLog("source");
+    const writer = new CanonicalWriter(source, (error) => { throw error; });
+    await writer.startTurn("malformed needle");
+    const record = readFullSessionCanonicalRecords(source.readAll({ includeCanonical: true }))[0]!;
+    const { log } = openLog();
+    for (const payload of [{ ...record, formatVersion: 999 }, { ...record, message: { text: 42 } }]) {
+      log.append({ kind: "canonical_message", actor: "kernel", payload });
+    }
+    log.append({ event_id: "malformed-user", kind: "user_message", actor: "user", payload: { text: "malformed needle" } });
+    const indexed = searchTranscriptModule.indexSessionTranscript(log);
+    expect(indexed.entries).toEqual([]);
+    expect(indexed.canonicalTranscriptAvailable).toBe(false);
+    const tool = searchTranscriptModule.createSearchTranscriptTool({ eventLog: log }).search_transcript;
+    const result = await tool.execute(args);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected unavailable transcript");
+    expect(result.error).toMatch(/canonical transcript is not available for this session/i);
+    expect(result.error).toContain("search_session_log");
+  });
+
   test("does not search its own calls or results but still fetches them by id", async () => {
     const { log } = openLog();
     addCanonical(log, "user-needle", {

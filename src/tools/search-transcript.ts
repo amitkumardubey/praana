@@ -144,7 +144,6 @@ export function indexSessionTranscript(
       continue;
     }
     if (ev.kind !== "canonical_message") continue;
-    canonicalTranscriptAvailable = true;
     // Historical writers used an empty call ID. Validate the rest of that
     // record normally, but keep it fetchable without allowing result pairing.
     const message = ev.payload.message;
@@ -161,6 +160,7 @@ export function indexSessionTranscript(
     }
     const record = parsedRecords[0];
     if (!record) continue;
+    canonicalTranscriptAvailable = true;
     if (missingCallId && record.kind === "tool_result") record.message.callId = "";
     const extracted = extractRecordTexts(record);
     const entry: IndexedTranscriptEntry = {
