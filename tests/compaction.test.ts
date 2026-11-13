@@ -1243,7 +1243,7 @@ test("compaction modules import nothing from src/memory/ or checkpoint.ts and do
   expect(compactionSource).not.toMatch(/from\s*["']\.\/compaction\.js["']/);
 });
 
-test("materialises each distinct state at most once per run (bounded by 3 + stubKeepRecent) with identical outcomes", async () => {
+test("materialises each distinct state at most once per run (bounded by 3 + 2 * stubKeepRecent) with identical outcomes", async () => {
   const { runCompaction, materializeHistory, requestFill, stateCacheKey } = await api();
   const baseKeyState: FrozenState = {
     resetEpoch: "epoch-1",
@@ -1406,11 +1406,50 @@ test("materialises each distinct state at most once per run (bounded by 3 + stub
       if (!oracleFill.ok) throw new Error(JSON.stringify(oracleFill));
       expect(outcomeA.fill).toEqual(oracleFill.fill);
     }
-    // Each distinct state is materialised at most once, and total calls are bounded by 3 + stubKeepRecent.
+    // Each distinct state is materialised at most once, and total calls are bounded by 3 + 2 * stubKeepRecent.
     expect(calls).toBe(seenKeys.size);
-    expect(calls).toBeLessThanOrEqual(3 + stubKeepRecent);
+    expect(calls).toBeLessThanOrEqual(3 + 2 * stubKeepRecent);
   }
   expect(totalUncachedCalls).toBeGreaterThan(totalCachedCalls);
+
+  // Scenario reaching both runInFlightStubbing paths (after an insufficient fold and again in Step 3)
+  // exercises the true worst-case bound of 3 + 2 * stubKeepRecent materialisations.
+  {
+    const { log } = openLog();
+    addTurn(log, 1, {
+      inputText: "T1",
+      toolResults: [{ id: "stale-1", text: "S".repeat(800) }],
+    });
+    addTurn(log, 2, {
+      inputText: "U".repeat(2680),
+      toolResults: [
+        { id: "if-1", text: "A".repeat(400) },
+        { id: "if-2", text: "B".repeat(400) },
+        { id: "if-3", text: "C".repeat(400) },
+        { id: "if-4", text: "ok" },
+      ],
+    });
+    let bothPathCalls = 0;
+    const bothPathKeys = new Set<string>();
+    const stubKeepRecent = 2;
+    const outcome = await runCompaction({
+      log,
+      liveRequest: baseLiveRequest(),
+      contextWindowTokens: 1200,
+      options: { effectiveMaxTokens: 200, tailTurns: 0, stubKeepRecent, stubMinTokens: 50 },
+      planStubs: (candidates) => candidates.map((c) => ({ eventId: c.eventId, stubText: "s" })),
+      materialize: (s, src) => {
+        bothPathCalls++;
+        bothPathKeys.add(stateCacheKey(s));
+        return materializeHistory(s, src);
+      },
+      runSummary: async () => summaryResp(validSummary("S".repeat(280))),
+    });
+    expect(outcome.status).toBe("stubbed");
+    expect(bothPathCalls).toBe(bothPathKeys.size);
+    expect(bothPathCalls).toBe(3 + 2 * stubKeepRecent);
+    expect(bothPathCalls).toBeGreaterThan(3 + stubKeepRecent);
+  }
 });
 
 test("seeded 500-scenario randomized test maintains all ladder, boundary, capacity, generation and INV-1 invariants", async () => {

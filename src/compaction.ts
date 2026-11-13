@@ -632,7 +632,8 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
 
   // Materialize each distinct (resetEpoch, boundaryEventId, summary, stubSet) state at most once per run:
   // 1 initial state + at most 1 Step 1 stale-stub state + at most 1 Step 2 post-fold state +
-  // at most stubKeepRecent Step 3 in-flight stub states (at most 3 + stubKeepRecent materialisations per run).
+  // at most stubKeepRecent in-flight stub states after folding in Step 2 + at most stubKeepRecent
+  // in-flight stub states in Step 3 if the fold still does not fit (at most 3 + 2 * stubKeepRecent materialisations per run).
   const measuredByState = new Map<string, RequestFill>([
     [stateCacheKey(state), initialFill],
     [stateCacheKey({ ...state, stubSet: toStubSet(baseActiveStubs) }), initialFill],
