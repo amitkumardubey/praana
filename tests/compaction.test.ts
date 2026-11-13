@@ -602,6 +602,84 @@ test("first-turn hard pressure shrinks stubKeepRecent down to 1 and never stubs 
   expect(JSON.stringify(mat.messages)).toContain("NEWEST4:".repeat(120));
 });
 
+test("in-flight stubbing starts at stubKeepRecent and keeps as many recent results as fit", async () => {
+  const { runCompaction } = await api();
+
+  // 1. Single in-flight turn with 3 results and stubKeepRecent=3 that already fits usable capacity (0.80 <= ratio <= 1.0)
+  // must keep all 3 recent results verbatim instead of starting at keepRecent=2 and stubbing r1.
+  {
+    const { log } = openLog();
+    addTurn(log, 1, {
+      inputText: "Single turn fitting within capacity",
+      toolResults: [
+        { id: "r1", text: "RES1:".repeat(180) },
+        { id: "r2", text: "RES2:".repeat(180) },
+        { id: "r3", text: "RES3:".repeat(180) },
+      ],
+    });
+    const outcome = await runCompaction({
+      log,
+      liveRequest: baseLiveRequest(),
+      contextWindowTokens: 1200,
+      options: { effectiveMaxTokens: 200, stubKeepRecent: 3, stubMinTokens: 100 },
+      planStubs: (candidates) => candidates.map((c) => ({ eventId: c.eventId, stubText: `[stub:${c.eventId}]` })),
+    });
+    expect(outcome.status).toBe("unchanged_fits");
+    if (outcome.status !== "unchanged_fits") throw new Error(JSON.stringify(outcome));
+    expect(outcome.state.stubSet).toEqual([]);
+  }
+
+  // 2. Post-fold in-flight turn with 3 results and stubKeepRecent=3 that fits usable capacity (ratio > targetRatio but <= 1.0)
+  // must keep all 3 recent results verbatim.
+  {
+    const { log } = openLog();
+    addTurn(log, 1, { inputText: "Completed turn 1 " + "a".repeat(1600) });
+    addTurn(log, 2, {
+      inputText: "In-flight turn 2",
+      toolResults: [
+        { id: "if-1", text: "R1:".repeat(240) },
+        { id: "if-2", text: "R2:".repeat(240) },
+        { id: "if-3", text: "R3:".repeat(240) },
+      ],
+    });
+    const outcome = await runCompaction({
+      log,
+      liveRequest: baseLiveRequest(),
+      contextWindowTokens: 1200,
+      options: { effectiveMaxTokens: 200, tailTurns: 0, stubKeepRecent: 3, stubMinTokens: 100 },
+      planStubs: (candidates) => candidates.map((c) => ({ eventId: c.eventId, stubText: `[stub:${c.eventId}]` })),
+      runSummary: async () => summaryResp(validSummary("Folded turn 1.")),
+    });
+    expect(outcome.status).toBe("rewritten");
+    if (outcome.status !== "rewritten") throw new Error(JSON.stringify(outcome));
+    expect(outcome.state.stubSet).toEqual([]);
+  }
+
+  // 3. When 3 results with stubKeepRecent=4 exceed usable capacity, shrinking keepRecent stubs only the oldest (r1)
+  // and keeps the 2 most recent results (r2, r3) once that fits.
+  {
+    const { log } = openLog();
+    addTurn(log, 1, {
+      inputText: "Overflowing turn where stubbing oldest 1 suffices",
+      toolResults: [
+        { id: "r1", text: "OLDEST1:".repeat(400) },
+        { id: "r2", text: "RECENT2:".repeat(200) },
+        { id: "r3", text: "RECENT3:".repeat(200) },
+      ],
+    });
+    const outcome = await runCompaction({
+      log,
+      liveRequest: baseLiveRequest(),
+      contextWindowTokens: 1200,
+      options: { effectiveMaxTokens: 200, stubKeepRecent: 4, stubMinTokens: 100 },
+      planStubs: (candidates) => candidates.map((c) => ({ eventId: c.eventId, stubText: `[stub:${c.eventId}]` })),
+    });
+    expect(outcome.status).toBe("stubbed");
+    if (outcome.status !== "stubbed") throw new Error(JSON.stringify(outcome));
+    expect(outcome.state.stubSet).toEqual([{ eventId: "r1", stubText: "[stub:r1]" }]);
+  }
+});
+
 test("batch fallback chains multiple batches, repairs once, and commits all-or-nothing without admitting oversized requests", async () => {
   const { runCompaction } = await api();
   const { log } = openLog();

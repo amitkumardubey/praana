@@ -644,10 +644,10 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
       };
     }
 
-    const startKeep = Math.min(Math.max(1, opts.stubKeepRecent), inFlightCandidates.length - 1);
+    const startKeep = Math.max(1, opts.stubKeepRecent);
     let changed = false;
     for (let keepRecent = startKeep; keepRecent >= 1; keepRecent--) {
-      const olderSlice = inFlightCandidates.slice(0, inFlightCandidates.length - keepRecent);
+      const olderSlice = inFlightCandidates.slice(0, Math.max(0, inFlightCandidates.length - keepRecent));
       const eligible = olderSlice.filter((c) => !stubMap.has(c.eventId) && c.estimatedTokens >= opts.stubMinTokens);
       if (eligible.length > 0) {
         if (signal?.aborted) return { cancelled: true };
