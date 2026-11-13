@@ -1233,12 +1233,14 @@ test("log read failure during commit validation propagates instead of becoming c
   expect(readCalls).toBe(2);
 });
 
-test("compaction modules import nothing from src/memory/ or checkpoint.ts", async () => {
+test("compaction modules import nothing from src/memory/ or checkpoint.ts and do not self-import", async () => {
   await api();
   for (const rel of ["../src/compaction.ts", "../src/compaction-requests.ts"]) {
     const source = readFileSync(new URL(rel, import.meta.url), "utf8");
     expect(source).not.toMatch(/(?:from\s*|import\s*\()["'][^"']*(?:checkpoint|memory)/);
   }
+  const compactionSource = readFileSync(new URL("../src/compaction.ts", import.meta.url), "utf8");
+  expect(compactionSource).not.toMatch(/from\s*["']\.\/compaction\.js["']/);
 });
 
 test("materialises each distinct state at most once per run (bounded by 3 + stubKeepRecent) with identical outcomes", async () => {

@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import * as self from "./compaction.js";
 import { CanonicalTranscriptError, CanonicalValidator, emitCanonicalTranscript, readCanonicalEntries, resolveRawEvents, type CanonicalEventSource, type CanonicalRecord } from "./canonical-transcript.js";
 import {
   buildSameModelSummaryRequest,
@@ -591,7 +590,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
   const targetRatio = opts.contextLimitRatio - opts.postRewriteMargin;
   const planStubs = input.planStubs ?? defaultPlanStubs;
   const runSummary = input.runSummary ?? defaultRunSummary;
-  const materialize = input.materialize ?? ((s, src) => self.materializeHistory(s, src));
+  const materialize = input.materialize ?? materializeHistory;
 
   const events = input.log.readAll({ includeInternal: true });
   const restored = restoreFrozenState(events);
