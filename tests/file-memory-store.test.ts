@@ -110,6 +110,34 @@ describe("file memory store", () => {
     expect(await fs.readdir(outside)).toEqual([]);
   });
 
+  test("unresolved project root refuses same-name removal before any unlink", async () => {
+    const { home } = await setup();
+    const cwd = join(home, "project");
+    const options = { home, cwd, findRoot: (cwd: string) => cwd };
+    const dirs = memoryDirectories(home, projectKey(cwd, options.findRoot));
+    const store = createFileMemoryStore(options);
+    for (const scope of ["global", "project"] as const) expect((await store.write({ ...input, scope })).ok).toBe(true);
+    const global = join(dirs.global, "coffee.md"), project = join(dirs.project, "coffee.md");
+    const projectBefore = await fs.readFile(project, "utf8");
+    await fs.symlink(cwd, cwd);
+    const unlinks: string[] = [];
+    const seam = new Proxy(fs, { get(target, key) {
+      if (key !== "unlink") return Reflect.get(target, key);
+      return async (...args: Parameters<typeof fs.unlink>) => { unlinks.push(String(args[0])); return fs.unlink(...args); };
+    } });
+    const rootless = createFileMemoryStore({ ...options, fs: seam });
+    expect(await rootless.list({ scope: "project" })).toMatchObject({ ok: false, error: expect.stringContaining("cannot resolve project root: ELOOP") });
+    const result = await rootless.remove({ name: "coffee" });
+    expect(unlinks).toEqual([]);
+    expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/explicit scope/i), skippedScopes: [{ scope: "project", reason: expect.stringContaining("ELOOP") }] });
+    expect(await fs.exists(global)).toBe(true);
+    expect(await fs.readFile(project, "utf8")).toBe(projectBefore);
+    expect(await rootless.remove({ name: "coffee", scope: "global" })).toEqual({ ok: true });
+    expect(unlinks).toEqual([global]);
+    expect(await fs.exists(global)).toBe(false);
+    expect(await fs.readFile(project, "utf8")).toBe(projectBefore);
+  });
+
   test("two non-removable entries give a clear error, never ambiguity", async () => {
     const { home, store } = await setup();
     const dirs = memoryDirectories(home, projectKey(home, (cwd) => cwd));
