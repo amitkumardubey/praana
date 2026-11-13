@@ -86,6 +86,24 @@ describe("user-settings", () => {
     expect(loadUserSettings().settings.thinking).toBe(false);
   });
 
+  it("updateUserSettings refuses to overwrite a corrupt file and preserves unknown top-level keys", () => {
+    writeFileSync(getUserSettingsPath(), "{corrupt", "utf-8");
+    const badUpdate = updateUserSettings({ thinking: false });
+    expect(badUpdate.ok).toBe(false);
+    expect(readFileSync(getUserSettingsPath(), "utf-8")).toBe("{corrupt");
+
+    writeFileSync(
+      getUserSettingsPath(),
+      JSON.stringify({ thinking: true, extra_future_key: { nested: 42 } }, null, 2) + "\n",
+      "utf-8",
+    );
+    const okUpdate = updateUserSettings({ thinking: false });
+    expect(okUpdate.ok).toBe(true);
+    const onDisk = JSON.parse(readFileSync(getUserSettingsPath(), "utf-8"));
+    expect(onDisk.thinking).toBe(false);
+    expect(onDisk.extra_future_key).toEqual({ nested: 42 });
+  });
+
   it("resetUserSettings restores defaults", () => {
     saveUserSettings({
       model: "x",

@@ -7,47 +7,22 @@
  * only `/settings set` / `/settings reset` persist.
  */
 
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname } from "node:path";
 import { appHomePath } from "./app-identity.js";
+import {
+  DEFAULT_USER_SETTINGS,
+  readSettingsDocument,
+  replaceSettingsDocument,
+  updateSettingsDocument,
+  USER_SETTINGS_KEYS,
+  type UserSettings,
+  type UserSettingsKey,
+} from "./settings/store.js";
 
-export const USER_SETTINGS_KEYS = [
-  "model",
-  "provider",
-  "thinking",
-  "incognito",
-  "debug",
-  "theme",
-  "auto_update",
-] as const;
-
-export type UserSettingsKey = (typeof USER_SETTINGS_KEYS)[number];
-
-export interface UserSettings {
-  model: string;
-  provider: string;
-  thinking: boolean;
-  incognito: boolean;
-  debug: boolean;
-  theme: string;
-  auto_update: boolean;
-}
-
-export const DEFAULT_USER_SETTINGS: UserSettings = {
-  model: "",
-  provider: "",
-  thinking: true,
-  incognito: false,
-  debug: false,
-  theme: "default",
-  auto_update: false,
+export {
+  DEFAULT_USER_SETTINGS,
+  USER_SETTINGS_KEYS,
+  type UserSettings,
+  type UserSettingsKey,
 };
 
 export function getUserSettingsPath(): string {
@@ -153,65 +128,45 @@ export function normalizeUserSettings(
   return { settings, invalid };
 }
 
-function atomicWriteJson(path: string, data: UserSettings): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", "utf-8");
-  try {
-    renameSync(tmp, path);
-  } catch (err) {
-    try {
-      unlinkSync(tmp);
-    } catch {
-      // best-effort cleanup
-    }
-    throw err;
-  }
-}
-
 /**
- * Load settings from disk. Missing file → defaults (and create the file).
- * Corrupt JSON → defaults + warning (does not overwrite the bad file).
+ * Load settings from disk. Missing file → defaults (and create the file with mode 0600).
+ * Corrupt JSON or unreadable file → defaults + warning (does not overwrite the bad file).
  */
 export function loadUserSettings(): LoadUserSettingsResult {
   const path = getUserSettingsPath();
-  if (!existsSync(path)) {
+  const read = readSettingsDocument({ path });
+
+  if (read.state === "missing") {
     const settings = { ...DEFAULT_USER_SETTINGS };
-    try {
-      atomicWriteJson(path, settings);
-      return { settings, createdDefaults: true };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+    const written = replaceSettingsDocument(
+      { ...settings },
+      { path, backupCorrupt: false },
+    );
+    if (!written.ok) {
       return {
         settings,
-        warning: `Could not create settings file (${path}): ${msg}`,
+        warning: `Could not create settings file (${path}): ${written.error}`,
         createdDefaults: true,
       };
     }
+    return { settings, createdDefaults: true };
   }
 
-  let text: string;
-  try {
-    text = readFileSync(path, "utf-8");
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+  if (read.state === "unreadable") {
     return {
       settings: { ...DEFAULT_USER_SETTINGS },
-      warning: `Could not read settings file (${path}): ${msg}`,
+      warning: `Could not read settings file (${path}): ${read.error ?? "unreadable"}`,
     };
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
+  if (read.state === "corrupt") {
     return {
       settings: { ...DEFAULT_USER_SETTINGS },
       warning: `Corrupt settings file (${path}); using defaults`,
     };
   }
 
-  const { settings, invalid } = normalizeUserSettings(parsed);
+  const { settings, invalid } = normalizeUserSettings(read.doc);
   if (invalid) {
     return {
       settings,
@@ -221,40 +176,86 @@ export function loadUserSettings(): LoadUserSettingsResult {
   return { settings };
 }
 
-/** Write full settings object to disk. */
+/**
+ * Replace only the seven legacy fields in the document on disk; every other key
+ * (`default_model`, `config_overrides`, unknown keys) is preserved. Never
+ * overwrites a corrupt or unreadable file.
+ */
 export function saveUserSettings(settings: UserSettings): { ok: true } | { ok: false; error: string } {
-  const path = getUserSettingsPath();
-  try {
-    const { settings: normalized } = normalizeUserSettings(settings);
-    atomicWriteJson(path, normalized);
-    return { ok: true };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: msg };
-  }
+  const { settings: normalized } = normalizeUserSettings(settings);
+  const patch: Record<string, unknown> = {
+    model: normalized.model,
+    provider: normalized.provider,
+    thinking: normalized.thinking,
+    incognito: normalized.incognito,
+    debug: normalized.debug,
+    theme: normalized.theme,
+    auto_update: normalized.auto_update,
+  };
+  const updated = updateSettingsDocument(patch, {
+    baseDefaultsIfMissing: { ...DEFAULT_USER_SETTINGS },
+  });
+  if (!updated.ok) return updated;
+  return { ok: true };
 }
 
 /**
- * Update one or more keys and persist. Returns the merged settings.
+ * Apply a sparse patch for the caller's named legacy keys and persist.
+ * Preserves unrelated legacy keys written by other processes as well as
+ * `default_model`, `config_overrides`, and unknown keys. Never overwrites
+ * a corrupt or unreadable file.
  */
 export function updateUserSettings(
   patch: Partial<UserSettings>,
 ): { ok: true; settings: UserSettings } | { ok: false; error: string } {
-  const loaded = loadUserSettings();
-  const merged: UserSettings = { ...loaded.settings, ...patch };
-  const saved = saveUserSettings(merged);
-  if (!saved.ok) return saved;
-  return { ok: true, settings: merged };
+  const sparsePatch: Record<string, unknown> = {};
+  for (const key of USER_SETTINGS_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(patch, key) || patch[key] === undefined) continue;
+    const { settings: normalizedKey, invalid } = normalizeUserSettings({ [key]: patch[key] });
+    if (invalid) {
+      return { ok: false, error: `Invalid value for setting "${key}"` };
+    }
+    sparsePatch[key] = normalizedKey[key];
+  }
+
+  const updated = updateSettingsDocument(sparsePatch, {
+    baseDefaultsIfMissing: { ...DEFAULT_USER_SETTINGS },
+  });
+  if (!updated.ok) return updated;
+  const { settings } = normalizeUserSettings(updated.doc);
+  return { ok: true, settings };
 }
 
-/** Reset file to defaults and return them. */
+/**
+ * Reset only the seven legacy fields to defaults, preserving `default_model`,
+ * `config_overrides`, and unknown keys (those have their own clear actions in
+ * later slices). When the existing file is corrupt, backs it up to
+ * `settings.json.corrupt-<timestamp>` (0600) first and then writes default
+ * legacy fields. Never replaces an unreadable file.
+ */
 export function resetUserSettings():
   | { ok: true; settings: UserSettings }
   | { ok: false; error: string } {
-  const settings = { ...DEFAULT_USER_SETTINGS };
-  const saved = saveUserSettings(settings);
-  if (!saved.ok) return saved;
-  return { ok: true, settings };
+  const path = getUserSettingsPath();
+  const current = readSettingsDocument({ path });
+  if (current.state === "unreadable") {
+    return {
+      ok: false,
+      error: current.error ?? `Cannot reset unreadable settings file (${path})`,
+    };
+  }
+  const defaults = { ...DEFAULT_USER_SETTINGS };
+  if (current.state === "corrupt") {
+    const replaced = replaceSettingsDocument({ ...defaults }, { path, backupCorrupt: true });
+    if (!replaced.ok) return replaced;
+    return { ok: true, settings: defaults };
+  }
+  const updated = updateSettingsDocument(
+    { ...defaults },
+    { path, baseDefaultsIfMissing: { ...defaults } },
+  );
+  if (!updated.ok) return updated;
+  return { ok: true, settings: defaults };
 }
 
 /**

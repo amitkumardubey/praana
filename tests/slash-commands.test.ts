@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterAll, afterEach, mock, type Mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterAll, afterEach, mock } from "bun:test";
 import { mkdirSync, writeFileSync, rmSync, readFileSync, utimesSync, existsSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -971,6 +971,27 @@ describe("executeSlashCommand", () => {
         readFileSync(join(praanaHome, ".praana", "settings.json"), "utf-8"),
       );
       expect(onDisk.auto_update).toBe(true);
+    });
+
+    it("set against a corrupt file reports failure before applying live changes", async () => {
+      const settingsFile = join(praanaHome, ".praana", "settings.json");
+      writeFileSync(settingsFile, "{corrupt-settings-json", "utf-8");
+      const setThinking = mock();
+      const session = settingsSession({ debug: false });
+      const result = await executeSlashCommand(
+        "/settings set thinking off",
+        session,
+        {
+          setModel: mock(),
+          setThinking,
+          getThinking: () => true,
+        },
+      );
+      expect(result.action).toBe("none");
+      expect(result.toastTone).toBe("error");
+      expect(result.lines.join("\n")).toContain("Failed to save settings");
+      expect(setThinking).not.toHaveBeenCalled();
+      expect(readFileSync(settingsFile, "utf-8")).toBe("{corrupt-settings-json");
     });
 
     it("reset restores defaults", async () => {
