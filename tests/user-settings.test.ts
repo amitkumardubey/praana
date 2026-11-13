@@ -291,14 +291,41 @@ describe("user-settings", () => {
     expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual(concurrentDoc);
   });
 
-  it("loadUserSettings reports corrupt warning with underlying error text when file becomes corrupt before lock", () => {
+  it("loadUserSettings reports the underlying error text once and the path once for every corruption kind on both direct and race paths", () => {
     const settingsPath = getUserSettingsPath();
     const baseFs = createSettingsFs();
+    const countOccurrences = (haystack: string, needle: string): number =>
+      haystack.split(needle).length - 1;
 
-    for (const { bytes, expectedDetail } of [
-      { bytes: "[1, 2, 3]", expectedDetail: "root must be a JSON object" },
-      { bytes: Buffer.from([0x7b, 0xff, 0xfe, 0x7d]), expectedDetail: "not valid UTF-8" },
-    ]) {
+    const cases = [
+      {
+        kind: "invalid JSON",
+        bytes: "{not-json",
+        expectedError: `Corrupt settings file (${settingsPath})`,
+      },
+      {
+        kind: "non-object root",
+        bytes: "[1, 2, 3]",
+        expectedError: `Corrupt settings file (${settingsPath}): root must be a JSON object`,
+      },
+      {
+        kind: "invalid UTF-8",
+        bytes: Buffer.from([0x7b, 0xff, 0xfe, 0x7d]),
+        expectedError: `Settings file (${settingsPath}) is not valid UTF-8`,
+      },
+    ];
+
+    for (const { bytes, expectedError } of cases) {
+      // 1. Corrupt at initial read
+      writeFileSync(settingsPath, bytes);
+      const direct = loadUserSettings();
+      expect(direct.createdDefaults).toBeUndefined();
+      expect(direct.settings).toEqual(DEFAULT_USER_SETTINGS);
+      expect(direct.warning).toBe(`${expectedError}; using defaults`);
+      expect(countOccurrences(direct.warning ?? "", expectedError)).toBe(1);
+      expect(countOccurrences(direct.warning ?? "", settingsPath)).toBe(1);
+
+      // 2. Missing at initial read, becomes corrupt before locked createOnly
       rmSync(settingsPath, { force: true });
       let lstatCalls = 0;
       const interleavingFs = createSettingsFs({
@@ -318,13 +345,15 @@ describe("user-settings", () => {
         },
       });
 
-      const loaded = loadUserSettings({ fs: interleavingFs });
-      expect(loaded.createdDefaults).toBeUndefined();
-      expect(loaded.warning).toContain("Corrupt settings file");
-      expect(loaded.warning).toContain(expectedDetail);
-      expect(loaded.warning).not.toContain("Could not create settings file");
-      expect(loaded.warning).not.toContain("it already exists");
-      expect(loaded.settings).toEqual(DEFAULT_USER_SETTINGS);
+      const raced = loadUserSettings({ fs: interleavingFs });
+      expect(raced.createdDefaults).toBeUndefined();
+      expect(raced.settings).toEqual(DEFAULT_USER_SETTINGS);
+      expect(raced.warning).toBe(`${expectedError}; using defaults`);
+      expect(countOccurrences(raced.warning ?? "", expectedError)).toBe(1);
+      expect(countOccurrences(raced.warning ?? "", settingsPath)).toBe(1);
+      expect(raced.warning).toBe(direct.warning);
+      expect(raced.warning).not.toContain("Could not create settings file");
+      expect(raced.warning).not.toContain("it already exists");
     }
   });
 });
