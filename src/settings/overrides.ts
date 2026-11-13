@@ -2,10 +2,8 @@
  * Restricted ingestion of `config_overrides` from `settings.json`.
  *
  * This table is a stopgap for the v1 approved config keys and is replaced by
- * a typed settings registry. String-shape checks here (for
- * example on `tools.web.allow_domains`) are not full domain/hostname
- * normalization, which remains in the config validators. Nothing in this
- * module merges overrides into the active config.
+ * a typed settings registry. Nothing in this module merges overrides into the
+ * active config.
  */
 
 export type OverrideSpec =
@@ -20,7 +18,6 @@ export type OverrideValue = boolean | number | string | string[];
 export const APPROVED_CONFIG_OVERRIDES: Readonly<Record<string, OverrideSpec>> = Object.freeze({
   "edit.confirm": { kind: "boolean" },
   "tools.block_repeat_reads": { kind: "boolean" },
-  "tools.web.allow_domains": { kind: "stringList", maxItems: 100, maxItemLength: 253 },
   "lsp.enabled": { kind: "boolean" },
   "lsp.diagnostics": { kind: "boolean" },
   "lsp.format_on_edit": { kind: "boolean" },

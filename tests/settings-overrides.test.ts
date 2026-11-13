@@ -11,7 +11,6 @@ describe("settings config_overrides ingestion", () => {
     const expectedPaths = [
       "edit.confirm",
       "tools.block_repeat_reads",
-      "tools.web.allow_domains",
       "lsp.enabled",
       "lsp.diagnostics",
       "lsp.format_on_edit",
@@ -43,7 +42,6 @@ describe("settings config_overrides ingestion", () => {
     const validInput: Record<string, unknown> = {
       "edit.confirm": true,
       "tools.block_repeat_reads": true,
-      "tools.web.allow_domains": ["example.com", "docs.praana.dev"],
       "lsp.enabled": true,
       "lsp.diagnostics": false,
       "lsp.format_on_edit": true,
@@ -69,7 +67,6 @@ describe("settings config_overrides ingestion", () => {
       edit: { confirm: true },
       tools: {
         block_repeat_reads: true,
-        web: { allow_domains: ["example.com", "docs.praana.dev"] },
       },
       lsp: { enabled: true, diagnostics: false, format_on_edit: true },
       verify: { enabled: true, syntax: false, typecheck: true, tests: false },
@@ -85,7 +82,7 @@ describe("settings config_overrides ingestion", () => {
     });
   });
 
-  test("rejects wrong types, string-to-boolean coercion, out-of-range ints, bad enums, and invalid stringLists", async () => {
+  test("rejects wrong types, string-to-boolean coercion, out-of-range ints, and bad enums", async () => {
     const { parseConfigOverrides } = await api();
     const badInputs: Record<string, unknown> = {
       "edit.confirm": "true",
@@ -96,7 +93,6 @@ describe("settings config_overrides ingestion", () => {
       "ui.ambient": "loud",
       "ui.tool_icons": "emoji",
       "ui.syntax_theme": "   ",
-      "tools.web.allow_domains": ["valid.com", "has space.com"],
     };
 
     const res = parseConfigOverrides(badInputs);
@@ -106,22 +102,12 @@ describe("settings config_overrides ingestion", () => {
       expect(item.reason.length).toBeGreaterThan(0);
     }
 
-    // Boundary checks on turn.pause_after_steps (1..1000) and tools.web.allow_domains (<=100 items, <=253 chars)
+    // Boundary checks on turn.pause_after_steps (1..1000)
     expect(parseConfigOverrides({ "turn.pause_after_steps": 1 }).accepted).toEqual({ "turn.pause_after_steps": 1 });
     expect(parseConfigOverrides({ "turn.pause_after_steps": 1000 }).accepted).toEqual({ "turn.pause_after_steps": 1000 });
     expect(parseConfigOverrides({ "turn.pause_after_steps": 1001 }).rejected[0]?.path).toBe("turn.pause_after_steps");
     expect(parseConfigOverrides({ "turn.pause_after_steps": -5 }).rejected[0]?.path).toBe("turn.pause_after_steps");
     expect(parseConfigOverrides({ "turn.pause_after_steps": 10.5 }).rejected[0]?.path).toBe("turn.pause_after_steps");
-
-    const maxDomain = "a".repeat(253);
-    expect(parseConfigOverrides({ "tools.web.allow_domains": [maxDomain] }).accepted).toEqual({
-      "tools.web.allow_domains": [maxDomain],
-    });
-    expect(parseConfigOverrides({ "tools.web.allow_domains": ["a".repeat(254)] }).rejected[0]?.path).toBe("tools.web.allow_domains");
-    expect(parseConfigOverrides({ "tools.web.allow_domains": [""] }).rejected[0]?.path).toBe("tools.web.allow_domains");
-    expect(parseConfigOverrides({ "tools.web.allow_domains": "example.com" }).rejected[0]?.path).toBe("tools.web.allow_domains");
-    const over100 = Array.from({ length: 101 }, (_, i) => `d${i}.example.com`);
-    expect(parseConfigOverrides({ "tools.web.allow_domains": over100 }).rejected[0]?.path).toBe("tools.web.allow_domains");
   });
 
   test("rejects forbidden security-sensitive paths, empty segments, symbol keys, and non-object roots", async () => {
@@ -192,5 +178,15 @@ describe("settings config_overrides ingestion", () => {
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
     expect((Object.prototype as Record<string, unknown>).polluted).toBeUndefined();
     expect(expanded).toEqual({ edit: { confirm: true } });
+  });
+
+  test("rejects tools.web.allow_domains as unapproved", async () => {
+    const { APPROVED_CONFIG_OVERRIDES, parseConfigOverrides } = await api();
+    expect("tools.web.allow_domains" in APPROVED_CONFIG_OVERRIDES).toBe(false);
+    const res = parseConfigOverrides({ "tools.web.allow_domains": ["example.com"] });
+    expect(res.accepted).toEqual({});
+    expect(res.rejected).toEqual([
+      { path: "tools.web.allow_domains", reason: expect.stringMatching(/unapproved/i) },
+    ]);
   });
 });
