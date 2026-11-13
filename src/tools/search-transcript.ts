@@ -106,7 +106,9 @@ function extractRecordTexts(record: CanonicalRecord): {
 export function indexSessionTranscript(
   eventLog: Pick<EventLog, "readAll">,
 ): { entries: IndexedTranscriptEntry[]; currentResetEpoch: string } {
-  const events = eventLog.readAll({ includeCanonical: true });
+  // Request unfiltered events with either event-log reader API.
+  const rawOptions = { includeCanonical: true, includeInternal: true };
+  const events = eventLog.readAll(rawOptions);
   let currentResetEpoch = SESSION_START_EPOCH;
   const entries: IndexedTranscriptEntry[] = [];
   const artifactResults = new Map<string, IndexedTranscriptEntry>();
@@ -459,9 +461,11 @@ export function createSearchTranscriptTool(ctx: {
           }
         }
 
-        // Prefer source content over shorter artifact cards and elision stubs.
+        // Recovered source output retains artifactId, but is not a card/stub.
+        // Prefer it over shorter references to the same output.
         scored.sort(
-          (a, b) => Number(a.entry.artifactId !== undefined) - Number(b.entry.artifactId !== undefined) ||
+          (a, b) => Number(extractArtifactId(a.entry.text) !== undefined) -
+            Number(extractArtifactId(b.entry.text) !== undefined) ||
             b.score - a.score || b.entry.logPosition - a.entry.logPosition,
         );
 

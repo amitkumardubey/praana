@@ -74,6 +74,26 @@ function addResetBoundary(log: EventLog, id: string): void {
 }
 
 describe("search_transcript tool (PR3)", () => {
+  test.each(["includeCanonical", "includeInternal"] as const)("requests unfiltered canonical events with the %s reader API", async (option) => {
+    const { log } = openLog();
+    addCanonical(log, "raw-message", {
+      formatVersion: 1,
+      kind: "user_input",
+      turnId: 1,
+      message: { text: "raw canonical needle" },
+    });
+    const rawOptions = { includeCanonical: true, includeInternal: true };
+    const events = log.readAll(rawOptions);
+    const reader = {
+      readAll: (options?: { includeCanonical?: boolean; includeInternal?: boolean }) =>
+        options?.[option] ? events : events.filter((event) => event.kind !== "canonical_message"),
+    };
+    const tool = searchTranscriptModule.createSearchTranscriptTool({ eventLog: reader }).search_transcript;
+    const result = await tool.execute({ query: "needle" });
+    if (!result.ok || result.mode !== "search") throw new Error("Expected search");
+    expect(result.matches.map((match) => match.id)).toEqual(["raw-message"]);
+  });
+
   test("does not search its own calls or results but still fetches them by id", async () => {
     const { log } = openLog();
     addCanonical(log, "user-needle", {
@@ -134,6 +154,35 @@ describe("search_transcript tool (PR3)", () => {
     const limited = await tool.execute({ query: "needle", limit: 1 });
     if (!limited.ok || limited.mode !== "search") throw new Error("Expected search");
     expect(limited.matches[0]?.id).toBe("original");
+  });
+
+  test("keeps recovered source output ahead of later cards for the same artifact", async () => {
+    const { log } = openLog();
+    const card = '[artifact: art_abcdef123456 | read_file: needle.txt | 1,000 tokens raw]';
+    for (const id of ["source", "repeat"]) {
+      addCanonical(log, id, {
+        formatVersion: 1,
+        kind: "tool_result",
+        turnId: 1,
+        message: { callId: id, toolName: "read_file", text: card, isError: false },
+      });
+      log.append({
+        kind: "tool_result",
+        actor: "tool",
+        payload: {
+          toolCallId: id,
+          tool: "read_file",
+          result: id === "source"
+            ? { content: `needle.txt ${"ordinary output ".repeat(200)}` }
+            : { content: card, skipped_disk: true },
+        },
+      });
+    }
+    const tool = searchTranscriptModule.createSearchTranscriptTool({ eventLog: log }).search_transcript;
+    const result = await tool.execute({ query: "needle.txt", limit: 1 });
+    if (!result.ok || result.mode !== "search") throw new Error("Expected search");
+    expect(result.matches[0]?.id).toBe("source");
+    expect(result.matches[0]?.artifactId).toBe("art_abcdef123456");
   });
 
   test("redacts complete tokens before either edge of a search snippet is sliced", async () => {
@@ -221,7 +270,8 @@ describe("search_transcript tool (PR3)", () => {
     })());
     try {
       await runTurn(session, "inspect output", undefined, { sink: {} });
-      const records = readFullSessionCanonicalRecords(session.eventLog.readAll({ includeCanonical: true }));
+      const rawOptions = { includeCanonical: true, includeInternal: true };
+      const records = readFullSessionCanonicalRecords(session.eventLog.readAll(rawOptions));
       const result = records.find((r) => r.kind === "tool_result");
       expect(result?.message.text).toContain("[artifact:");
       expect(result?.message.text).not.toContain(needle);
