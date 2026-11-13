@@ -242,7 +242,7 @@ describe("search_transcript tool (PR3)", () => {
       message: {
         callId: "card-call",
         toolName: "shell",
-        text: "[artifact: art_best | shell: cobalt migration failure | 1,000 tokens raw]",
+        text: buildArtifactCard("art_best", "shell", "cobalt migration failure", 1000),
         isError: false,
       },
     });
@@ -280,6 +280,48 @@ describe("search_transcript tool (PR3)", () => {
     const result = await tool.execute({ query: "needle", limit: 1 });
     if (!result.ok || result.mode !== "search") throw new Error("Expected search");
     expect(result.matches.map((match) => match.id)).toEqual(["quoted"]);
+  });
+
+  test.each([
+    ["shell", "src/card.ts:16: const marker = '[artifact: art_mentioned';"],
+    ["read_file", 'The output format uses [artifact: art_mentioned | tool | tokens raw].\nThis is documentation, not a stub.'],
+    ["read_file", `Example card:\n\`\`\`text\n${buildArtifactCard("art_mentioned", "shell", "inspect", 1000)}\n\`\`\``],
+    ["shell", 'docs/format.md:20: full output stored in artifact art_mentioned'],
+  ])("does not classify %s output mentioning artifact syntax as a stub: %s", async (tool, promptResultText) => {
+    const { log } = openLog();
+    const id = await writeCanonicalToolResult(log, tool!, "mention", promptResultText!);
+    const entry = searchTranscriptModule.indexSessionTranscript(log).entries.find((entry) => entry.id === id)!;
+    expect(entry.artifactId).toBe("art_mentioned");
+    expect(entry.unrecoveredStub).toBe(false);
+    expect(entry.text).toBe(promptResultText!);
+  });
+
+  test.each([
+    buildArtifactCard("art_stub", "shell", "inspect", 1000),
+    'head\n... [elided 80 lines / 3200 bytes; full output stored in artifact art_stub — call retrieve_artifact("art_stub") to inspect] ...',
+  ])("classifies only canonical artifact cards and elided stubs as unrecovered: %s", async (promptResultText) => {
+    const { log } = openLog();
+    const id = await writeCanonicalToolResult(log, "shell", "stub", promptResultText);
+    const entry = searchTranscriptModule.indexSessionTranscript(log).entries.find((entry) => entry.id === id)!;
+    expect(entry.artifactId).toBe("art_stub");
+    expect(entry.unrecoveredStub).toBe(true);
+    expect(searchTranscriptModule.indexSessionTranscript(log).entries.filter((entry) => entry.kind !== "tool_result")
+      .every((entry) => !entry.unrecoveredStub)).toBe(true);
+  });
+
+  test.each([
+    buildArtifactCard("art_quoted", "shell", "inspect", 1000),
+    { ok: true, content: 'Document quoting [artifact: art_quoted and full output stored in artifact art_quoted' },
+  ])("never marks recovered output as a stub even when it contains artifact syntax: %j", async (result) => {
+    const { log } = openLog();
+    const tool = "echo";
+    const toolCallId = "recovered";
+    const id = await writeCanonicalToolResult(log, tool, toolCallId, buildArtifactCard("art_source", tool, "inspect", 1000));
+    log.append({ kind: "tool_result", actor: "tool", payload: { toolCallId, tool, result } });
+    const entry = searchTranscriptModule.indexSessionTranscript(log).entries.find((entry) => entry.id === id)!;
+    expect(entry.text).toBe(typeof result === "string" ? result : JSON.stringify(result));
+    expect(entry.artifactId).toBe("art_source");
+    expect(entry.unrecoveredStub).toBe(false);
   });
 
   test("keeps recovered source output ahead of later cards for the same artifact", async () => {
@@ -326,7 +368,7 @@ describe("search_transcript tool (PR3)", () => {
       },
       {
         formatVersion: 1, kind: "tool_result", turnId: 1,
-        message: { callId: "call", toolName: "shell", text: "[artifact: art_redact | shell: inspect]", isError: false },
+        message: { callId: "call", toolName: "shell", text: buildArtifactCard("art_redact", "shell", "inspect", 1000), isError: false },
       },
       { formatVersion: 1, kind: "notice", turnId: 1, message: { text: `needle ${token}` } },
     ];
@@ -530,6 +572,7 @@ describe("search_transcript tool (PR3)", () => {
     log.append({ kind: "tool_result", actor: "tool", payload: { toolCallId, tool, result } });
     const entry = searchTranscriptModule.indexSessionTranscript(log).entries.find((entry) => entry.id === id)!;
     expect(entry.text).toBe(card);
+    expect(entry.unrecoveredStub).toBe(false);
   });
 
   test("only recovers paired source results within the same reset epoch", async () => {

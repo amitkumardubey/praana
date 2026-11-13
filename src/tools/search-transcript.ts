@@ -52,6 +52,12 @@ function extractArtifactId(text: string): string | undefined {
   return undefined;
 }
 
+function isArtifactStub(text: string, artifactId: string): boolean {
+  const card = /^\[artifact:\s*(art_[A-Za-z0-9_-]+)\s*\|[\s\S]* tokens raw\]\nRetrieve: retrieve_artifact\("\1"\)$/.exec(text);
+  const elided = /(?:^|\n)\.\.\. \[elided \d+ lines \/ \d+ bytes; full output stored in artifact (art_[A-Za-z0-9_-]+) — call retrieve_artifact\("\1"\) to inspect\] \.\.\.$/.exec(text);
+  return card?.[1] === artifactId || elided?.[1] === artifactId;
+}
+
 function extractRecordTexts(record: CanonicalRecord): {
   text: string;
   toolName?: string;
@@ -129,10 +135,10 @@ export function indexSessionTranscript(
       const result = ev.payload.result;
       const skippedDisk = result !== null && typeof result === "object" &&
         (result as { skipped_disk?: unknown }).skipped_disk === true;
-      if (entry?.artifactId && result !== undefined && !skippedDisk) {
+      if (entry?.unrecoveredStub && result !== undefined && !skippedDisk) {
         const text = typeof result === "string" ? result : JSON.stringify(result);
         entry.text = text;
-        entry.unrecoveredStub = extractArtifactId(text) !== undefined;
+        entry.unrecoveredStub = false;
       }
       artifactResults.delete(key);
       continue;
@@ -162,7 +168,8 @@ export function indexSessionTranscript(
       resetEpoch: currentResetEpoch,
       turnId: record.turnId,
       kind: record.kind,
-      unrecoveredStub: record.kind === "tool_result" && extracted.artifactId !== undefined,
+      unrecoveredStub: record.kind === "tool_result" && extracted.toolName !== "retrieve_artifact" &&
+        extracted.artifactId !== undefined && isArtifactStub(extracted.text, extracted.artifactId),
       searchable: record.kind === "assistant"
         ? !record.message.toolCalls?.some((call) => call.name === "search_transcript")
         : record.kind !== "tool_result" || record.message.toolName !== "search_transcript",
