@@ -1,12 +1,12 @@
 /**
  * Whole-document persistence and schema validation for `~/.praana/settings.json`.
  *
- * Concurrency model: atomic replacement (exclusive `.settings.json.tmp-<pid>-<rand>`
- * temp file in the same directory with mode 0600, fsync, close, atomic rename,
- * and best-effort directory fsync) combined with re-read-before-write key merge.
- * Two processes writing at the exact same instant can still lose one update
- * (last-writer-wins at the rename point), which is accepted; a torn or partially
- * written settings file is never possible.
+ * Concurrency model: cross-process advisory locking (`acquireSync` on a sibling
+ * `.settings.json.lock.db` SQLite lock file, bounded wait, released in `finally`)
+ * serialises every read-modify-write (`updateSettingsDocument` and
+ * `replaceSettingsDocument`), combined with atomic replacement (exclusive
+ * `.settings.json.tmp-<pid>-<rand>` temp file in the same directory with mode
+ * 0600, fsync, close, atomic rename, and best-effort directory fsync).
  *
  * Note on permissions: mode 0600 is enforced on POSIX filesystems. On Windows,
  * POSIX mode bits do not provide equivalent ACL privacy.
@@ -31,6 +31,11 @@ import {
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { appHomePath } from "../app-identity.js";
+import {
+  acquireSync,
+  CredentialLockTimeoutError,
+  type CredentialLock,
+} from "../credential-lock.js";
 import {
   parseConfigOverrides,
   type AcceptedOverrides,
@@ -351,38 +356,70 @@ function writeDocumentAtomic(
   }
 }
 
+const SETTINGS_LOCK_WAIT_MS = 2_000;
+
+function settingsLockPath(path: string): string {
+  return join(dirname(path), `.${basename(path)}.lock.db`);
+}
+
+function withSettingsLock<T>(
+  path: string,
+  fn: () => T | { ok: false; error: string },
+): T | { ok: false; error: string } {
+  const lockPath = settingsLockPath(path);
+  let lock: CredentialLock;
+  try {
+    lock = acquireSync(lockPath, { waitMs: SETTINGS_LOCK_WAIT_MS });
+  } catch (err) {
+    if (err instanceof CredentialLockTimeoutError) {
+      return {
+        ok: false,
+        error: `Timed out waiting for settings lock (${lockPath}). Another process may be updating settings.`,
+      };
+    }
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+  try {
+    return fn();
+  } finally {
+    lock.release();
+  }
+}
+
 export function updateSettingsDocument(
   patch: Record<string, unknown>,
   options?: SettingsStoreOptions & { baseDefaultsIfMissing?: Record<string, unknown> },
 ): { ok: true; doc: Record<string, unknown> } | { ok: false; error: string } {
   const path = resolveSettingsPath(options);
   const fs = options?.fs ?? defaultFs;
-  const current = readSettingsDocument({ path, fs });
+  return withSettingsLock(path, () => {
+    const current = readSettingsDocument({ path, fs });
 
-  if (current.state === "corrupt" || current.state === "unreadable") {
-    return {
-      ok: false,
-      error: current.error ?? `Cannot update ${current.state} settings file (${path})`,
-    };
-  }
-
-  const nextDoc: Record<string, unknown> =
-    current.state === "missing" && options?.baseDefaultsIfMissing
-      ? { ...options.baseDefaultsIfMissing }
-      : { ...current.doc };
-
-  for (const key of Object.keys(patch)) {
-    const val = patch[key];
-    if (val === null) {
-      delete nextDoc[key];
-    } else if (val !== undefined) {
-      nextDoc[key] = val;
+    if (current.state === "corrupt" || current.state === "unreadable") {
+      return {
+        ok: false,
+        error: current.error ?? `Cannot update ${current.state} settings file (${path})`,
+      };
     }
-  }
 
-  const written = writeDocumentAtomic(path, nextDoc, fs);
-  if (!written.ok) return written;
-  return { ok: true, doc: nextDoc };
+    const nextDoc: Record<string, unknown> =
+      current.state === "missing" && options?.baseDefaultsIfMissing
+        ? { ...options.baseDefaultsIfMissing }
+        : { ...current.doc };
+
+    for (const key of Object.keys(patch)) {
+      const val = patch[key];
+      if (val === null) {
+        delete nextDoc[key];
+      } else if (val !== undefined) {
+        nextDoc[key] = val;
+      }
+    }
+
+    const written = writeDocumentAtomic(path, nextDoc, fs);
+    if (!written.ok) return written;
+    return { ok: true, doc: nextDoc };
+  });
 }
 
 export function replaceSettingsDocument(
@@ -391,35 +428,37 @@ export function replaceSettingsDocument(
 ): { ok: true; doc: Record<string, unknown>; backupPath?: string } | { ok: false; error: string } {
   const path = resolveSettingsPath(options);
   const fs = options?.fs ?? defaultFs;
-  const current = readSettingsDocument({ path, fs });
+  return withSettingsLock(path, () => {
+    const current = readSettingsDocument({ path, fs });
 
-  if (current.state === "unreadable") {
-    return {
-      ok: false,
-      error: current.error ?? `Cannot replace unreadable settings file (${path})`,
-    };
-  }
-
-  let backupPath: string | undefined;
-  if (current.state === "corrupt" && options?.backupCorrupt !== false) {
-    backupPath = `${path}.corrupt-${Date.now()}-${randomBytes(4).toString("hex")}`;
-    try {
-      fs.copyFile(path, backupPath);
-      try {
-        fs.chmod(backupPath, 0o600);
-      } catch {
-        // Ignore chmod failure on platforms without POSIX mode semantics.
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return { ok: false, error: `Failed to back up corrupt settings file (${path}): ${msg}` };
+    if (current.state === "unreadable") {
+      return {
+        ok: false,
+        error: current.error ?? `Cannot replace unreadable settings file (${path})`,
+      };
     }
-  }
 
-  const copy = { ...doc };
-  const written = writeDocumentAtomic(path, copy, fs);
-  if (!written.ok) return written;
-  return { ok: true, doc: copy, ...(backupPath ? { backupPath } : {}) };
+    let backupPath: string | undefined;
+    if (current.state === "corrupt" && options?.backupCorrupt !== false) {
+      backupPath = `${path}.corrupt-${Date.now()}-${randomBytes(4).toString("hex")}`;
+      try {
+        fs.copyFile(path, backupPath);
+        try {
+          fs.chmod(backupPath, 0o600);
+        } catch {
+          // Ignore chmod failure on platforms without POSIX mode semantics.
+        }
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { ok: false, error: `Failed to back up corrupt settings file (${path}): ${msg}` };
+      }
+    }
+
+    const copy = { ...doc };
+    const written = writeDocumentAtomic(path, copy, fs);
+    if (!written.ok) return written;
+    return { ok: true, doc: copy, ...(backupPath ? { backupPath } : {}) };
+  });
 }
 
 export const REASONING_LEVELS = ["off", "none", "minimal", "low", "medium", "high", "xhigh"] as const;

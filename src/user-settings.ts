@@ -72,9 +72,9 @@ export function loadUserSettings(): LoadUserSettingsResult {
 
   if (read.state === "missing") {
     const settings = { ...DEFAULT_USER_SETTINGS };
-    const written = replaceSettingsDocument(
-      { ...settings },
-      { path, backupCorrupt: false },
+    const written = updateSettingsDocument(
+      {},
+      { path, baseDefaultsIfMissing: { ...settings } },
     );
     if (!written.ok) {
       return {
@@ -83,7 +83,7 @@ export function loadUserSettings(): LoadUserSettingsResult {
         createdDefaults: true,
       };
     }
-    return { settings, createdDefaults: true };
+    return { settings: normalizeUserSettings(written.doc).settings, createdDefaults: true };
   }
 
   if (read.state === "unreadable") {

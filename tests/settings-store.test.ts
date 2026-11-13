@@ -590,4 +590,79 @@ if (mode === "sequential-a") {
       rmSync(workerScript, { force: true });
     }
   });
+
+  test("concurrent child processes patching distinct keys 50 times each preserve every key", async () => {
+    await storeApi();
+    const scratchDir = join(process.env.HOME ?? tmpdir(), ".cache", "settings-scratch");
+    mkdirSync(scratchDir, { recursive: true });
+    const workerScript = join(scratchDir, `settings-race-worker-${process.pid}.ts`);
+    const testDir = dirname(fileURLToPath(import.meta.url));
+    const storeModulePath = join(dirname(testDir), "src", "settings", "store.ts");
+
+    writeFileSync(
+      workerScript,
+      `
+import { existsSync } from "node:fs";
+import { updateSettingsDocument } from ${JSON.stringify(storeModulePath)};
+
+const [id, barrierPath] = process.argv.slice(2);
+console.log("READY:" + id);
+while (!existsSync(barrierPath)) {
+  Bun.sleepSync(1);
+}
+for (let i = 0; i < 50; i++) {
+  const res = updateSettingsDocument({ [id + "_" + i]: i });
+  if (!res.ok) {
+    console.error("FAIL:" + id + ":" + i + ":" + res.error);
+    process.exit(2);
+  }
+}
+`,
+      "utf-8",
+    );
+
+    const waitForReady = async (stdout: ReadableStream<Uint8Array>, expected: string) => {
+      const reader = stdout.getReader();
+      const dec = new TextDecoder();
+      let buf = "";
+      while (!buf.includes(expected)) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += dec.decode(value, { stream: true });
+      }
+      reader.releaseLock();
+      expect(buf).toContain(expected);
+    };
+
+    try {
+      const barrier = join(root, "race-barrier");
+      const p1 = Bun.spawn(["bun", workerScript, "p1", barrier], {
+        env: { ...process.env, PRAANA_HOME: root },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const p2 = Bun.spawn(["bun", workerScript, "p2", barrier], {
+        env: { ...process.env, PRAANA_HOME: root },
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+
+      await Promise.all([
+        waitForReady(p1.stdout, "READY:p1"),
+        waitForReady(p2.stdout, "READY:p2"),
+      ]);
+
+      writeFileSync(barrier, "go");
+      expect(await p1.exited).toBe(0);
+      expect(await p2.exited).toBe(0);
+
+      const finalDoc = JSON.parse(readFileSync(settingsPath, "utf-8"));
+      for (let i = 0; i < 50; i++) {
+        expect(finalDoc[`p1_${i}`]).toBe(i);
+        expect(finalDoc[`p2_${i}`]).toBe(i);
+      }
+    } finally {
+      rmSync(workerScript, { force: true });
+    }
+  });
 });
