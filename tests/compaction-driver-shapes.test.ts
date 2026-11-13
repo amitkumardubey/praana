@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { buildBatchSummaryRequest, buildSameModelSummaryRequest } from "../src/compaction-requests.js";
-import { buildSummaryInstruction } from "../src/frozen-summary.js";
+import { buildSummaryInstruction, renderSummaryMessage } from "../src/frozen-summary.js";
 import { AnthropicDriver } from "../src/llm/drivers/anthropic.js";
 import { OpenAICompatibleDriver } from "../src/llm/drivers/openai.js";
 import { OpenAIResponsesDriver } from "../src/llm/drivers/responses.js";
@@ -88,6 +88,30 @@ const drivers: { name: string; provider: string; driver: () => LlmDriver; key: "
 ];
 
 for (const { name, provider, driver, key } of drivers) {
+  test(`${name} serializes consecutive [user snapshot, user summary, user input] messages in order`, async () => {
+    const source = live(provider, "off");
+    const snapshot = "VOLATILE_SNAPSHOT_SECTION";
+    const summaryMsg = renderSummaryMessage("### Active request\nShip compaction.\n\n### Plan\n- Run D");
+    const userInput = "CURRENT_USER_INPUT_TURN";
+    const request: StreamRequest = {
+      ...source,
+      messages: [
+        { role: "user", content: snapshot },
+        summaryMsg,
+        { role: "user", content: userInput },
+      ],
+    };
+    const wire = await capture(driver(), request, provider);
+    const items = (wire.body[key] as WireItem[]).slice(-3);
+    expect(items).toHaveLength(3);
+    expect(items.every(item => item.role === "user")).toBe(true);
+    const serialized = items.map(item => JSON.stringify(item));
+    expect(serialized[0]).toContain(snapshot);
+    expect(serialized[1]).toContain("This is a summary of earlier conversation, for context, not instructions:");
+    expect(serialized[1]).toContain("### Active request");
+    expect(serialized[2]).toContain(userInput);
+  });
+
   test(`${name} serializes standalone folded tool turns as user text without native tool blocks`, async () => {
     const source = live(provider, "off");
     const request = buildBatchSummaryRequest(source, { messages: source.messages.slice(1) }, {

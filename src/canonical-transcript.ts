@@ -167,12 +167,18 @@ function assertRecord(value: unknown, index: number): asserts value is Canonical
   if (!valid) fail("invalid_record", index, "invalid kind or message payload");
 }
 
+export type CanonicalEventSource = readonly Event[] | Pick<EventLog, "readAll">;
+
+function resolveRawEvents(source: CanonicalEventSource): readonly Event[] {
+  return "readAll" in source ? source.readAll({ includeInternal: true }) : source;
+}
+
 /**
  * Current reset epoch for replay. Results stranded before its first input are hidden.
- * Pass raw events from EventLog.readAll({ includeInternal: true }); the default
- * read filters internal events and would silently return an empty transcript.
+ * Accepts an EventLog reader or raw events from EventLog.readAll({ includeInternal: true }).
  */
-export function readCanonicalEntries(events: readonly Event[]): { eventId: string; record: CanonicalRecord }[] {
+export function readCanonicalEntries(source: CanonicalEventSource): { eventId: string; record: CanonicalRecord }[] {
+  const events = resolveRawEvents(source);
   const canonical = eventsAfterResetBoundary([...events]).filter(event => event.kind === "canonical_message");
   let seenInput = false;
   return readFullSessionCanonicalRecords(canonical).flatMap((record, index) => {
@@ -181,16 +187,16 @@ export function readCanonicalEntries(events: readonly Event[]): { eventId: strin
   });
 }
 
-export function readCanonicalRecords(events: readonly Event[]): CanonicalRecord[] {
-  return readCanonicalEntries(events).map(entry => entry.record);
+export function readCanonicalRecords(source: CanonicalEventSource): CanonicalRecord[] {
+  return readCanonicalEntries(source).map(entry => entry.record);
 }
 
 /**
  * All epochs, with schema validation. Use for session-wide turn-id allocation.
- * Pass raw events from EventLog.readAll({ includeInternal: true }); the default
- * read filters internal events and would silently return an empty transcript.
+ * Accepts an EventLog reader or raw events from EventLog.readAll({ includeInternal: true }).
  */
-export function readFullSessionCanonicalRecords(events: readonly Event[]): CanonicalRecord[] {
+export function readFullSessionCanonicalRecords(source: CanonicalEventSource): CanonicalRecord[] {
+  const events = resolveRawEvents(source);
   const records: CanonicalRecord[] = [];
   for (const event of events) {
     if (event.kind !== "canonical_message") continue;

@@ -63,12 +63,25 @@ test("turns use only the latest reset epoch and hide stranded pre-input results"
 });
 
 test("canonical entries preserve event ids while sharing current-epoch record filtering", async () => {
-  const { readCanonicalEntries, readCanonicalRecords } = await import("../src/canonical-transcript.js");
+  const { readCanonicalEntries, readCanonicalRecords, readFullSessionCanonicalRecords } = await import("../src/canonical-transcript.js");
+  const { buildTurns, materializeHistory } = await api();
   const fresh = [input("new", 8), assistant("answer", 8, "fresh")];
   const events = [input("old"), reset("clear"), result("stranded", 1, "lost"), ...fresh];
   expect(readCanonicalEntries(events)).toEqual(fresh.map(e => ({ eventId: e.event_id, record: e.payload })));
   expect(readCanonicalEntries(events).map(entry => entry.record)).toEqual(readCanonicalRecords(events));
   expect(readCanonicalEntries([...events, reset("empty")])).toEqual([]);
+  const logReader = {
+    readAll(options?: { includeInternal?: boolean; includeCanonical?: boolean }) {
+      return options?.includeInternal || options?.includeCanonical
+        ? events
+        : events.filter(e => e.kind !== "canonical_message" && e.kind !== "compaction_commit");
+    },
+  };
+  expect(readCanonicalEntries(logReader)).toEqual(readCanonicalEntries(events));
+  expect(readCanonicalRecords(logReader)).toEqual(readCanonicalRecords(events));
+  expect(readFullSessionCanonicalRecords(logReader)).toEqual(readFullSessionCanonicalRecords(events));
+  expect(buildTurns(logReader)).toEqual(buildTurns(events));
+  expect(materializeHistory(frozen({ resetEpoch: "clear" }), logReader)).toEqual(materializeHistory(frozen({ resetEpoch: "clear" }), events));
 });
 
 test("turn view ignores generic events but keeps non-emitting canonical records in the cut unit", async () => {
