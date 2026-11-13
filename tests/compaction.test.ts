@@ -1040,6 +1040,9 @@ test("cancellation with controlled promises prevents every commit across primary
     const { log } = openLog();
     addTurn(log, 1, { inputText: "Turn 1 " + "a".repeat(6000) });
     addTurn(log, 2, { inputText: "Turn 2" });
+    const restored = restoreFrozenStateFromLog(log);
+    if (!restored.ok) throw restored.error;
+    const readSpy = spyOn(log, "readAll");
     const res = await runCompaction({
       log,
       liveRequest: baseLiveRequest(),
@@ -1051,6 +1054,10 @@ test("cancellation with controlled promises prevents every commit across primary
       },
     });
     expect(res.status).toBe("cancelled");
+    if (res.status !== "cancelled") throw new Error(JSON.stringify(res));
+    expect(res.state).toEqual(restored.state);
+    expect(readSpy).toHaveBeenCalledTimes(2); // initial restore and appendCommit validation only
+    readSpy.mockRestore();
     expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
   }
 });
@@ -1092,12 +1099,14 @@ test("commit_uncertain is returned without retry when append throws, and reopeni
 test("commit_rejected is returned with reason when replay or validation rejects a commit before append", async () => {
   const { runCompaction } = await api();
 
-  // 1. Replay rejects commit in Step 2 (e.g. boundary event disappeared or concurrent commit advanced generation in same epoch).
+  // 1. A concurrent rewrite winning the same generation is cancellation, not rejection.
   {
     const { log } = openLog();
     addTurn(log, 1, { inputText: "Turn 1 " + "a".repeat(6000) });
     addTurn(log, 2, { inputText: "Turn 2" });
-    const { appendCommit } = await import("../src/frozen-summary.js");
+    const restored = restoreFrozenStateFromLog(log);
+    if (!restored.ok) throw restored.error;
+    let winner: compaction.CompactionOutcome | undefined;
 
     const outcome = await runCompaction({
       log,
@@ -1105,30 +1114,21 @@ test("commit_rejected is returned with reason when replay or validation rejects 
       contextWindowTokens: 2100,
       options: { effectiveMaxTokens: 200, tailTurns: 0 },
       runSummary: async () => {
-        // Concurrent commit in the same epoch advances generation to 1 while summary is running.
-        appendCommit(log, {
-          formatVersion: 1,
-          resetEpoch: "session_start",
-          generation: 1,
-          boundaryEventId: "t1-final",
-          summary: validSummary("Concurrent commit."),
-          stubSet: [],
-          summaryRequest: {
-            cutDescription: "through turn 1 (t1-final)",
-            capTokens: 237,
-            instructionSha256: "a".repeat(64),
-            usage: null,
-          },
+        winner = await runCompaction({
+          log,
+          liveRequest: baseLiveRequest(),
+          contextWindowTokens: 2100,
+          options: { effectiveMaxTokens: 200, tailTurns: 0 },
+          runSummary: async () => summaryResp(validSummary("Concurrent commit.")),
         });
         return summaryResp(validSummary("Conflicting summary."));
       },
     });
 
-    expect(outcome.status).toBe("commit_rejected");
-    if (outcome.status !== "commit_rejected") throw new Error(JSON.stringify(outcome));
-    expect(outcome.reason).toContain("generation");
-    expect(outcome.error.code).toBe("invalid_generation");
-    expect(outcome.state.generation).toBe(0);
+    expect(winner?.status).toBe("rewritten");
+    expect(outcome.status).toBe("cancelled");
+    if (outcome.status !== "cancelled") throw new Error(JSON.stringify(outcome));
+    expect(outcome.state).toEqual(restored.state);
     expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(1);
   }
 

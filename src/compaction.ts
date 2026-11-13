@@ -528,20 +528,12 @@ function tryCommitRewrite(
   | { status: "commit_rejected"; state: FrozenState; reason: string; error: FrozenSummaryError }
   | { status: "commit_uncertain"; error: unknown } {
   if (signal?.aborted) return { status: "cancelled" };
-  try {
-    const latestEvents = log.readAll({ includeInternal: true });
-    const resetIdx = findLastResetBoundaryIndex([...latestEvents]);
-    const latestEpoch = resetIdx < 0 ? SESSION_START_EPOCH : latestEvents[resetIdx].event_id;
-    if (latestEpoch !== initialState.resetEpoch) return { status: "cancelled" };
-  } catch (error) {
-    const err = error instanceof FrozenSummaryError
-      ? error
-      : new FrozenSummaryError("invalid_commit", -1, `cannot validate commit: ${error instanceof Error ? error.message : String(error)}`);
-    return { status: "commit_rejected", state: initialState, reason: err.message, error: err };
-  }
   const appended = appendCommit(log, commit);
   if (appended.status === "commit_uncertain") return { status: "commit_uncertain", error: appended.error };
   if (appended.status === "rejected") {
+    if (appended.error.code === "invalid_generation" || appended.error.code === "invalid_epoch") {
+      return { status: "cancelled" };
+    }
     return { status: "commit_rejected", state: initialState, reason: appended.error.message, error: appended.error };
   }
   return {
