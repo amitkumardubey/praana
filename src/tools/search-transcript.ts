@@ -106,11 +106,12 @@ function extractRecordTexts(record: CanonicalRecord): {
 
 export function indexSessionTranscript(
   eventLog: Pick<EventLog, "readAll">,
-): { entries: IndexedTranscriptEntry[]; currentResetEpoch: string } {
+): { entries: IndexedTranscriptEntry[]; currentResetEpoch: string; canonicalTranscriptAvailable: boolean } {
   // includeCanonical is used on feat/search-transcript; includeInternal on feat/compaction-core.
   const rawOptions = { includeCanonical: true, includeInternal: true };
   const events = eventLog.readAll(rawOptions);
   let currentResetEpoch = SESSION_START_EPOCH;
+  let canonicalTranscriptAvailable = false;
   const entries: IndexedTranscriptEntry[] = [];
   // null marks a call key with multiple pending canonical results.
   const artifactResults = new Map<string, IndexedTranscriptEntry | null>();
@@ -149,6 +150,7 @@ export function indexSessionTranscript(
       continue;
     }
     if (ev.kind !== "canonical_message") continue;
+    canonicalTranscriptAvailable = true;
     // Historical writers used an empty call ID. Validate the rest of that
     // record normally, but keep it fetchable without allowing result pairing.
     const message = ev.payload.message;
@@ -192,7 +194,7 @@ export function indexSessionTranscript(
     epochPosition++;
   }
 
-  return { entries, currentResetEpoch };
+  return { entries, currentResetEpoch, canonicalTranscriptAvailable };
 }
 
 function buildSnippet(
@@ -367,7 +369,8 @@ export function createSearchTranscriptTool(ctx: {
         "Search canonical session records (BM25 + case-insensitive substring; no regex), including compacted/stubbed turns, " +
         "or fetch full/ranged content and neighbors by ID. Searches the current reset epoch by default; " +
         "set include_previous_resets=true to search or fetch across /clear. Search excludes search_transcript calls/results. " +
-        "Artifact-backed results use paired logged output only with a matching artifact ID; matches retain artifactId.",
+        "Artifact-backed results use paired logged output only with a matching artifact ID; matches retain artifactId. " +
+        "If the session has no canonical transcript, use search_session_log instead.",
       parameters: searchTranscriptParameters,
       execute: async (rawArgs: SearchTranscriptArgs): Promise<SearchTranscriptResult> => {
         const parsed = searchTranscriptParameters.safeParse(rawArgs ?? {});
@@ -376,7 +379,13 @@ export function createSearchTranscriptTool(ctx: {
         }
         const args = parsed.data;
         const includePreviousResets = args.include_previous_resets ?? false;
-        const { entries, currentResetEpoch } = indexSessionTranscript(ctx.eventLog);
+        const { entries, currentResetEpoch, canonicalTranscriptAvailable } = indexSessionTranscript(ctx.eventLog);
+        if (!canonicalTranscriptAvailable) {
+          return {
+            ok: false,
+            error: "Canonical transcript is not available for this session; use search_session_log instead.",
+          };
+        }
 
         const scopedEntries = includePreviousResets
           ? entries

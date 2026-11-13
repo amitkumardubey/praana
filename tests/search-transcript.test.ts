@@ -94,6 +94,18 @@ describe("search_transcript tool (PR3)", () => {
     expect(result.matches.map((match) => match.id)).toEqual(["raw-message"]);
   });
 
+  test.each([{ query: "legacy needle" }, { id: "legacy-user" }])("directs legacy-only sessions to search_session_log for %j", async (args) => {
+    const { log } = openLog();
+    log.append({ event_id: "legacy-user", kind: "user_message", actor: "user", payload: { text: "legacy needle" } });
+    log.append({ kind: "tool_result", actor: "tool", payload: { tool: "shell", toolCallId: "legacy-call", result: "legacy needle" } });
+    const tool = searchTranscriptModule.createSearchTranscriptTool({ eventLog: log }).search_transcript;
+    const result = await tool.execute(args);
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error("Expected unavailable transcript");
+    expect(result.error).toMatch(/canonical transcript is not available for this session/i);
+    expect(result.error).toContain("search_session_log");
+  });
+
   test("does not search its own calls or results but still fetches them by id", async () => {
     const { log } = openLog();
     addCanonical(log, "user-needle", {
