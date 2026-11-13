@@ -198,10 +198,11 @@ describe("file memory store", () => {
     expect((await store.write(input)).ok).toBe(false);
     expect((await store.remove({ name: input.name })).ok).toBe(false);
   });
-  test("write, remove and the derived refresh share one incognito refusal", async () => {
+  test("each incognito refusal names the operation it blocks", async () => {
     const { store } = await setup({ incognito: true });
-    const results = [await store.write(input), await store.remove({ name: input.name }), await store.refreshIndexFile("global")];
-    for (const result of results) expect(result).toEqual({ ok: false, error: "Incognito mode prevents writes" });
+    expect(await store.write(input)).toEqual({ ok: false, error: "Incognito mode prevents writes" });
+    expect(await store.refreshIndexFile("global")).toEqual({ ok: false, error: "Incognito mode prevents writes" });
+    expect(await store.remove({ name: input.name })).toEqual({ ok: false, error: "Incognito mode prevents removal" });
   });
   test("read, list and ambiguous removal", async () => {
     const { store } = await setup();

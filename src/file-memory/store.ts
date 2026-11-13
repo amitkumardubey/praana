@@ -20,8 +20,9 @@ export interface StoreOptions {
 type SkippedScope = { scope: MemoryScope; reason: string };
 type ScopeWarnings = { skippedScopes?: SkippedScope[] };
 type ResultError = { ok: false; error: string; similar?: Array<{ name: string; description: string }> } & ScopeWarnings;
-/** Every incognito refusal uses this one message, so write, remove and the derived refresh agree. */
-const INCOGNITO_REFUSAL = "Incognito mode prevents writes";
+/** Incognito blocks every mutation; each operation names the action it could not perform. */
+const INCOGNITO_PREFIX = "Incognito mode prevents";
+const incognitoRefusal = (blocked: "writes" | "removal"): ResultError => ({ ok: false, error: `${INCOGNITO_PREFIX} ${blocked}` });
 const scopeWarnings = (skippedScopes: SkippedScope[]): ScopeWarnings => skippedScopes.length ? { skippedScopes } : {};
 const reasonText = (skippedScopes: SkippedScope[]) => skippedScopes.map(({ scope, reason }) => `${scope}: ${reason}`).join("; ");
 /** Every unscoped by-name operation refuses through here, so `read`, `recall` and
@@ -184,7 +185,7 @@ export function createFileMemoryStore(options: StoreOptions) {
   }
 
   async function write(input: MemoryInput & { scope: MemoryScope }): Promise<{ ok: true; name: string; scope: MemoryScope; created: boolean } | ResultError> {
-    if (options.incognito) return { ok: false, error: INCOGNITO_REFUSAL };
+    if (options.incognito) return incognitoRefusal("writes");
     try {
       const allowed = new Set(["scope", "type", "name", "description", "body"]);
       if (!input || typeof input !== "object" || Reflect.ownKeys(input).some((key) => !allowed.has(String(key)))) return { ok: false, error: "Unknown write input key; allowed keys: scope, type, name, description, body" };
@@ -239,7 +240,7 @@ export function createFileMemoryStore(options: StoreOptions) {
   }
 
   async function remove(input: { scope?: MemoryScope; name: string }): Promise<({ ok: true; skipped?: SkippedScope[] } & ScopeWarnings) | ResultError> {
-    if (options.incognito) return { ok: false, error: INCOGNITO_REFUSAL };
+    if (options.incognito) return incognitoRefusal("removal");
     if (!validName(input.name)) return { ok: false, error: "Invalid memory name" };
     try {
       const skipped: SkippedScope[] = [];
@@ -319,7 +320,7 @@ export function createFileMemoryStore(options: StoreOptions) {
   /** Derived convenience copy only. A failed refresh is observable here but never
    * changes the result of an already-committed write or removal. Never read back. */
   async function refreshIndexFile(scope: MemoryScope): Promise<{ ok: true } | ResultError> {
-    if (options.incognito) return { ok: false, error: INCOGNITO_REFUSAL };
+    if (options.incognito) return incognitoRefusal("writes");
     try {
       const data = await list({ scope });
       if (!data.ok) return errorResult(new Error(data.error));
