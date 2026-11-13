@@ -408,7 +408,13 @@ function writeDocumentAtomic(
   return writeExclusiveFile(tmpPath, bytes, fs, () => {
     // The renamed inode is the 0600 temp file, so no second chmod is needed.
     fs.rename(tmpPath, path);
-    fs.fsyncDir(dir); // best effort: the default implementation swallows its own errors
+    try {
+      // Best effort: the rename has already committed, so a directory fsync failure must
+      // not report the write as failed.
+      fs.fsyncDir(dir);
+    } catch {
+      // Ignore: durability of the directory entry is not something the caller can act on.
+    }
   });
 }
 

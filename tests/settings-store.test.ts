@@ -1156,6 +1156,29 @@ console.log(JSON.stringify(res));
     }
   });
 
+  test("a throwing directory fsync after a committed rename stays a success", async () => {
+    const { updateSettingsDocument, replaceSettingsDocument, createSettingsFs } = await storeApi();
+    const throwingFs = createSettingsFs({
+      fsyncDir() {
+        throw new Error("injected fsyncDir failure");
+      },
+    });
+
+    const replaced = replaceSettingsDocument({ ...DEFAULT_USER_SETTINGS }, { fs: throwingFs });
+    expect(replaced.ok).toBe(true);
+    expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual(DEFAULT_USER_SETTINGS);
+
+    const updated = updateSettingsDocument({ thinking: false }, { fs: throwingFs });
+    expect(updated.ok).toBe(true);
+    if (updated.ok) expect(updated.doc.thinking).toBe(false);
+    expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual({
+      ...DEFAULT_USER_SETTINGS,
+      thinking: false,
+    });
+    // The rename committed, so the temp file is gone and nothing is left behind.
+    expect(readdirSync(homeDir).filter((f) => f.includes(".tmp-"))).toEqual([]);
+  });
+
   test("createOnly never modifies an existing file in any read state", async () => {
     const { updateSettingsDocument, createSettingsFs } = await storeApi();
     const baseFs = createSettingsFs();
