@@ -96,6 +96,35 @@ describe("search_transcript tool (PR3)", () => {
     }
   });
 
+  test("ranks artifact cards and elided stubs below original content while retaining artifact ids", async () => {
+    const { log } = openLog();
+    const artifactId = "art_abcdef123456";
+    const texts = [
+      ["original", `needle ${"ordinary output ".repeat(200)}`],
+      ["card", `[artifact: ${artifactId} | shell: needle | 1,000 tokens raw]\nRetrieve: retrieve_artifact("${artifactId}")`],
+      ["stub", `needle\n... [elided 80 lines / 3200 bytes; full output stored in artifact ${artifactId} — call retrieve_artifact("${artifactId}") to inspect] ...`],
+    ] as const;
+    for (const [id, text] of texts) {
+      addCanonical(log, id, {
+        formatVersion: 1,
+        kind: "tool_result",
+        turnId: 1,
+        message: { callId: id, toolName: "shell", text, isError: false },
+      });
+    }
+    const tool = searchTranscriptModule.createSearchTranscriptTool({ eventLog: log }).search_transcript;
+    const result = await tool.execute({ query: "needle" });
+    if (!result.ok || result.mode !== "search") throw new Error("Expected search");
+    expect(result.matches[0]?.id).toBe("original");
+    expect(result.matches).toHaveLength(3);
+    for (const id of ["card", "stub"]) {
+      expect(result.matches.find((m) => m.id === id)?.artifactId).toBe(artifactId);
+    }
+    const limited = await tool.execute({ query: "needle", limit: 1 });
+    if (!limited.ok || limited.mode !== "search") throw new Error("Expected search");
+    expect(limited.matches[0]?.id).toBe("original");
+  });
+
   test("recovers a unique fact folded across two compactions and after session reload", async () => {
     const { createSearchTranscriptTool } = await api();
     const { root, log, sessionId } = openLog();

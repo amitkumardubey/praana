@@ -435,8 +435,10 @@ export function createSearchTranscriptTool(ctx: {
           }
         }
 
+        // Prefer source content over shorter artifact cards and elision stubs.
         scored.sort(
-          (a, b) => b.score - a.score || b.entry.logPosition - a.entry.logPosition,
+          (a, b) => Number(a.entry.artifactId !== undefined) - Number(b.entry.artifactId !== undefined) ||
+            b.score - a.score || b.entry.logPosition - a.entry.logPosition,
         );
 
         const limit = args.limit ?? 10;
