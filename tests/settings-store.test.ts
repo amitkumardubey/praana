@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
@@ -1122,6 +1122,38 @@ console.log(JSON.stringify(res));
       true,
     );
     expect(overrideCloseCalls).toBe(3);
+  });
+
+  test("a throwing lock release does not replace a committed result", async () => {
+    const { updateSettingsDocument, replaceSettingsDocument } = await storeApi();
+    const lockMod = await import("../src/credential-lock.js");
+    const realAcquireSync = lockMod.acquireSync;
+    const spy = spyOn(lockMod, "acquireSync").mockImplementation((lockPath, opts) => {
+      const lock = realAcquireSync(lockPath, opts);
+      return {
+        release() {
+          lock.release();
+          throw new Error("injected release failure");
+        },
+      };
+    });
+
+    try {
+      const updated = updateSettingsDocument({ thinking: false });
+      expect(updated.ok).toBe(true);
+      if (updated.ok) expect(updated.doc.thinking).toBe(false);
+      expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual({ thinking: false });
+
+      const replaced = replaceSettingsDocument({ ...DEFAULT_USER_SETTINGS });
+      expect(replaced.ok).toBe(true);
+      expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual(DEFAULT_USER_SETTINGS);
+
+      // A failing result is still reported as a failure, not as an exception.
+      writeFileSync(settingsPath, "{corrupt", "utf-8");
+      expect(updateSettingsDocument({ thinking: true }).ok).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   test("createOnly never modifies an existing file in any read state", async () => {

@@ -438,7 +438,11 @@ function withSettingsLock<T>(
   try {
     return fn();
   } finally {
-    lock.release();
+    try {
+      lock.release();
+    } catch {
+      // Best effort: a release failure must not replace a committed result with an exception.
+    }
   }
 }
 
