@@ -589,7 +589,10 @@ export function updateSettingsDocument(
     }
 
     const written = writeDocumentAtomic(path, nextDoc, fs);
-    if (!written.ok) return written;
+    if (!written.ok) {
+      if (backupPath) discardCorruptBackup(backupPath, fs);
+      return written;
+    }
     return {
       ok: true,
       doc: nextDoc,
@@ -630,6 +633,19 @@ function backupCorruptFile(
   return { ok: true, backupPath };
 }
 
+/**
+ * Undo a backup whose replacement write failed, so repeated failed attempts cannot
+ * pile up `corrupt-*` files. Best effort: a backup that cannot be removed is only
+ * extra noise next to the corrupt file the caller is already told about.
+ */
+function discardCorruptBackup(backupPath: string, fs: SettingsFs): void {
+  try {
+    fs.unlink(backupPath);
+  } catch {
+    // Ignore: the write error is the result the caller needs.
+  }
+}
+
 export function replaceSettingsDocument(
   doc: Record<string, unknown>,
   options?: SettingsStoreOptions & { backupCorrupt?: boolean },
@@ -658,7 +674,10 @@ export function replaceSettingsDocument(
 
     const copy = { ...doc };
     const written = writeDocumentAtomic(path, copy, fs);
-    if (!written.ok) return written;
+    if (!written.ok) {
+      if (backupPath) discardCorruptBackup(backupPath, fs);
+      return written;
+    }
     return { ok: true, doc: copy, ...(backupPath ? { backupPath } : {}) };
   });
 }

@@ -1124,6 +1124,50 @@ console.log(JSON.stringify(res));
     expect(overrideCloseCalls).toBe(3);
   });
 
+  test("a failed replacement write removes the corrupt backup it just created and keeps the corrupt file", async () => {
+    const { updateSettingsDocument, replaceSettingsDocument, createSettingsFs } = await storeApi();
+    const corruptBytes = "{corrupt-needs-backup";
+    writeFileSync(settingsPath, corruptBytes, "utf-8");
+
+    const failRenameFs = createSettingsFs({
+      rename() {
+        throw new Error("injected rename failure");
+      },
+    });
+    const backups = () => readdirSync(homeDir).filter((f) => f.includes(".corrupt-"));
+
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const replaced = replaceSettingsDocument(
+        { ...DEFAULT_USER_SETTINGS },
+        { fs: failRenameFs, backupCorrupt: true },
+      );
+      expect(replaced.ok).toBe(false);
+      if (!replaced.ok) expect(replaced.error).toContain("injected rename failure");
+      expect(backups()).toEqual([]);
+      expect(readFileSync(settingsPath, "utf-8")).toBe(corruptBytes);
+
+      const updated = updateSettingsDocument(
+        { ...DEFAULT_USER_SETTINGS },
+        {
+          fs: failRenameFs,
+          baseDefaultsIfMissing: { ...DEFAULT_USER_SETTINGS },
+          onCorrupt: "backup-and-reset-legacy",
+        },
+      );
+      expect(updated.ok).toBe(false);
+      if (!updated.ok) expect(updated.error).toContain("injected rename failure");
+      expect(backups()).toEqual([]);
+      expect(readFileSync(settingsPath, "utf-8")).toBe(corruptBytes);
+      expect(readdirSync(homeDir).filter((f) => f.includes(".tmp-"))).toEqual([]);
+    }
+
+    // The corrupt bytes are still recoverable by a later successful reset.
+    const reset = resetUserSettings();
+    expect(reset.ok).toBe(true);
+    expect(backups()).toHaveLength(1);
+    expect(readFileSync(join(homeDir, backups()[0] ?? ""), "utf-8")).toBe(corruptBytes);
+  });
+
   test("bounded key scan handles deep nesting, throwing getters, and toJSON on caller input", async () => {
     const { updateSettingsDocument, replaceSettingsDocument, createSettingsFs } = await storeApi();
     const baseFs = createSettingsFs();
