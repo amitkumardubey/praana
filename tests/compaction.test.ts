@@ -1207,6 +1207,34 @@ test("commit_rejected is returned with reason when replay or validation rejects 
   }
 });
 
+for (const code of ["invalid_generation", "invalid_epoch"] as const) {
+  test(`an earlier concurrent ${code} is corruption, not a lost race`, async () => {
+    const { log } = openLog();
+    addTurn(log, 1, { inputText: "Turn 1 " + "a".repeat(6000) });
+    addTurn(log, 2, { inputText: "Turn 2" });
+    const badIndex = log.readAll({ includeInternal: true }).length;
+    const outcome = await compaction.runCompaction({
+      log,
+      liveRequest: baseLiveRequest(),
+      contextWindowTokens: 2100,
+      options: { effectiveMaxTokens: 200, tailTurns: 0 },
+      runSummary: async () => {
+        log.append({ kind: "compaction_commit", actor: "kernel", payload: {
+          formatVersion: 1,
+          resetEpoch: code === "invalid_epoch" ? "wrong-epoch" : "session_start",
+          generation: code === "invalid_generation" ? 2 : 1,
+          boundaryEventId: "t1-final",
+          summary: validSummary("Malformed concurrent commit"),
+          stubSet: [],
+          summaryRequest: { cutDescription: "turn 1", capTokens: 200, instructionSha256: "a".repeat(64), usage: null },
+        } });
+        return summaryResp();
+      },
+    });
+    expect(outcome).toMatchObject({ status: "commit_rejected", error: { code, eventIndex: badIndex } });
+  });
+}
+
 test("log read failure during commit validation propagates instead of becoming commit_rejected", async () => {
   const { runCompaction } = await api();
   const { log } = openLog();

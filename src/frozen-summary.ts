@@ -342,7 +342,7 @@ export function restoreFrozenStateFromLog(log: Pick<EventLog, "readAll">): Froze
   return restoreFrozenState(log.readAll({ includeInternal: true }));
 }
 
-export type CommitAppendResult = { status: "committed" } | { status: "rejected"; error: FrozenSummaryError } | { status: "commit_uncertain"; error: unknown };
+export type CommitAppendResult = { status: "committed" } | { status: "rejected"; error: FrozenSummaryError; candidateEventIndex?: number } | { status: "commit_uncertain"; error: unknown };
 
 /** Never retry an uncertain append: reload raw events and restore before deciding what to do next. */
 export function appendCommit(log: Pick<EventLog, "append" | "readAll">, commit: Omit<CompactionCommit, "prefix">): CommitAppendResult {
@@ -356,7 +356,7 @@ export function appendCommit(log: Pick<EventLog, "append" | "readAll">, commit: 
   const events = log.readAll({ includeInternal: true });
   const candidate: Event = { ...event, event_id: "", session_id: "", timestamp: 0 };
   const result = restoreFrozenState([...events, candidate]);
-  if (!result.ok) return { status: "rejected", error: result.error };
+  if (!result.ok) return { status: "rejected", error: result.error, candidateEventIndex: events.length };
   try {
     log.append(event);
     return { status: "committed" };

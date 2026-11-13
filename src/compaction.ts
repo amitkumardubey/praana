@@ -558,7 +558,8 @@ function tryCommitRewrite(
   const appended = appendCommit(log, commit);
   if (appended.status === "commit_uncertain") return { status: "commit_uncertain", error: appended.error };
   if (appended.status === "rejected") {
-    if (appended.error.code === "invalid_generation" || appended.error.code === "invalid_epoch") {
+    if (appended.error.eventIndex === appended.candidateEventIndex &&
+        (appended.error.code === "invalid_generation" || appended.error.code === "invalid_epoch")) {
       return { status: "cancelled" };
     }
     return { status: "commit_rejected", state: initialState, reason: appended.error.message, error: appended.error };
