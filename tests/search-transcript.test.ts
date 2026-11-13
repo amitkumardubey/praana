@@ -125,6 +125,57 @@ describe("search_transcript tool (PR3)", () => {
     expect(limited.matches[0]?.id).toBe("original");
   });
 
+  test("redacts complete tokens before either edge of a search snippet is sliced", async () => {
+    const { log } = openLog();
+    const token = `ghp_${"Z".repeat(40)}`;
+    const texts = [
+      `needle ${" ".repeat(283)}${token} ${"padding ".repeat(60)}`,
+      `${" ".repeat(140)}${token}${" ".repeat(116)}needle ${"padding ".repeat(60)}`,
+    ];
+    for (const [i, text] of texts.entries()) {
+      addCanonical(log, `secret-${i}`, {
+        formatVersion: 1,
+        kind: "user_input",
+        turnId: i + 1,
+        message: { text },
+      });
+    }
+    const tool = searchTranscriptModule.createSearchTranscriptTool({ eventLog: log }).search_transcript;
+    const result = await tool.execute({ query: "needle" });
+    if (!result.ok || result.mode !== "search") throw new Error("Expected search");
+    expect(result.matches).toHaveLength(2);
+    for (const match of result.matches) {
+      expect(match.snippet).not.toContain("Z".repeat(8));
+      expect(match.snippet).not.toContain("ghp_");
+    }
+  });
+
+  test("redacts full fetch and neighbor texts before truncating them", async () => {
+    const { log } = openLog();
+    const token = `ghp_${"Z".repeat(40)}`;
+    for (const [id, padding] of [["before", 190], ["target", 90], ["after", 190]] as const) {
+      addCanonical(log, id, {
+        formatVersion: 1,
+        kind: "assistant",
+        turnId: 1,
+        message: { text: `${" ".repeat(padding)}${token} trailing text` },
+      });
+    }
+    const tool = searchTranscriptModule.createSearchTranscriptTool({ eventLog: log }).search_transcript;
+    const result = await tool.execute({ id: "target", max_chars: 100, context_messages: 1 });
+    if (!result.ok || result.mode !== "fetch") throw new Error("Expected fetch");
+    expect(result.message.content).not.toContain("ghp_");
+    expect(result.message.before).toHaveLength(1);
+    expect(result.message.after).toHaveLength(1);
+    for (const neighbor of [...result.message.before!, ...result.message.after!]) {
+      expect(neighbor.preview).not.toContain("ghp_");
+    }
+    const full = await tool.execute({ id: "target" });
+    if (!full.ok || full.mode !== "fetch") throw new Error("Expected fetch");
+    expect(full.message.content).toContain("[REDACTED:github-token]");
+    expect(full.message.totalChars).toBe(full.message.content.length);
+  });
+
   test("recovers a unique fact folded across two compactions and after session reload", async () => {
     const { createSearchTranscriptTool } = await api();
     const { root, log, sessionId } = openLog();

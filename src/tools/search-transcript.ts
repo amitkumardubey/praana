@@ -14,6 +14,7 @@ import {
   type CanonicalRecord,
 } from "../canonical-transcript.js";
 import { isResetBoundaryEvent, type EventLog } from "../event-log.js";
+import { redactSecrets } from "../redact/secrets.js";
 import {
   bm25Score,
   buildBM25StatsFromTokens,
@@ -133,8 +134,9 @@ export function indexSessionTranscript(
       resetEpoch: currentResetEpoch,
       turnId: record.turnId,
       kind: record.kind,
-      text: extracted.text,
-      searchText: extracted.searchText,
+      // Redact complete text before any snippet, line range, or preview is cut.
+      text: redactSecrets(extracted.text) as string,
+      searchText: redactSecrets(extracted.searchText) as string,
       timestamp: ev.timestamp,
       epochPosition,
       logPosition: i,
