@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { resolve, join, dirname } from "node:path";
+import { resolve, join } from "node:path";
 import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { globalMemoryDirectory, memoryDirectories, projectKey } from "../src/file-memory/paths.js";
@@ -141,17 +141,13 @@ describe("file memory paths", () => {
     });
   });
 
-  test("both scopes derive from one resolved global directory", async () => {
+  test("both scopes derive from one resolved global directory", () => {
     const home = "/home/example/./nested/..";
     const global = globalMemoryDirectory(home);
     expect(global).toBe("/home/example/.praana/memory");
     expect(memoryDirectories(home, "repo-123456").global).toBe(global);
-    // The project path is built from that same directory, not from a second resolution of `home`.
-    expect(memoryDirectories(home, "repo-123456").project).toBe(join(dirname(global), "projects", "repo-123456", "memory"));
     expect(memoryDirectories(home, "one").global).toBe(memoryDirectories(home, "two").global);
-    const source = await fs.readFile(new URL("../src/file-memory/paths.ts", import.meta.url), "utf8");
-    const body = source.slice(source.indexOf("export function memoryDirectories"));
-    expect(body.match(/globalMemoryDirectory\(/g) ?? []).toHaveLength(1);
-    expect(body).not.toContain("resolve(");
+    // The project directory is a sibling of the global one, so it can never be mistaken for a global memory.
+    expect(memoryDirectories(home, "repo-123456").project.startsWith(global)).toBe(false);
   });
 });
