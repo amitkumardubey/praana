@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import * as compaction from "../src/compaction.js";
+import type { StubCandidate, StubEntry, StubPlanner } from "../src/compaction.js";
 import { loadConfig } from "../src/config.js";
 import { ArtifactStore } from "../src/context-engine/artifact-store.js";
 import { estimateTokens } from "../src/token-estimate.js";
+import * as toolOutput from "../src/tool-output.js";
 import {
   buildToolResultStub,
   DEFAULT_EXACT_BYTES_TOOLS,
@@ -289,5 +292,44 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
       { phase: "stale", minTokens: 256, keepRecent: 3 },
     );
     expect(direct).toEqual([{ eventId: "res-1", stubText }]);
+  });
+
+  test("shares StubPlanner types and stub constants from compaction.ts with no local copies or private defaults", () => {
+    const planner: StubPlanner = planToolResultStubs;
+    expect(typeof planner).toBe("function");
+    // No default `= {}` on the options parameter: both parameters are required.
+    expect(planToolResultStubs.length).toBe(2);
+
+    // Constants are re-exported from compaction.ts (single source of truth).
+    expect(toolOutput.DEFAULT_STUB_KEEP_RECENT).toBe(compaction.DEFAULT_STUB_KEEP_RECENT);
+    expect(toolOutput.DEFAULT_STUB_MIN_TOKENS).toBe(compaction.DEFAULT_STUB_MIN_TOKENS);
+
+    // Type compatibility: StubCandidate and StubEntry from compaction.ts match tool-output.ts.
+    const candidate: StubCandidate = {
+      eventId: "ev-1",
+      turnId: 1,
+      callId: "call-1",
+      toolName: "shell",
+      text: "A".repeat(1200),
+      isError: false,
+      estimatedTokens: 300,
+    };
+    const entries: readonly StubEntry[] = planner([candidate], {
+      phase: "stale",
+      minTokens: 200,
+      keepRecent: 3,
+    });
+    expect(entries).toHaveLength(1);
+    // Respects the caller's minTokens without falling back to a private default.
+    expect(
+      planner([candidate], { phase: "stale", minTokens: 400, keepRecent: 3 }),
+    ).toEqual([]);
+
+    const source = readFileSync(new URL("../src/tool-output.ts", import.meta.url), "utf8");
+    expect(source).toMatch(/import type \{[^}]*\bStubCandidate\b[^}]*\bStubEntry\b[^}]*\bStubPlanner\b[^}]*\} from "\.\/compaction\.js"/);
+    expect(source).not.toMatch(/\b(?:export\s+)?interface StubCandidate\b/);
+    expect(source).not.toMatch(/\b(?:export\s+)?interface StubEntry\b/);
+    expect(source).not.toMatch(/\bDEFAULT_STUB_(?:KEEP_RECENT|MIN_TOKENS)\s*=/);
+    expect(source).not.toMatch(/options\.minTokens\s*\?\?/);
   });
 });

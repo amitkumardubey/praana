@@ -12,7 +12,11 @@
  *    artifact ID when present).
  */
 
+import type { StubCandidate, StubEntry, StubPlanner } from "./compaction.js";
 import { estimateTokens } from "./token-estimate.js";
+
+export type { StubCandidate, StubEntry, StubPlanner };
+export { DEFAULT_STUB_KEEP_RECENT, DEFAULT_STUB_MIN_TOKENS } from "./compaction.js";
 
 export const DEFAULT_INLINE_THRESHOLD_TOKENS = 400;
 export const DEFAULT_SHAPE_MAX_LINES = 80;
@@ -21,8 +25,6 @@ export const DEFAULT_SHAPE_TAIL_LINES = 40;
 export const DEFAULT_SHAPE_MAX_BYTES = 8192;
 export const DEFAULT_SHAPE_HEAD_BYTES = 4096;
 export const DEFAULT_SHAPE_TAIL_BYTES = 4096;
-export const DEFAULT_STUB_KEEP_RECENT = 3;
-export const DEFAULT_STUB_MIN_TOKENS = 256;
 
 /**
  * Tools whose output the model must reproduce verbatim (`edit_file` targets,
@@ -256,21 +258,6 @@ export function shapeToolOutput(input: ShapeToolOutputInput): ShapeToolOutputRes
   return out;
 }
 
-export interface StubCandidate {
-  eventId: string;
-  turnId: number;
-  callId: string;
-  toolName: string;
-  text: string;
-  isError: boolean;
-  estimatedTokens: number;
-}
-
-export interface StubEntry {
-  eventId: string;
-  stubText: string;
-}
-
 export function buildToolResultStub(candidate: StubCandidate): string {
   const artifactId = extractArtifactIdFromText(candidate.text);
   const artifactClause = artifactId ? `, artifact ${artifactId}` : "";
@@ -287,9 +274,9 @@ export function buildToolResultStub(candidate: StubCandidate): string {
  */
 export function planToolResultStubs(
   candidates: readonly StubCandidate[],
-  options: { phase?: "stale" | "in_flight"; minTokens?: number; keepRecent?: number } = {},
+  options: { phase: "stale" | "in_flight"; minTokens: number; keepRecent: number },
 ): StubEntry[] {
-  const minTokens = options.minTokens ?? DEFAULT_STUB_MIN_TOKENS;
+  const minTokens = options.minTokens;
   const entries: StubEntry[] = [];
   for (const candidate of candidates) {
     if (candidate.estimatedTokens < minTokens) continue;
