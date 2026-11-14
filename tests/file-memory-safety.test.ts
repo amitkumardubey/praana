@@ -109,6 +109,31 @@ test("write reads every allowed field exactly once", async () => {
   expect(reads).toEqual({ scope: 1, type: 1, name: 1, description: 1, body: 1 });
 });
 
+test("a private key header is refused even when the detector cannot match a whole key", async () => {
+  const home = await homeDir();
+  const store = make(home);
+  const header = "-----BEGIN PRIVATE KEY-----";
+  const cases: Array<[string, Record<string, string>, string]> = [
+    // The strict detector needs a matching END line, so a truncated key would be stored.
+    ["truncated", { body: `${header}\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC` }, "body"],
+    ["complete", { body: "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----" }, "body"],
+    ["pgp", { body: "-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: 4" }, "body"],
+    ["description", { description: header }, "description"],
+    ["name", { name: header }, "name"],
+  ];
+  for (const [label, extra, field] of cases) {
+    const result = await store.write({ ...entry, name: `key-${label}`, ...extra });
+    expect(result.ok).toBe(false);
+    if (result.ok) continue;
+    expect(result.error).toContain(field);
+    expect(result.error).toContain("Remove the secret-shaped text");
+    expect(result.error).not.toContain("MIIE");
+  }
+  expect(await storedText(home)).not.toContain("PRIVATE KEY");
+  // Prose about keys is not a header.
+  expect((await store.write({ ...entry, name: "key-rotation", description: "Notes about the private key rotation", body: "We rotate the private key each year." })).ok).toBe(true);
+});
+
 test("dangling .praana symlink is reported exactly, creates nothing and skips every scope", async () => {
   const home = await homeDir();
   const base = join(home, ".praana");

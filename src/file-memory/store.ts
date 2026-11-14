@@ -69,6 +69,10 @@ const inside = (parent: string, child: string) => { const p = relative(parent, c
 const DUPLICATE_MIN_TOKENS = 3;
 const DUPLICATE_JACCARD = 0.75;
 const WRITE_FIELDS = ["scope", "type", "name", "description", "body"] as const;
+const SCANNED_FIELDS = ["name", "description", "body"] as const;
+/** The strict detector needs a matching END line, so a truncated or header-only key would
+ * otherwise be stored. Any private-key header is refused, including the PGP block form. */
+const PRIVATE_KEY_HEADER = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/;
 /** Read each allowed field exactly once, before anything is validated, scanned or
  * serialized: a getter or Proxy cannot answer the scan with clean text and the write
  * with a secret when the writer only ever sees this snapshot. */
@@ -237,13 +241,14 @@ export function createFileMemoryStore(options: StoreOptions) {
       if (!input || typeof input !== "object" || Reflect.ownKeys(input).some((key) => !allowed.has(String(key)))) return { ok: false, error: "Unknown write input key; allowed keys: scope, type, name, description, body" };
       let draft: MemoryInput & { scope: MemoryScope };
       try { draft = snapshotWrite(input); } catch { return { ok: false, error: "Memory fields could not be read" }; }
+      const secretFields = SCANNED_FIELDS.filter((field) => typeof draft[field] === "string" && PRIVATE_KEY_HEADER.test(draft[field]));
+      if (secretFields.length) return { ok: false, error: `Secret-shaped content refused in ${secretFields.join(", ")}. Remove the secret-shaped text before retrying` };
       const invalid = validateMemory(draft);
       if (invalid) return { ok: false, error: invalid };
       if (!scopes.includes(draft.scope)) return { ok: false, error: "Invalid scope" };
       // Scan each string field of the snapshot, so the input's prototype is irrelevant and a
       // strict-mode throw becomes a refusal instead of an exception out of write.
-      const secretFields: string[] = [];
-      for (const field of ["name", "description", "body"] as const) {
+      for (const field of SCANNED_FIELDS) {
         let scanned: string;
         try { scanned = redactSecretsStrict(draft[field]); } catch { return { ok: false, error: "Secret scan failed" }; }
         if (scanned !== draft[field]) secretFields.push(field);
