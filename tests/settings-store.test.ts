@@ -2214,4 +2214,100 @@ console.log(JSON.stringify(res));
       }
     }
   });
+
+  test("corrupt symlinked replace and reset report both backupPath and replaced targetPath, and name targetPath when replacement write fails after backup", async () => {
+    if (process.platform === "win32") return;
+    const { createSettingsFs, replaceSettingsDocument } = await storeApi();
+    const baseFs = createSettingsFs();
+
+    const dotfilesDir = join(root, "dotfiles-backup-msg");
+    mkdirSync(dotfilesDir, { recursive: true });
+    const targetPath = join(dotfilesDir, "settings.json");
+    symlinkSync(targetPath, settingsPath);
+
+    // 1. Failed replacement write after backup (replaceSettingsDocument & resetUserSettings):
+    //    backup is deleted, corrupt target is untouched, and error names targetPath.
+    const corruptBytes = "{corrupt-symlinked-target";
+    writeFileSync(targetPath, corruptBytes, "utf-8");
+    const failRenameFs = createSettingsFs({
+      rename() {
+        throw new Error("injected rename failure");
+      },
+    });
+
+    const failedReplace = replaceSettingsDocument(
+      { ...DEFAULT_USER_SETTINGS },
+      { fs: failRenameFs, backupCorrupt: true },
+    );
+    expect(failedReplace.ok).toBe(false);
+    if (!failedReplace.ok) {
+      expect(failedReplace.error).toContain(targetPath);
+      expect(failedReplace.error).toContain("injected rename failure");
+    }
+    expect(readdirSync(homeDir).filter((f) => f.includes(".corrupt-"))).toEqual([]);
+    expect(readdirSync(dotfilesDir).filter((f) => f.includes(".corrupt-"))).toEqual([]);
+    expect(readdirSync(dotfilesDir).filter((f) => f.includes(".tmp-"))).toEqual([]);
+    expect(readFileSync(targetPath, "utf-8")).toBe(corruptBytes);
+
+    const failedReset = resetUserSettings({ fs: failRenameFs });
+    expect(failedReset.ok).toBe(false);
+    if (!failedReset.ok) {
+      expect(failedReset.error).toContain(targetPath);
+      expect(failedReset.error).toContain("injected rename failure");
+    }
+    expect(readdirSync(homeDir).filter((f) => f.includes(".corrupt-"))).toEqual([]);
+    expect(readdirSync(dotfilesDir).filter((f) => f.includes(".corrupt-"))).toEqual([]);
+    expect(readFileSync(targetPath, "utf-8")).toBe(corruptBytes);
+
+    // Also when openExclusive fails with EACCES after backup was made
+    const failOpenEaccesFs = createSettingsFs({
+      openExclusive(p, mode) {
+        if (p.includes(".tmp-")) {
+          const err = new Error(`EACCES: permission denied, open '${p}'`) as NodeJS.ErrnoException;
+          err.code = "EACCES";
+          throw err;
+        }
+        return baseFs.openExclusive(p, mode);
+      },
+    });
+    const failedResetEacces = resetUserSettings({ fs: failOpenEaccesFs });
+    expect(failedResetEacces.ok).toBe(false);
+    if (!failedResetEacces.ok) {
+      expect(failedResetEacces.error).toContain(targetPath);
+      expect(failedResetEacces.error).toContain(settingsPath);
+      expect(failedResetEacces.error).not.toContain(".tmp-");
+    }
+    expect(readdirSync(homeDir).filter((f) => f.includes(".corrupt-"))).toEqual([]);
+    expect(readFileSync(targetPath, "utf-8")).toBe(corruptBytes);
+
+    // 2. Success case (replaceSettingsDocument): reports backupPath, targetPath, and message naming both.
+    const replaced = replaceSettingsDocument(
+      { ...DEFAULT_USER_SETTINGS, debug: true },
+      { backupCorrupt: true },
+    );
+    expect(replaced.ok).toBe(true);
+    if (replaced.ok) {
+      const r = replaced as typeof replaced & { targetPath?: string; message?: string };
+      expect(r.backupPath).toBeDefined();
+      expect(dirname(r.backupPath!)).toBe(homeDir);
+      expect(r.targetPath).toBe(targetPath);
+      expect(r.message).toBeDefined();
+      expect(r.message!).toContain(r.backupPath!);
+      expect(r.message!).toContain(targetPath);
+    }
+
+    // 3. Success case (resetUserSettings): reports backupPath, targetPath, and message naming both.
+    writeFileSync(targetPath, corruptBytes, "utf-8");
+    const reset = resetUserSettings();
+    expect(reset.ok).toBe(true);
+    if (reset.ok) {
+      const r = reset as typeof reset & { backupPath?: string; targetPath?: string; message?: string };
+      expect(r.backupPath).toBeDefined();
+      expect(dirname(r.backupPath!)).toBe(homeDir);
+      expect(r.targetPath).toBe(targetPath);
+      expect(r.message).toBeDefined();
+      expect(r.message!).toContain(r.backupPath!);
+      expect(r.message!).toContain(targetPath);
+    }
+  });
 });

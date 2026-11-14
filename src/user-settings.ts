@@ -195,7 +195,15 @@ export function updateUserSettings(
  */
 export function resetUserSettings(
   options?: SettingsStoreOptions,
-): { ok: true; settings: UserSettings } | { ok: false; error: string } {
+):
+  | {
+      ok: true;
+      settings: UserSettings;
+      backupPath?: string;
+      targetPath?: string;
+      message?: string;
+    }
+  | { ok: false; error: string } {
   const path = options?.path ?? getUserSettingsPath();
   const fs = options?.fs;
   const defaults = { ...DEFAULT_USER_SETTINGS };
@@ -204,7 +212,13 @@ export function resetUserSettings(
     { path, fs, baseDefaultsIfMissing: { ...defaults }, onCorrupt: "backup-and-reset-legacy" },
   );
   if (!updated.ok) return updated;
-  return { ok: true, settings: defaults };
+  return {
+    ok: true,
+    settings: defaults,
+    ...(updated.backupPath ? { backupPath: updated.backupPath } : {}),
+    ...(updated.targetPath ? { targetPath: updated.targetPath } : {}),
+    ...(updated.message ? { message: updated.message } : {}),
+  };
 }
 
 /**

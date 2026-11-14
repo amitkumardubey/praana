@@ -860,7 +860,14 @@ export interface UpdateSettingsDocumentOptions extends SettingsStoreOptions {
 }
 
 export type UpdateSettingsDocumentResult =
-  | { ok: true; doc: Record<string, unknown>; created: boolean; backupPath?: string }
+  | {
+      ok: true;
+      doc: Record<string, unknown>;
+      created: boolean;
+      backupPath?: string;
+      targetPath?: string;
+      message?: string;
+    }
   | { ok: false; error: string; state?: SettingsReadState };
 
 export function updateSettingsDocument(
@@ -947,14 +954,17 @@ export function updateSettingsDocument(
       isSymlink,
     });
     if (!written.ok) {
-      if (backupPath) discardCorruptBackup(backupPath, fs);
+      if (backupPath) {
+        discardCorruptBackup(backupPath, fs);
+        return { ok: false, error: formatFailedWriteAfterBackup(targetPath, written.error) };
+      }
       return written;
     }
     return {
       ok: true,
       doc: nextDoc,
       created: current.state === "missing",
-      ...(backupPath ? { backupPath } : {}),
+      ...(backupPath ? buildBackupInfo(backupPath, targetPath) : {}),
     };
   });
 }
@@ -1010,10 +1020,35 @@ function discardCorruptBackup(backupPath: string, fs: SettingsFs): void {
   }
 }
 
+function buildBackupInfo(
+  backupPath: string,
+  targetPath: string,
+): { backupPath: string; targetPath: string; message: string } {
+  return {
+    backupPath,
+    targetPath,
+    message: `Backed up corrupt settings to ${backupPath} and replaced ${targetPath}`,
+  };
+}
+
+function formatFailedWriteAfterBackup(targetPath: string, writeError: string): string {
+  return writeError.includes(targetPath)
+    ? writeError
+    : `Failed to replace ${targetPath}: ${writeError}`;
+}
+
 export function replaceSettingsDocument(
   doc: Record<string, unknown>,
   options?: SettingsStoreOptions & { backupCorrupt?: boolean },
-): { ok: true; doc: Record<string, unknown>; backupPath?: string } | { ok: false; error: string } {
+):
+  | {
+      ok: true;
+      doc: Record<string, unknown>;
+      backupPath?: string;
+      targetPath?: string;
+      message?: string;
+    }
+  | { ok: false; error: string } {
   const docErr = validateSettingsObject(doc, "Settings document");
   if (docErr) return { ok: false, error: docErr };
 
@@ -1043,10 +1078,17 @@ export function replaceSettingsDocument(
       isSymlink,
     });
     if (!written.ok) {
-      if (backupPath) discardCorruptBackup(backupPath, fs);
+      if (backupPath) {
+        discardCorruptBackup(backupPath, fs);
+        return { ok: false, error: formatFailedWriteAfterBackup(targetPath, written.error) };
+      }
       return written;
     }
-    return { ok: true, doc: copy, ...(backupPath ? { backupPath } : {}) };
+    return {
+      ok: true,
+      doc: copy,
+      ...(backupPath ? buildBackupInfo(backupPath, targetPath) : {}),
+    };
   });
 }
 
