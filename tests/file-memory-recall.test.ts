@@ -225,6 +225,16 @@ test("recall rejects both/neither arguments and empty or stop-word-only queries"
   }
 });
 
+test("recall rejects a scope with a query, the same rule the tool enforces", async () => {
+  const { store, put } = await setup();
+  await put("scoped", { body: "searchable" });
+  for (const scope of ["global", "project"] as const) {
+    expect(await store.recall({ query: "searchable", scope })).toEqual({ ok: false, error: "scope applies only to a name lookup" });
+  }
+  expect(await store.recall({ query: "searchable" })).toMatchObject({ ok: true, matches: [{ name: "scoped" }] });
+  expect(await store.recall({ name: "scoped", scope: "global" })).toMatchObject({ ok: true, memory: { name: "scoped", scope: "global" } });
+});
+
 test("recall cleans controls without Markdown escaping, skips invalid files and orphan temps", async () => {
   const { store, put, dirs } = await setup();
   await put("safe", { description: "- [forged](x)\n# instruction", body: "> search\n- [do-this](x) `cmd`\u0000" + "😀".repeat(400) });

@@ -346,6 +346,8 @@ export function createFileMemoryStore(options: StoreOptions) {
   async function recall(input: { query?: string; name?: string; scope?: MemoryScope }): Promise<({ ok: true; memory: ScopedMemory } & ScopeWarnings) | ({ ok: true; matches: RecallMatch[] } & ScopeWarnings) | ResultError> {
     if ((input.query !== undefined) === (input.name !== undefined)) return { ok: false, error: "Provide exactly one of query or name" };
     if (input.name !== undefined) return read({ name: input.name, scope: input.scope });
+    // A query always searches both scopes, so a scope here would be silently ignored.
+    if (input.scope !== undefined) return { ok: false, error: "scope applies only to a name lookup" };
     if (typeof input.query !== "string") return { ok: false, error: "Query must be a string" };
     const invalid = validateQueryPolicy(input.query);
     if (invalid) return { ok: false, error: invalid };
