@@ -137,8 +137,9 @@ const ELIDED_MARKER_LINE_RE = new RegExp(
 /** Marker text emitted when no artifact holds the elided middle. */
 const UNKEPT_ELISION_ADVICE = "no artifact available, elided content was not kept";
 const UNKEPT_ELISION_PREFIX = "... [elided ";
+/** Whole-text artifact card as `buildArtifactCard` writes it: header with `tokens raw` and the retrieve footer. */
 const CARD_WHOLE_TEXT_RE = new RegExp(
-  `^\\[artifact:\\s*(${ARTIFACT_ID_GRAMMAR})\\s*\\|[^\\n]*\\](?:\\nRetrieve: retrieve_artifact\\("\\1"\\))?$`,
+  `^\\[artifact:\\s*(${ARTIFACT_ID_GRAMMAR})\\s*\\|[^\\n]* tokens raw\\]\\nRetrieve: retrieve_artifact\\("\\1"\\)$`,
 );
 
 export interface ShapeToolOutputOptions {
@@ -225,10 +226,19 @@ const GIT_VALUE_FLAGS = new Set([
   "--config-env",
 ]);
 
+/**
+ * Splits a shell command into simple command segments, or returns `null` when
+ * the command cannot be judged. A `null` result keeps the output exact-bytes, so
+ * every construct that can run a reader somewhere other than the first word of
+ * a segment fails closed: command substitution (`$(...)`, backticks, also inside
+ * double quotes), subshells and groups (`(`, `)`, `{`, `}`), process
+ * substitution, and unterminated quotes or a trailing escape. A single `&`
+ * (background) separates segments; `>&`, `<&` and `&>` stay redirections.
+ */
 function splitShellCommandSegments(command: string): string[] | null {
   const segments: string[] = [];
   let current = "";
-  let quote: "'" | '"' | "`" | null = null;
+  let quote: "'" | '"' | null = null;
   let escaped = false;
 
   for (let i = 0; i < command.length; i++) {
@@ -248,21 +258,34 @@ function splitShellCommandSegments(command: string): string[] | null {
       escaped = true;
       continue;
     }
+    const next = command[i + 1] ?? "";
+    // Command substitution runs inside double quotes too.
+    if (ch === "`" || (ch === "$" && next === "(")) return null;
     if (quote !== null) {
       current += ch;
       if (ch === quote) quote = null;
       continue;
     }
-    if (ch === "'" || ch === '"' || ch === "`") {
+    if (ch === "'" || ch === '"') {
       quote = ch;
       current += ch;
       continue;
     }
-    const next = command[i + 1] ?? "";
+    if (ch === "(" || ch === ")" || ch === "{" || ch === "}") return null;
     if ((ch === "&" && next === "&") || (ch === "|" && next === "|")) {
       segments.push(current);
       current = "";
       i++;
+      continue;
+    }
+    if (ch === "&") {
+      const prev = command[i - 1] ?? "";
+      if (prev === ">" || prev === "<" || next === ">") {
+        current += ch;
+        continue;
+      }
+      segments.push(current);
+      current = "";
       continue;
     }
     if (ch === "|" || ch === ";" || ch === "\n" || ch === "\r") {

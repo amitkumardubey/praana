@@ -1817,4 +1817,44 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
       expect(res.text.split("\n").length).toBeLessThanOrEqual(DEFAULT_SHAPE_MAX_LINES + 1);
     }
   });
+
+  test("shell reads hidden in substitutions, groups, subshells or background stay exact", () => {
+    const bulk = Array.from({ length: 200 }, (_, i) => `line-${i}: ${"content ".repeat(12)}`).join("\n");
+    const options = { inlineThresholdTokens: 50, maxLines: 20, headLines: 8, tailLines: 10 };
+    const shapeWith = (command: string) =>
+      shapeToolOutput({ toolName: "shell", command, text: bulk, storeArtifact: () => "art_cmd", options });
+
+    for (const command of [
+      "echo $(cat foo.ts)",
+      "echo `cat foo.ts`",
+      'echo "$(cat foo.ts)"',
+      "(cat foo.ts)",
+      "echo hi & cat foo.ts",
+      "{ cat foo.ts; }",
+      "diff <(cat a.ts) b.ts",
+    ]) {
+      const result = shapeWith(command);
+      expect({ command, shaped: result.shaped }).toEqual({ command, shaped: false });
+      expect(result.text).toBe(bulk);
+    }
+
+    // Plain bulk commands, redirections and quoted metacharacters are still shaped.
+    for (const command of [
+      "bun test 2>&1",
+      "bun test &> out.log; echo done",
+      "bun test --grep '(foo) {bar} $(x)'",
+    ]) {
+      expect({ command, shaped: shapeWith(command).shaped }).toEqual({ command, shaped: true });
+    }
+  });
+
+  test("only a full artifact card counts as a whole-text stub", () => {
+    const fullCard = '[artifact: art_card_1 | shell: bun test | 1,234 tokens raw]\nRetrieve: retrieve_artifact("art_card_1")';
+    expect(toolOutput.isShapedStubFor(fullCard, "art_card_1")).toBe(true);
+    expect(toolOutput.isShapedStubFor("[artifact: art_card_1 | shell: bun test | 1,234 tokens raw]", "art_card_1")).toBe(false);
+    expect(toolOutput.isShapedStubFor("[artifact: art_card_1 | notes]", "art_card_1")).toBe(false);
+    expect(
+      toolOutput.isShapedStubFor('[artifact: art_card_1 | notes]\nRetrieve: retrieve_artifact("art_card_1")', "art_card_1"),
+    ).toBe(false);
+  });
 });
