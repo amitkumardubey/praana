@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CanonicalWriter } from "../src/canonical-transcript.js";
-import { buildTurns, estimateMessageTokens, materializeHistory, runCompaction, type CompactionOutcome, type StubPlanner } from "../src/compaction.js";
+import { buildTurns, estimateMessageTokens, materializeHistory, runCompaction, type CompactionOutcome, type StubPlanner, type SummaryRequestMeta } from "../src/compaction.js";
 import { EventLog } from "../src/event-log.js";
 import { appendCommit, buildSummaryInstruction, checkSummary, minimumValidSummary, readCommits, renderSummaryMessage, restoreFrozenStateFromLog, SESSION_START_EPOCH, summaryCapTokens } from "../src/frozen-summary.js";
 import type { ConversationMessage, StreamRequest } from "../src/llm/types.js";
@@ -66,7 +66,7 @@ function expectNoDiscard(outcome: CompactionOutcome) {
   expect(outcome).not.toHaveProperty("discardedSummary");
 }
 
-function expectDiscarded(outcome: CompactionOutcome, log: EventLog, text: string) {
+function expectDiscarded(outcome: CompactionOutcome, log: EventLog, text: string, usage: SummaryRequestMeta["usage"] = null) {
   const boundaryEventId = buildTurns(log)[0].eventIds.at(-1)!;
   expect(outcome).toMatchObject({
     summaryDiscarded: true,
@@ -80,7 +80,7 @@ function expectDiscarded(outcome: CompactionOutcome, log: EventLog, text: string
         cutDescription: `through canonical event ${boundaryEventId} (end of turn 1)`,
         capTokens: summaryCapTokens(usableTokens),
         instructionSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
-        usage: null,
+        usage,
       },
     },
   });
@@ -141,6 +141,7 @@ test("an impossible minimum remains fold_not_possible even when the fold also ca
   expect(inputTokens(messages(log))).toBeLessThanOrEqual(usableTokens);
   const minimumFold = inputTokens([renderSummaryMessage(summary()), ...buildTurns(log).at(-1)!.messages]);
   expect(minimumFold).toBeGreaterThan(usableTokens);
+  expect(minimumFold).toBeGreaterThanOrEqual(inputTokens(messages(log)));
   let calls = 0;
   const outcome = await runCompaction({
     log, liveRequest, contextWindowTokens, options,
@@ -438,6 +439,88 @@ test("a capacity error exposes the accepted summary and its paid request metadat
       },
     },
   });
+  expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
+});
+
+test("batch fallback preserves the discarded combined summary and batch request metadata", async () => {
+  const { log, writer } = openLog();
+  for (let i = 0; i < 20; i++) {
+    const turn = await writer.startTurn(`turn ${i}: ` + "C".repeat(2000));
+    await writer.assistant(turn, { role: "assistant", content: "done" });
+  }
+  const current = await writer.startTurn("now");
+  for (const [id, text] of [["large", "R".repeat(16000)], ["newest", "ok"]]) {
+    await writer.assistant(current, { role: "assistant", content: "", toolCalls: [{ id, name: "shell", args: {} }] });
+    await writer.result(current, id, "shell", text, false);
+  }
+  const boundaryEventId = buildTurns(log).at(-2)!.eventIds.at(-1)!;
+  const cutDescription = `through canonical event ${boundaryEventId} (end of turn 20)`;
+  const capTokens = summaryCapTokens(5000);
+  const requests: StreamRequest[] = [];
+  const replies: string[] = [];
+  const accepted = summary("D".repeat(380));
+  const outcome = await runCompaction({
+    log, liveRequest, contextWindowTokens: 5200, options: { ...options, stubKeepRecent: 1 },
+    // Final wire size still exceeds capacity, even though the fold itself is useful.
+    planStubs: (candidates) => candidates.map((c) => ({ eventId: c.eventId, stubText: "\\".repeat(c.text.length) })),
+    runSummary: async (request) => {
+      requests.push(request);
+      const last = request.messages.at(-1)!;
+      if (last.role === "tool_result" || typeof last.content !== "string") throw new Error("Expected instruction");
+      const text = last.content.includes(cutDescription) ? accepted : summary(`batch ${requests.length}`);
+      replies.push(text);
+      return { text, finishReason: "stop", usage: { input: 10, output: 5, totalTokens: 15 }, toolCalls: [] };
+    },
+  });
+  expect(requests.length).toBeGreaterThan(1);
+  for (const request of requests) {
+    expect(request).not.toHaveProperty("tools");
+    expect(request).not.toHaveProperty("systemPrompt");
+    expect(JSON.stringify(request.messages)).toContain("no retained tail is included");
+  }
+  const combinedInstruction = buildSummaryInstruction({
+    cutDescription, capTokens, previousSummary: replies.at(-2)!, tailVisible: false,
+  });
+  expect(requests.at(-1)!.messages.at(-1)).toEqual({ role: "user", content: combinedInstruction });
+  expect(outcome).toMatchObject({
+    status: "capacity_error", summaryDiscarded: true,
+    discardedSummary: {
+      text: accepted, boundaryEventId, resetEpoch: SESSION_START_EPOCH, baseBoundaryEventId: null, previousSummarySha256: null,
+      request: {
+        cutDescription, capTokens,
+        instructionSha256: createHash("sha256").update(combinedInstruction).digest("hex"),
+        usage: { input: 10 * requests.length, output: 5 * requests.length, totalTokens: 15 * requests.length },
+      },
+    },
+  });
+  expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
+});
+
+test("a repaired accepted summary is discarded with the original request hash and both usages", async () => {
+  const { log } = await nearCapacity("C".repeat(220), 1000);
+  const accepted = summary("D".repeat(380));
+  const requests: StreamRequest[] = [];
+  const outcome = await runCompaction({
+    log, liveRequest, contextWindowTokens, options: { ...options, contextLimitRatio: 0.2 },
+    runSummary: async (request) => {
+      requests.push(request);
+      return requests.length === 1
+        ? { text: "invalid", finishReason: "stop", usage: { input: 10, output: 2, totalTokens: 12 }, toolCalls: [] }
+        : { text: accepted, finishReason: "stop", usage: { input: 20, output: 5, totalTokens: 25 }, toolCalls: [] };
+    },
+  });
+  expect(requests).toHaveLength(2);
+  expect(requests[1].messages.slice(0, requests[0].messages.length)).toEqual(requests[0].messages);
+  expect(requests[1].messages).toContainEqual({ role: "assistant", content: "invalid" });
+  expect(JSON.stringify(requests[1].messages.at(-1))).toContain("Make exactly one repair attempt");
+  expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "fold_not_beneficial" });
+  expectDiscarded(outcome, log, accepted, { input: 30, output: 7, totalTokens: 37 });
+  const instruction = requests[0].messages.at(-1)!;
+  if (instruction.role === "tool_result" || typeof instruction.content !== "string") throw new Error("Expected instruction");
+  expect(outcome).toMatchObject({ discardedSummary: { request: {
+    instructionSha256: createHash("sha256").update(instruction.content).digest("hex"),
+    usage: { input: 30, output: 7, totalTokens: 37 },
+  } } });
   expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
 });
 
