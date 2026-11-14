@@ -281,7 +281,13 @@ export function planToolResultStubs(
   for (const candidate of candidates) {
     if (candidate.estimatedTokens < minTokens) continue;
     const stubText = buildToolResultStub(candidate);
-    if (estimateTokens(stubText) >= candidate.estimatedTokens) continue;
+    if (
+      stubText.length >= candidate.text.length ||
+      Buffer.byteLength(stubText, "utf8") >= Buffer.byteLength(candidate.text, "utf8") ||
+      estimateTokens(stubText) >= candidate.estimatedTokens
+    ) {
+      continue;
+    }
     entries.push({ eventId: candidate.eventId, stubText });
   }
   return entries;

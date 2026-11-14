@@ -2,10 +2,20 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { CanonicalWriter } from "../src/canonical-transcript.js";
 import * as compaction from "../src/compaction.js";
-import type { StubCandidate, StubEntry, StubPlanner } from "../src/compaction.js";
+import {
+  materializeHistory,
+  requestFill,
+  runCompaction,
+  type StubCandidate,
+  type StubEntry,
+  type StubPlanner,
+} from "../src/compaction.js";
 import { loadConfig } from "../src/config.js";
 import { ArtifactStore } from "../src/context-engine/artifact-store.js";
+import { EventLog } from "../src/event-log.js";
+import { restoreFrozenState, SUMMARY_HEADINGS } from "../src/frozen-summary.js";
 import { estimateTokens } from "../src/token-estimate.js";
 import * as toolOutput from "../src/tool-output.js";
 import {
@@ -17,8 +27,10 @@ import {
 
 const tempDirs: string[] = [];
 const stores: ArtifactStore[] = [];
+const logs: EventLog[] = [];
 afterEach(() => {
   for (const store of stores.splice(0)) store.close();
+  for (const log of logs.splice(0)) log.close();
   for (const dir of tempDirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
@@ -331,5 +343,251 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     expect(source).not.toMatch(/\b(?:export\s+)?interface StubEntry\b/);
     expect(source).not.toMatch(/\bDEFAULT_STUB_(?:KEEP_RECENT|MIN_TOKENS)\s*=/);
     expect(source).not.toMatch(/options\.minTokens\s*\?\?/);
+  });
+
+  test("integrates with CanonicalWriter and runCompaction across Step 1 (stale) and Step 3 (in-flight)", async () => {
+    const validSummary = (active: string) =>
+      SUMMARY_HEADINGS.map((h, i) => `### ${h}\n${i === 0 ? active : "- item"}`).join("\n\n");
+
+    const openWorkspace = (sessionId: string) => {
+      const dir = mkdtempSync(join(tmpdir(), "praana-tool-output-comp-"));
+      tempDirs.push(dir);
+      const log = new EventLog(sessionId, dir);
+      logs.push(log);
+      const store = ArtifactStore.open(
+        join(dir, "context.db"),
+        sessionId,
+        loadConfig("/nonexistent-praana.toml").context_engine,
+      );
+      stores.push(store);
+      const writer = new CanonicalWriter(log, (err) => {
+        throw err;
+      });
+      return { log, store, writer };
+    };
+
+    const appendShapedResult = async (
+      log: EventLog,
+      store: ArtifactStore,
+      writer: CanonicalWriter,
+      turnId: number,
+      callId: string,
+      rawText: string,
+      shapeOpts?: { inlineThresholdTokens?: number; maxLines?: number; headLines?: number; tailLines?: number; maxBytes?: number; headBytes?: number; tailBytes?: number },
+    ) => {
+      await writer.assistant(turnId, {
+        role: "assistant",
+        content: `Running ${callId}`,
+        toolCalls: [{ id: callId, name: "shell", args: { cmd: callId } }],
+      });
+      const shaped = shapeToolOutput({
+        toolName: "shell",
+        command: callId,
+        text: rawText,
+        storeArtifact: (content) =>
+          store.ingestToolResult({ sourceTool: "shell", command: callId, rawText: content, createdTurn: turnId }).artifactId,
+        options: shapeOpts,
+      });
+      await writer.result(turnId, callId, "shell", shaped.text, false);
+      const eventId = log.readAll({ includeInternal: true }).at(-1)!.event_id;
+      return { eventId, artifactId: shaped.artifactId, text: shaped.text };
+    };
+
+    // --- Part A: Step 1 (stale stubbing outside tailTurns=4) ---
+    {
+      const { log, store, writer } = openWorkspace("sess-step1");
+      const largeBody = (tag: string, lines = 120) =>
+        Array.from({ length: lines }, (_, i) => `${tag}-row-${i + 1}: ${"payload-".repeat(8)}`).join("\n");
+
+      // Turn 1 (stale): one large shaped result + one small verbatim result (< minTokens)
+      const t1 = (await writer.startTurn("Inspect stale turn 1"))!;
+      const stale1 = await appendShapedResult(log, store, writer, t1, "c-stale-1", largeBody("STALE1"), {
+        inlineThresholdTokens: 50,
+        maxLines: 60,
+        headLines: 30,
+        tailLines: 30,
+      });
+      const staleSmall = await appendShapedResult(log, store, writer, t1, "c-stale-small", "small-stale-ok");
+      await writer.assistant(t1, { role: "assistant", content: "Turn 1 complete." });
+
+      // Turn 2 (stale): one large shaped result
+      const t2 = (await writer.startTurn("Inspect stale turn 2"))!;
+      const stale2 = await appendShapedResult(log, store, writer, t2, "c-stale-2", largeBody("STALE2"), {
+        inlineThresholdTokens: 50,
+        maxLines: 60,
+        headLines: 30,
+        tailLines: 30,
+      });
+      await writer.assistant(t2, { role: "assistant", content: "Turn 2 complete." });
+
+      // Turns 3..6 (4 tail completed turns): results that must stay verbatim in Step 1
+      const tailRecords: { eventId: string; text: string }[] = [];
+      for (let idx = 3; idx <= 6; idx++) {
+        const tid = (await writer.startTurn(`Tail turn ${idx}`))!;
+        const rec = await appendShapedResult(log, store, writer, tid, `c-tail-${idx}`, `TAIL_${idx}_` + "x".repeat(600));
+        tailRecords.push(rec);
+        await writer.assistant(tid, { role: "assistant", content: `Turn ${idx} complete.` });
+      }
+
+      // Turn 7 (in-flight): result that must stay verbatim in Step 1
+      const t7 = (await writer.startTurn("In-flight turn 7"))!;
+      const inFlightRec = await appendShapedResult(log, store, writer, t7, "c-inflight-7", "INFLIGHT_7_" + "y".repeat(600));
+
+      expect(stale1.artifactId).toBeDefined();
+      expect(stale2.artifactId).toBeDefined();
+
+      // Measure initial request input tokens so Step 1 crosses >= 0.80 down to <= 0.60
+      const events = log.readAll({ includeInternal: true });
+      const restored = restoreFrozenState(events);
+      if (!restored.ok) throw restored.error;
+      const mat0 = materializeHistory(restored.state, events);
+      if (!mat0.ok) throw mat0.error;
+      const initialFill = requestFill({}, mat0.messages, 100_000, { effectiveMaxTokens: 200 });
+      if (!initialFill.ok) throw new Error(initialFill.error.message);
+      const usableTokens = Math.floor(initialFill.fill.inputTokens / 0.85);
+
+      let summaryCalls = 0;
+      const outcome = await runCompaction({
+        log,
+        liveRequest: { model: "claude-sonnet-4-20250514", provider: "anthropic", messages: [] },
+        contextWindowTokens: usableTokens + 200,
+        options: { effectiveMaxTokens: 200, tailTurns: 4, stubMinTokens: 200, stubKeepRecent: 3 },
+        planStubs: planToolResultStubs,
+        runSummary: async () => {
+          summaryCalls++;
+          return { text: validSummary("unused"), finishReason: "stop", usage: null, toolCalls: [] };
+        },
+      });
+
+      expect(outcome.status).toBe("stubbed");
+      if (outcome.status !== "stubbed") throw new Error(JSON.stringify(outcome));
+      expect(summaryCalls).toBe(0);
+      expect(outcome.fill.fits).toBe(true);
+
+      const stubMap = new Map(outcome.state.stubSet.map((s) => [s.eventId, s.stubText]));
+      expect([...stubMap.keys()].sort()).toEqual([stale1.eventId, stale2.eventId].sort());
+      expect(stubMap.get(stale1.eventId)).toContain(stale1.eventId);
+      expect(stubMap.get(stale1.eventId)).toContain(stale1.artifactId!);
+      expect(stubMap.get(stale1.eventId)!.length).toBeLessThan(stale1.text.length);
+      expect(stubMap.get(stale2.eventId)).toContain(stale2.eventId);
+      expect(stubMap.get(stale2.eventId)).toContain(stale2.artifactId!);
+      expect(stubMap.get(stale2.eventId)!.length).toBeLessThan(stale2.text.length);
+
+      const mat = materializeHistory(outcome.state, log);
+      expect(mat.ok).toBe(true);
+      if (!mat.ok) throw mat.error;
+      const results = mat.messages
+        .filter((m): m is Extract<typeof m, { role: "tool_result" }> => m.role === "tool_result")
+        .map((m) => m.result);
+      expect(results).toContain(stubMap.get(stale1.eventId)!);
+      expect(results).toContain(stubMap.get(stale2.eventId)!);
+      expect(results.join("\n")).not.toContain("STALE1-row-1:");
+      expect(results.join("\n")).not.toContain("STALE2-row-1:");
+      expect(results).toContain(staleSmall.text);
+      for (const tailRec of tailRecords) expect(results).toContain(tailRec.text);
+      expect(results).toContain(inFlightRec.text);
+    }
+
+    // --- Part B: Step 3 (in-flight stubbing keeping newest stubKeepRecent and < minTokens verbatim) ---
+    {
+      const { log, store, writer } = openWorkspace("sess-step3");
+      const largeBody = (tag: string) =>
+        Array.from({ length: 120 }, (_, i) => `${tag}-row-${i + 1}: ${"content-".repeat(7)}`).join("\n");
+
+      // Completed turn 1 folded in Step 2
+      const t1 = (await writer.startTurn("Completed turn 1 " + "z".repeat(1200)))!;
+      await writer.assistant(t1, { role: "assistant", content: "Turn 1 complete." });
+
+      // In-flight turn 2 with 6 results: 2 older large, 1 older small, and 3 recent large (keepRecent=3)
+      const t2 = (await writer.startTurn("In-flight turn 2"))!;
+      const ifOld1 = await appendShapedResult(log, store, writer, t2, "if-old-1", largeBody("IFOLD1"), {
+        inlineThresholdTokens: 50,
+        maxLines: 30,
+        headLines: 15,
+        tailLines: 15,
+      });
+      const ifSmall = await appendShapedResult(log, store, writer, t2, "if-small", "tiny-in-flight-ok");
+      const ifOld2 = await appendShapedResult(log, store, writer, t2, "if-old-2", largeBody("IFOLD2"), {
+        inlineThresholdTokens: 50,
+        maxLines: 30,
+        headLines: 15,
+        tailLines: 15,
+      });
+      const ifKeep1 = await appendShapedResult(log, store, writer, t2, "if-keep-1", "KEEP_RECENT_1_" + "k".repeat(400));
+      const ifKeep2 = await appendShapedResult(log, store, writer, t2, "if-keep-2", "KEEP_RECENT_2_" + "k".repeat(400));
+      const ifKeep3 = await appendShapedResult(log, store, writer, t2, "if-keep-3", "KEEP_RECENT_3_" + "k".repeat(400));
+
+      const events = log.readAll({ includeInternal: true });
+      const restored = restoreFrozenState(events);
+      if (!restored.ok) throw restored.error;
+      const mat0 = materializeHistory(restored.state, events);
+      if (!mat0.ok) throw mat0.error;
+      const initialFill = requestFill({}, mat0.messages, 100_000, { effectiveMaxTokens: 200 });
+      if (!initialFill.ok) throw new Error(initialFill.error.message);
+      const usableTokens = Math.floor(initialFill.fill.inputTokens / 0.9);
+
+      const outcome = await runCompaction({
+        log,
+        liveRequest: { model: "claude-sonnet-4-20250514", provider: "anthropic", messages: [] },
+        contextWindowTokens: usableTokens + 200,
+        options: { effectiveMaxTokens: 200, tailTurns: 4, stubMinTokens: 200, stubKeepRecent: 3 },
+        planStubs: planToolResultStubs,
+        runSummary: async () => ({
+          text: validSummary("Folded turn 1."),
+          finishReason: "stop",
+          usage: { input: 100, output: 40, totalTokens: 140 },
+          toolCalls: [],
+        }),
+      });
+
+      expect(outcome.status).toBe("rewritten");
+      if (outcome.status !== "rewritten") throw new Error(JSON.stringify(outcome));
+      expect(outcome.fill.fits).toBe(true);
+
+      const stubMap = new Map(outcome.state.stubSet.map((s) => [s.eventId, s.stubText]));
+      expect([...stubMap.keys()].sort()).toEqual([ifOld1.eventId, ifOld2.eventId].sort());
+      expect(stubMap.get(ifOld1.eventId)).toContain(ifOld1.eventId);
+      expect(stubMap.get(ifOld1.eventId)).toContain(ifOld1.artifactId!);
+      expect(stubMap.get(ifOld1.eventId)!.length).toBeLessThan(ifOld1.text.length);
+      expect(stubMap.get(ifOld2.eventId)).toContain(ifOld2.eventId);
+      expect(stubMap.get(ifOld2.eventId)).toContain(ifOld2.artifactId!);
+      expect(stubMap.get(ifOld2.eventId)!.length).toBeLessThan(ifOld2.text.length);
+
+      const mat = materializeHistory(outcome.state, log);
+      expect(mat.ok).toBe(true);
+      if (!mat.ok) throw mat.error;
+      const results = mat.messages
+        .filter((m): m is Extract<typeof m, { role: "tool_result" }> => m.role === "tool_result")
+        .map((m) => m.result);
+      expect(results).toContain(stubMap.get(ifOld1.eventId)!);
+      expect(results).toContain(stubMap.get(ifOld2.eventId)!);
+      expect(results.join("\n")).not.toContain("IFOLD1-row-1:");
+      expect(results.join("\n")).not.toContain("IFOLD2-row-1:");
+      expect(results).toContain(ifSmall.text);
+      expect(results).toContain(ifKeep1.text);
+      expect(results).toContain(ifKeep2.text);
+      expect(results).toContain(ifKeep3.text);
+    }
+
+    // --- Part C: Never return a stub longer in chars/bytes than the original or below minTokens ---
+    {
+      const emojiText = "🧪".repeat(45);
+      const shortEmojiCandidate: StubCandidate = {
+        eventId: "ev-short-emoji",
+        turnId: 1,
+        callId: "call-short-emoji",
+        toolName: "shell",
+        text: emojiText,
+        isError: false,
+        estimatedTokens: estimateTokens(emojiText),
+      };
+      expect(shortEmojiCandidate.estimatedTokens).toBe(45);
+      expect(
+        planToolResultStubs([shortEmojiCandidate], { phase: "stale", minTokens: 40, keepRecent: 3 }),
+      ).toEqual([]);
+      expect(
+        planToolResultStubs([shortEmojiCandidate], { phase: "stale", minTokens: 100, keepRecent: 3 }),
+      ).toEqual([]);
+    }
   });
 });
