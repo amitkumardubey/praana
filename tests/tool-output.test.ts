@@ -796,4 +796,180 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
       expect(res.shaped).toBe(true);
     }
   });
+
+  test("must-be-exact tools and shell read/error exemptions preserve exact bytes while bulk shell/web_fetch shape", () => {
+    const registeredLspTools = Object.keys(
+      createAllTools({
+        eventLog: {} as unknown as EventLog,
+        stateGraph: {} as unknown as StateGraph,
+        memoryStore: null,
+        memoryEnabled: true,
+        incognito: false,
+        contextEngine: null,
+        cwd: process.cwd(),
+        skills: [],
+        skillRuntime: null,
+        classicMode: false,
+      }),
+    ).filter((name) => name.startsWith("lsp_"));
+
+    const mustBeExact = new Set([
+      "read_file",
+      "find_files",
+      "search_code",
+      "git_status",
+      "git_diff",
+      "git_log",
+      "run_tests",
+      "search_transcript",
+      "retrieve_artifact",
+      ...registeredLspTools,
+    ]);
+    expect(registeredLspTools.length).toBeGreaterThan(0);
+
+    const largeExactPayload = Array.from(
+      { length: 200 },
+      (_, i) => `src/file-${i + 1}.ts:${i + 10}:12: exact symbol or hunk content ${"x".repeat(60)}`,
+    ).join("\n");
+
+    for (const toolName of mustBeExact) {
+      let stored = false;
+      expect(TOOL_OUTPUT_CLASSIFICATION[toolName]).toBe("exact-bytes");
+      expect(DEFAULT_EXACT_BYTES_TOOLS.has(toolName)).toBe(true);
+      const res = shapeToolOutput({
+        toolName,
+        text: largeExactPayload,
+        storeArtifact: () => {
+          stored = true;
+          return "art_must_not_store";
+        },
+        options: { inlineThresholdTokens: 50, maxBytes: 1024, maxLines: 20 },
+      });
+      expect(res.shaped).toBe(false);
+      expect(res.text).toBe(largeExactPayload);
+      expect(stored).toBe(false);
+    }
+
+    // Realistic outputs for git_diff, git_log, run_tests stay exact-bytes.
+    const largeDiff = JSON.stringify({
+      ok: true,
+      files: Array.from({ length: 40 }, (_, i) => ({
+        path: `src/mod-${i}.ts`,
+        status: "modified",
+        hunks: [{ oldStart: 1, newStart: 1, lines: ["-old line", "+new line", " context ".repeat(10)] }],
+      })),
+      stats: { insertions: 40, deletions: 40 },
+    });
+    const largeLog = JSON.stringify({
+      ok: true,
+      commits: Array.from({ length: 80 }, (_, i) => ({
+        sha: `deadbeef${String(i).padStart(4, "0")}`,
+        subject: `fix(core): change #${i} with enough detail to exceed threshold`,
+        files: [`src/file-${i}.ts`],
+      })),
+    });
+    const largeRunTests = JSON.stringify({
+      ok: false,
+      passed: 120,
+      failed: 5,
+      failures: Array.from({ length: 30 }, (_, i) => ({
+        file: `tests/suite-${i}.test.ts`,
+        line: i + 10,
+        message: `Expected value at tests/suite-${i}.test.ts:${i + 10} ${"detail ".repeat(8)}`,
+      })),
+    });
+
+    for (const [toolName, text] of [
+      ["git_diff", largeDiff],
+      ["git_log", largeLog],
+      ["run_tests", largeRunTests],
+    ] as const) {
+      const res = shapeToolOutput({
+        toolName,
+        text,
+        storeArtifact: () => "art_unused",
+        options: { inlineThresholdTokens: 50, maxBytes: 1024, maxLines: 20 },
+      });
+      expect(res.shaped).toBe(false);
+      expect(res.text).toBe(text);
+    }
+
+    // web_fetch stays shapeable.
+    const largeWebPage = Array.from(
+      { length: 150 },
+      (_, i) => `Paragraph ${i + 1}: ${"documentation prose ".repeat(6)}`,
+    ).join("\n");
+    const webRes = shapeToolOutput({
+      toolName: "web_fetch",
+      text: largeWebPage,
+      storeArtifact: () => "art_webfetch01",
+      options: { inlineThresholdTokens: 50, maxBytes: 1024, maxLines: 20 },
+    });
+    expect(webRes.shaped).toBe(true);
+    expect(webRes.artifactId).toBe("art_webfetch01");
+
+    // shell + file-read commands detected by detectShellReads are exact-bytes.
+    const largeFileContent = Array.from(
+      { length: 200 },
+      (_, i) => `${i + 1}: export const item${i} = "exact file bytes";`,
+    ).join("\n");
+    for (const command of [
+      "cat big.txt",
+      "head -n 200 big.txt",
+      "sed -n 1,200p big.txt",
+      "rg -n needle src/",
+    ]) {
+      let stored = false;
+      const res = shapeToolOutput({
+        toolName: "shell",
+        command,
+        text: largeFileContent,
+        storeArtifact: () => {
+          stored = true;
+          return "art_shell_read";
+        },
+        options: { inlineThresholdTokens: 50, maxBytes: 1024, maxLines: 20 },
+      });
+      expect(res.shaped).toBe(false);
+      expect(res.text).toBe(largeFileContent);
+      expect(stored).toBe(false);
+    }
+
+    // shell + failing tsc run with isError: true is exact-bytes.
+    const failingTsc = Array.from(
+      { length: 120 },
+      (_, i) => `src/mod-${i}.ts(${i + 1},5): error TS2322: Type 'string' is not assignable to type 'number'.`,
+    ).join("\n");
+    let tscStored = false;
+    const tscRes = shapeToolOutput({
+      toolName: "shell",
+      command: "bun run typecheck",
+      isError: true,
+      text: failingTsc,
+      storeArtifact: () => {
+        tscStored = true;
+        return "art_tsc_err";
+      },
+      options: { inlineThresholdTokens: 50, maxBytes: 1024, maxLines: 20 },
+    });
+    expect(tscRes.shaped).toBe(false);
+    expect(tscRes.text).toBe(failingTsc);
+    expect(tscStored).toBe(false);
+
+    // shell + ls -R of a large tree (non-error, non-read) is shaped.
+    const largeTree = Array.from(
+      { length: 250 },
+      (_, i) => `./packages/pkg-${Math.floor(i / 25)}/src/file-${i}.ts`,
+    ).join("\n");
+    const treeRes = shapeToolOutput({
+      toolName: "shell",
+      command: "ls -R",
+      isError: false,
+      text: largeTree,
+      storeArtifact: () => "art_shell_tree",
+      options: { inlineThresholdTokens: 50, maxBytes: 1024, maxLines: 20 },
+    });
+    expect(treeRes.shaped).toBe(true);
+    expect(treeRes.artifactId).toBe("art_shell_tree");
+  });
 });

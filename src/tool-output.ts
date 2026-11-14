@@ -14,6 +14,7 @@
 
 import type { StubCandidate, StubEntry, StubPlanner } from "./compaction.js";
 import { estimateTokens } from "./token-estimate.js";
+import { detectShellReads } from "./tools/shell-read-detect.js";
 
 export type { StubCandidate, StubEntry, StubPlanner };
 export { DEFAULT_STUB_KEEP_RECENT, DEFAULT_STUB_MIN_TOKENS } from "./compaction.js";
@@ -76,10 +77,10 @@ export const TOOL_OUTPUT_CLASSIFICATION: Readonly<Record<string, ToolOutputClass
 
     // Git tools (src/tools/git.ts)
     git_status: "exact-bytes", // Structured JSON lists of exact staged/unstaged/untracked/conflicted paths.
-    git_diff: "shapeable", // Bulk diff hunks that can grow arbitrarily large across files.
+    git_diff: "exact-bytes", // Carries file paths, line numbers, and diff hunks; large diffs already use artifacts with stub cards.
     git_commit: "exact-bytes", // Small commit ack with sha, summary, and committed paths.
     git_branches: "exact-bytes", // Structured branch names, upstreams, and commit refs.
-    git_log: "shapeable", // Bulk commit history log that can grow long.
+    git_log: "exact-bytes", // Carries commit shas, file paths, and summaries reused in follow-up calls.
 
     // Tree-sitter code intelligence tools (src/tools/code-intel.ts)
     code_parse: "exact-bytes", // Syntax diagnostic positions (line/column/path) for locating edits.
@@ -99,7 +100,7 @@ export const TOOL_OUTPUT_CLASSIFICATION: Readonly<Record<string, ToolOutputClass
     lsp_apply_code_action: "exact-bytes", // Small ack listing modified file paths.
 
     // Test runner & web fetch (src/tools/run-tests.ts, src/tools/web/tool.ts)
-    run_tests: "shapeable", // Bulk test runner counts and failure output logs.
+    run_tests: "exact-bytes", // Carries structured pass/fail counts, file paths, line numbers, and failure excerpts.
     web_fetch: "shapeable", // Free-form bulk markdown/text fetched from web pages.
   });
 
@@ -370,7 +371,12 @@ export function shapeToolOutput(input: ShapeToolOutputInput): ShapeToolOutputRes
   });
 
   if (!rawText) return unchanged();
-  if (input.preserveExactBytes || isExactBytesTool(input.toolName, opts.exactBytesTools)) {
+  if (
+    input.preserveExactBytes ||
+    input.isError ||
+    isExactBytesTool(input.toolName, opts.exactBytesTools) ||
+    (input.toolName === "shell" && input.command !== undefined && detectShellReads(input.command) !== null)
+  ) {
     return unchanged();
   }
   // Idempotence: already-shaped strings are never shaped a second time.
