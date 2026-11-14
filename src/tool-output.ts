@@ -487,8 +487,16 @@ export function buildToolResultStub(candidate: StubCandidate): string {
 
 /**
  * Compatible with `compaction.ts`'s `StubPlanner` signature.
- * Replaces eligible candidates (>= minTokens) with a single-line stub carrying
- * the canonical event ID and any artifact ID found in the shaped text.
+ * Replaces eligible candidates (`estimatedTokens >= minTokens`) with a
+ * single-line stub carrying the canonical event ID and any artifact ID found in
+ * the shaped text.
+ *
+ * By design, stubbing applies during compaction to stale completed-turn results
+ * and older in-flight results regardless of tool name: exact-bytes protection
+ * is an ingestion-time rule (`shapeToolOutput`), not a stubbing rule. The model
+ * can recover stubbed results from the canonical log with `search_transcript`
+ * (and raw unshaped output with `retrieve_artifact` when an artifact ID is
+ * present).
  */
 export function planToolResultStubs(
   candidates: readonly StubCandidate[],
