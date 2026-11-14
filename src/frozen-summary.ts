@@ -7,6 +7,11 @@ export const SUMMARY_HEADINGS = [
   "Active request", "Plan", "Constraints", "Decisions", "Files in play", "Completed", "Open threads",
 ] as const;
 
+/** Smallest summary shape used for compaction lower bounds; only Active request needs a body. */
+export function minimumValidSummary(): string {
+  return SUMMARY_HEADINGS.map((heading, index) => `### ${heading}${index === 0 ? "\nok" : ""}`).join("\n\n");
+}
+
 type SummaryHeading = typeof SUMMARY_HEADINGS[number];
 
 /** A best-effort view; markdown bytes, not parsed fields, are the stored summary. */

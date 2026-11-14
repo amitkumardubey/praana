@@ -114,6 +114,18 @@ test("checks only headings, nonempty active request and the estimated size cap",
   expect(checkSummary(lenient, { capTokens: 4096 }).ok).toBe(true);
 });
 
+test("minimumValidSummary passes validation with filler under the first heading", async () => {
+  const { minimumValidSummary, checkSummary, parseSummary } = await api();
+  expect(minimumValidSummary).toBeFunction();
+  const text = minimumValidSummary();
+  expect(text).toBe(headings.map((heading, index) => `### ${heading}${index === 0 ? "\nok" : ""}`).join("\n\n"));
+  expect(parseSummary(text)).toEqual({
+    active_request: "ok", plans: [], constraints: [], decisions: [], files: [], completed: [], open_threads: [],
+  });
+  expect(checkSummary(text, { capTokens: estimateTokens(text) })).toEqual({ ok: true, failures: [], estimatedTokens: estimateTokens(text) });
+  expect(checkSummary(text, { capTokens: estimateTokens(text) - 1 }).ok).toBe(false);
+});
+
 test("caps at one eighth of a small usable window, rounded down, and never above 4096", async () => {
   const { summaryCapTokens } = await api();
   expect(summaryCapTokens(2048)).toBe(256);
