@@ -559,6 +559,21 @@ export function readSettingsDocument(options?: SettingsStoreOptions): ReadSettin
 
 type WriteExclusiveStage = "open" | "body" | "afterClose";
 
+function pathFreeTempCleanupCause(cause: unknown, tempPath: string): string {
+  const code = (cause as NodeJS.ErrnoException)?.code;
+  if (typeof code === "string" && code.length > 0) {
+    return code;
+  }
+  const raw = cause instanceof Error ? cause.message : String(cause);
+  let cleaned = raw.split(tempPath).join("<temp>");
+  const dir = dirname(tempPath);
+  if (dir) {
+    cleaned = cleaned.split(dir).join("<dir>");
+  }
+  cleaned = cleaned.replace(/\.tmp-\d+-[0-9a-f]+/gi, "<temp>");
+  return cleaned || "unknown error";
+}
+
 function writeExclusiveFile(
   filePath: string,
   bytes: Buffer,
@@ -601,8 +616,14 @@ function writeExclusiveFile(
     }
     try {
       fs.unlink(filePath);
-    } catch {
+    } catch (unlinkErr) {
       // best-effort temp cleanup
+      logBestEffortFailure(
+        "cleanupSettingsTempFile",
+        "Failed to remove temporary settings file",
+        {},
+        pathFreeTempCleanupCause(unlinkErr, filePath),
+      );
     }
     return {
       ok: false,

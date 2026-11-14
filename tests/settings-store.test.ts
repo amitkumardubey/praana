@@ -2676,4 +2676,98 @@ console.log(JSON.stringify(res));
       );
     }
   });
+
+  test("logs a path-free warning with operation when temp-file cleanup unlink fails after rename failure and keeps the save result unchanged", async () => {
+    const { createSettingsFs, updateSettingsDocument, replaceSettingsDocument } = await storeApi();
+    const baseFs = createSettingsFs();
+    writeFileSync(settingsPath, '{"thinking":true}\n', "utf-8");
+
+    const makeRenameFailFs = (unlinkImpl?: (p: string) => void) =>
+      createSettingsFs({
+        rename() {
+          const err = new Error("EIO: i/o error during rename") as NodeJS.ErrnoException;
+          err.code = "EIO";
+          throw err;
+        },
+        unlink(p) {
+          if (unlinkImpl) {
+            unlinkImpl(p);
+            return;
+          }
+          baseFs.unlink(p);
+        },
+      });
+
+    // Baseline result when temp unlink succeeds.
+    const baseline = updateSettingsDocument({ debug: true }, { fs: makeRenameFailFs() });
+    expect(baseline.ok).toBe(false);
+
+    // 1. Errno error on temp unlink (with temp path in message and err.path): logs operation + path-free cause, result unchanged.
+    const lines: string[] = [];
+    const previousLogger = getAppLogger();
+    setAppLogger(createTestLogger((line) => lines.push(line)));
+    try {
+      const failedWithErrnoUnlink = updateSettingsDocument(
+        { debug: true },
+        {
+          fs: makeRenameFailFs((p) => {
+            const err = new Error(`EPERM: operation not permitted, unlink '${p}'`) as NodeJS.ErrnoException;
+            err.code = "EPERM";
+            err.path = p;
+            throw err;
+          }),
+        },
+      );
+      expect(failedWithErrnoUnlink).toEqual(baseline);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("cleanupSettingsTempFile");
+      expect(lines[0]).toContain("EPERM");
+      expect(lines[0]).not.toContain(root);
+      expect(lines[0]).not.toContain(homeDir);
+      expect(lines[0]).not.toContain(".tmp-");
+
+      // 2. Non-errno error on temp unlink whose message embeds temp path: still strips paths from cause.
+      lines.length = 0;
+      const failedWithMsgUnlink = replaceSettingsDocument(
+        { ...DEFAULT_USER_SETTINGS },
+        {
+          fs: makeRenameFailFs((p) => {
+            throw new Error(`custom unlink failure on ${p}`);
+          }),
+        },
+      );
+      expect(failedWithMsgUnlink.ok).toBe(false);
+      if (!failedWithMsgUnlink.ok && !baseline.ok) {
+        expect(failedWithMsgUnlink.error).toBe(baseline.error);
+      }
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("cleanupSettingsTempFile");
+      expect(lines[0]).toContain("custom unlink failure");
+      expect(lines[0]).not.toContain(root);
+      expect(lines[0]).not.toContain(homeDir);
+      expect(lines[0]).not.toContain(".tmp-");
+    } finally {
+      setAppLogger(previousLogger);
+    }
+
+    // 3. Throwing logger.warn during temp cleanup logging does not mask the save failure.
+    const warnSpy = spyOn(PraanaLogger.prototype, "warn").mockImplementation(() => {
+      throw new Error("injected logger warn failure during temp cleanup");
+    });
+    try {
+      const res = updateSettingsDocument(
+        { debug: true },
+        {
+          fs: makeRenameFailFs((p) => {
+            const err = new Error(`EACCES: permission denied, unlink '${p}'`) as NodeJS.ErrnoException;
+            err.code = "EACCES";
+            throw err;
+          }),
+        },
+      );
+      expect(res).toEqual(baseline);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
 });
