@@ -110,6 +110,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
       let storeCalls = 0;
       const res = shapeToolOutput({
         toolName: "shell",
+        command: "ls -la",
         text: raw,
         storeArtifact: () => {
           storeCalls++;
@@ -138,6 +139,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
       const callsBeforeSecond = storeCalls;
       const again = shapeToolOutput({
         toolName: "shell",
+        command: "ls -la",
         text: res.text,
         storeArtifact: () => {
           storeCalls++;
@@ -243,6 +245,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     // Degraded mode (artifact store unavailable / returns null): still shapes head/tail and explains fallback
     const degraded = shapeToolOutput({
       toolName: "shell",
+      command: "bun test",
       text: fullLog,
       storeArtifact: () => null,
       options: { inlineThresholdTokens: 100, maxLines: 20, headLines: 10, tailLines: 10 },
@@ -655,6 +658,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     for (const raw of reproductions) {
       const res = shapeToolOutput({
         toolName: "shell",
+        command: "ls -la",
         text: raw,
         storeArtifact: () => "art_repro123456",
       });
@@ -664,7 +668,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
       expect(Buffer.from(res.text, "utf8").toString("utf8")).toBe(res.text);
       expect(Buffer.byteLength(res.text, "utf8")).toBeLessThan(Buffer.byteLength(raw, "utf8"));
       expect(res.text.length).toBeLessThan(raw.length);
-      const again = shapeToolOutput({ toolName: "shell", text: res.text });
+      const again = shapeToolOutput({ toolName: "shell", command: "ls -la", text: res.text });
       expect(again.shaped).toBe(false);
       expect(again.text).toBe(res.text);
     }
@@ -677,6 +681,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     ].join("\n");
     const mixedRes = shapeToolOutput({
       toolName: "shell",
+      command: "ls -la",
       text: mixedLineRaw,
       storeArtifact: () => "art_mixed123456",
       options: { inlineThresholdTokens: 50, maxLines: 20, headLines: 10, tailLines: 10, maxBytes: 1024 },
@@ -740,6 +745,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
       let storeCalls = 0;
       const res = shapeToolOutput({
         toolName: "shell",
+        command: "ls -la",
         text: raw,
         storeArtifact: () => {
           storeCalls++;
@@ -772,6 +778,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
         const callsBefore = storeCalls;
         const again = shapeToolOutput({
           toolName: "shell",
+          command: "ls -la",
           text: res.text,
           storeArtifact: () => {
             storeCalls++;
@@ -833,6 +840,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
       if (policy !== "shapeable") continue;
       const res = shapeToolOutput({
         toolName: name,
+        command: name === "shell" ? "ls -la" : undefined,
         text: bulkText,
         storeArtifact: () => "art_shapeable123",
         options: { inlineThresholdTokens: 50, maxBytes: 1024, maxLines: 20 },
@@ -1093,6 +1101,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     const singleLong = "A".repeat(20 * 1024);
     const singleRes = shapeToolOutput({
       toolName: "shell",
+      command: "ls -la",
       text: singleLong,
       storeArtifact: () => "art_single20kb",
     });
@@ -1107,6 +1116,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     const manyShort = Array.from({ length: 200 }, (_, i) => `short-${i}: ${"d".repeat(60)}`).join("\n");
     const manyRes = shapeToolOutput({
       toolName: "shell",
+      command: "ls -la",
       text: manyShort,
       storeArtifact: () => "art_manyshort",
       options: { inlineThresholdTokens: 50, maxLines: 20, headLines: 10, tailLines: 9 },
@@ -1127,6 +1137,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     ].join("\n");
     const mixedSharedRes = shapeToolOutput({
       toolName: "shell",
+      command: "ls -la",
       text: mixedSharedMiddle,
       storeArtifact: () => "art_mixed_shared",
     });
@@ -1147,6 +1158,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     ].join("\n");
     const mixedOneRes = shapeToolOutput({
       toolName: "shell",
+      command: "ls -la",
       text: mixedOneOmitted,
       storeArtifact: () => "art_mixed_one",
     });
@@ -1163,6 +1175,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     for (const customId of ["custom-blob-42", "mem:item/99"]) {
       const shaped = shapeToolOutput({
         toolName: "shell",
+        command: "ls -la",
         text: raw,
         storeArtifact: () => customId,
       });
@@ -1307,5 +1320,95 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     });
     expect(readRes.shaped).toBe(false);
     expect(readRes.artifactId).toBeUndefined();
+  });
+
+  test("shell shaping fails closed on missing/non-string command, compound/piped reads, readers, and read-only git content commands while shaping bulk commands", () => {
+    const bulkOutput = Array.from(
+      { length: 200 },
+      (_, i) => `row-${String(i + 1).padStart(3, "0")}: ${"content ".repeat(10)}`,
+    ).join("\n");
+
+    // (a) Missing, empty, or non-string command -> never shaped.
+    for (const badCmd of [undefined, "", "   ", 42 as unknown as string, null as unknown as string]) {
+      let stored = false;
+      const res = shapeToolOutput({
+        toolName: "shell",
+        command: badCmd,
+        text: bulkOutput,
+        storeArtifact: () => {
+          stored = true;
+          return "art_unused";
+        },
+        options: { inlineThresholdTokens: 50, maxBytes: 1024, maxLines: 20 },
+      });
+      expect(res.shaped).toBe(false);
+      expect(res.text).toBe(bulkOutput);
+      expect(stored).toBe(false);
+    }
+
+    // (b) Compound, piped, redirected, known readers, and read-only git content commands -> exact-bytes.
+    const exactCommands = [
+      "cd src && cat foo.ts",
+      "cat a.ts | head -300",
+      "echo start; tail -n 50 log.txt",
+      "false || less README.md",
+      "cd src\nmore NOTES.md",
+      "bat src/index.ts > /dev/null",
+      "rg pattern src/ | wc -l",
+      "grep -n needle foo.ts",
+      "sed -n '1,100p' foo.ts | cat",
+      "nl a.ts",
+      "awk 1 a.ts",
+      "awk '{print $1}' a.ts",
+      "git show HEAD:a.ts",
+      "git diff HEAD~1",
+      "git -C repo log -p -n 5",
+      "git --no-pager blame src/foo.ts",
+    ];
+    for (const command of exactCommands) {
+      let stored = false;
+      const res = shapeToolOutput({
+        toolName: "shell",
+        command,
+        text: bulkOutput,
+        storeArtifact: () => {
+          stored = true;
+          return "art_unused";
+        },
+        options: { inlineThresholdTokens: 50, maxBytes: 1024, maxLines: 20 },
+      });
+      expect(res.shaped).toBe(false);
+      expect(res.text).toBe(bulkOutput);
+      expect(stored).toBe(false);
+    }
+
+    // (c) isError stays exempt even on plain bulk commands.
+    const errRes = shapeToolOutput({
+      toolName: "shell",
+      command: "find . -name '*.ts'",
+      isError: true,
+      text: bulkOutput,
+      options: { inlineThresholdTokens: 50, maxBytes: 1024, maxLines: 20 },
+    });
+    expect(errRes.shaped).toBe(false);
+    expect(errRes.text).toBe(bulkOutput);
+
+    // Plain bulk commands (and quoted mentions of reader names) are still shaped.
+    for (const command of [
+      "ls -R",
+      "find . -name '*.ts'",
+      "echo 'cd src && cat foo.ts'",
+      "git status",
+    ]) {
+      const res = shapeToolOutput({
+        toolName: "shell",
+        command,
+        text: bulkOutput,
+        storeArtifact: () => "art_bulk_ok",
+        options: { inlineThresholdTokens: 50, maxBytes: 1024, maxLines: 20 },
+      });
+      expect(res.shaped).toBe(true);
+      expect(res.artifactId).toBe("art_bulk_ok");
+    }
   });
 });

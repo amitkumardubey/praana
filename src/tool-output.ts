@@ -183,6 +183,200 @@ function resolveShapeOptions(
   };
 }
 
+const SHELL_READER_COMMANDS = new Set([
+  "cat",
+  "head",
+  "tail",
+  "nl",
+  "awk",
+  "less",
+  "more",
+  "bat",
+  "rg",
+  "grep",
+]);
+
+const GIT_READ_CONTENT_SUBCOMMANDS = new Set(["show", "diff", "log", "blame"]);
+const GIT_VALUE_FLAGS = new Set([
+  "-C",
+  "-c",
+  "--git-dir",
+  "--work-tree",
+  "--namespace",
+  "--exec-path",
+  "--super-prefix",
+  "--config-env",
+]);
+
+function splitShellCommandSegments(command: string): string[] | null {
+  const segments: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | "`" | null = null;
+  let escaped = false;
+
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i] ?? "";
+    if (escaped) {
+      current += ch;
+      escaped = false;
+      continue;
+    }
+    if (quote === "'") {
+      current += ch;
+      if (ch === "'") quote = null;
+      continue;
+    }
+    if (ch === "\\") {
+      current += ch;
+      escaped = true;
+      continue;
+    }
+    if (quote !== null) {
+      current += ch;
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === "`") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    const next = command[i + 1] ?? "";
+    if ((ch === "&" && next === "&") || (ch === "|" && next === "|")) {
+      segments.push(current);
+      current = "";
+      i++;
+      continue;
+    }
+    if (ch === "|" || ch === ";" || ch === "\n" || ch === "\r") {
+      segments.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+
+  // Fail closed on unterminated quotes or trailing escape.
+  if (quote !== null || escaped) return null;
+  segments.push(current);
+  return segments;
+}
+
+function tokenizeShellSegment(segment: string): string[] {
+  const tokens: string[] = [];
+  let i = 0;
+  while (i < segment.length) {
+    while (i < segment.length && /\s/.test(segment[i] ?? "")) i++;
+    if (i >= segment.length) break;
+    let token = "";
+    while (i < segment.length && !/\s/.test(segment[i] ?? "")) {
+      const ch = segment[i] ?? "";
+      if (ch === "'" || ch === '"') {
+        const q = ch;
+        i++;
+        while (i < segment.length && segment[i] !== q) {
+          if (q === '"' && segment[i] === "\\" && i + 1 < segment.length) {
+            i++;
+          }
+          token += segment[i] ?? "";
+          i++;
+        }
+        if (i < segment.length && segment[i] === q) i++;
+      } else if (ch === "\\" && i + 1 < segment.length) {
+        i++;
+        token += segment[i] ?? "";
+        i++;
+      } else {
+        token += ch;
+        i++;
+      }
+    }
+    if (token.length > 0) tokens.push(token);
+  }
+  return tokens;
+}
+
+function isSedPrintSegment(args: readonly string[]): boolean {
+  for (const arg of args) {
+    if (arg === "--") break;
+    if (arg === "-n" || arg === "--quiet" || arg === "--silent") return true;
+    if (arg.startsWith("-") && !arg.startsWith("--") && arg.slice(1).includes("n")) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isGitReadContentSegment(args: readonly string[]): boolean {
+  let i = 0;
+  while (i < args.length) {
+    const arg = args[i];
+    if (!arg) break;
+    if (arg === "--") {
+      i++;
+      break;
+    }
+    if (arg.startsWith("-") && arg !== "-") {
+      if (GIT_VALUE_FLAGS.has(arg) && !arg.includes("=")) {
+        i += 2;
+        continue;
+      }
+      i++;
+      continue;
+    }
+    return GIT_READ_CONTENT_SUBCOMMANDS.has(arg);
+  }
+  return false;
+}
+
+function isSegmentFileRead(segment: string): boolean {
+  const trimmed = segment.trim();
+  if (!trimmed) return false;
+  if (detectShellReads(trimmed) !== null) return true;
+
+  const tokens = tokenizeShellSegment(trimmed);
+  let idx = 0;
+  while (idx < tokens.length) {
+    const tok = tokens[idx] ?? "";
+    if (tok === "!" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) {
+      idx++;
+      continue;
+    }
+    const bareTok = tok.includes("/") ? (tok.split("/").pop() ?? tok) : tok;
+    if (bareTok === "env" || bareTok === "command" || bareTok === "exec") {
+      idx++;
+      while (idx < tokens.length && (tokens[idx] ?? "").startsWith("-")) idx++;
+      continue;
+    }
+    break;
+  }
+
+  const cmdToken = tokens[idx];
+  if (!cmdToken) return false;
+
+  const bare = cmdToken.includes("/") ? (cmdToken.split("/").pop() ?? cmdToken) : cmdToken;
+  const args = tokens.slice(idx + 1);
+
+  if (SHELL_READER_COMMANDS.has(bare)) return true;
+  if (bare === "sed" && isSedPrintSegment(args)) return true;
+  if (bare === "git" && isGitReadContentSegment(args)) return true;
+  return false;
+}
+
+function isShapeableShellCommand(command: unknown): boolean {
+  if (typeof command !== "string" || command.trim().length === 0) return false;
+  const segments = splitShellCommandSegments(command);
+  if (!segments) return false;
+  let hasCommand = false;
+  for (const segment of segments) {
+    const trimmed = segment.trim();
+    if (!trimmed) continue;
+    hasCommand = true;
+    if (isSegmentFileRead(trimmed)) return false;
+  }
+  return hasCommand;
+}
+
 function isExactBytesTool(
   toolName: string,
   custom?: ReadonlySet<string> | readonly string[],
@@ -425,7 +619,7 @@ export function shapeToolOutput(input: ShapeToolOutputInput): ShapeToolOutputRes
     input.preserveExactBytes ||
     input.isError ||
     isExactBytesTool(input.toolName, opts.exactBytesTools) ||
-    (input.toolName === "shell" && input.command !== undefined && detectShellReads(input.command) !== null)
+    (input.toolName === "shell" && !isShapeableShellCommand(input.command))
   ) {
     return unchanged();
   }
