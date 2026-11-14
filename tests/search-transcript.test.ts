@@ -333,6 +333,24 @@ describe("search_transcript tool (PR3)", () => {
       .every((entry) => !entry.unrecoveredStub)).toBe(true);
   });
 
+  test("recovers the raw output behind a card for a multi-line shell command", async () => {
+    const { log } = openLog("multiline-card");
+    const card = buildArtifactCard("art_0123456789ab", "shell", "cd packages/foo\nbun test", 1200);
+    const id = await writeCanonicalToolResult(log, "shell", "call-multiline", card);
+    log.append({
+      kind: "tool_result",
+      actor: "tool",
+      payload: { toolCallId: "call-multiline", tool: "shell", result: "PANIC_NEEDLE_9988 in foo" },
+    });
+    const entry = searchTranscriptModule.indexSessionTranscript(log).entries.find((e) => e.id === id)!;
+    expect(entry.artifactId).toBe("art_0123456789ab");
+    expect(entry.unrecoveredStub).toBe(false);
+    const tool = searchTranscriptModule.createSearchTranscriptTool({ eventLog: log }).search_transcript;
+    const search = await tool.execute({ query: "PANIC_NEEDLE_9988" });
+    if (!search.ok || search.mode !== "search") throw new Error("Expected search");
+    expect(search.matches.map((m) => m.id)).toEqual([id]);
+  });
+
   test("recognizes real shapeToolOutput markers (N lines, 1 line, no-line-count, custom id) as unrecovered stubs and recovers them", async () => {
     const oneLineRaw = [
       "short-0",
