@@ -513,11 +513,7 @@ function writeExclusiveFile(
     fs.fsync(fd);
     closed = true;
     fs.close(fd);
-    try {
-      fs.chmod(filePath, 0o600);
-    } catch {
-      // Ignore chmod failure on platforms without POSIX mode semantics.
-    }
+    // Created exclusively with mode 0o600 by openExclusive; no post-close chmod is needed.
     afterClose?.();
     return { ok: true };
   } catch (err) {
@@ -587,7 +583,7 @@ function writeDocumentAtomic(
   const tmpPath = join(dir, `.${base}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`);
 
   return writeExclusiveFile(tmpPath, bytes, fs, () => {
-    // The renamed inode is the 0600 temp file, so no second chmod is needed.
+    // The renamed inode already has mode 0o600 from openExclusive.
     fs.rename(tmpPath, path);
     try {
       // Best effort: the rename has already committed, so a directory fsync failure must

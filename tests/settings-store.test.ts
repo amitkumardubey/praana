@@ -1831,4 +1831,40 @@ console.log(JSON.stringify(res));
       expect(badParsed.errors.map((e) => e.key)).toContain("default_model.reasoning");
     }
   });
+
+  test("writeExclusiveFile relies on openExclusive(0o600) and does not call redundant post-close fs.chmod", async () => {
+    const { createSettingsFs, updateSettingsDocument, replaceSettingsDocument } = await storeApi();
+    const baseFs = createSettingsFs();
+    const chmodCalls: string[] = [];
+    const openModes: number[] = [];
+
+    const spyFs = createSettingsFs({
+      openExclusive(p, mode) {
+        openModes.push(mode);
+        return baseFs.openExclusive(p, mode);
+      },
+      chmod(p, mode) {
+        chmodCalls.push(p);
+        return baseFs.chmod(p, mode);
+      },
+    });
+
+    const updated = updateSettingsDocument({ thinking: false }, { fs: spyFs });
+    expect(updated.ok).toBe(true);
+    expect(chmodCalls).toEqual([]);
+    expect(openModes).toEqual([0o600]);
+    if (process.platform !== "win32") {
+      expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
+    }
+
+    // Corrupt backup also opens with 0o600 and makes no redundant post-close chmod call.
+    writeFileSync(settingsPath, "{corrupt-for-chmod-check", "utf-8");
+    const replaced = replaceSettingsDocument({ ...DEFAULT_USER_SETTINGS }, { fs: spyFs, backupCorrupt: true });
+    expect(replaced.ok).toBe(true);
+    expect(chmodCalls).toEqual([]);
+    expect(openModes).toEqual([0o600, 0o600, 0o600]);
+    if (process.platform !== "win32" && replaced.ok && replaced.backupPath) {
+      expect(statSync(replaced.backupPath).mode & 0o777).toBe(0o600);
+    }
+  });
 });
