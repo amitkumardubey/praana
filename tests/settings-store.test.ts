@@ -2759,7 +2759,7 @@ console.log(JSON.stringify(res));
     }
   });
 
-  test("logs a path-free warning with operation when temp-file cleanup unlink fails after rename failure and keeps the save result unchanged", async () => {
+  test("logs a warning naming the leaked temp file when cleanup unlink fails (except ENOENT) and keeps the save result unchanged", async () => {
     const { createSettingsFs, updateSettingsDocument, replaceSettingsDocument } = await storeApi();
     const baseFs = createSettingsFs();
     writeFileSync(settingsPath, '{"thinking":true}\n', "utf-8");
@@ -2784,36 +2784,52 @@ console.log(JSON.stringify(res));
     const baseline = updateSettingsDocument({ debug: true }, { fs: makeRenameFailFs() });
     expect(baseline.ok).toBe(false);
 
-    // 1. Errno error on temp unlink (with temp path in message and err.path): logs operation + path-free cause, result unchanged.
     const lines: string[] = [];
     const previousLogger = getAppLogger();
     setAppLogger(createTestLogger((line) => lines.push(line)));
     try {
+      // 1. Unlink fails with EACCES: exactly one log entry containing the leaked temp file path.
+      let failedUnlinkPath: string | undefined;
       const failedWithErrnoUnlink = updateSettingsDocument(
         { debug: true },
         {
           fs: makeRenameFailFs((p) => {
-            const err = new Error(`EPERM: operation not permitted, unlink '${p}'`) as NodeJS.ErrnoException;
-            err.code = "EPERM";
-            err.path = p;
+            failedUnlinkPath = p;
+            const err = new Error(`EACCES: permission denied, unlink '${p}'`) as NodeJS.ErrnoException;
+            err.code = "EACCES";
             throw err;
           }),
         },
       );
       expect(failedWithErrnoUnlink).toEqual(baseline);
+      expect(failedUnlinkPath).toBeDefined();
       expect(lines).toHaveLength(1);
       expect(lines[0]).toContain("cleanupSettingsTempFile");
-      expect(lines[0]).toContain("EPERM");
-      expect(lines[0]).not.toContain(root);
-      expect(lines[0]).not.toContain(homeDir);
-      expect(lines[0]).not.toContain(".tmp-");
+      expect(lines[0]).toContain(failedUnlinkPath!);
+      expect(lines[0]).toContain("EACCES");
 
-      // 2. Non-errno error on temp unlink whose message embeds temp path: still strips paths from cause.
+      // 2. Unlink fails with ENOENT (temp already gone): no log entry.
+      lines.length = 0;
+      const failedWithEnoentUnlink = updateSettingsDocument(
+        { debug: true },
+        {
+          fs: makeRenameFailFs((p) => {
+            const err = new Error(`ENOENT: no such file or directory, unlink '${p}'`) as NodeJS.ErrnoException;
+            err.code = "ENOENT";
+            throw err;
+          }),
+        },
+      );
+      expect(failedWithEnoentUnlink).toEqual(baseline);
+      expect(lines).toEqual([]);
+
+      // 3. Non-errno error on temp unlink whose message embeds temp path: log still names the leaked temp file.
       lines.length = 0;
       const failedWithMsgUnlink = replaceSettingsDocument(
         { ...DEFAULT_USER_SETTINGS },
         {
           fs: makeRenameFailFs((p) => {
+            failedUnlinkPath = p;
             throw new Error(`custom unlink failure on ${p}`);
           }),
         },
@@ -2824,15 +2840,13 @@ console.log(JSON.stringify(res));
       }
       expect(lines).toHaveLength(1);
       expect(lines[0]).toContain("cleanupSettingsTempFile");
+      expect(lines[0]).toContain(failedUnlinkPath!);
       expect(lines[0]).toContain("custom unlink failure");
-      expect(lines[0]).not.toContain(root);
-      expect(lines[0]).not.toContain(homeDir);
-      expect(lines[0]).not.toContain(".tmp-");
     } finally {
       setAppLogger(previousLogger);
     }
 
-    // 3. Throwing logger.warn during temp cleanup logging does not mask the save failure.
+    // 4. Throwing logger.warn during temp cleanup logging does not mask the save failure.
     const warnSpy = spyOn(PraanaLogger.prototype, "warn").mockImplementation(() => {
       throw new Error("injected logger warn failure during temp cleanup");
     });

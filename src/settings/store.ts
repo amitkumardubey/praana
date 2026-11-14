@@ -628,13 +628,17 @@ function writeExclusiveFile(
     try {
       fs.unlink(filePath);
     } catch (unlinkErr) {
-      // best-effort temp cleanup
-      logBestEffortFailure(
-        "cleanupSettingsTempFile",
-        "Failed to remove temporary settings file",
-        {},
-        pathFreeTempCleanupCause(unlinkErr, filePath),
-      );
+      const unlinkCode = (unlinkErr as NodeJS.ErrnoException)?.code;
+      // The temp file is already gone; there is no leak to report.
+      if (unlinkCode !== "ENOENT") {
+        // best-effort temp cleanup: name the leaked temp file (it holds the full settings document)
+        logBestEffortFailure(
+          "cleanupSettingsTempFile",
+          "Failed to remove temporary settings file",
+          { path: filePath },
+          pathFreeTempCleanupCause(unlinkErr, filePath),
+        );
+      }
     }
     return {
       ok: false,
