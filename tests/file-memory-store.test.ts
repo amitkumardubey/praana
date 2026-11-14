@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { createFileMemoryStore } from "../src/file-memory/store.js";
 import { searchTokens } from "../src/file-memory/format.js";
 import { memoryDirectories, projectKey } from "../src/file-memory/paths.js";
+import { createTestLogger, getAppLogger, setAppLogger, type PraanaLogger } from "../src/logger.js";
 
 const scratch = tmpdir();
 const homes: string[] = [];
@@ -427,6 +428,48 @@ describe("file memory store", () => {
     expect(await writing.write({ ...input, name: "tea", description: "Tea is also welcome" })).toEqual({ ok: true, name: "tea", scope: "global", created: true });
     expect((await store.read({ name: "tea", scope: "global" })).ok).toBe(true);
     expect((await fs.readdir(dir)).filter((name) => name.includes(".tmp-"))).toEqual([]);
+  });
+  test("a tolerated close failure is logged once per failure and never changes the result", async () => {
+    const { home, store, dir } = await setup();
+    expect((await store.write(input)).ok).toBe(true);
+    const options = { home, cwd: home, findRoot: (cwd: string) => cwd, now: () => new Date("2026-05-01T00:00:00Z") };
+    const previous = getAppLogger();
+    const lines: string[] = [];
+    setAppLogger(createTestLogger((line) => lines.push(line)));
+    try {
+      const closing = createFileMemoryStore({ ...options, fs: failingClose((path) => path === join(dir, "coffee.md")) });
+      expect(await closing.read({ name: "coffee", scope: "global" })).toMatchObject({ ok: true, memory: { name: "coffee" } });
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("closing a read handle");
+      expect(lines[0]).toContain("EIO");
+      expect(lines[0]).not.toContain(home);
+      lines.length = 0;
+      expect(await closing.remove({ name: "coffee", scope: "global" })).toEqual({ ok: true });
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("closing a removal probe");
+      expect(lines[0]).not.toContain(home);
+      lines.length = 0;
+      const writing = createFileMemoryStore({ ...options, fs: failingClose((path) => path.includes(".tea.md.tmp-")) });
+      expect((await writing.write({ ...input, name: "tea", description: "Tea is also welcome" })).ok).toBe(true);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain("closing a replacement file");
+      expect(lines[0]).not.toContain(home);
+    } finally { setAppLogger(previous); }
+  });
+  test("a throwing logger cannot change a tolerated close result", async () => {
+    const { home, store, dir } = await setup();
+    expect((await store.write(input)).ok).toBe(true);
+    const options = { home, cwd: home, findRoot: (cwd: string) => cwd, now: () => new Date("2026-05-01T00:00:00Z") };
+    const previous = getAppLogger();
+    const throwing = { child: () => ({ warn: () => { throw new Error("logger down"); } }) } as unknown as PraanaLogger;
+    setAppLogger(throwing);
+    try {
+      const closing = createFileMemoryStore({ ...options, fs: failingClose((path) => path === join(dir, "coffee.md")) });
+      expect(await closing.read({ name: "coffee", scope: "global" })).toMatchObject({ ok: true, memory: { name: "coffee" } });
+      expect(await closing.remove({ name: "coffee", scope: "global" })).toEqual({ ok: true });
+      const writing = createFileMemoryStore({ ...options, fs: failingClose((path) => path.includes(".tea.md.tmp-")) });
+      expect((await writing.write({ ...input, name: "tea", description: "Tea is also welcome" })).ok).toBe(true);
+    } finally { setAppLogger(previous); }
   });
   test("ignores malformed, oversized, symlink and temp files", async () => {
     const { store, dir, home } = await setup();

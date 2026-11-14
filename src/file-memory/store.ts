@@ -3,6 +3,7 @@ import * as nodeFs from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { redactSecretsStrict } from "../redact/secrets.js";
+import { getAppLogger } from "../logger.js";
 import { parseMemory, searchTokens, serializeMemory, validName, validateMemory, validateQueryPolicy, type Memory, type MemoryInput } from "./format.js";
 import { globalMemoryDirectory, memoryDirectories, projectKey, type MemoryScope } from "./paths.js";
 import { buildMemoryIndex as renderMemoryIndex, type MemoryIndex } from "./index.js";
@@ -62,6 +63,14 @@ const readCause = (error: unknown): string => {
   }
 };
 const errorResult = (error: unknown): ResultError => ({ ok: false, error: error instanceof Error ? error.message : String(error) });
+/** A tolerated failure is still logged with the operation it belonged to, and a throwing
+ * logger cannot change a result the caller already holds. The cause is an error code,
+ * never a path, so no memory location reaches the log. */
+function logBestEffortFailure(operation: string, error: unknown): void {
+  const code = (error as NodeJS.ErrnoException)?.code;
+  try { getAppLogger().child("memory").warn(`File memory: ${operation} failed${code ? ` (${code})` : ""}`); }
+  catch { /* Logging is best-effort too. */ }
+}
 const inside = (parent: string, child: string) => { const p = relative(parent, child); return p === "" || (!p.startsWith(`..${sep}`) && p !== ".." && !isAbsolute(p)); };
 /** Description tokens are compared as a Jaccard overlap of searchTokens. Below three
  * tokens on either side the ratio is too coarse to mean anything, and two four-token
@@ -191,7 +200,7 @@ export function createFileMemoryStore(options: StoreOptions) {
     } finally {
       // A close that fails after the read must not discard the memory, and must not replace a
       // read failure with its own: the outcome of this file is already decided above.
-      if (handle) { try { await handle.close(); } catch { /* The read result stands. */ } }
+      if (handle) { try { await handle.close(); } catch (error) { logBestEffortFailure("closing a read handle", error); } }
     }
   }
 
@@ -248,7 +257,7 @@ export function createFileMemoryStore(options: StoreOptions) {
       try { await handle.writeFile(text, "utf8"); await handle.sync(); }
       // A close that fails after a complete write must not discard the replacement: the
       // rename below still commits, and the original error (if any) still wins.
-      finally { try { await handle.close(); } catch { /* The write result stands. */ } }
+      finally { try { await handle.close(); } catch (error) { logBestEffortFailure("closing a replacement file", error); } }
       await fs.rename(temp, target);
       createdTemp = false;
       try { const handle = await fs.open(dir, "r"); try { await handle.sync(); } finally { await handle.close(); } } catch { /* Directory fsync is best-effort. */ }
@@ -354,7 +363,7 @@ export function createFileMemoryStore(options: StoreOptions) {
           if ((error as NodeJS.ErrnoException).code === "ELOOP") skip(scope);
           else if (!missing(error)) throw error;
         }
-        finally { if (handle) { try { await handle.close(); } catch { /* The probe result stands. */ } } }
+        finally { if (handle) { try { await handle.close(); } catch (error) { logBestEffortFailure("closing a removal probe", error); } } }
         return null;
       });
       if (!scanned.ok) return scanned;
