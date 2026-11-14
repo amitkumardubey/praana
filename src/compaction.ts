@@ -254,7 +254,7 @@ export interface DiscardedSummary {
   baseBoundaryEventId: string | null;
   previousSummarySha256: string | null;
   text: string;
-  request: SummaryRequestMeta | null;
+  request: SummaryRequestMeta;
 }
 
 /** Values only: the integration layer must make terminal capacity stops exit headless runs non-zero. */
@@ -861,6 +861,9 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
     const foldNotPossible = capTokens < minValidSummaryTokens || stubbedFoldBestCase > initialFill.usableTokens;
     // Reuse the request measured after Step 1, only after the cheap impossibility checks.
     // unchanged_fits returns the original state unless the Step 3 fallback commits the stubs.
+    // This candidate keeps the old generation and summaryRequest; that is safe only because
+    // stateCacheKey covers only resetEpoch, boundary, summary and stub set, so it reuses
+    // the Step 1 measurement instead of materializing again.
     const preFold = foldNotPossible ? null : measureCandidate({ ...state, stubSet: toStubSet(step1StubMap) });
     if (preFold === null) {
       unchangedReason = "fold_not_possible";
