@@ -430,8 +430,8 @@ export class Session {
         });
       },
     });
-    // Checkpoint ids may refer to canonical events; resolve on the raw log.
-    session.restoreWorkingMemory(session.eventLog.readAll({ includeCanonical: true }));
+    // Checkpoint ids may refer to internal events; resolve on the raw log.
+    session.restoreWorkingMemory(session.eventLog.readAll({ includeInternal: true }));
 
     loadProjectContextField(session, cwd);
 
@@ -822,7 +822,7 @@ export class Session {
 
   /** Persist working-memory state for fast resume (issue #464). */
   persistStateGraphCheckpoint(): void {
-    const lastEvent = this.eventLog.getLastEvent({ includeCanonical: true });
+    const lastEvent = this.eventLog.getLastEvent({ includeInternal: true });
     if (!lastEvent) return;
 
     const sessionDir = join(this.config.session.log_dir, this.id);

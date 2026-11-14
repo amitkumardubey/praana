@@ -21,10 +21,12 @@ import {
   SessionNotFoundError,
 } from "./session-errors.js";
 
-/** Unfiltered access is reserved for canonical readers and event-id anchors. */
+/** Unfiltered access is reserved for internal readers and event-id anchors. */
 export interface EventReadOptions {
-  includeCanonical?: boolean;
+  includeInternal?: boolean;
 }
+
+const INTERNAL_EVENT_KINDS: ReadonlySet<EventKind> = new Set(["canonical_message", "compaction_commit"]);
 
 export interface EventSearchOptions {
   kinds?: EventKind[];
@@ -254,7 +256,7 @@ export class EventLog {
   }
 
   readAll(options: EventReadOptions = {}): Event[] {
-    return this.internalRead(options.includeCanonical);
+    return this.internalRead(options.includeInternal);
   }
 
   /** Last visible event without allocating a copy; anchors may opt into the raw tail. */
@@ -262,7 +264,7 @@ export class EventLog {
     this.syncCache();
     for (let i = (this.eventCache?.length ?? 0) - 1; i >= 0; i--) {
       const event = this.eventCache![i];
-      if (options.includeCanonical || event.kind !== "canonical_message") return event;
+      if (options.includeInternal || !INTERNAL_EVENT_KINDS.has(event.kind)) return event;
     }
     return null;
   }
@@ -333,11 +335,11 @@ export class EventLog {
     return matches;
   }
 
-  private internalRead(includeCanonical = false): Event[] {
+  private internalRead(includeInternal = false): Event[] {
     this.syncCache();
     // Filter before any bounded read, search limit or compaction selection.
     // Always return a fresh array so readers cannot mutate the cache.
-    return this.eventCache?.filter((event) => includeCanonical || event.kind !== "canonical_message") ?? [];
+    return this.eventCache?.filter((event) => includeInternal || !INTERNAL_EVENT_KINDS.has(event.kind)) ?? [];
   }
 
   getSessionId(): string {
