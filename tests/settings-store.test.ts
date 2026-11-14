@@ -2105,4 +2105,113 @@ console.log(JSON.stringify(res));
       }
     }
   });
+
+  test("classifies path failures via SettingsPathError kind regardless of primitive message text and reports ELOOP on resolved target as swapped", async () => {
+    const store = await storeApi();
+    const { createSettingsFs, readSettingsDocument } = store;
+    const SettingsPathError = (store as Record<string, unknown>).SettingsPathError as new (
+      kind: "directory" | "not_regular" | "loop" | "dangling" | "swapped",
+      path: string,
+      message?: string,
+    ) => Error & { kind: string };
+    expect(SettingsPathError).toBeDefined();
+
+    // 1. Reworded SettingsPathError from readBounded still classifies every kind into the expected user message.
+    writeFileSync(settingsPath, '{"thinking":true}\n', "utf-8");
+    const kinds = [
+      { kind: "directory" as const, expected: `Settings path is a directory (${settingsPath})` },
+      { kind: "not_regular" as const, expected: `Settings path is not a regular file (${settingsPath})` },
+      {
+        kind: "loop" as const,
+        expected: `Settings file symlink (${settingsPath}) forms a symlink loop; fix or remove the symlink`,
+      },
+      {
+        kind: "dangling" as const,
+        expected: `Settings file symlink (${settingsPath}) points to a missing target; create the target file or remove the symlink`,
+      },
+      { kind: "swapped" as const, expected: `${settingsPath} changed while it was being read; retry` },
+    ];
+    for (const { kind, expected } of kinds) {
+      const rewordedFs = createSettingsFs({
+        readBounded(p) {
+          throw new SettingsPathError(kind, p, `unrelated-primitive-text-${kind}`);
+        },
+      });
+      const res = readSettingsDocument({ fs: rewordedFs });
+      expect(res.state).toBe("unreadable");
+      expect(res.error).toBe(expected);
+      expect(res.error).not.toContain(`unrelated-primitive-text-${kind}`);
+    }
+
+    // 2. Symlinked settings.json: ELOOP from readBounded (an already-resolved target) reports swapped, NOT loop.
+    if (process.platform !== "win32") {
+      rmSync(settingsPath, { force: true });
+      const dotfilesDir = join(root, "dotfiles-typed-err");
+      mkdirSync(dotfilesDir, { recursive: true });
+      const targetPath = join(dotfilesDir, "settings.json");
+      writeFileSync(targetPath, '{"thinking":true}\n', "utf-8");
+      symlinkSync(targetPath, settingsPath);
+
+      const swappedOpenFs = createSettingsFs(undefined, {
+        open() {
+          const err = new Error("ELOOP: too many levels of symbolic links") as NodeJS.ErrnoException;
+          err.code = "ELOOP";
+          throw err;
+        },
+      });
+      const swappedRes = readSettingsDocument({ fs: swappedOpenFs });
+      expect(swappedRes.state).toBe("unreadable");
+      expect(swappedRes.error).toBe(`${settingsPath} changed while it was being read; retry`);
+      expect(swappedRes.error).not.toContain("loop");
+
+      // Symlinked directory & not_regular from readBounded fstat (reworded/opaque primitive error)
+      const dirFstatFs = createSettingsFs(undefined, {
+        open: () => 999,
+        fstat: () =>
+          ({
+            isDirectory: () => true,
+            isFile: () => false,
+          }) as unknown as import("node:fs").Stats,
+        close: () => {},
+      });
+      const dirRes = readSettingsDocument({ fs: dirFstatFs });
+      expect(dirRes.state).toBe("unreadable");
+      expect(dirRes.error).toBe(
+        `Settings file symlink (${settingsPath}) points to a directory; point it to a regular file or remove the symlink`,
+      );
+
+      const fifoFstatFs = createSettingsFs(undefined, {
+        open: () => 999,
+        fstat: () =>
+          ({
+            isDirectory: () => false,
+            isFile: () => false,
+          }) as unknown as import("node:fs").Stats,
+        close: () => {},
+      });
+      const fifoRes = readSettingsDocument({ fs: fifoFstatFs });
+      expect(fifoRes.state).toBe("unreadable");
+      expect(fifoRes.error).toBe(
+        `Settings file symlink (${settingsPath}) does not point to a regular file; point it to a regular file or remove the symlink`,
+      );
+
+      // readBounded throws SettingsPathError directly with .kind for fstat directory/not_regular and open ELOOP
+      expect(() => dirFstatFs.readBounded(targetPath, 1024)).toThrow(SettingsPathError);
+      try {
+        dirFstatFs.readBounded(targetPath, 1024);
+      } catch (err) {
+        expect((err as { kind?: string }).kind).toBe("directory");
+      }
+      try {
+        fifoFstatFs.readBounded(targetPath, 1024);
+      } catch (err) {
+        expect((err as { kind?: string }).kind).toBe("not_regular");
+      }
+      try {
+        swappedOpenFs.readBounded(targetPath, 1024);
+      } catch (err) {
+        expect((err as { kind?: string }).kind).toBe("swapped");
+      }
+    }
+  });
 });

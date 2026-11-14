@@ -86,6 +86,22 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
 
 export const MAX_SETTINGS_BYTES = 1_048_576;
 
+export type SettingsPathErrorKind = "directory" | "not_regular" | "loop" | "dangling" | "swapped";
+
+export class SettingsPathError extends Error {
+  readonly kind: SettingsPathErrorKind;
+  readonly path: string;
+  readonly code?: string;
+
+  constructor(kind: SettingsPathErrorKind, path: string, message?: string, code?: string) {
+    super(message ?? `Settings path error (${kind}): ${path}`);
+    this.name = "SettingsPathError";
+    this.kind = kind;
+    this.path = path;
+    if (code !== undefined) this.code = code;
+  }
+}
+
 export interface SettingsFs {
   openExclusive: (path: string, mode: number) => number;
   write: (fd: number, data: Buffer) => void;
@@ -160,16 +176,26 @@ export function createSettingsFs(
       const closeFn = readSeam?.close ?? closeSync;
       const flags =
         constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
-      const fd = openFn(path, flags);
+      let fd: number;
+      try {
+        fd = openFn(path, flags);
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException)?.code;
+        if (code === "EISDIR") {
+          throw new SettingsPathError("directory", path, "Target resolved to a directory", code);
+        }
+        if (code === "ELOOP") {
+          throw new SettingsPathError("swapped", path, "Target changed into a symlink", code);
+        }
+        throw err;
+      }
       try {
         const stat = fstatFn(fd);
         if (stat.isDirectory()) {
-          const err = new Error(`Path is a directory: ${path}`) as NodeJS.ErrnoException;
-          err.code = "EISDIR";
-          throw err;
+          throw new SettingsPathError("directory", path, "Target resolved to a directory", "EISDIR");
         }
         if (!stat.isFile()) {
-          throw new Error(`Path is not a regular file: ${path}`);
+          throw new SettingsPathError("not_regular", path, "Target has unsupported file type");
         }
         const limit = maxBytes + 1;
         const chunks: Buffer[] = [];
@@ -250,24 +276,54 @@ function resolveSettingsPath(options?: SettingsStoreOptions): string {
 
 const UTF8_FATAL = new TextDecoder("utf-8", { fatal: true });
 
+function formatSettingsPathError(
+  kind: SettingsPathErrorKind,
+  path: string,
+  isSymlink: boolean,
+): string {
+  switch (kind) {
+    case "directory":
+      return isSymlink
+        ? `Settings file symlink (${path}) points to a directory; point it to a regular file or remove the symlink`
+        : `Settings path is a directory (${path})`;
+    case "not_regular":
+      return isSymlink
+        ? `Settings file symlink (${path}) does not point to a regular file; point it to a regular file or remove the symlink`
+        : `Settings path is not a regular file (${path})`;
+    case "loop":
+      return `Settings file symlink (${path}) forms a symlink loop; fix or remove the symlink`;
+    case "dangling":
+      return `Settings file symlink (${path}) points to a missing target; create the target file or remove the symlink`;
+    case "swapped":
+      return `${path} changed while it was being read; retry`;
+  }
+}
+
 function symlinkResolutionError(
   path: string,
   err: unknown,
   fallbackPrefix: string,
 ): ReadSettingsDocumentResult {
+  if (err instanceof SettingsPathError) {
+    return {
+      doc: {},
+      state: "unreadable",
+      error: formatSettingsPathError(err.kind, path, true),
+    };
+  }
   const code = (err as NodeJS.ErrnoException)?.code;
   if (code === "ENOENT") {
     return {
       doc: {},
       state: "unreadable",
-      error: `Settings file symlink (${path}) points to a missing target; create the target file or remove the symlink`,
+      error: formatSettingsPathError("dangling", path, true),
     };
   }
   if (code === "ELOOP") {
     return {
       doc: {},
       state: "unreadable",
-      error: `Settings file symlink (${path}) forms a symlink loop; fix or remove the symlink`,
+      error: formatSettingsPathError("loop", path, true),
     };
   }
   const msg = err instanceof Error ? err.message : String(err);
@@ -296,6 +352,13 @@ function resolveSettingsTarget(
     if (code === "ENOENT") {
       return { ok: false, result: { doc: {}, state: "missing" }, targetPath: path };
     }
+    if (err instanceof SettingsPathError) {
+      return {
+        ok: false,
+        result: { doc: {}, state: "unreadable", error: formatSettingsPathError(err.kind, path, false) },
+        targetPath: path,
+      };
+    }
     if (code === "ELOOP") {
       return {
         ok: false,
@@ -315,14 +378,14 @@ function resolveSettingsTarget(
     if (stat.isDirectory()) {
       return {
         ok: false,
-        result: { doc: {}, state: "unreadable", error: `Settings path is a directory (${path})` },
+        result: { doc: {}, state: "unreadable", error: formatSettingsPathError("directory", path, false) },
         targetPath: path,
       };
     }
     if (!stat.isFile()) {
       return {
         ok: false,
-        result: { doc: {}, state: "unreadable", error: `Settings path is not a regular file (${path})` },
+        result: { doc: {}, state: "unreadable", error: formatSettingsPathError("not_regular", path, false) },
         targetPath: path,
       };
     }
@@ -357,7 +420,7 @@ function resolveSettingsTarget(
       result: {
         doc: {},
         state: "unreadable",
-        error: `Settings file symlink (${path}) points to a directory; point it to a regular file or remove the symlink`,
+        error: formatSettingsPathError("directory", path, true),
       },
       targetPath,
     };
@@ -368,7 +431,7 @@ function resolveSettingsTarget(
       result: {
         doc: {},
         state: "unreadable",
-        error: `Settings file symlink (${path}) does not point to a regular file; point it to a regular file or remove the symlink`,
+        error: formatSettingsPathError("not_regular", path, true),
       },
       targetPath,
     };
@@ -397,6 +460,17 @@ function readSettingsDocumentWithBytes(
   try {
     rawBytes = fs.readBounded(targetPath, MAX_SETTINGS_BYTES);
   } catch (err) {
+    if (err instanceof SettingsPathError) {
+      return {
+        result: {
+          doc: {},
+          state: "unreadable",
+          error: formatSettingsPathError(err.kind, path, isSymlink),
+        },
+        targetPath,
+        isSymlink,
+      };
+    }
     const code = (err as NodeJS.ErrnoException)?.code;
     if (code === "ENOENT") {
       if (isSymlink) {
@@ -404,7 +478,7 @@ function readSettingsDocumentWithBytes(
           result: {
             doc: {},
             state: "unreadable",
-            error: `Settings file symlink (${path}) points to a missing target; create the target file or remove the symlink`,
+            error: formatSettingsPathError("dangling", path, true),
           },
           targetPath,
           isSymlink,
@@ -417,37 +491,24 @@ function readSettingsDocumentWithBytes(
         result: {
           doc: {},
           state: "unreadable",
-          error: isSymlink
-            ? `Settings file symlink (${path}) forms a symlink loop; fix or remove the symlink`
-            : `Settings path (${path}) changed to a symlink; retry or replace it`,
+          error: formatSettingsPathError("swapped", path, isSymlink),
+        },
+        targetPath,
+        isSymlink,
+      };
+    }
+    if (code === "EISDIR") {
+      return {
+        result: {
+          doc: {},
+          state: "unreadable",
+          error: formatSettingsPathError("directory", path, isSymlink),
         },
         targetPath,
         isSymlink,
       };
     }
     const msg = err instanceof Error ? err.message : String(err);
-    if (isSymlink && (code === "EISDIR" || msg.includes("Path is a directory"))) {
-      return {
-        result: {
-          doc: {},
-          state: "unreadable",
-          error: `Settings file symlink (${path}) points to a directory; point it to a regular file or remove the symlink`,
-        },
-        targetPath,
-        isSymlink,
-      };
-    }
-    if (isSymlink && msg.includes("Path is not a regular file")) {
-      return {
-        result: {
-          doc: {},
-          state: "unreadable",
-          error: `Settings file symlink (${path}) does not point to a regular file; point it to a regular file or remove the symlink`,
-        },
-        targetPath,
-        isSymlink,
-      };
-    }
     return {
       result: { doc: {}, state: "unreadable", error: `Cannot read settings file (${path}): ${msg}` },
       targetPath,
