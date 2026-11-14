@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterAll, afterEach, mock } from "bun:test";
-import { mkdirSync, writeFileSync, rmSync, readFileSync, utimesSync, existsSync, mkdtempSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, readFileSync, readdirSync, symlinkSync, utimesSync, existsSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createNullScorecard } from "../src/context-engine/telemetry.js";
@@ -1008,6 +1008,7 @@ describe("executeSlashCommand", () => {
         getThinking: () => false,
       });
       expect(result.action).toBe("refresh_status");
+      expect(result.lines[0]).toBe("Settings reset to defaults and applied to this session.");
       expect(setThinking).toHaveBeenCalledWith(true);
       expect(session.debug).toBe(false);
       const onDisk = JSON.parse(
@@ -1015,6 +1016,51 @@ describe("executeSlashCommand", () => {
       );
       expect(onDisk.thinking).toBe(true);
       expect(onDisk.debug).toBe(false);
+    });
+
+    it("reset on a corrupt file includes backup path and replaced target path", async () => {
+      const settingsFile = join(praanaHome, ".praana", "settings.json");
+      writeFileSync(settingsFile, "{corrupt-for-slash-reset", "utf-8");
+      const setThinking = mock();
+      const session = settingsSession({ debug: true });
+      const result = await executeSlashCommand("/settings reset", session, {
+        setModel: mock(),
+        setThinking,
+        getThinking: () => false,
+      });
+      expect(result.action).toBe("refresh_status");
+      expect(result.toastTone).toBe("success");
+      const backups = readdirSync(join(praanaHome, ".praana")).filter((f) =>
+        f.startsWith("settings.json.corrupt-"),
+      );
+      expect(backups).toHaveLength(1);
+      const backupPath = join(praanaHome, ".praana", backups[0]!);
+      expect(result.lines[0]).toContain(backupPath);
+      expect(result.lines[0]).toContain(settingsFile);
+
+      if (process.platform !== "win32") {
+        rmSync(settingsFile, { force: true });
+        rmSync(backupPath, { force: true });
+        const dotfilesDir = join(praanaHome, "dotfiles");
+        mkdirSync(dotfilesDir, { recursive: true });
+        const targetFile = join(dotfilesDir, "settings.json");
+        writeFileSync(targetFile, "{corrupt-symlink-slash-reset", "utf-8");
+        symlinkSync(targetFile, settingsFile);
+
+        const symlinkResult = await executeSlashCommand("/settings reset", settingsSession(), {
+          setModel: mock(),
+          setThinking: mock(),
+          getThinking: () => true,
+        });
+        expect(symlinkResult.action).toBe("refresh_status");
+        const symlinkBackups = readdirSync(join(praanaHome, ".praana")).filter((f) =>
+          f.startsWith("settings.json.corrupt-"),
+        );
+        expect(symlinkBackups).toHaveLength(1);
+        const symlinkBackupPath = join(praanaHome, ".praana", symlinkBackups[0]!);
+        expect(symlinkResult.lines[0]).toContain(symlinkBackupPath);
+        expect(symlinkResult.lines[0]).toContain(targetFile);
+      }
     });
 
     it("/model does not write settings.json", async () => {

@@ -309,7 +309,11 @@ async function handleSettingsCommand(
     for (const key of USER_SETTINGS_KEYS) {
       await applySettingToSession(session, handlers, key, reset.settings[key]);
     }
-    lines.push("Settings reset to defaults and applied to this session.");
+    lines.push(
+      reset.message
+        ? `Settings reset to defaults and applied to this session. ${reset.message}`
+        : "Settings reset to defaults and applied to this session.",
+    );
     for (const key of USER_SETTINGS_KEYS) {
       lines.push(`  ${key}=${formatSettingValue(reset.settings[key])}`);
     }
