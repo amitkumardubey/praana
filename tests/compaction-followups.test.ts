@@ -197,6 +197,28 @@ for (const reasoning of [false, true]) test(`native estimates count visible bloc
   }
 });
 
+test("rendered summary allowance handles a newline-heavy summary at the cap", async () => {
+  const { log, writer } = fixture();
+  for (const size of [5000, ...Array(8).fill(1000)]) {
+    const turn = await writer.startTurn("x".repeat(size));
+    await writer.assistant(turn, { role: "assistant", content: "done" });
+  }
+  await writer.startTurn("current " + "y".repeat(1000));
+  const cap = summaryCapTokens(2800);
+  const summary = minimumValidSummary() + "\n".repeat(cap * 4 - minimumValidSummary().length);
+  expect(Math.ceil(summary.length / 4)).toBe(cap);
+  let calls = 0;
+  const outcome = await compaction.runCompaction({ log, liveRequest: live, contextWindowTokens: 3000,
+    options: { ...options, tailTurns: 8, contextLimitRatio: 1 },
+    runSummary: async () => { calls++; return response(summary); },
+  });
+  expect(calls).toBeGreaterThan(0);
+  expect(outcome.status).toBe("rewritten");
+  if (outcome.status !== "rewritten") throw new Error(outcome.status);
+  expect(outcome.fill.fits).toBe(true);
+  expect(outcome).not.toHaveProperty("discardedSummary");
+});
+
 for (const length of [80, 200]) for (const previous of [false, true]) {
   test(`visible cut quotes ${length} characters with previous=${previous}`, async () => {
     const { log, writer } = fixture();

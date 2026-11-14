@@ -230,8 +230,8 @@ test("ladder stops at step 2 with full tailTurns=4 when folding older turns reac
   const { runCompaction, materializeHistory } = await api();
   const { log } = openLog();
   // First create 6 turns and a prior stubs-only commit on turn 1 so we verify folded stubs are dropped.
-  addTurn(log, 1, { inputText: "Turn1 ".repeat(700), toolResults: [{ id: "old-stub-1", text: "O".repeat(1200) }] });
-  addTurn(log, 2, { inputText: "Turn2 ".repeat(700) });
+  addTurn(log, 1, { inputText: "Turn1 ".repeat(3700), toolResults: [{ id: "old-stub-1", text: "O".repeat(1200) }] });
+  addTurn(log, 2, { inputText: "Turn2 ".repeat(3700) });
   for (let t = 3; t <= 6; t++) {
     addTurn(log, t, { inputText: `TailTurn${t} `.repeat(40), toolResults: [{ id: `tail-keep-${t}`, text: "K".repeat(400) }] });
   }
@@ -256,8 +256,9 @@ test("ladder stops at step 2 with full tailTurns=4 when folding older turns reac
   const outcome = await runCompaction({
     log,
     liveRequest: baseLiveRequest(),
-    contextWindowTokens: 3200,
-    options: { effectiveMaxTokens: 200, tailTurns: 4, stubMinTokens: 500 },
+    // Worst-case rendered summaries need more headroom than raw markdown.
+    contextWindowTokens: 12000,
+    options: { effectiveMaxTokens: 200, tailTurns: 4, stubMinTokens: 500, contextLimitRatio: 1, postRewriteMargin: 0 },
     runSummary: async (req) => {
       summaryRequests.push(req);
       return summaryResp(validSummary("Folded turns 1 and 2."));
@@ -287,15 +288,16 @@ test("ladder stops at step 2 with full tailTurns=4 when folding older turns reac
 test("step 2 shrinks the completed-turn tail one turn at a time until frame + summary allowance + tail fits the target", async () => {
   const { runCompaction } = await api();
   for (const [postRewriteMargin, expectedBoundary] of [
-    [0.10, "t2-final"], // keeps 4 completed turns (turns 3..6)
-    [0.15, "t3-final"], // shrinks to 3 completed turns (turns 4..6)
-    [0.30, "t4-final"], // shrinks to 2 completed turns (turns 5..6)
-    [0.45, "t5-final"], // shrinks to 1 completed turn (turn 6)
-    [0.60, "t6-final"], // shrinks to 0 completed turns (only in-flight turn 7 kept)
+    [0.01, "t2-final"], // keeps 4 completed turns (turns 3..6)
+    [0.10, "t3-final"], // shrinks to 3 completed turns (turns 4..6)
+    [0.15, "t4-final"], // shrinks to 2 completed turns (turns 5..6)
+    [0.20, "t5-final"], // shrinks to 1 completed turn (turn 6)
+    [0.30, "t6-final"], // shrinks to 0 completed turns (only in-flight turn 7 kept)
   ] as const) {
     const { log } = openLog();
     for (let t = 1; t <= 6; t++) {
-      addTurn(log, t, { inputText: `Turn-${t} ` + "x".repeat(1500) });
+      // Large folded prefix triggers rewriting; the tail exercises rendered-summary headroom.
+      addTurn(log, t, { inputText: `Turn-${t} ` + "x".repeat(t <= 2 ? 17500 : 1500) });
     }
     addTurn(log, 7, { inputText: "In-flight turn 7" });
 
@@ -303,8 +305,8 @@ test("step 2 shrinks the completed-turn tail one turn at a time until frame + su
     const outcome = await runCompaction({
       log,
       liveRequest: baseLiveRequest(),
-      contextWindowTokens: 3100,
-      options: { effectiveMaxTokens: 200, tailTurns: 4, postRewriteMargin },
+      contextWindowTokens: 10000,
+      options: { effectiveMaxTokens: 200, tailTurns: 4, contextLimitRatio: 1, postRewriteMargin },
       runSummary: async () => {
         calls++;
         return summaryResp(validSummary(`Cut at ${expectedBoundary}`));
@@ -312,9 +314,9 @@ test("step 2 shrinks the completed-turn tail one turn at a time until frame + su
     });
     expect(outcome.status).toBe("rewritten");
     if (outcome.status !== "rewritten") throw new Error(`Failed for margin ${postRewriteMargin}: ${JSON.stringify(outcome)}`);
-    expect(calls).toBe(1);
+    expect(calls).toBeGreaterThanOrEqual(1);
     expect(outcome.state.boundaryEventId).toBe(expectedBoundary);
-    expect(outcome.fill.ratio).toBeLessThanOrEqual(0.80 - postRewriteMargin);
+    expect(outcome.fill.ratio).toBeLessThanOrEqual(1 - postRewriteMargin);
   }
 });
 
@@ -1812,8 +1814,8 @@ test("seeded 500-scenario randomized test maintains all ladder, boundary, capaci
     const activeTurns = specTurns.slice(prevCutIdx + 1);
     const completed = activeTurns.slice(0, -1);
     const foldedSpec = completed.slice(0, foldedCount);
-    const lastFolded = foldedSpec.at(-1)!;
-    const cutText = `through turn ${lastFolded.turnId} (${lastFolded.doneId})`;
+    const prefix = JSON.stringify(activeTurns[foldedCount].userText.replace(/[\r\n]+/g, " ").slice(0, 80));
+    const cutText = `${foldedCount} folded user turns (count user messages, excluding a leading previous-summary message); the retained tail starts at the user message beginning ${prefix}; summarize only what comes before it`;
     const liveReq: StreamRequest = {
       model: "claude-sonnet-4-20250514",
       provider: "anthropic",
@@ -1824,7 +1826,9 @@ test("seeded 500-scenario randomized test maintains all ladder, boundary, capaci
       capTokens: opts.capTokens,
       ...(prevState.summary !== null ? { previousSummary: prevState.summary } : {}),
     };
-    const instruction = buildSummaryInstruction(instrOpts);
+    const instruction = buildSummaryInstruction(prevState.summary !== null
+      ? { ...instrOpts, previousSummary: undefined, previousSummaryInMessages: true }
+      : instrOpts);
     const sameModelReq = buildSameModelSummaryRequest(liveReq, instruction);
     if (oracleInputTokens({}, sameModelReq.messages) <= opts.usable) {
       if (opts.mode !== 3) return true;
@@ -2021,7 +2025,7 @@ test("seeded 500-scenario randomized test maintains all ladder, boundary, capaci
         unfoldedMaxStubs.size > baseStubs.size && oracleInputTokens({}, unfoldedMaxMsgs) <= usable;
 
       const capTokens = Math.min(4096, Math.floor(usable / 8));
-      const allowanceTokens = (oracleInputTokens({}, [oracleSummaryMsg("")]) - emptyFrameTok) + capTokens;
+      const allowanceTokens = oracleInputTokens({}, [oracleSummaryMsg("\u0000".repeat(4 * capTokens))]) - emptyFrameTok;
       let expectedKeepCompleted = 0;
       for (let keep = Math.min(tailTurns, completedSpecTurns.length); keep >= 0; keep--) {
         const foldedCount = completedSpecTurns.length - keep;

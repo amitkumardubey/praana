@@ -866,7 +866,9 @@ async function runCompactionChecked(input: RunCompactionInput): Promise<Compacti
     const minValidSummary = minimumValidSummary();
     const minValidSummaryTokens = estimateTokens(minValidSummary);
     const minSummaryMessageTokens = estimateMessageTokens(renderSummaryMessage(minValidSummary));
-    const summaryAllowanceTokens = estimateMessageTokens(renderSummaryMessage("")) + capTokens;
+    // A raw token can occupy four characters; JSON can expand each to six bytes.
+    // Budget the rendered message, not raw markdown, before choosing retained turns.
+    const summaryAllowanceTokens = estimateMessageTokens(renderSummaryMessage("\u0000".repeat(4 * capTokens)));
 
     // Pre-check whether the in-flight turn (after maximal Step 3 stubbing down to keepRecent=1) + frame + minimum valid summary can fit usable capacity.
     const inFlightMinMap = new Map(step1StubMap);
