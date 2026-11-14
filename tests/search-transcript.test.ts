@@ -25,6 +25,9 @@ import { toolIcon } from "../src/ui/tui/tool-icons.js";
 
 const api = async () => searchTranscriptModule;
 
+// Raw reads must opt into internal events; includeCanonical remains for readers keyed on it.
+const RAW_EVENTS = { includeCanonical: true, includeInternal: true } as const;
+
 const roots: string[] = [];
 const logs: EventLog[] = [];
 afterEach(() => {
@@ -57,7 +60,7 @@ async function writeCanonicalToolResult(log: EventLog, tool: string, toolCallId:
     role: "assistant", content: "", toolCalls: [{ id: toolCallId, name: tool, args: {} }],
   });
   await writer.result(turnId, toolCallId, tool, promptResultText, false);
-  return log.readAll({ includeCanonical: true }).at(-1)!.event_id;
+  return log.readAll(RAW_EVENTS).at(-1)!.event_id;
 }
 
 function addCompactionBoundary(log: EventLog, id: string, generation: number, boundaryEventId: string): void {
@@ -94,8 +97,7 @@ describe("search_transcript tool (PR3)", () => {
       turnId: 1,
       message: { text: "raw canonical needle" },
     });
-    const rawOptions = { includeCanonical: true, includeInternal: true };
-    const events = log.readAll(rawOptions);
+    const events = log.readAll(RAW_EVENTS);
     const reader = {
       readAll: (options?: { includeCanonical?: boolean; includeInternal?: boolean }) =>
         options?.[option] ? events : events.filter((event) => event.kind !== "canonical_message"),
@@ -122,7 +124,7 @@ describe("search_transcript tool (PR3)", () => {
     const { log: source } = openLog("source");
     const writer = new CanonicalWriter(source, (error) => { throw error; });
     await writer.startTurn("malformed needle");
-    const record = readFullSessionCanonicalRecords(source.readAll({ includeCanonical: true }))[0]!;
+    const record = readFullSessionCanonicalRecords(source.readAll(RAW_EVENTS))[0]!;
     const { log } = openLog();
     for (const payload of [{ ...record, formatVersion: 999 }, { ...record, message: { text: 42 } }]) {
       log.append({ kind: "canonical_message", actor: "kernel", payload });
@@ -496,8 +498,7 @@ describe("search_transcript tool (PR3)", () => {
     })());
     try {
       await runTurn(session, "inspect output", undefined, { sink: {} });
-      const rawOptions = { includeCanonical: true, includeInternal: true };
-      const records = readFullSessionCanonicalRecords(session.eventLog.readAll(rawOptions));
+      const records = readFullSessionCanonicalRecords(session.eventLog.readAll(RAW_EVENTS));
       const result = records.find((r) => r.kind === "tool_result");
       expect(result?.message.text).toContain("[artifact:");
       expect(result?.message.text).not.toContain(needle);
