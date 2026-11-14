@@ -78,7 +78,6 @@ function twoFacedName(first: string, then: string) {
   return { input, reads: () => reads };
 }
 
-const SECRET_TEXT = "key=AKIAIOSFODNN7EXAMPLE and more";
 test("read snapshots the name, so a getter cannot validate one name and open another", async () => {
   const home = await homeDir();
   expect((await make(home).write(entry)).ok).toBe(true);
@@ -143,43 +142,41 @@ test("a field that cannot be read is refused by read, remove and recall, never t
   expect((await store.list({})).entries.map(({ name }) => name)).toEqual([entry.name]);
 });
 
+const SECRET_TEXT = "key=AKIAIOSFODNN7EXAMPLE and more";
 const clean = "A clean description";
-/** A getter that answers with clean text for the reads the old code made before the
- * write, and with a secret from then on. */
-function scheduled(schedule: string[]) {
-  let reads = 0;
-  return { reads: () => reads, next() { reads++; return schedule[Math.min(reads - 1, schedule.length - 1)]!; } };
-}
-
 async function storedText(home: string) {
   const dir = join(home, ".praana/memory");
   const files = await fs.readdir(dir).catch(() => [] as string[]);
   return (await Promise.all(files.map((file) => fs.readFile(join(dir, file), "utf8")))).join("\n");
 }
+/** Clean on the first read, the secret on the second: the write sees only the first. */
+const secretSecond = (reads: { count: number }) => () => (reads.count++ === 0 ? clean : SECRET_TEXT);
 
-test("a getter cannot show the scan clean text and the write a secret", async () => {
+test("a getter that turns into a secret on its second read cannot reach the write", async () => {
   const home = await homeDir();
-  const value = scheduled([clean, clean, clean, clean, clean, clean, SECRET_TEXT]);
+  const reads = { count: 0 };
   const input = { scope: "global" as const, type: "user" as const, name: "getter-draft", body: "Clean body" };
-  Object.defineProperty(input, "description", { enumerable: true, get: () => value.next() });
-  const result = await make(home).write(input);
-  expect(await storedText(home)).not.toContain("AKIAIOSFODNN7EXAMPLE");
-  if (result.ok) expect((await make(home).read({ name: "getter-draft", scope: "global" }))).toMatchObject({ ok: true, memory: { description: clean } });
-  else expect(result.error).not.toContain("AKIAIOSFODNN7EXAMPLE");
-  // One snapshot means one read per field, so no read order can split scan from write.
-  expect(value.reads()).toBe(1);
+  Object.defineProperty(input, "description", { enumerable: true, get: secretSecond(reads) });
+  expect(await make(home).write(input)).toEqual({ ok: true, name: "getter-draft", scope: "global", created: true });
+  expect(reads.count).toBe(1);
+  const stored = await storedText(home);
+  expect(stored).toContain(clean);
+  expect(stored).not.toContain("AKIAIOSFODNN7EXAMPLE");
+  expect(await make(home).read({ name: "getter-draft", scope: "global" })).toMatchObject({ ok: true, memory: { description: clean } });
 });
 
-test("a Proxy that answers differently on every read is snapshotted once", async () => {
+test("a Proxy that turns into a secret on its second read cannot reach the write", async () => {
   const home = await homeDir();
-  const value = scheduled([clean, `${clean} one`, `${clean} two`, `${clean} three`, `${clean} four`, `${clean} five`, SECRET_TEXT]);
+  const reads = { count: 0 };
+  const next = secretSecond(reads);
   const base = { scope: "global" as const, type: "user" as const, name: "proxy-draft", description: clean, body: "Clean body" };
-  const input = new Proxy(base, { get(target, key) { return key === "description" ? value.next() : Reflect.get(target, key); } });
-  const result = await make(home).write(input);
-  expect(await storedText(home)).not.toContain("AKIAIOSFODNN7EXAMPLE");
-  if (result.ok) expect((await make(home).read({ name: "proxy-draft", scope: "global" }))).toMatchObject({ ok: true, memory: { description: clean } });
-  else expect(result.error).not.toContain("AKIAIOSFODNN7EXAMPLE");
-  expect(value.reads()).toBe(1);
+  const input = new Proxy(base, { get(target, key) { return key === "description" ? next() : Reflect.get(target, key); } });
+  expect(await make(home).write(input)).toEqual({ ok: true, name: "proxy-draft", scope: "global", created: true });
+  expect(reads.count).toBe(1);
+  const stored = await storedText(home);
+  expect(stored).toContain(clean);
+  expect(stored).not.toContain("AKIAIOSFODNN7EXAMPLE");
+  expect(await make(home).read({ name: "proxy-draft", scope: "global" })).toMatchObject({ ok: true, memory: { description: clean } });
 });
 
 test("write reads every allowed field exactly once", async () => {
