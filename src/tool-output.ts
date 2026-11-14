@@ -114,6 +114,16 @@ export const DEFAULT_EXACT_BYTES_TOOLS: ReadonlySet<string> = new Set(
     .map(([name]) => name),
 );
 
+/** Shared artifact ID token grammar used by marker formatting and extraction. */
+const ARTIFACT_ID_GRAMMAR = "[A-Za-z0-9][A-Za-z0-9_.:/-]*";
+const ARTIFACT_ID_EXACT_RE = new RegExp(`^${ARTIFACT_ID_GRAMMAR}$`);
+const ELIDED_ARTIFACT_ID_RE = new RegExp(
+  `full output stored in artifact (${ARTIFACT_ID_GRAMMAR})(?=\\s|—|$)`,
+);
+const CARD_ARTIFACT_ID_RE = new RegExp(
+  `\\[artifact:\\s*(${ARTIFACT_ID_GRAMMAR})(?=[\\s|\\],;]|$)`,
+);
+
 export interface ShapeToolOutputOptions {
   inlineThresholdTokens: number;
   maxLines: number;
@@ -244,6 +254,18 @@ function countTouchedLines(fragment: string, trimLeading: boolean, trimTrailing:
   return Math.max(0, count);
 }
 
+function normalizeArtifactId(
+  stored: { artifactId?: string | null } | string | null | undefined,
+): string | undefined {
+  let raw: string | null | undefined;
+  if (typeof stored === "string") {
+    raw = stored;
+  } else if (stored && typeof stored === "object") {
+    raw = stored.artifactId;
+  }
+  return typeof raw === "string" && ARTIFACT_ID_EXACT_RE.test(raw) ? raw : undefined;
+}
+
 function formatElisionMarker(
   omittedLines: number,
   omittedBytes: number,
@@ -252,16 +274,17 @@ function formatElisionMarker(
   const unit = omittedLines === 1 ? "line" : "lines";
   const lineSummary = omittedLines > 0 ? `${omittedLines} ${unit} / ` : "";
   const elidedSummary = `elided ${lineSummary}${omittedBytes} bytes (partial lines at cut truncated)`;
-  if (artifactId) {
-    return `... [${elidedSummary}; full output stored in artifact ${artifactId} — call retrieve_artifact("${artifactId}") to inspect] ...`;
+  const validId = normalizeArtifactId(artifactId);
+  if (validId) {
+    return `... [${elidedSummary}; full output stored in artifact ${validId} — call retrieve_artifact("${validId}") to inspect] ...`;
   }
   return `... [${elidedSummary}; artifact store unavailable — use search_transcript to inspect full output] ...`;
 }
 
 function extractArtifactIdFromText(text: string): string | undefined {
-  const elidedMatch = /full output stored in artifact (art_[A-Za-z0-9_-]+)/.exec(text);
+  const elidedMatch = ELIDED_ARTIFACT_ID_RE.exec(text);
   if (elidedMatch?.[1]) return elidedMatch[1];
-  const cardMatch = /\[artifact:\s*(art_[A-Za-z0-9_-]+)/.exec(text);
+  const cardMatch = CARD_ARTIFACT_ID_RE.exec(text);
   if (cardMatch?.[1]) return cardMatch[1];
   return undefined;
 }
@@ -416,20 +439,16 @@ export function shapeToolOutput(input: ShapeToolOutputInput): ShapeToolOutputRes
 
   // Probe with a worst-case marker before calling storeArtifact so we never
   // persist an artifact when the shaped result would exceed caps or not shrink.
-  const probeId = input.artifactId ?? (input.storeArtifact ? "art_000000000000" : undefined);
+  const explicitArtifactId = normalizeArtifactId(input.artifactId);
+  const probeId = explicitArtifactId ?? (input.storeArtifact ? "art_000000000000" : undefined);
   const probe = convergeShapedCandidate(rawText, lines, totalBytes, exceedsLines, opts, probeId);
   if (!probe || probe.text.length >= rawText.length || Buffer.byteLength(probe.text, "utf8") > targetMaxBytes) {
     return unchanged();
   }
 
-  let resolvedArtifactId = input.artifactId;
+  let resolvedArtifactId = explicitArtifactId;
   if (!resolvedArtifactId && input.storeArtifact) {
-    const stored = input.storeArtifact(rawText);
-    if (typeof stored === "string" && stored.length > 0) {
-      resolvedArtifactId = stored;
-    } else if (stored && typeof stored === "object" && typeof stored.artifactId === "string" && stored.artifactId.length > 0) {
-      resolvedArtifactId = stored.artifactId;
-    }
+    resolvedArtifactId = normalizeArtifactId(input.storeArtifact(rawText));
   }
 
   const finalCand =

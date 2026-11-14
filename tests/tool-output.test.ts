@@ -1156,4 +1156,47 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     expect(mixedOneRes.text).toContain(`1 line / ${mixedOneRes.omittedBytes} bytes`);
     expect(mixedOneRes.text).toMatch(/partial.*truncated/i);
   });
+
+  test("preserves non-art_ artifact ids from custom storeArtifact in markers and stubs", () => {
+    const raw = Array.from({ length: 120 }, (_, i) => `custom-line-${i}: ${"x".repeat(60)}`).join("\n");
+
+    for (const customId of ["custom-blob-42", "mem:item/99"]) {
+      const shaped = shapeToolOutput({
+        toolName: "shell",
+        text: raw,
+        storeArtifact: () => customId,
+      });
+      expect(shaped.shaped).toBe(true);
+      expect(shaped.artifactId).toBe(customId);
+      expect(shaped.text).toContain(`artifact ${customId}`);
+
+      const candidate: StubCandidate = {
+        eventId: `ev-${customId}`,
+        turnId: 1,
+        callId: `call-${customId}`,
+        toolName: "shell",
+        text: shaped.text,
+        isError: false,
+        estimatedTokens: 800,
+      };
+      const stub = buildToolResultStub(candidate);
+      expect(stub).toContain(customId);
+      expect(stub).toContain(`retrieve_artifact("${customId}")`);
+
+      const planned = planToolResultStubs([candidate], {
+        phase: "stale",
+        minTokens: 256,
+        keepRecent: 3,
+      });
+      expect(planned).toEqual([{ eventId: `ev-${customId}`, stubText: stub }]);
+
+      // Card format with non-art_ id also round-trips into stub.
+      const cardStub = buildToolResultStub({
+        ...candidate,
+        text: `[artifact: ${customId} | shell | 1,200 tokens raw]\nRetrieve: retrieve_artifact("${customId}")\n${"padding ".repeat(60)}`,
+      });
+      expect(cardStub).toContain(customId);
+      expect(cardStub).toContain(`retrieve_artifact("${customId}")`);
+    }
+  });
 });
