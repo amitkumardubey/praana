@@ -61,7 +61,7 @@ test("batch planner covers complete folded turns once, in order, in bounded capa
   for (const batch of planned.batches) {
     expect(batch.turnIds.length).toBeGreaterThan(0);
     expect(batch.boundaryEventId).toBe(batch.eventIds.at(-1)!);
-    expect(batch.cutDescription).toContain(batch.boundaryEventId);
+    expect(batch.cutDescription).toBe(`${batch.turnIds.length} folded user turns; summarize every message below`);
     expect(batch.budgetedInputTokens + options.effectiveMaxTokens).toBeLessThanOrEqual(options.contextWindowTokens);
   }
   expect(JSON.stringify(turns)).toBe(before);
@@ -274,8 +274,7 @@ test("incremental batch plans match an independently measured greedy partition",
     let pending: CompactionTurn[] = [];
     let admitted = 0;
     const measure = (candidate: CompactionTurn[]) => {
-      const last = candidate.at(-1)!;
-      const cutDescription = `through canonical event ${last.eventIds.at(-1)!} (end of turn ${last.turnId})`;
+      const cutDescription = `${candidate.length} folded user turns; summarize every message below`;
       const request = buildBatchSummaryRequest(live(), { messages: candidate.flatMap(turn => turn.messages) }, {
         ...options, cutDescription, previousSummary: expected.length ? "" : options.previousSummary,
       });

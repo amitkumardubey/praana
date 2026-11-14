@@ -67,7 +67,11 @@ function expectNoDiscard(outcome: CompactionOutcome) {
 }
 
 function expectDiscarded(outcome: CompactionOutcome, log: EventLog, text: string, usage: SummaryRequestMeta["usage"] = null) {
-  const boundaryEventId = buildTurns(log)[0].eventIds.at(-1)!;
+  const turns = buildTurns(log);
+  const boundaryEventId = turns[0].eventIds.at(-1)!;
+  const retained = turns[1].messages[0];
+  if (retained.role !== "user" || typeof retained.content !== "string") throw new Error("Expected retained input");
+  const prefix = JSON.stringify(retained.content.replace(/[\r\n]+/g, " ").slice(0, 80));
   expect(outcome).toMatchObject({
     summaryDiscarded: true,
     discardedSummary: {
@@ -77,7 +81,7 @@ function expectDiscarded(outcome: CompactionOutcome, log: EventLog, text: string
       previousSummarySha256: null,
       text,
       request: {
-        cutDescription: `through canonical event ${boundaryEventId} (end of turn 1)`,
+        cutDescription: `1 folded user turns (count user messages, excluding a leading previous-summary message); the retained tail starts at the user message beginning ${prefix}; summarize only what comes before it`,
         capTokens: summaryCapTokens(usableTokens),
         instructionSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         usage,
@@ -432,7 +436,7 @@ test("a capacity error exposes the accepted summary and its paid request metadat
       previousSummarySha256: null,
       text: accepted,
       request: {
-        cutDescription: `through canonical event ${boundaryEventId} (end of turn 1)`,
+        cutDescription: '1 folded user turns (count user messages, excluding a leading previous-summary message); the retained tail starts at the user message beginning "now"; summarize only what comes before it',
         capTokens: summaryCapTokens(usableTokens),
         instructionSha256: createHash("sha256").update(instruction).digest("hex"),
         usage,
@@ -454,7 +458,7 @@ test("batch fallback preserves the discarded combined summary and batch request 
     await writer.result(current, id, "shell", text, false);
   }
   const boundaryEventId = buildTurns(log).at(-2)!.eventIds.at(-1)!;
-  const cutDescription = `through canonical event ${boundaryEventId} (end of turn 20)`;
+  const cutDescription = '20 folded user turns (count user messages, excluding a leading previous-summary message); the retained tail starts at the user message beginning "now"; summarize only what comes before it';
   const capTokens = summaryCapTokens(5000);
   const requests: StreamRequest[] = [];
   const replies: string[] = [];
@@ -467,7 +471,7 @@ test("batch fallback preserves the discarded combined summary and batch request 
       requests.push(request);
       const last = request.messages.at(-1)!;
       if (last.role === "tool_result" || typeof last.content !== "string") throw new Error("Expected instruction");
-      const text = last.content.includes(cutDescription) ? accepted : summary(`batch ${requests.length}`);
+      const text = JSON.stringify(request.messages).includes("user: turn 19:") ? accepted : summary(`batch ${requests.length}`);
       replies.push(text);
       return { text, finishReason: "stop", usage: { input: 10, output: 5, totalTokens: 15 }, toolCalls: [] };
     },
@@ -479,7 +483,8 @@ test("batch fallback preserves the discarded combined summary and batch request 
     expect(JSON.stringify(request.messages)).toContain("no retained tail is included");
   }
   const combinedInstruction = buildSummaryInstruction({
-    cutDescription, capTokens, previousSummary: replies.at(-2)!, tailVisible: false,
+    cutDescription: `${requests.at(-1)!.messages.length / 2 - 0.5} folded user turns; summarize every message below`,
+    capTokens, previousSummary: replies.at(-2)!, tailVisible: false,
   });
   expect(requests.at(-1)!.messages.at(-1)).toEqual({ role: "user", content: combinedInstruction });
   expect(outcome).toMatchObject({

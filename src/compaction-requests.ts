@@ -114,8 +114,11 @@ function validateSummaryCap(capTokens: number): void {
   }
 }
 
-export function cutDescription(turn: CompactionTurn): string {
-  return `through canonical event ${turn.eventIds.at(-1)!} (end of turn ${turn.turnId})`;
+export function cutDescription(foldedCount: number, firstRetained?: CompactionTurn): string {
+  if (!firstRetained) return `${foldedCount} folded user turns; summarize every message below`;
+  const input = firstRetained.records.find(record => record.kind === "user_input");
+  const prefix = input?.kind === "user_input" ? input.message.text.replace(/[\r\n]+/g, " ").slice(0, 80) : "";
+  return `${foldedCount} folded user turns (count user messages, excluding a leading previous-summary message); the retained tail starts at the user message beginning ${JSON.stringify(prefix)}; summarize only what comes before it`;
 }
 
 function summaryBatch(turns: readonly CompactionTurn[]): SummaryBatch {
@@ -123,7 +126,7 @@ function summaryBatch(turns: readonly CompactionTurn[]): SummaryBatch {
   const boundaryEventId = last.eventIds.at(-1)!;
   return {
     turnIds: turns.map(turn => turn.turnId), eventIds: turns.flatMap(turn => turn.eventIds), boundaryEventId,
-    cutDescription: cutDescription(last),
+    cutDescription: cutDescription(turns.length),
     messages: turns.flatMap(turn => turn.messages), budgetedInputTokens: 0,
   };
 }
@@ -158,7 +161,7 @@ export function planBatchSummaries(
     const turnTokens = turn.messages.reduce((sum, message) => sum + estimateMessageTokens(renderBatchMessage(message)), 0);
     const measureFrame = () => {
       const request = buildBatchSummaryRequest(template, { messages: [] }, {
-        ...options, cutDescription: cutDescription(turn),
+        ...options, cutDescription: cutDescription(pending.length + 1),
         previousSummary: batches.length ? "" : options.previousSummary,
       });
       return requestFill(request, request.messages, options.contextWindowTokens, options);

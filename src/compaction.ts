@@ -898,7 +898,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
       if (!lastFoldedTurn || !newBoundaryEventId) {
         throw new Error("Expected at least one folded turn with a boundary event id.");
       }
-      const cutText = cutDescription(lastFoldedTurn);
+      const cutText = cutDescription(foldedTurns.length, retainedTurns[0]);
 
       // Drop any stubs pointing into foldedTurns; retain only stubs in retainedTurns.
       const retainedResultIds = new Set(collectToolResults(retainedTurns).map((c) => c.eventId));
