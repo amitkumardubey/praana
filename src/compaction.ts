@@ -684,6 +684,7 @@ async function runCompactionChecked(input: RunCompactionInput): Promise<Compacti
     const summaryAllowanceTokens = estimateMessageTokens(renderSummaryMessage("\u0000".repeat(4 * capTokens)));
 
     // Pre-check whether the in-flight turn (after maximal Step 3 stubbing down to keepRecent=1) + frame + minimum valid summary can fit usable capacity.
+    // Step 1 adds only stale stubs, but this copy preserves pre-existing in-flight stubs.
     const inFlightMinMap = new Map(step1StubMap);
     const inFlightCandidates = collectToolResults([inFlightTurn]);
     const unstubbedInFlightMessages = emitCanonicalTranscript(applyStubs(inFlightTurn, inFlightMinMap));

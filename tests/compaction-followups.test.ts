@@ -284,6 +284,26 @@ test("buildTurns owns turn construction without a forwarding wrapper", async () 
   expect(compaction.buildTurns.toString()).not.toContain("return turnView(");
 });
 
+test("pre-check copy preserves pre-existing in-flight stubs without planning new ones", async () => {
+  const { log, writer } = fixture();
+  const old = await writer.startTurn("old " + "x".repeat(2000));
+  await writer.assistant(old, { role: "assistant", content: "done" });
+  const current = await writer.startTurn("current");
+  let stubId = "";
+  for (const [id, size] of [["older", 20000], ["newest", 10000]] as const) {
+    await writer.assistant(current, { role: "assistant", content: "", toolCalls: [{ id, name: "shell", args: {} }] });
+    await writer.result(current, id, "shell", "r".repeat(size), false);
+    if (id === "older") stubId = log.readAll({ includeInternal: true }).at(-1)!.event_id;
+  }
+  expect(appendCommit(log, { formatVersion: 1, ...state(log), generation: 1, stubSet: [{ eventId: stubId, stubText: "stub" }] }).status).toBe("committed");
+  const outcome = await compaction.runCompaction({ log, liveRequest: live, contextWindowTokens: 4000, options,
+    planStubs: () => [], runSummary: async () => response(),
+  });
+  expect(outcome.status).toBe("rewritten");
+  if (outcome.status !== "rewritten") throw new Error(outcome.status);
+  expect(outcome.state.stubSet).toEqual([{ eventId: stubId, stubText: "stub" }]);
+});
+
 for (const length of [80, 200]) for (const previous of [false, true]) {
   test(`visible cut quotes ${length} characters with previous=${previous}`, async () => {
     const { log, writer } = fixture();
