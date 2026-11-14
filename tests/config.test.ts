@@ -206,6 +206,7 @@ describe("config loading", () => {
       "utf-8",
     );
 
+    getConfigWarnings(); // drain warnings left by earlier test files before asserting none
     const config = loadConfig(configPath);
     expect(config.llm.fallback_provider).toBe("openrouter");
     expect(config.llm.fallback_model).toBe("moonshotai/kimi-k2.7-code");
@@ -260,6 +261,7 @@ describe("config loading", () => {
     writeFileSync(goodConfig, '[llm]\nprovider = "openrouter"\nmodel = "m"\n', "utf-8");
     writeFileSync(badConfig, "[llm\n", "utf-8");
 
+    getConfigWarnings(); // drain warnings left by earlier test files before asserting none
     loadConfig(goodConfig);
     expect(getConfigWarnings()).toHaveLength(0);
 

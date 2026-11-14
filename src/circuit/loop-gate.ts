@@ -13,6 +13,7 @@ const READ_TOOLS = new Set<string>([
   "retrieve_artifact",
   "recall",
   "search_session_log",
+  "search_transcript",
   "search_turn_events",
   "git_status",
   "git_diff",
