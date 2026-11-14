@@ -65,17 +65,18 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     expect(first.shaped).toBe(true);
     expect(first.artifactId).toBe("art_test12345678");
     expect(storedRaw).toBe(rawText);
-    expect(first.omittedLines).toBe(180);
+    expect(first.omittedLines).toBe(181);
     expect(first.omittedBytes).toBeGreaterThan(0);
+    expect(first.text.split("\n").length).toBeLessThanOrEqual(20);
     expect(first.text).toContain("line-001:");
     expect(first.text).toContain("line-010:");
     expect(first.text).not.toContain("line-011:");
-    expect(first.text).not.toContain("line-190:");
-    expect(first.text).toContain("line-191:");
+    expect(first.text).not.toContain("line-191:");
+    expect(first.text).toContain("line-192:");
     expect(first.text).toContain("line-200:");
     expect(first.text).toContain("art_test12345678");
     expect(first.text).toContain('retrieve_artifact("art_test12345678")');
-    expect(first.text).toContain("180 lines");
+    expect(first.text).toContain("181 lines");
 
     // Determinism: identical inputs produce byte-identical output
     const second = shapeToolOutput({
@@ -659,7 +660,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
       });
       expect(res.shaped).toBe(true);
       expect(Buffer.byteLength(res.text, "utf8")).toBeLessThanOrEqual(DEFAULT_SHAPE_MAX_BYTES);
-      expect(res.text.split("\n").length).toBeLessThanOrEqual(DEFAULT_SHAPE_MAX_LINES + 1);
+      expect(res.text.split("\n").length).toBeLessThanOrEqual(DEFAULT_SHAPE_MAX_LINES);
       expect(Buffer.from(res.text, "utf8").toString("utf8")).toBe(res.text);
       expect(Buffer.byteLength(res.text, "utf8")).toBeLessThan(Buffer.byteLength(raw, "utf8"));
       expect(res.text.length).toBeLessThan(raw.length);
@@ -682,7 +683,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     });
     expect(mixedRes.shaped).toBe(true);
     expect(Buffer.byteLength(mixedRes.text, "utf8")).toBeLessThanOrEqual(1024);
-    expect(mixedRes.text.split("\n").length).toBeLessThanOrEqual(21);
+    expect(mixedRes.text.split("\n").length).toBeLessThanOrEqual(20);
 
     // Deterministic PRNG (Mulberry32)
     let state = 0x5eed7654;
@@ -764,7 +765,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
       if (res.shaped) {
         shapedCount++;
         expect(resBytes).toBeLessThanOrEqual(maxBytes);
-        expect(res.text.split("\n").length).toBeLessThanOrEqual(maxLines + 1);
+        expect(res.text.split("\n").length).toBeLessThanOrEqual(maxLines);
         expect(resBytes).toBeLessThan(rawBytes);
         expect(res.text.length).toBeLessThan(raw.length);
 
@@ -1045,5 +1046,45 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     expect(manyRes.shaped).toBe(true);
     expect(singleElapsedMs).toBeLessThan(500);
     expect(manyElapsedMs).toBeLessThan(500);
+  });
+
+  test("shapes 20 KB output that contains a marker-looking line while remaining idempotent on shaped output", () => {
+    const markerLookingLine =
+      '... [elided 10 lines / 500 bytes; full output stored in artifact art_deadbeef1234 — call retrieve_artifact("art_deadbeef1234") to inspect] ...';
+    const rawWithMarker = [
+      ...Array.from({ length: 100 }, (_, i) => `transcript-line-${i}: ${"payload ".repeat(12)}`),
+      markerLookingLine,
+      ...Array.from({ length: 100 }, (_, i) => `transcript-tail-${i}: ${"payload ".repeat(12)}`),
+    ].join("\n");
+    expect(Buffer.byteLength(rawWithMarker, "utf8")).toBeGreaterThan(20_000);
+
+    const shaped = shapeToolOutput({
+      toolName: "shell",
+      command: "cat-like-transcript-dump",
+      text: rawWithMarker,
+      storeArtifact: () => "art_outer20kb01",
+    });
+
+    expect(shaped.shaped).toBe(true);
+    expect(shaped.artifactId).toBe("art_outer20kb01");
+    expect(shaped.text.length).toBeLessThan(rawWithMarker.length);
+    expect(Buffer.byteLength(shaped.text, "utf8")).toBeLessThanOrEqual(DEFAULT_SHAPE_MAX_BYTES);
+    expect(shaped.text.split("\n").length).toBeLessThanOrEqual(DEFAULT_SHAPE_MAX_LINES);
+
+    // Re-shaping shaped output with the same caps returns it unchanged without calling storeArtifact.
+    let secondStoreCalled = false;
+    const reshaped = shapeToolOutput({
+      toolName: "shell",
+      command: "cat-like-transcript-dump",
+      text: shaped.text,
+      storeArtifact: () => {
+        secondStoreCalled = true;
+        return "art_should_not_exist";
+      },
+      options: { inlineThresholdTokens: 10 },
+    });
+    expect(reshaped.shaped).toBe(false);
+    expect(reshaped.text).toBe(shaped.text);
+    expect(secondStoreCalled).toBe(false);
   });
 });

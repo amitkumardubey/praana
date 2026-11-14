@@ -114,9 +114,6 @@ export const DEFAULT_EXACT_BYTES_TOOLS: ReadonlySet<string> = new Set(
     .map(([name]) => name),
 );
 
-const ELISION_MARKER_PATTERN =
-  /^... \[elided \d+ lines \/ \d+ bytes; (?:full output stored in artifact [^\s—]+ — call retrieve_artifact\("[^"]+"\) to inspect|artifact store unavailable — use search_transcript to inspect full output)\] ...$/m;
-
 export interface ShapeToolOutputOptions {
   inlineThresholdTokens: number;
   maxLines: number;
@@ -276,8 +273,22 @@ function buildShapedCandidate(
   artifactIdForMarker?: string,
 ): ShapedCandidate | null {
   const maxLinesCap = Math.max(0, opts.maxLines);
-  const effHeadLines = Math.min(Math.max(0, opts.headLines), maxLinesCap);
-  const effTailLines = Math.min(Math.max(0, opts.tailLines), Math.max(0, maxLinesCap - effHeadLines));
+  if (maxLinesCap === 0) return null;
+  const contentLineBudget = maxLinesCap - 1;
+  const cfgHeadLines = Math.max(0, opts.headLines);
+  const cfgTailLines = Math.max(0, opts.tailLines);
+  const configuredLineSum = cfgHeadLines + cfgTailLines;
+  let effHeadLines =
+    configuredLineSum > contentLineBudget && configuredLineSum > 0
+      ? Math.ceil((contentLineBudget * cfgHeadLines) / configuredLineSum)
+      : cfgHeadLines;
+  let effTailLines =
+    configuredLineSum > contentLineBudget && configuredLineSum > 0
+      ? contentLineBudget - effHeadLines
+      : cfgTailLines;
+  effHeadLines = Math.min(effHeadLines, cfgHeadLines);
+  effTailLines = Math.min(effTailLines, cfgTailLines, Math.max(0, contentLineBudget - effHeadLines));
+
   const targetMaxBytes = Math.min(opts.maxBytes, totalBytes - 1);
   const byteBudget = targetMaxBytes - overheadBytes;
   if (byteBudget < 0) return null;
@@ -301,7 +312,7 @@ function buildShapedCandidate(
     tail = sliceTailByUtf8Bytes(rawText, tailByteBudget);
     const keptHead = head ? head.split("\n").length : 0;
     const keptTail = tail ? tail.split("\n").length : 0;
-    if (keptHead + keptTail > maxLinesCap) {
+    if (keptHead + keptTail > contentLineBudget) {
       head = sliceHeadByUtf8Bytes(sliceHeadLinesFromArray(lines, effHeadLines), headByteBudget);
       tail = sliceTailByUtf8Bytes(sliceTailLinesFromArray(lines, effTailLines), tailByteBudget);
     }
@@ -346,7 +357,7 @@ function convergeShapedCandidate(
     if (!cand) return null;
     const candBytes = Buffer.byteLength(cand.text, "utf8");
     const candLines = cand.text.split("\n").length;
-    if (candBytes <= targetMaxBytes && candLines <= maxLinesCap + 1) {
+    if (candBytes <= targetMaxBytes && candLines <= maxLinesCap) {
       return cand;
     }
     const actualOverhead =
@@ -379,10 +390,6 @@ export function shapeToolOutput(input: ShapeToolOutputInput): ShapeToolOutputRes
     isExactBytesTool(input.toolName, opts.exactBytesTools) ||
     (input.toolName === "shell" && input.command !== undefined && detectShellReads(input.command) !== null)
   ) {
-    return unchanged();
-  }
-  // Idempotence: already-shaped strings are never shaped a second time.
-  if (ELISION_MARKER_PATTERN.test(rawText)) {
     return unchanged();
   }
 
@@ -424,7 +431,7 @@ export function shapeToolOutput(input: ShapeToolOutputInput): ShapeToolOutputRes
     !finalCand ||
     finalCand.text.length >= rawText.length ||
     Buffer.byteLength(finalCand.text, "utf8") > targetMaxBytes ||
-    finalCand.text.split("\n").length > maxLinesCap + 1
+    finalCand.text.split("\n").length > maxLinesCap
   ) {
     return unchanged();
   }
