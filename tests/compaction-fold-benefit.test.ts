@@ -6,7 +6,7 @@ import { CanonicalWriter } from "../src/canonical-transcript.js";
 import * as compaction from "../src/compaction.js";
 import type { SummaryResult } from "../src/compaction-requests.js";
 import { EventLog } from "../src/event-log.js";
-import { readCommits, restoreFrozenStateFromLog, SUMMARY_HEADINGS, type FrozenState } from "../src/frozen-summary.js";
+import { appendCommit, minimumValidSummary, readCommits, restoreFrozenStateFromLog, SUMMARY_HEADINGS, type FrozenState } from "../src/frozen-summary.js";
 
 const fixtures: { log: EventLog; root: string }[] = [];
 afterEach(() => {
@@ -45,6 +45,49 @@ function tokens(log: EventLog, state: FrozenState): number {
 }
 
 const liveRequest = { model: "test", provider: "anthropic" as const, messages: [{ role: "user" as const, content: "Summarize the conversation." }] };
+
+async function seedSummary(log: EventLog, writer: CanonicalWriter, text: string) {
+  const seed = await writer.startTurn("Earlier work");
+  await writer.assistant(seed, { role: "assistant", content: "done" });
+  const boundaryEventId = log.readAll({ includeInternal: true }).at(-1)!.event_id;
+  expect(appendCommit(log, {
+    formatVersion: 1, resetEpoch: "session_start", generation: 1,
+    boundaryEventId, summary: text, stubSet: [],
+    summaryRequest: { cutDescription: "earlier work", capTokens: 4096, instructionSha256: "a".repeat(64), usage: null },
+  })).toEqual({ status: "committed" });
+}
+
+for (const largePrevious of [true, false]) {
+  test(`benefit pre-check includes a ${largePrevious ? "large" : "minimum-sized"} previous summary`, async () => {
+    const { log, writer } = fixture();
+    await seedSummary(log, writer, largePrevious ? summary("P".repeat(2400)) : minimumValidSummary());
+    const completed = await writer.startTurn("");
+    await writer.assistant(completed, { role: "assistant", content: "" });
+    const cut = log.readAll({ includeInternal: true }).at(-1)!.event_id;
+    await writer.startTurn("Current request");
+    const before = restored(log);
+    const text = largePrevious ? minimumValidSummary() : summary("S".repeat(2400));
+    let calls = 0;
+    const outcome = await compaction.runCompaction({
+      log, liveRequest, contextWindowTokens: 6000,
+      options: { effectiveMaxTokens: 200, tailTurns: 0, contextLimitRatio: 0.001, postRewriteMargin: 0 },
+      runSummary: async () => { calls++; return response(text); },
+    });
+    // Even a minimum previous summary can be replaced while removing a completed turn.
+    expect(tokens(log, { ...before, boundaryEventId: cut, summary: minimumValidSummary() })).toBeLessThan(tokens(log, before));
+    expect(calls).toBe(1);
+    if (largePrevious) {
+      expect(outcome.status).toBe("rewritten");
+      expect(restored(log)).toMatchObject({ generation: 2, boundaryEventId: cut, summary: text });
+      expect(tokens(log, restored(log))).toBeLessThan(tokens(log, before));
+      expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(2);
+    } else {
+      expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "fold_not_beneficial", summaryDiscarded: true });
+      expect(restored(log)).toEqual(before);
+      expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(1);
+    }
+  });
+}
 
 for (const scenario of [
   { name: "non-beneficial fitting", oldChars: 900, currentChars: 40, summaryChars: 2400, beneficial: false, foldFits: true },
