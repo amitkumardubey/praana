@@ -2555,4 +2555,125 @@ console.log(JSON.stringify(res));
       }
     }
   });
+
+  test("classifies write/backup results by typed actionable flag rather than targetPath substring, and classifies ELOOP/EISDIR in one place regardless of errno text", async () => {
+    const store = await storeApi();
+    const {
+      createSettingsFs,
+      readSettingsDocument,
+      replaceSettingsDocument,
+      MAX_SETTINGS_BYTES,
+    } = store;
+    const formatFailedWriteAfterBackup = (store as Record<string, unknown>)
+      .formatFailedWriteAfterBackup as (
+      targetPath: string,
+      writeResult: { ok: false; error: string; actionable: boolean },
+    ) => string;
+    expect(formatFailedWriteAfterBackup).toBeTypeOf("function");
+
+    // 1. Substring trap: a non-actionable error mentioning sibling `<target>.corrupt-...` must still be prefixed.
+    const siblingCorruptPath = `${settingsPath}.corrupt-1700000000000-abcd1234`;
+    const nonActionableSiblingErr = `Unexpected failure involving ${siblingCorruptPath}`;
+    expect(
+      formatFailedWriteAfterBackup(settingsPath, {
+        ok: false,
+        error: nonActionableSiblingErr,
+        actionable: false,
+      }),
+    ).toBe(`Failed to replace ${settingsPath}: ${nonActionableSiblingErr}`);
+
+    // Actionable result with reworded message is NOT prefixed even when it doesn't contain targetPath.
+    expect(
+      formatFailedWriteAfterBackup(settingsPath, {
+        ok: false,
+        error: "Reworded actionable message",
+        actionable: true,
+      }),
+    ).toBe("Reworded actionable message");
+
+    // 2. End-to-end corrupt replace with oversized doc (non-actionable pre-write error) prefixes Failed to replace.
+    writeFileSync(settingsPath, "{corrupt-before-oversize", "utf-8");
+    const oversizeReplace = replaceSettingsDocument(
+      { huge: "x".repeat(MAX_SETTINGS_BYTES + 1) },
+      { backupCorrupt: true },
+    );
+    expect(oversizeReplace.ok).toBe(false);
+    if (!oversizeReplace.ok) {
+      expect(oversizeReplace.error).toContain(`Failed to replace ${settingsPath}:`);
+    }
+
+    // 3. Reworded errno text on EACCES still classifies by code and is actionable (no Failed to replace prefix).
+    const rewordedEaccesFs = createSettingsFs({
+      rename() {
+        const err = new Error("completely custom reworded message") as NodeJS.ErrnoException;
+        err.code = "EACCES";
+        throw err;
+      },
+    });
+    const rewordedReplace = replaceSettingsDocument(
+      { ...DEFAULT_USER_SETTINGS },
+      { fs: rewordedEaccesFs, backupCorrupt: true },
+    );
+    expect(rewordedReplace.ok).toBe(false);
+    if (!rewordedReplace.ok) {
+      expect(rewordedReplace.error).toContain(`${settingsPath} cannot be updated: permission denied (EACCES)`);
+      expect(rewordedReplace.error).not.toContain("Failed to replace");
+      expect(rewordedReplace.error).not.toContain("completely custom reworded message");
+    }
+
+    // 4. Reworded ELOOP/EISDIR texts: unresolved ELOOP -> loop, resolved readBounded open ELOOP -> swapped,
+    //    open EISDIR -> directory, and no duplicate raw ELOOP/EISDIR classification in readSettingsDocumentWithBytes.
+    writeFileSync(settingsPath, '{"thinking":true}\n', "utf-8");
+
+    const unresolvedEloopFs = createSettingsFs({
+      lstat() {
+        const err = new Error("reworded unresolved loop text") as NodeJS.ErrnoException;
+        err.code = "ELOOP";
+        throw err;
+      },
+    });
+    const unresolvedRes = readSettingsDocument({ fs: unresolvedEloopFs });
+    expect(unresolvedRes.state).toBe("unreadable");
+    expect(unresolvedRes.error).toBe(
+      `Settings file symlink (${settingsPath}) forms a symlink loop; fix or remove the symlink`,
+    );
+
+    const resolvedEloopFs = createSettingsFs(undefined, {
+      open() {
+        const err = new Error("reworded resolved loop text") as NodeJS.ErrnoException;
+        err.code = "ELOOP";
+        throw err;
+      },
+    });
+    const resolvedRes = readSettingsDocument({ fs: resolvedEloopFs });
+    expect(resolvedRes.state).toBe("unreadable");
+    expect(resolvedRes.error).toBe(`${settingsPath} changed while it was being read; retry`);
+
+    const resolvedEisdirFs = createSettingsFs(undefined, {
+      open() {
+        const err = new Error("reworded isdir text") as NodeJS.ErrnoException;
+        err.code = "EISDIR";
+        throw err;
+      },
+    });
+    const eisdirRes = readSettingsDocument({ fs: resolvedEisdirFs });
+    expect(eisdirRes.state).toBe("unreadable");
+    expect(eisdirRes.error).toBe(`Settings path is a directory (${settingsPath})`);
+
+    // Overridden readBounded throwing raw ELOOP/EISDIR (not SettingsPathError) is not duplicated downstream.
+    for (const rawCode of ["ELOOP", "EISDIR"] as const) {
+      const rawOverrideFs = createSettingsFs({
+        readBounded() {
+          const err = new Error(`raw ${rawCode} outside readBounded`) as NodeJS.ErrnoException;
+          err.code = rawCode;
+          throw err;
+        },
+      });
+      const rawRes = readSettingsDocument({ fs: rawOverrideFs });
+      expect(rawRes.state).toBe("unreadable");
+      expect(rawRes.error).toBe(
+        `Cannot read settings file (${settingsPath}): raw ${rawCode} outside readBounded`,
+      );
+    }
+  });
 });

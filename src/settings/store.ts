@@ -486,28 +486,6 @@ function readSettingsDocumentWithBytes(
       }
       return { result: { doc: {}, state: "missing" }, targetPath, isSymlink };
     }
-    if (code === "ELOOP") {
-      return {
-        result: {
-          doc: {},
-          state: "unreadable",
-          error: formatSettingsPathError("swapped", path, isSymlink),
-        },
-        targetPath,
-        isSymlink,
-      };
-    }
-    if (code === "EISDIR") {
-      return {
-        result: {
-          doc: {},
-          state: "unreadable",
-          error: formatSettingsPathError("directory", path, isSymlink),
-        },
-        targetPath,
-        isSymlink,
-      };
-    }
     const msg = err instanceof Error ? err.message : String(err);
     return {
       result: { doc: {}, state: "unreadable", error: `Cannot read settings file (${path}): ${msg}` },
@@ -1041,7 +1019,7 @@ export function updateSettingsDocument(
         discardCorruptBackup(backupPath, fs);
         return {
           ok: false,
-          error: formatFailedWriteAfterBackup(targetPath, written.error),
+          error: formatFailedWriteAfterBackup(targetPath, written),
           actionable: written.actionable,
         };
       }
@@ -1118,10 +1096,13 @@ function buildBackupInfo(
   };
 }
 
-function formatFailedWriteAfterBackup(targetPath: string, writeError: string): string {
-  return writeError.includes(targetPath)
-    ? writeError
-    : `Failed to replace ${targetPath}: ${writeError}`;
+export function formatFailedWriteAfterBackup(
+  targetPath: string,
+  writeResult: { ok: false; error: string; actionable: boolean },
+): string {
+  return writeResult.actionable
+    ? writeResult.error
+    : `Failed to replace ${targetPath}: ${writeResult.error}`;
 }
 
 export function replaceSettingsDocument(
@@ -1167,7 +1148,7 @@ export function replaceSettingsDocument(
     if (!written.ok) {
       if (backupPath) {
         discardCorruptBackup(backupPath, fs);
-        return { ok: false, error: formatFailedWriteAfterBackup(targetPath, written.error) };
+        return { ok: false, error: formatFailedWriteAfterBackup(targetPath, written) };
       }
       return written;
     }
