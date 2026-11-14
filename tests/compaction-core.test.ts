@@ -71,8 +71,8 @@ test("canonical entries preserve event ids while sharing current-epoch record fi
   expect(readCanonicalEntries(events).map(entry => entry.record)).toEqual(readCanonicalRecords(events));
   expect(readCanonicalEntries([...events, reset("empty")])).toEqual([]);
   const logReader = {
-    readAll(options?: { includeInternal?: boolean; includeCanonical?: boolean }) {
-      return options?.includeInternal || options?.includeCanonical
+    readAll(options?: { includeInternal?: boolean }) {
+      return options?.includeInternal
         ? events
         : events.filter(e => e.kind !== "canonical_message" && e.kind !== "compaction_commit");
     },

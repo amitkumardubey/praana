@@ -25,8 +25,8 @@ import { toolIcon } from "../src/ui/tui/tool-icons.js";
 
 const api = async () => searchTranscriptModule;
 
-// Raw reads must opt into internal events; includeCanonical remains for readers keyed on it.
-const RAW_EVENTS = { includeCanonical: true, includeInternal: true } as const;
+// Raw reads must opt into internal events.
+const RAW_EVENTS = { includeInternal: true } as const;
 
 const roots: string[] = [];
 const logs: EventLog[] = [];
@@ -89,23 +89,18 @@ function addResetBoundary(log: EventLog, id: string): void {
 }
 
 describe("search_transcript tool (PR3)", () => {
-  test.each(["includeCanonical", "includeInternal"] as const)("requests unfiltered canonical events with the %s reader API", async (option) => {
+  test("requests unfiltered canonical events with only the internal reader option", async () => {
     const { log } = openLog();
-    addCanonical(log, "raw-message", {
-      formatVersion: 1,
-      kind: "user_input",
-      turnId: 1,
-      message: { text: "raw canonical needle" },
-    });
-    const events = log.readAll(RAW_EVENTS);
-    const reader = {
-      readAll: (options?: { includeCanonical?: boolean; includeInternal?: boolean }) =>
-        options?.[option] ? events : events.filter((event) => event.kind !== "canonical_message"),
-    };
-    const tool = searchTranscriptModule.createSearchTranscriptTool({ eventLog: reader }).search_transcript;
+    const writer = new CanonicalWriter(log, error => { throw error; });
+    await writer.startTurn("raw canonical needle");
+    const id = log.readAll(RAW_EVENTS).at(-1)!.event_id;
+    const read = spyOn(log, "readAll");
+    const tool = searchTranscriptModule.createSearchTranscriptTool({ eventLog: log }).search_transcript;
     const result = await tool.execute({ query: "needle" });
     if (!result.ok || result.mode !== "search") throw new Error("Expected search");
-    expect(result.matches.map((match) => match.id)).toEqual(["raw-message"]);
+    expect(result.matches.map((match) => match.id)).toEqual([id]);
+    expect(read).toHaveBeenCalled();
+    for (const args of read.mock.calls) expect(args).toEqual([{ includeInternal: true }]);
   });
 
   test.each([{ query: "legacy needle" }, { id: "legacy-user" }])("directs legacy-only sessions to search_session_log for %j", async (args) => {
