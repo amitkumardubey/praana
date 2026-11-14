@@ -412,3 +412,44 @@ test("the header refusal covers newlines, truncation and Unicode spaces", async 
     expect([name, (await store.write({ ...entry, name, description, body })).ok]).toEqual([name, true]);
   }
 });
+
+/** A scope is either absent or one of the two known strings. Anything else must be a fixed
+ * refusal from the store, never a thrown exception and never an echoed value; a falsy value
+ * must not silently mean "unscoped", which would skip the removal guard. */
+const HOSTILE_SCOPES: Array<[string, unknown]> = [
+  ["symbol", Symbol("scope")],
+  ["throwing toString", { toString() { throw new Error("toString failed"); } }],
+  ["number", 42],
+  ["zero", 0],
+  ["false", false],
+  ["empty string", ""],
+  ["elsewhere", "elsewhere"],
+  ["array", ["global"]],
+  ["object", { scope: "global" }],
+  ["true", true],
+];
+
+test("read, remove and recall refuse every invalid scope with one fixed message", async () => {
+  const home = await homeDir();
+  const store = make(home);
+  expect((await store.write(entry)).ok).toBe(true);
+  const calls = [
+    ["read", (scope: unknown) => store.read({ name: entry.name, scope } as never)],
+    ["remove", (scope: unknown) => store.remove({ name: entry.name, scope } as never)],
+    ["recall name", (scope: unknown) => store.recall({ name: entry.name, scope } as never)],
+    ["recall query", (scope: unknown) => store.recall({ query: "complete", scope } as never)],
+  ] as const;
+  for (const [label, call] of calls) {
+    for (const [name, scope] of HOSTILE_SCOPES) {
+      let result: unknown;
+      try { result = await call(scope); } catch (error) { result = `threw: ${String(error)}`; }
+      expect([label, name, result]).toEqual([label, name, { ok: false, error: "Invalid scope" }]);
+    }
+  }
+  // Nothing was deleted by a refused scope, and the memory is still readable.
+  expect(await fs.exists(join(home, ".praana/memory", `${entry.name}.md`))).toBe(true);
+  expect(await store.read({ name: entry.name })).toMatchObject({ ok: true, memory: { name: entry.name } });
+  // A valid scope and an absent scope keep working.
+  expect(await store.read({ name: entry.name, scope: "global" })).toMatchObject({ ok: true, memory: { scope: "global" } });
+  expect(await store.recall({ name: entry.name, scope: "project" })).toEqual({ ok: false, error: "Memory not found" });
+});

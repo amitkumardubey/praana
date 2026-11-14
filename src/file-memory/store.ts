@@ -52,6 +52,13 @@ const blockingScopes = (skippedScopes: SkippedScope[], rule: "answer" | "removal
   return clean < 0 ? scopes : scopes.slice(0, clean);
 };
 const missing = (error: unknown) => (error as NodeJS.ErrnoException)?.code === "ENOENT";
+/** A requested scope is either absent or exactly one of the known strings. Anything else is
+ * refused with this one fixed message, so a hostile value is never interpolated into an error
+ * and a falsy value can never be mistaken for "unscoped" (which would skip a removal guard). */
+const INVALID_SCOPE = "Invalid scope";
+const scopeRefusal = (scope: unknown): ResultError | undefined =>
+  scope === undefined || (typeof scope === "string" && scopes.includes(scope as MemoryScope)) ? undefined : { ok: false, error: INVALID_SCOPE };
+const requestedScope = (scope: unknown): MemoryScope | undefined => scope as MemoryScope | undefined;
 /** Path-free cause class for a single unreadable memory file. */
 const readCause = (error: unknown): string => {
   switch ((error as NodeJS.ErrnoException)?.code) {
@@ -331,8 +338,10 @@ export function createFileMemoryStore(options: StoreOptions) {
   async function read(input: { scope?: MemoryScope; name: string }): Promise<({ ok: true; memory: Memory & { scope: MemoryScope } } & ScopeWarnings) | ResultError> {
     const fields = snapshotInput(input, READ_FIELDS);
     if (!fields) return { ok: false, error: FIELD_READ_REFUSAL };
+    const invalidScope = scopeRefusal(fields.scope);
+    if (invalidScope) return invalidScope;
     const name = fields.name;
-    const requested = fields.scope as MemoryScope | undefined;
+    const requested = requestedScope(fields.scope);
     if (!validName(name)) return { ok: false, error: "Invalid memory name" };
     const scanned = await visitScopes(requested, async (scope) => {
       const dir = await directory(scope, false);
@@ -363,8 +372,10 @@ export function createFileMemoryStore(options: StoreOptions) {
     if (options.incognito) return incognitoRefusal("removal");
     const fields = snapshotInput(input, READ_FIELDS);
     if (!fields) return { ok: false, error: FIELD_READ_REFUSAL };
+    const invalidScope = scopeRefusal(fields.scope);
+    if (invalidScope) return invalidScope;
     const name = fields.name;
-    const requested = fields.scope as MemoryScope | undefined;
+    const requested = requestedScope(fields.scope);
     if (!validName(name)) return { ok: false, error: "Invalid memory name" };
     try {
       const skipped: SkippedScope[] = [];
@@ -428,9 +439,11 @@ export function createFileMemoryStore(options: StoreOptions) {
   async function recall(input: { query?: string; name?: string; scope?: MemoryScope }): Promise<({ ok: true; memory: ScopedMemory } & ScopeWarnings) | ({ ok: true; matches: RecallMatch[] } & ScopeWarnings) | ResultError> {
     const fields = snapshotInput(input, RECALL_FIELDS);
     if (!fields) return { ok: false, error: FIELD_READ_REFUSAL };
+    const invalidScope = scopeRefusal(fields.scope);
+    if (invalidScope) return invalidScope;
     const query = fields.query;
     const name = fields.name as string | undefined;
-    const scope = fields.scope as MemoryScope | undefined;
+    const scope = requestedScope(fields.scope);
     if ((query !== undefined) === (name !== undefined)) return { ok: false, error: "Provide exactly one of query or name" };
     if (name !== undefined) return read({ name, scope });
     // A query always searches both scopes, so a scope here would be silently ignored.
