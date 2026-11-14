@@ -1,13 +1,15 @@
 import { z } from "zod";
 import { defineTool } from "../tools/tool-def.js";
-import { MEMORY_NAME_PATTERN, validName } from "./format.js";
+import { MEMORY_NAME_SCHEMA_PATTERN } from "./format.js";
 import type { createFileMemoryStore } from "./store.js";
 
 type ToolStore = Pick<ReturnType<typeof createFileMemoryStore>, "write" | "recall" | "remove">;
 const NAME_RULE = "Invalid memory name: use a non-reserved lowercase slug of at most 64 characters";
-// The regex reaches the model as a JSON Schema `pattern`, so the published schema states the
-// whole rule, reserved names included.
-const name = z.string().regex(MEMORY_NAME_PATTERN, NAME_RULE).refine(validName, NAME_RULE);
+const NAME_DESCRIPTION = "Non-reserved lowercase slug of at most 64 characters; reserved names such as memory, con, nul are refused";
+// The regex reaches the model as a JSON Schema `pattern`, so it stays the plain slug: a
+// negative lookahead is the riskiest form for a structured-output validator. The reserved
+// names are stated in the field description and refused at execution by the store.
+const name = z.string().regex(MEMORY_NAME_SCHEMA_PATTERN, NAME_RULE).describe(NAME_DESCRIPTION);
 const scope = z.enum(["global", "project"]);
 
 function execute<T>(schema: z.ZodType<T>, operation: (args: T) => Promise<unknown>) {

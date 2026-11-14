@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { MEMORY_NAME_PATTERN, parseMemory, sanitizeDescription, serializeMemory, validName, validateMemory } from "../src/file-memory/format.js";
+import { MEMORY_NAME_SCHEMA_PATTERN, parseMemory, sanitizeDescription, serializeMemory, validName, validateMemory } from "../src/file-memory/format.js";
 
 const entry = { name: "example", description: "A useful note", type: "user" as const, updated: "2026-01-02", body: "Hello world" };
 
@@ -18,22 +18,34 @@ describe("file memory format", () => {
     expect(parseMemory(serializeMemory({ ...entry, body: "" }).trimEnd())).toEqual({ ...entry, body: "" });
     expect(parseMemory(serializeMemory({ ...entry, body: "" }))).toEqual({ ...entry, body: "" });
   });
-  test("the published name pattern is the whole name rule", () => {
-    const pattern = new RegExp(MEMORY_NAME_PATTERN.source);
-    const names = [
-      "coffee", "a", "a-b-c", "note-1", "0-start",
-      // Reserved device and index names fail the pattern, not only the validator.
-      "memory", "con", "prn", "aux", "nul", "com1", "com9", "lpt1", "lpt9",
+  test("the published name pattern is the plain slug while the validator keeps the reserved names", () => {
+    const published = new RegExp(MEMORY_NAME_SCHEMA_PATTERN.source);
+    expect(published.source).toBe("^[a-z0-9][a-z0-9-]{0,63}$");
+    // No lookahead: a structured-output validator may reject one.
+    expect(published.source).not.toContain("?!");
+    const names: Array<[string, boolean]> = [
+      ["coffee", true], ["a", true], ["a-b-c", true], ["note-1", true], ["0-start", true],
       // Neighbours of the reserved set are ordinary names.
-      "com0", "lpt0", "memorys", "console", "nullable",
-      "Upper", "Coffee", "-lead", "trail-", "under_score", "two words", "",
-      "a".repeat(64), "a".repeat(65),
-      // `$` does not match before a trailing newline, so the lookahead cannot smuggle one.
-      "coffee\n", "coffee\r\n", "memory\n", "con\n",
+      ["com0", true], ["lpt0", true], ["memorys", true], ["console", true], ["nullable", true],
+      ["a".repeat(64), true],
+      // Reserved device and index names keep their execution-time refusal in validName.
+      ["memory", false], ["con", false], ["prn", false], ["aux", false], ["nul", false],
+      ["com1", false], ["com9", false], ["lpt1", false], ["lpt9", false],
+      ["Upper", false], ["Coffee", false], ["-lead", false], ["trail-", true], ["under_score", false],
+      ["two words", false], ["", false], ["a".repeat(65), false],
+      ["coffee\n", false], ["coffee\r\n", false], ["memory\n", false], ["con\n", false],
     ];
-    for (const name of names) expect([name, pattern.test(name)]).toEqual([name, validName(name)]);
+    // Both rules are consulted at execution, so a name is accepted only when the published
+    // shape and the validator agree.
+    for (const [name, accepted] of names) expect([name, published.test(name) && validName(name)]).toEqual([name, accepted]);
+    // The published pattern itself is exactly the slug shape, so it accepts reserved names
+    // that the validator refuses and nothing the validator would allow.
+    for (const reserved of ["memory", "con", "prn", "aux", "nul", "com1", "com9", "lpt1", "lpt9"]) {
+      expect([reserved, published.test(reserved), validName(reserved)]).toEqual([reserved, true, false]);
+    }
+    for (const name of ["coffee", "note-1", "a", "a".repeat(64)]) expect([name, published.test(name)]).toEqual([name, validName(name)]);
     expect(validName("coffee\n")).toBe(false);
-    expect(pattern.test("memory\n")).toBe(false);
+    expect(published.test("memory\n")).toBe(false);
   });
   test("validates names, descriptions, byte limits and policy", () => {
     for (const name of ["../x", "a/b", ".hidden", "/abs", "Upper", "a".repeat(65), "memory", "con", "com9", "lpt1", "nul", "aux", "prn"]) {

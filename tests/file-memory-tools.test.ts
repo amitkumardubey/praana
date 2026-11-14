@@ -4,7 +4,6 @@ import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFileMemoryStore } from "../src/file-memory/store.js";
-import { MEMORY_NAME_PATTERN } from "../src/file-memory/format.js";
 import { normalizeToolParameters } from "../src/turn.js";
 import { createFileMemoryTools } from "../src/file-memory/tools.js";
 import { memoryDirectories, projectKey } from "../src/file-memory/paths.js";
@@ -35,25 +34,37 @@ test("three inert file memory tools delegate valid operations and expose their l
   refused(await tools.forget_memory.execute({ name: entry.name }));
 });
 
-test("the generated JSON schema tells the model the memory name rule", async () => {
-  const { tools } = await setup();
+test("the generated JSON schema publishes the plain slug and lists the reserved names", async () => {
+  const { tools, store } = await setup();
   const nameProperty = (tool: { parameters?: unknown }) => {
-    const schema = normalizeToolParameters(tool.parameters) as { properties: Record<string, { pattern?: string }> };
+    const schema = normalizeToolParameters(tool.parameters) as { properties: Record<string, { pattern?: string; description?: string }> };
     return schema.properties.name;
   };
-  expect(MEMORY_NAME_PATTERN.source).toBe("^(?!(?:memory|con|prn|aux|nul|com[1-9]|lpt[1-9])$)[a-z0-9][a-z0-9-]{0,63}$");
   for (const tool of [tools.remember, tools.recall, tools.forget_memory]) {
-    expect(nameProperty(tool)?.pattern).toBe(MEMORY_NAME_PATTERN.source);
+    // No lookahead: a structured-output validator may reject one, so the published shape is
+    // the plain slug and the reserved names travel in the field description.
+    expect([nameProperty(tool)?.pattern, nameProperty(tool)?.description?.includes("memory, con, nul")]).toEqual(["^[a-z0-9][a-z0-9-]{0,63}$", true]);
   }
-  // The published pattern excludes reserved names, so the model sees the rule it must follow.
   const published = new RegExp(nameProperty(tools.remember)?.pattern ?? "");
-  for (const reserved of ["memory", "con", "prn", "aux", "nul", "com1", "com9", "lpt1", "lpt9"]) expect(published.test(reserved)).toBe(false);
-  expect(published.test("coffee")).toBe(true);
-  // The pattern and the validator cannot drift: the schema now states the rule it enforces.
-  refused(await tools.remember.execute({ ...entry, name: "Upper" }));
-  refused(await tools.remember.execute({ ...entry, name: "con" }));
+  expect(published.test("con")).toBe(true);
+  // Execution still refuses every reserved name, with exactly one message.
+  for (const reserved of ["memory", "con", "nul"]) {
+    for (const call of [
+      () => tools.remember.execute({ ...entry, name: reserved }),
+      () => tools.recall.execute({ name: reserved }),
+      () => tools.forget_memory.execute({ name: reserved, scope: "global" }),
+    ]) {
+      const result = await call();
+      refused(result);
+      expect([reserved, result.error]).toEqual([reserved, "Invalid memory name"]);
+    }
+  }
+  // A name that fails the published shape reports one message, not two.
+  const upper = await tools.remember.execute({ ...entry, name: "Upper" });
+  refused(upper);
+  expect(upper.error.split("Invalid memory name").length - 1).toBe(1);
+  expect((await store.list()).entries).toEqual([]);
 });
-
 test("remember execute rejects wrong types, missing fields, bad enums and unknown keys", async () => {
   const { tools, store } = await setup();
   const invalid: unknown[] = [null, undefined, [], "text", 1, {}, { ...entry, scope: "other" }, { ...entry, type: "fact" }, { ...entry, extra: true }, { ...entry, query: 42 }];

@@ -16,6 +16,10 @@ export type MemoryInput = Omit<Memory, "updated">;
 const RESERVED_NAME_SOURCE = "(?:memory|con|prn|aux|nul|com[1-9]|lpt[1-9])";
 const NAME_SLUG_SOURCE = "[a-z0-9][a-z0-9-]{0,63}";
 export const MEMORY_NAME_PATTERN = new RegExp(`^(?!${RESERVED_NAME_SOURCE}$)${NAME_SLUG_SOURCE}$`);
+/** The shape the tools publish to the model. A structured-output validator may reject a
+ * negative lookahead, so this stays the plain slug: the reserved names are listed in the
+ * name field description and `validName` still refuses them at execution. */
+export const MEMORY_NAME_SCHEMA_PATTERN = new RegExp(`^${NAME_SLUG_SOURCE}$`);
 const types = new Set(["user", "feedback", "project", "reference"]);
 
 export function validName(name: unknown): name is string {
