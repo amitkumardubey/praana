@@ -238,14 +238,14 @@ export type CapacityErrorKind = "reserve_exceeds_window" | "invalid_capacity" | 
 export type SummaryRequestMeta = NonNullable<FrozenState["summaryRequest"]>;
 
 /**
- * An accepted, uncommitted summary. Callers may reuse it only when all four match:
- * boundaryEventId is still the intended cut, and resetEpoch, baseGeneration and
- * previousSummarySha256 match the current frozen state (hash null for no summary).
+ * An accepted, uncommitted summary. Reuse requires boundaryEventId to remain the intended cut,
+ * and resetEpoch, baseBoundaryEventId and previousSummarySha256 to match the current frozen
+ * state (hash null for no summary). Generation is irrelevant: stubs-only commits preserve this base.
  */
 export interface DiscardedSummary {
   boundaryEventId: string;
   resetEpoch: string;
-  baseGeneration: number;
+  baseBoundaryEventId: string | null;
   previousSummarySha256: string | null;
   text: string;
   request: SummaryRequestMeta | null;
@@ -1052,7 +1052,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
         discardedSummary = {
           boundaryEventId: newBoundaryEventId,
           resetEpoch: state.resetEpoch,
-          baseGeneration: state.generation,
+          baseBoundaryEventId: state.boundaryEventId,
           previousSummarySha256: state.summary === null ? null : createHash("sha256").update(state.summary).digest("hex"),
           text: acceptedSummary,
           request: summaryRequestMeta,

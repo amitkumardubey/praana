@@ -73,7 +73,7 @@ function expectDiscarded(outcome: CompactionOutcome, log: EventLog, text: string
     discardedSummary: {
       boundaryEventId,
       resetEpoch: SESSION_START_EPOCH,
-      baseGeneration: 0,
+      baseBoundaryEventId: null,
       previousSummarySha256: null,
       text,
       request: {
@@ -403,7 +403,7 @@ test("a capacity error exposes the accepted summary and its paid request metadat
     discardedSummary: {
       boundaryEventId,
       resetEpoch: SESSION_START_EPOCH,
-      baseGeneration: 0,
+      baseBoundaryEventId: null,
       previousSummarySha256: null,
       text: accepted,
       request: {
@@ -463,7 +463,7 @@ test.each(["unchanged_fits", "stubbed", "capacity_error"] as const)("discarded s
   expect(outcome).toMatchObject({
     summaryDiscarded: true,
     discardedSummary: {
-      boundaryEventId, resetEpoch, baseGeneration: base.state.generation,
+      boundaryEventId, resetEpoch, baseBoundaryEventId: base.state.boundaryEventId,
       previousSummarySha256: createHash("sha256").update(previousSummary).digest("hex"),
       text: accepted,
     },
@@ -473,12 +473,32 @@ test.each(["unchanged_fits", "stubbed", "capacity_error"] as const)("discarded s
   if (!currentState.ok) throw currentState.error;
   expect(currentState.state.summary).toBe(previousSummary);
   expect(currentState.state.boundaryEventId).toBe(baseBoundary);
-  if (status === "stubbed") {
-    expect(outcome.discardedSummary.baseGeneration).not.toBe(currentState.state.generation);
-    expect(currentState.state.generation).toBe(base.state.generation + 1);
-  } else {
-    expect(outcome.discardedSummary.baseGeneration).toBe(currentState.state.generation);
-  }
+  expect(outcome.discardedSummary).not.toHaveProperty("baseGeneration");
+  const reuseIdentity = (state: typeof base.state) => ({
+    resetEpoch: state.resetEpoch,
+    baseBoundaryEventId: state.boundaryEventId,
+    previousSummarySha256: state.summary === null ? null : createHash("sha256").update(state.summary).digest("hex"),
+  });
+  // A stubs-only commit changes generation, not the summary's reusable base.
+  expect(outcome.discardedSummary).toMatchObject(reuseIdentity(currentState.state));
+  expect(currentState.state.generation).toBe(base.state.generation + (status === "stubbed" ? 1 : 0));
+
+  // Move only the cut, preserving summary bytes, so the boundary alone invalidates reuse.
+  expect(appendCommit(log, {
+    formatVersion: 1, ...currentState.state, generation: currentState.state.generation + 1,
+    boundaryEventId, stubSet: [], summaryRequest: base.state.summaryRequest,
+  })).toEqual({ status: "committed" });
+  const folded = restoreFrozenStateFromLog(log);
+  if (!folded.ok) throw folded.error;
+  expect(outcome.discardedSummary).not.toMatchObject(reuseIdentity(folded.state));
+  expect(outcome.discardedSummary.baseBoundaryEventId).not.toBe(folded.state.boundaryEventId);
+  expect(outcome.discardedSummary.previousSummarySha256).toBe(reuseIdentity(folded.state).previousSummarySha256);
+
+  log.append({ kind: "system_note", actor: "kernel", payload: { type: "reset_boundary", command: "/clear" } });
+  const reset = restoreFrozenStateFromLog(log);
+  if (!reset.ok) throw reset.error;
+  expect(outcome.discardedSummary).not.toMatchObject(reuseIdentity(reset.state));
+  expect(outcome.discardedSummary.resetEpoch).not.toBe(reset.state.resetEpoch);
 });
 
 test.each([
