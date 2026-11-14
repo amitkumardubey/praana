@@ -116,6 +116,13 @@ export const DEFAULT_EXACT_BYTES_TOOLS: ReadonlySet<string> = new Set(
 
 /** Shared artifact ID token grammar used by marker formatting and extraction. */
 const ARTIFACT_ID_GRAMMAR = "[A-Za-z0-9][A-Za-z0-9_.:/-]*";
+/**
+ * Maximum accepted artifact ID length (in ASCII characters/bytes).
+ * Reserved during worst-case marker sizing so a valid stored ID never pushes
+ * an already-fitted candidate over `maxBytes`.
+ */
+const MAX_ARTIFACT_ID_LENGTH = 64;
+const RESERVED_ARTIFACT_ID = "a".repeat(MAX_ARTIFACT_ID_LENGTH);
 const ARTIFACT_ID_EXACT_RE = new RegExp(`^${ARTIFACT_ID_GRAMMAR}$`);
 const ELIDED_MARKER_LINE_RE = new RegExp(
   `^\\.\\.\\. \\[elided (?:[1-9]\\d* lines? / )?\\d+ bytes \\(partial lines at cut truncated\\); full output stored in artifact (${ARTIFACT_ID_GRAMMAR}) — call retrieve_artifact\\("\\1"\\) to inspect\\] \\.\\.\\.$`,
@@ -489,7 +496,11 @@ function normalizeArtifactId(
   } else if (stored && typeof stored === "object") {
     raw = stored.artifactId;
   }
-  return typeof raw === "string" && ARTIFACT_ID_EXACT_RE.test(raw) ? raw : undefined;
+  return typeof raw === "string" &&
+    raw.length <= MAX_ARTIFACT_ID_LENGTH &&
+    ARTIFACT_ID_EXACT_RE.test(raw)
+    ? raw
+    : undefined;
 }
 
 function formatElisionMarker(
@@ -666,10 +677,10 @@ export function shapeToolOutput(input: ShapeToolOutputInput): ShapeToolOutputRes
   const maxLinesCap = Math.max(0, opts.maxLines);
   const targetMaxBytes = Math.min(opts.maxBytes, totalBytes - 1);
 
-  // Probe with a worst-case marker before calling storeArtifact so we never
-  // persist an artifact when the shaped result would exceed caps or not shrink.
+  // Probe with a worst-case marker (MAX_ARTIFACT_ID_LENGTH) before calling
+  // storeArtifact so no valid stored ID can push the final marker over caps.
   const explicitArtifactId = normalizeArtifactId(input.artifactId);
-  const probeId = explicitArtifactId ?? (input.storeArtifact ? "art_000000000000" : undefined);
+  const probeId = explicitArtifactId || input.storeArtifact ? RESERVED_ARTIFACT_ID : undefined;
   const probe = convergeShapedCandidate(rawText, lines, totalBytes, exceedsLines, opts, probeId);
   if (!probe || probe.text.length >= rawText.length || Buffer.byteLength(probe.text, "utf8") > targetMaxBytes) {
     return unchanged();
@@ -677,7 +688,11 @@ export function shapeToolOutput(input: ShapeToolOutputInput): ShapeToolOutputRes
 
   let resolvedArtifactId = explicitArtifactId;
   if (!resolvedArtifactId && input.storeArtifact) {
-    resolvedArtifactId = normalizeArtifactId(input.storeArtifact(rawText));
+    try {
+      resolvedArtifactId = normalizeArtifactId(input.storeArtifact(rawText));
+    } catch {
+      resolvedArtifactId = undefined;
+    }
   }
 
   const finalCand =

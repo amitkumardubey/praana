@@ -1464,4 +1464,80 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     expect(singleRes.omittedLines).toBe(0);
     expect(singleRes.text).not.toMatch(/0\s+lines?/i);
   });
+
+  test("reserves worst-case artifact id width before calling storeArtifact and handles store errors without orphan artifacts", () => {
+    const raw = "x".repeat(800);
+
+    // 1. Valid id longer than 16-char placeholder (48 chars) succeeds and stays under maxBytes.
+    let calls48 = 0;
+    const id48 = `art_custom_${"a".repeat(37)}`;
+    const res48 = shapeToolOutput({
+      toolName: "shell",
+      command: "ls -la",
+      text: raw,
+      storeArtifact: () => {
+        calls48++;
+        return id48;
+      },
+      options: { inlineThresholdTokens: 50, maxBytes: 400, maxLines: 20 },
+    });
+    expect(calls48).toBe(1);
+    expect(res48.shaped).toBe(true);
+    expect(res48.artifactId).toBe(id48);
+    expect(Buffer.byteLength(res48.text, "utf8")).toBeLessThanOrEqual(400);
+
+    // 2. Overlong id (200 chars, beyond accepted id length) never leaves output unshaped after storeArtifact ran.
+    let calls200 = 0;
+    const id200 = `art_${"z".repeat(196)}`;
+    const res200 = shapeToolOutput({
+      toolName: "shell",
+      command: "ls -la",
+      text: raw,
+      storeArtifact: () => {
+        calls200++;
+        return id200;
+      },
+      options: { inlineThresholdTokens: 50, maxBytes: 350, maxLines: 20 },
+    });
+    expect(calls200).toBe(1);
+    expect(res200.shaped).toBe(true);
+    expect(res200.artifactId).toBeUndefined();
+    expect(res200.text).toContain("artifact store unavailable");
+    expect(Buffer.byteLength(res200.text, "utf8")).toBeLessThanOrEqual(350);
+
+    // 3. Throwing storeArtifact never propagates; falls back to unavailable marker and is called once.
+    let throwCalls = 0;
+    const resThrow = shapeToolOutput({
+      toolName: "shell",
+      command: "ls -la",
+      text: raw,
+      storeArtifact: () => {
+        throwCalls++;
+        throw new Error("sqlite busy");
+      },
+      options: { inlineThresholdTokens: 50, maxBytes: 512, maxLines: 20 },
+    });
+    expect(throwCalls).toBe(1);
+    expect(resThrow.shaped).toBe(true);
+    expect(resThrow.artifactId).toBeUndefined();
+    expect(resThrow.text).toContain("artifact store unavailable");
+
+    // 4. When output cannot fit the worst-case reserved marker (returned unshaped), storeArtifact is never called.
+    for (const smallMaxBytes of [80, 240]) {
+      let unshapedCalls = 0;
+      const resUnshaped = shapeToolOutput({
+        toolName: "shell",
+        command: "ls -la",
+        text: raw,
+        storeArtifact: () => {
+          unshapedCalls++;
+          return "art_never_stored";
+        },
+        options: { inlineThresholdTokens: 50, maxBytes: smallMaxBytes, maxLines: 20 },
+      });
+      expect(resUnshaped.shaped).toBe(false);
+      expect(resUnshaped.text).toBe(raw);
+      expect(unshapedCalls).toBe(0);
+    }
+  });
 });
