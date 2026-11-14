@@ -438,7 +438,8 @@ test("a capacity error exposes the accepted summary and its paid request metadat
       request: {
         cutDescription: '1 folded user turns (count user messages, excluding a leading previous-summary message); the retained tail starts at the user message beginning "now"; summarize only what comes before it',
         capTokens: summaryCapTokens(usableTokens),
-        instructionSha256: createHash("sha256").update(instruction).digest("hex"),
+        // This window uses a one-batch fallback, so hash its single primary hash.
+        instructionSha256: createHash("sha256").update(createHash("sha256").update(instruction).digest("hex")).digest("hex"),
         usage,
       },
     },
@@ -493,7 +494,11 @@ test("batch fallback preserves the discarded combined summary and batch request 
       text: accepted, boundaryEventId, resetEpoch: SESSION_START_EPOCH, baseBoundaryEventId: null, previousSummarySha256: null,
       request: {
         cutDescription, capTokens,
-        instructionSha256: createHash("sha256").update(combinedInstruction).digest("hex"),
+        instructionSha256: createHash("sha256").update(requests.map(request => {
+          const last = request.messages.at(-1)!;
+          if (last.role === "tool_result" || typeof last.content !== "string") throw new Error("Expected instruction");
+          return createHash("sha256").update(last.content).digest("hex");
+        }).join("\n")).digest("hex"),
         usage: { input: 10 * requests.length, output: 5 * requests.length, totalTokens: 15 * requests.length },
       },
     },

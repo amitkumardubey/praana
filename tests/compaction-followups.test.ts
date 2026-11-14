@@ -1,4 +1,6 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, mock, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
+import * as requestsApi from "../src/compaction-requests.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { CanonicalWriter } from "../src/canonical-transcript.js";
@@ -10,6 +12,7 @@ import type { StreamRequest } from "../src/llm/types.js";
 
 const fixtures: { log: EventLog; root: string }[] = [];
 afterEach(() => {
+  mock.restore();
   for (const { log, root } of fixtures.splice(0)) { log.close(); rmSync(root, { recursive: true, force: true }); }
 });
 function fixture() {
@@ -120,6 +123,46 @@ for (const batch of [false, true]) test(`previous summary is sent once with batc
     expect(last.content).toContain("previous summary is the first message above");
     expect(JSON.stringify(request.messages)).not.toContain("no retained tail");
   }
+});
+
+test("batch metadata hashes all three primary instructions in order", async () => {
+  const hashes: string[] = [];
+  for (const changed of [-1, 0, 1, 2]) {
+    const { log, writer } = fixture();
+    for (const size of [13000, 2000, 2000]) {
+      const turn = await writer.startTurn("x".repeat(size));
+      await writer.assistant(turn, { role: "assistant", content: "done" });
+    }
+    await writer.startTurn("retained");
+    const original = requestsApi.nextBatchSummaryRequest;
+    const spy = spyOn(requestsApi, "nextBatchSummaryRequest").mockImplementation((...args) => {
+      const step = original(...args);
+      if (step.status === "request" && step.attempt === 0 && step.batchIndex === changed) {
+        const last = step.request.messages.at(-1)!;
+        if (last.role === "tool_result" || typeof last.content !== "string") throw new Error("Expected instruction");
+        step.request.messages[step.request.messages.length - 1] = { ...last, content: last.content + "\nChanged instruction." };
+      }
+      return step;
+    });
+    const instructions: string[] = [];
+    const outcome = await compaction.runCompaction({ log, liveRequest: live, contextWindowTokens: 4000, options,
+      runSummary: async request => {
+        const last = request.messages.at(-1)!;
+        if (last.role === "tool_result" || typeof last.content !== "string") throw new Error("Expected instruction");
+        instructions.push(last.content);
+        return response();
+      },
+    });
+    spy.mockRestore();
+    expect(instructions).toHaveLength(3);
+    expect(outcome.status).toBe("rewritten");
+    if (outcome.status !== "rewritten") throw new Error(outcome.status);
+    const hash = outcome.state.summaryRequest!.instructionSha256;
+    const expected = createHash("sha256").update(instructions.map(text => createHash("sha256").update(text).digest("hex")).join("\n")).digest("hex");
+    expect(hash).toBe(expected);
+    hashes.push(hash);
+  }
+  expect(new Set(hashes).size).toBe(4);
 });
 
 for (const length of [80, 200]) for (const previous of [false, true]) {

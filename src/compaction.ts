@@ -1010,6 +1010,7 @@ async function runCompactionChecked(input: RunCompactionInput): Promise<Compacti
           unchangedReason = "fold_not_possible";
         } else {
           const attempts: BatchSummaryAttempt[] = [];
+          const instructionHashes: string[] = [];
           const usages: (Partial<ProviderUsage> | null | undefined)[] = [];
           while (true) {
             const step = nextBatchSummaryRequest(planned.plan, attempts);
@@ -1020,13 +1021,14 @@ async function runCompactionChecked(input: RunCompactionInput): Promise<Compacti
             }
             if (step.status === "complete") {
               acceptedSummary = step.summary;
+              instructionSha256 = createHash("sha256").update(instructionHashes.join("\n")).digest("hex");
               acceptedUsage = mergeUsage(usages);
               break;
             }
             if (step.attempt === 0) {
               const lastMsg = step.request.messages.at(-1);
               if (lastMsg && lastMsg.role !== "tool_result" && typeof lastMsg.content === "string") {
-                instructionSha256 = createHash("sha256").update(lastMsg.content).digest("hex");
+                instructionHashes.push(createHash("sha256").update(lastMsg.content).digest("hex"));
               }
             }
             const call = await invokeSummarizer(runSummary, step.request, signal, opts.summaryTimeoutMs);

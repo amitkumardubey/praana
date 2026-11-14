@@ -162,13 +162,21 @@ export const COMPACTION_COMMIT_VERSION = 1;
 export const SESSION_START_EPOCH = "session_start";
 const COMPACTION_COMMIT_KIND = "compaction_commit";
 
+export interface SummaryRequestMeta {
+  cutDescription: string;
+  capTokens: number;
+  /** Same-model: instruction hash. Batch: SHA-256 of primary instruction hashes joined by `\n` in batch order. */
+  instructionSha256: string;
+  usage: Partial<ProviderUsage> | null;
+}
+
 export interface FrozenState {
   resetEpoch: string;
   generation: number;
   boundaryEventId: string | null;
   summary: string | null;
   stubSet: { eventId: string; stubText: string }[];
-  summaryRequest: { cutDescription: string; capTokens: number; instructionSha256: string; usage: Partial<ProviderUsage> | null } | null;
+  summaryRequest: SummaryRequestMeta | null;
   /** Reserved exact prefix bytes, accepted on replay but not emitted here. */
   prefix?: { systemFrame: string; snapshot: string };
 }
