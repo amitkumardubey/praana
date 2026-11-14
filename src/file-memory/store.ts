@@ -83,8 +83,9 @@ const RECALL_FIELDS = ["query", "name", "scope"] as const;
 const SCANNED_FIELDS = ["name", "description", "body"] as const;
 const FIELD_READ_REFUSAL = "Memory fields could not be read";
 /** The strict detector needs a matching END line, so a truncated or header-only key would
- * otherwise be stored. Any private-key header is refused, including the PGP block form. */
-const PRIVATE_KEY_HEADER = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/;
+ * otherwise be stored. Any private-key header is refused, whatever its case, dash count or
+ * inner spacing, including the PGP, OpenSSH, SSH2 and secret-key block forms. */
+const PRIVATE_KEY_HEADER = /-{4,5}\s*BEGIN\s+[A-Z0-9 ]*(?:PRIVATE\s+KEY(?:\s+BLOCK)?|SECRET\s+KEY\s+BLOCK)\s*-{4,5}/i;
 /** Read each allowed field exactly once, before anything is validated, scanned or
  * serialized: a getter or Proxy cannot answer the scan with clean text and the write
  * with a secret when the writer only ever sees this snapshot. */
@@ -104,6 +105,22 @@ function snapshotInput<K extends string>(input: unknown, fields: readonly K[]): 
     // throws on the property read below and is reported as a refusal instead.
     return snapshotFields(input as Record<string, unknown>, fields);
   } catch { return null; }
+}
+
+/** The header check and the strict scan are one refusal path: it collects every refused
+ * field and builds the message once, so no caller shares a mutated list. */
+function secretRefusal(draft: MemoryInput): string | null {
+  const refused: string[] = [];
+  for (const field of SCANNED_FIELDS) {
+    const value = draft[field];
+    if (typeof value !== "string") continue;
+    if (PRIVATE_KEY_HEADER.test(value)) { refused.push(field); continue; }
+    // The strict detector can throw on hostile input; that is a refusal, not an escape.
+    let scanned: string;
+    try { scanned = redactSecretsStrict(value); } catch { return "Secret scan failed"; }
+    if (scanned !== value) refused.push(field);
+  }
+  return refused.length ? `Secret-shaped content refused in ${refused.join(", ")}. Remove the secret-shaped text before retrying` : null;
 }
 
 function snapshotWrite(input: Record<string, unknown>): MemoryInput & { scope: MemoryScope } {
@@ -271,19 +288,11 @@ export function createFileMemoryStore(options: StoreOptions) {
       if (!input || typeof input !== "object" || Reflect.ownKeys(input).some((key) => !allowed.has(String(key)))) return { ok: false, error: "Unknown write input key; allowed keys: scope, type, name, description, body" };
       let draft: MemoryInput & { scope: MemoryScope };
       try { draft = snapshotWrite(input); } catch { return { ok: false, error: "Memory fields could not be read" }; }
-      const secretFields = SCANNED_FIELDS.filter((field) => typeof draft[field] === "string" && PRIVATE_KEY_HEADER.test(draft[field]));
-      if (secretFields.length) return { ok: false, error: `Secret-shaped content refused in ${secretFields.join(", ")}. Remove the secret-shaped text before retrying` };
+      const secret = secretRefusal(draft);
+      if (secret) return { ok: false, error: secret };
       const invalid = validateMemory(draft);
       if (invalid) return { ok: false, error: invalid };
       if (!scopes.includes(draft.scope)) return { ok: false, error: "Invalid scope" };
-      // Scan each string field of the snapshot, so the input's prototype is irrelevant and a
-      // strict-mode throw becomes a refusal instead of an exception out of write.
-      for (const field of SCANNED_FIELDS) {
-        let scanned: string;
-        try { scanned = redactSecretsStrict(draft[field]); } catch { return { ok: false, error: "Secret scan failed" }; }
-        if (scanned !== draft[field]) secretFields.push(field);
-      }
-      if (secretFields.length) return { ok: false, error: `Secret-shaped content refused in ${secretFields.join(", ")}. Remove the secret-shaped text before retrying` };
       const existingDir = await directory(draft.scope, false);
       let filenames: string[] = [];
       if (existingDir) {

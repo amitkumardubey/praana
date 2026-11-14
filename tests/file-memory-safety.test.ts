@@ -194,21 +194,33 @@ test("write reads every allowed field exactly once", async () => {
   expect(reads).toEqual({ scope: 1, type: 1, name: 1, description: 1, body: 1 });
 });
 
-test("a private key header is refused even when the detector cannot match a whole key", async () => {
+const KEY_HEADERS = [
+  "-----BEGIN PRIVATE KEY-----",
+  "-----BEGIN RSA PRIVATE KEY-----",
+  "-----BEGIN ENCRYPTED PRIVATE KEY-----",
+  "-----BEGIN OPENSSH PRIVATE KEY-----",
+  "-----BEGIN PGP PRIVATE KEY BLOCK-----",
+  "-----BEGIN SECRET KEY BLOCK-----",
+  "---- BEGIN SSH2 ENCRYPTED PRIVATE KEY ----",
+  "-----BEGIN  PRIVATE  KEY-----",
+  "-----begin private key-----",
+  "-----Begin Encrypted Private Key-----",
+  "-----begin pgp private key block-----",
+];
+
+test("a private key header is refused in any case, dash count or spacing, even truncated", async () => {
   const home = await homeDir();
   const store = make(home);
-  const header = "-----BEGIN PRIVATE KEY-----";
-  const cases: Array<[string, Record<string, string>, string]> = [
+  const cases: Array<[string, string, Record<string, string>]> = KEY_HEADERS.flatMap((header, index) => [
     // The strict detector needs a matching END line, so a truncated key would be stored.
-    ["truncated", { body: `${header}\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC` }, "body"],
-    ["complete", { body: "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----" }, "body"],
-    ["pgp", { body: "-----BEGIN PGP PRIVATE KEY BLOCK-----\nVersion: 4" }, "body"],
-    ["description", { description: header }, "description"],
-    ["name", { name: header }, "name"],
-  ];
-  for (const [label, extra, field] of cases) {
+    [`body-${index}`, "body", { body: `${header}\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC` }],
+    [`description-${index}`, "description", { description: header }],
+    [`name-${index}`, "name", { name: header }],
+  ]);
+  cases.push(["complete", "body", { body: "-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----" }]);
+  for (const [label, field, extra] of cases) {
     const result = await store.write({ ...entry, name: `key-${label}`, ...extra });
-    expect(result.ok).toBe(false);
+    expect([label, result.ok]).toEqual([label, false]);
     if (result.ok) continue;
     expect(result.error).toContain(field);
     expect(result.error).toContain("Remove the secret-shaped text");
@@ -217,6 +229,12 @@ test("a private key header is refused even when the detector cannot match a whol
   expect(await storedText(home)).not.toContain("PRIVATE KEY");
   // Prose about keys is not a header.
   expect((await store.write({ ...entry, name: "key-rotation", description: "Notes about the private key rotation", body: "We rotate the private key each year." })).ok).toBe(true);
+});
+
+test("the header check and the strict scan refuse through one message listing every field", async () => {
+  const home = await homeDir();
+  const result = await make(home).write({ ...entry, name: "-----BEGIN PRIVATE KEY-----", body: "sk-abcdefghijklmnopqrstuvwxyz123456" });
+  expect(result).toEqual({ ok: false, error: "Secret-shaped content refused in name, body. Remove the secret-shaped text before retrying" });
 });
 
 test("dangling .praana symlink is reported exactly, creates nothing and skips every scope", async () => {
