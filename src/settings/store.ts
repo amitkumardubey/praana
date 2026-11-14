@@ -608,7 +608,7 @@ function writeExclusiveFile(
     fs.fsync(fd);
     closed = true;
     fs.close(fd);
-    // Created exclusively with safeMode by openExclusive; no post-close chmod is needed.
+    // Opened with safeMode (subject to process umask); callers replacing an existing target chmod in afterClose before rename.
     stage = "afterClose";
     afterClose?.();
     return { ok: true };
@@ -682,15 +682,16 @@ function logBestEffortFailure(
  *
  * Permissions: when replacing an existing regular file, the caller supplies its
  * permission bits (`mode & 0o777`), so the temp file is opened exclusively with
- * that mode and never widened beyond the target; when creating a new file, mode
- * `0o600` is used. Ownership and hard links are NOT preserved: a save replaces
- * the file atomically, so hard-link siblings diverge.
+ * that mode (masked by process umask) and explicitly chmodded to `mode & 0o777`
+ * before the rename; when creating a new file (`mode === undefined`), mode
+ * `0o600` is used without an extra chmod. Ownership and hard links are NOT
+ * preserved: a save replaces the file atomically, so hard-link siblings diverge.
  */
 function writeDocumentAtomic(
   path: string,
   doc: Record<string, unknown>,
   fs: SettingsFs,
-  mode: number = 0o600,
+  mode?: number,
   targetInfo: { settingsPath: string; isSymlink: boolean } = { settingsPath: path, isSymlink: false },
 ): { ok: true } | { ok: false; error: string } {
   // Caller-supplied input is validated before it reaches the merge (`updateSettingsDocument`
@@ -717,8 +718,13 @@ function writeDocumentAtomic(
   const base = basename(path);
   const tmpPath = join(dir, `.${base}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`);
 
-  const res = writeExclusiveFile(tmpPath, bytes, fs, mode, () => {
-    // The renamed inode already has the target's preserved mode (or 0o600 for new files) from openExclusive.
+  const preserveMode = mode !== undefined ? mode & 0o777 : undefined;
+  const openMode = preserveMode ?? 0o600;
+
+  const res = writeExclusiveFile(tmpPath, bytes, fs, openMode, () => {
+    if (preserveMode !== undefined) {
+      fs.chmod(tmpPath, preserveMode);
+    }
     fs.rename(tmpPath, path);
     try {
       // Best effort: the rename has already committed, so a directory fsync failure must

@@ -1833,7 +1833,7 @@ console.log(JSON.stringify(res));
     }
   });
 
-  test("writeExclusiveFile relies on openExclusive(0o600) and does not call redundant post-close fs.chmod", async () => {
+  test("writeExclusiveFile opens new files and corrupt backups with 0o600 without chmod, and chmods only the temp file when replacing an existing target", async () => {
     const { createSettingsFs, updateSettingsDocument, replaceSettingsDocument } = await storeApi();
     const baseFs = createSettingsFs();
     const chmodCalls: string[] = [];
@@ -1858,11 +1858,13 @@ console.log(JSON.stringify(res));
       expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
     }
 
-    // Corrupt backup also opens with 0o600 and makes no redundant post-close chmod call.
+    // Corrupt backup opens with 0o600 without chmod; replacing the existing target chmods only the .tmp- file.
     writeFileSync(settingsPath, "{corrupt-for-chmod-check", "utf-8");
     const replaced = replaceSettingsDocument({ ...DEFAULT_USER_SETTINGS }, { fs: spyFs, backupCorrupt: true });
     expect(replaced.ok).toBe(true);
-    expect(chmodCalls).toEqual([]);
+    expect(chmodCalls.some((p) => p.includes(".corrupt-"))).toBe(false);
+    expect(chmodCalls).toHaveLength(1);
+    expect(chmodCalls[0]).toContain(".tmp-");
     expect(openModes).toEqual([0o600, 0o600, 0o600]);
     if (process.platform !== "win32" && replaced.ok && replaced.backupPath) {
       expect(statSync(replaced.backupPath).mode & 0o777).toBe(0o600);
@@ -2308,6 +2310,101 @@ console.log(JSON.stringify(res));
       expect(r.message).toBeDefined();
       expect(r.message!).toContain(r.backupPath!);
       expect(r.message!).toContain(targetPath);
+    }
+  });
+
+  test("preserves exact target permission bits under real umasks via pre-rename chmod, keeps new files at 0600 without chmod, and aborts cleanly when chmod fails", async () => {
+    if (process.platform === "win32") return;
+    const { createSettingsFs, updateSettingsDocument, replaceSettingsDocument } = await storeApi();
+    const baseFs = createSettingsFs();
+
+    // 1. New file (no existing target) stays 0600 and does not call chmod.
+    const newChmodCalls: string[] = [];
+    const newSpyFs = createSettingsFs({
+      chmod(p, mode) {
+        newChmodCalls.push(p);
+        return baseFs.chmod(p, mode);
+      },
+    });
+    const prevUmask = process.umask(0o022);
+    try {
+      const created = updateSettingsDocument({ thinking: true }, { fs: newSpyFs });
+      expect(created.ok).toBe(true);
+      expect(newChmodCalls).toEqual([]);
+      expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
+
+      // 2. Existing targets keep exact permission bits under restrictive umasks:
+      //    0664 with umask 022, 0660 with umask 027, 0644 with umask 077.
+      const cases = [
+        { targetMode: 0o664, umask: 0o022 },
+        { targetMode: 0o660, umask: 0o027 },
+        { targetMode: 0o644, umask: 0o077 },
+      ] as const;
+
+      for (const { targetMode, umask } of cases) {
+        chmodSync(settingsPath, targetMode);
+        expect(statSync(settingsPath).mode & 0o777).toBe(targetMode);
+        process.umask(umask);
+
+        const events: string[] = [];
+        const orderFs = createSettingsFs({
+          chmod(p, mode) {
+            events.push("chmod");
+            return baseFs.chmod(p, mode);
+          },
+          rename(oldP, newP) {
+            events.push("rename");
+            return baseFs.rename(oldP, newP);
+          },
+        });
+
+        const updated = updateSettingsDocument({ debug: true, umask_case: targetMode }, { fs: orderFs });
+        expect(updated.ok).toBe(true);
+        expect(statSync(settingsPath).mode & 0o777).toBe(targetMode);
+        expect(events).toEqual(["chmod", "rename"]);
+      }
+
+      // 3. Failing chmod aborts the save before rename, returns actionable error, and leaves no temp file.
+      process.umask(0o022);
+      chmodSync(settingsPath, 0o664);
+      const beforeFail = readFileSync(settingsPath, "utf-8");
+      let renameCalled = false;
+      const failChmodFs = createSettingsFs({
+        chmod(p) {
+          const err = new Error(`EPERM: operation not permitted, chmod '${p}'`) as NodeJS.ErrnoException;
+          err.code = "EPERM";
+          throw err;
+        },
+        rename(oldP, newP) {
+          renameCalled = true;
+          return baseFs.rename(oldP, newP);
+        },
+      });
+      const failed = replaceSettingsDocument({ ...DEFAULT_USER_SETTINGS, debug: false }, { fs: failChmodFs });
+      expect(failed.ok).toBe(false);
+      if (!failed.ok) {
+        expect(failed.error).toContain(settingsPath);
+        expect(failed.error).toContain("EPERM");
+        expect(failed.error).not.toContain(".tmp-");
+      }
+      expect(renameCalled).toBe(false);
+      expect(readFileSync(settingsPath, "utf-8")).toBe(beforeFail);
+      expect(readdirSync(homeDir).filter((f) => f.includes(".tmp-"))).toEqual([]);
+
+      // 4. Symlinked target 0664 under umask 022 also preserves exact bits.
+      rmSync(settingsPath, { force: true });
+      const dotfilesDir = join(root, "dotfiles-umask");
+      mkdirSync(dotfilesDir, { recursive: true });
+      const targetPath = join(dotfilesDir, "settings.json");
+      writeFileSync(targetPath, '{"thinking":true}\n', "utf-8");
+      chmodSync(targetPath, 0o664);
+      symlinkSync(targetPath, settingsPath);
+      process.umask(0o022);
+      expect(updateSettingsDocument({ debug: true }).ok).toBe(true);
+      expect(lstatSync(settingsPath).isSymbolicLink()).toBe(true);
+      expect(statSync(targetPath).mode & 0o777).toBe(0o664);
+    } finally {
+      process.umask(prevUmask);
     }
   });
 });
