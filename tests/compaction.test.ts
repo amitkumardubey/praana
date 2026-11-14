@@ -287,12 +287,14 @@ test("ladder stops at step 2 with full tailTurns=4 when folding older turns reac
 
 test("step 2 shrinks the completed-turn tail one turn at a time until frame + summary allowance + tail fits the target", async () => {
   const { runCompaction } = await api();
-  for (const [postRewriteMargin, expectedBoundary] of [
-    [0.01, "t2-final"], // keeps 4 completed turns (turns 3..6)
-    [0.10, "t3-final"], // shrinks to 3 completed turns (turns 4..6)
-    [0.15, "t4-final"], // shrinks to 2 completed turns (turns 5..6)
-    [0.20, "t5-final"], // shrinks to 1 completed turn (turn 6)
-    [0.30, "t6-final"], // shrinks to 0 completed turns (only in-flight turn 7 kept)
+  // The folded prefix is too large for one same-model request, so these folds use batch
+  // summaries; the call count is the number of batches for each cut.
+  for (const [postRewriteMargin, expectedBoundary, expectedCalls] of [
+    [0.01, "t2-final", 1], // keeps 4 completed turns (turns 3..6)
+    [0.10, "t3-final", 1], // shrinks to 3 completed turns (turns 4..6)
+    [0.15, "t4-final", 2], // shrinks to 2 completed turns (turns 5..6)
+    [0.20, "t5-final", 2], // shrinks to 1 completed turn (turn 6)
+    [0.30, "t6-final", 2], // shrinks to 0 completed turns (only in-flight turn 7 kept)
   ] as const) {
     const { log } = openLog();
     for (let t = 1; t <= 6; t++) {
@@ -314,7 +316,7 @@ test("step 2 shrinks the completed-turn tail one turn at a time until frame + su
     });
     expect(outcome.status).toBe("rewritten");
     if (outcome.status !== "rewritten") throw new Error(`Failed for margin ${postRewriteMargin}: ${JSON.stringify(outcome)}`);
-    expect(calls).toBeGreaterThanOrEqual(1);
+    expect(calls).toBe(expectedCalls);
     expect(outcome.state.boundaryEventId).toBe(expectedBoundary);
     expect(outcome.fill.ratio).toBeLessThanOrEqual(1 - postRewriteMargin);
   }
@@ -1814,8 +1816,8 @@ test("seeded 500-scenario randomized test maintains all ladder, boundary, capaci
     const activeTurns = specTurns.slice(prevCutIdx + 1);
     const completed = activeTurns.slice(0, -1);
     const foldedSpec = completed.slice(0, foldedCount);
-    const prefix = JSON.stringify(activeTurns[foldedCount].userText.replace(/[\r\n]+/g, " ").slice(0, 80));
-    const cutText = `${foldedCount} folded user turns (count user messages, excluding a leading previous-summary message); the retained tail starts at the user message beginning ${prefix}; summarize only what comes before it`;
+    const prefix = JSON.stringify(Array.from(activeTurns[foldedCount].userText.split(/\r\n|\r|\n/, 1)[0] ?? "").slice(0, 80).join(""));
+    const cutText = `the first ${foldedCount} user messages are folded; the retained tail starts at user message ${foldedCount + 1} (counting user messages after any leading previous-summary message), which begins ${prefix}; summarize only what comes before it`;
     const liveReq: StreamRequest = {
       model: "claude-sonnet-4-20250514",
       provider: "anthropic",
