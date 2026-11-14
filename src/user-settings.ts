@@ -8,50 +8,27 @@
  */
 
 import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
-import { dirname } from "node:path";
-import { appHomePath } from "./app-identity.js";
+  coerceBoolean,
+  DEFAULT_USER_SETTINGS,
+  normalizeLegacySettings,
+  settingsFilePath,
+  readSettingsDocument,
+  updateSettingsDocument,
+  USER_SETTINGS_KEYS,
+  type SettingsStoreOptions,
+  type UserSettings,
+  type UserSettingsKey,
+} from "./settings/store.js";
 
-export const USER_SETTINGS_KEYS = [
-  "model",
-  "provider",
-  "thinking",
-  "incognito",
-  "debug",
-  "theme",
-  "auto_update",
-] as const;
-
-export type UserSettingsKey = (typeof USER_SETTINGS_KEYS)[number];
-
-export interface UserSettings {
-  model: string;
-  provider: string;
-  thinking: boolean;
-  incognito: boolean;
-  debug: boolean;
-  theme: string;
-  auto_update: boolean;
-}
-
-export const DEFAULT_USER_SETTINGS: UserSettings = {
-  model: "",
-  provider: "",
-  thinking: true,
-  incognito: false,
-  debug: false,
-  theme: "default",
-  auto_update: false,
+export {
+  DEFAULT_USER_SETTINGS,
+  USER_SETTINGS_KEYS,
+  type UserSettings,
+  type UserSettingsKey,
 };
 
 export function getUserSettingsPath(): string {
-  return appHomePath("settings.json");
+  return settingsFilePath();
 }
 
 export function isUserSettingsKey(key: string): key is UserSettingsKey {
@@ -66,29 +43,6 @@ export interface LoadUserSettingsResult {
   createdDefaults?: boolean;
 }
 
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function coerceBoolean(value: unknown): boolean | undefined {
-  if (typeof value === "boolean") return value;
-  if (typeof value === "string") {
-    const v = value.trim().toLowerCase();
-    if (v === "true" || v === "on" || v === "1") return true;
-    if (v === "false" || v === "off" || v === "0") return false;
-  }
-  if (typeof value === "number") {
-    if (value === 1) return true;
-    if (value === 0) return false;
-  }
-  return undefined;
-}
-
-function coerceString(value: unknown): string | undefined {
-  if (typeof value === "string") return value.trim();
-  return undefined;
-}
-
 /** Parse a CLI-style boolean token for `/settings set`. */
 export function parseSettingsBoolean(raw: string): boolean | undefined {
   return coerceBoolean(raw);
@@ -101,117 +55,74 @@ export function parseSettingsBoolean(raw: string): boolean | undefined {
 export function normalizeUserSettings(
   raw: unknown,
 ): { settings: UserSettings; invalid: boolean } {
-  const settings: UserSettings = { ...DEFAULT_USER_SETTINGS };
-  if (!isPlainObject(raw)) {
-    return { settings, invalid: true };
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return { settings: { ...DEFAULT_USER_SETTINGS }, invalid: true };
   }
-
-  let invalid = false;
-
-  const model = coerceString(raw.model);
-  if (raw.model !== undefined) {
-    if (model === undefined) invalid = true;
-    else settings.model = model;
-  }
-
-  const provider = coerceString(raw.provider);
-  if (raw.provider !== undefined) {
-    if (provider === undefined) invalid = true;
-    else settings.provider = provider;
-  }
-
-  const thinking = coerceBoolean(raw.thinking);
-  if (raw.thinking !== undefined) {
-    if (thinking === undefined) invalid = true;
-    else settings.thinking = thinking;
-  }
-
-  const incognito = coerceBoolean(raw.incognito);
-  if (raw.incognito !== undefined) {
-    if (incognito === undefined) invalid = true;
-    else settings.incognito = incognito;
-  }
-
-  const debug = coerceBoolean(raw.debug);
-  if (raw.debug !== undefined) {
-    if (debug === undefined) invalid = true;
-    else settings.debug = debug;
-  }
-
-  const theme = coerceString(raw.theme);
-  if (raw.theme !== undefined) {
-    if (theme === undefined || theme.length === 0) invalid = true;
-    else settings.theme = theme;
-  }
-
-  const autoUpdate = coerceBoolean(raw.auto_update);
-  if (raw.auto_update !== undefined) {
-    if (autoUpdate === undefined) invalid = true;
-    else settings.auto_update = autoUpdate;
-  }
-
-  return { settings, invalid };
-}
-
-function atomicWriteJson(path: string, data: UserSettings): void {
-  mkdirSync(dirname(path), { recursive: true });
-  const tmp = `${path}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", "utf-8");
-  try {
-    renameSync(tmp, path);
-  } catch (err) {
-    try {
-      unlinkSync(tmp);
-    } catch {
-      // best-effort cleanup
-    }
-    throw err;
-  }
+  const { settings, invalidKeys } = normalizeLegacySettings(raw as Record<string, unknown>);
+  return { settings, invalid: invalidKeys.length > 0 };
 }
 
 /**
- * Load settings from disk. Missing file → defaults (and create the file).
- * Corrupt JSON → defaults + warning (does not overwrite the bad file).
+ * Load settings from disk. Missing file → defaults (and create the file with mode 0600).
+ * Corrupt JSON or unreadable file → defaults + warning (does not overwrite the bad file).
  */
-export function loadUserSettings(): LoadUserSettingsResult {
-  const path = getUserSettingsPath();
-  if (!existsSync(path)) {
+export function loadUserSettings(options?: SettingsStoreOptions): LoadUserSettingsResult {
+  const path = options?.path ?? getUserSettingsPath();
+  const fs = options?.fs;
+  const read = readSettingsDocument({ path, fs });
+
+  if (read.state === "missing") {
     const settings = { ...DEFAULT_USER_SETTINGS };
-    try {
-      atomicWriteJson(path, settings);
-      return { settings, createdDefaults: true };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+    const written = updateSettingsDocument(
+      {},
+      { path, fs, baseDefaultsIfMissing: { ...settings }, createOnly: true },
+    );
+    if (!written.ok) {
+      if (written.state === "corrupt") {
+        return {
+          settings,
+          warning: `${written.error}; using defaults`,
+        };
+      }
+      if (written.state === "unreadable" || written.actionable) {
+        return {
+          settings,
+          warning: written.error,
+        };
+      }
       return {
         settings,
-        warning: `Could not create settings file (${path}): ${msg}`,
-        createdDefaults: true,
+        warning: `Could not create settings file (${path}): ${written.error}`,
       };
     }
+    const { settings: normalized, invalid } = normalizeUserSettings(written.doc);
+    if (written.created) {
+      return { settings: normalized, createdDefaults: true };
+    }
+    if (invalid) {
+      return {
+        settings: normalized,
+        warning: `Invalid fields in settings file (${path}); invalid keys ignored`,
+      };
+    }
+    return { settings: normalized };
   }
 
-  let text: string;
-  try {
-    text = readFileSync(path, "utf-8");
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
+  if (read.state === "unreadable") {
     return {
       settings: { ...DEFAULT_USER_SETTINGS },
-      warning: `Could not read settings file (${path}): ${msg}`,
+      warning: read.error,
     };
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
+  if (read.state === "corrupt") {
     return {
       settings: { ...DEFAULT_USER_SETTINGS },
-      warning: `Corrupt settings file (${path}); using defaults`,
+      warning: `${read.error}; using defaults`,
     };
   }
 
-  const { settings, invalid } = normalizeUserSettings(parsed);
+  const { settings, invalid } = normalizeUserSettings(read.doc);
   if (invalid) {
     return {
       settings,
@@ -221,40 +132,93 @@ export function loadUserSettings(): LoadUserSettingsResult {
   return { settings };
 }
 
-/** Write full settings object to disk. */
-export function saveUserSettings(settings: UserSettings): { ok: true } | { ok: false; error: string } {
-  const path = getUserSettingsPath();
-  try {
-    const { settings: normalized } = normalizeUserSettings(settings);
-    atomicWriteJson(path, normalized);
-    return { ok: true };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return { ok: false, error: msg };
+function formatSaveFailure(updated: { ok: false; error: string; state?: string }): { ok: false; error: string } {
+  if (updated.state === "corrupt") {
+    return {
+      ok: false,
+      error: `${updated.error}; run /settings reset to back it up and restore defaults`,
+    };
   }
+  return { ok: false, error: updated.error };
 }
 
 /**
- * Update one or more keys and persist. Returns the merged settings.
+ * Replace only the seven legacy fields in the document on disk; every other key
+ * (`default_model`, `config_overrides`, unknown keys) is preserved. Never
+ * overwrites a corrupt or unreadable file.
+ */
+export function saveUserSettings(settings: UserSettings): { ok: true } | { ok: false; error: string } {
+  const { settings: normalized } = normalizeUserSettings(settings);
+  const patch: Record<string, unknown> = Object.fromEntries(
+    USER_SETTINGS_KEYS.map((key) => [key, normalized[key]]),
+  );
+  const updated = updateSettingsDocument(patch, {
+    baseDefaultsIfMissing: { ...DEFAULT_USER_SETTINGS },
+  });
+  if (!updated.ok) return formatSaveFailure(updated);
+  return { ok: true };
+}
+
+/**
+ * Apply a sparse patch for the caller's named legacy keys and persist.
+ * Preserves unrelated legacy keys written by other processes as well as
+ * `default_model`, `config_overrides`, and unknown keys. Never overwrites
+ * a corrupt or unreadable file.
  */
 export function updateUserSettings(
   patch: Partial<UserSettings>,
 ): { ok: true; settings: UserSettings } | { ok: false; error: string } {
-  const loaded = loadUserSettings();
-  const merged: UserSettings = { ...loaded.settings, ...patch };
-  const saved = saveUserSettings(merged);
-  if (!saved.ok) return saved;
-  return { ok: true, settings: merged };
+  const sparsePatch: Record<string, unknown> = {};
+  for (const key of USER_SETTINGS_KEYS) {
+    if (!Object.prototype.hasOwnProperty.call(patch, key) || patch[key] === undefined) continue;
+    const { settings: normalizedKey, invalid } = normalizeUserSettings({ [key]: patch[key] });
+    if (invalid) {
+      return { ok: false, error: `Invalid value for setting "${key}"` };
+    }
+    sparsePatch[key] = normalizedKey[key];
+  }
+
+  const updated = updateSettingsDocument(sparsePatch, {
+    baseDefaultsIfMissing: { ...DEFAULT_USER_SETTINGS },
+  });
+  if (!updated.ok) return formatSaveFailure(updated);
+  const { settings } = normalizeUserSettings(updated.doc);
+  return { ok: true, settings };
 }
 
-/** Reset file to defaults and return them. */
-export function resetUserSettings():
-  | { ok: true; settings: UserSettings }
+/**
+ * Reset only the seven legacy fields to defaults, preserving `default_model`,
+ * `config_overrides`, and unknown keys (those are cleared by their own actions).
+ * When the existing file is corrupt, backs it up to
+ * `settings.json.corrupt-<timestamp>` (0600) first and then writes default
+ * legacy fields. Never replaces an unreadable file.
+ */
+export function resetUserSettings(
+  options?: SettingsStoreOptions,
+):
+  | {
+      ok: true;
+      settings: UserSettings;
+      backupPath?: string;
+      targetPath?: string;
+      message?: string;
+    }
   | { ok: false; error: string } {
-  const settings = { ...DEFAULT_USER_SETTINGS };
-  const saved = saveUserSettings(settings);
-  if (!saved.ok) return saved;
-  return { ok: true, settings };
+  const path = options?.path ?? getUserSettingsPath();
+  const fs = options?.fs;
+  const defaults = { ...DEFAULT_USER_SETTINGS };
+  const updated = updateSettingsDocument(
+    { ...defaults },
+    { path, fs, baseDefaultsIfMissing: { ...defaults }, onCorrupt: "backup-and-reset-legacy" },
+  );
+  if (!updated.ok) return updated;
+  return {
+    ok: true,
+    settings: defaults,
+    ...(updated.backupPath ? { backupPath: updated.backupPath } : {}),
+    ...(updated.targetPath ? { targetPath: updated.targetPath } : {}),
+    ...(updated.message ? { message: updated.message } : {}),
+  };
 }
 
 /**
