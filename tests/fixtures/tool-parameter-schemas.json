@@ -799,6 +799,49 @@
     ],
     "type": "object"
   },
+  "classic:search_transcript": {
+    "additionalProperties": false,
+    "properties": {
+      "context_messages": {
+        "description": "When fetching by id, number of surrounding messages before and after in the same reset epoch (0..5).",
+        "maximum": 5,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "id": {
+        "description": "Canonical message event ID to fetch full/ranged content and optional surrounding context.",
+        "type": "string"
+      },
+      "include_previous_resets": {
+        "default": false,
+        "description": "When true, also search or fetch across earlier /clear reset epochs in this session.",
+        "type": "boolean"
+      },
+      "limit": {
+        "default": 10,
+        "description": "Maximum number of matches to return (1..50, default 10).",
+        "maximum": 50,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "max_chars": {
+        "description": "When fetching by id, maximum characters of content to return (default 8000).",
+        "maximum": 32000,
+        "minimum": 100,
+        "type": "integer"
+      },
+      "offset": {
+        "description": "When fetching by id, 1-based starting line number of the message content.",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "query": {
+        "description": "Search query (BM25 + case-insensitive substring; no regex). Provide query to search or id to fetch.",
+        "type": "string"
+      }
+    },
+    "type": "object"
+  },
   "classic:shell": {
     "additionalProperties": false,
     "properties": {
@@ -1786,6 +1829,49 @@
     "required": [
       "query"
     ],
+    "type": "object"
+  },
+  "engine:search_transcript": {
+    "additionalProperties": false,
+    "properties": {
+      "context_messages": {
+        "description": "When fetching by id, number of surrounding messages before and after in the same reset epoch (0..5).",
+        "maximum": 5,
+        "minimum": 0,
+        "type": "integer"
+      },
+      "id": {
+        "description": "Canonical message event ID to fetch full/ranged content and optional surrounding context.",
+        "type": "string"
+      },
+      "include_previous_resets": {
+        "default": false,
+        "description": "When true, also search or fetch across earlier /clear reset epochs in this session.",
+        "type": "boolean"
+      },
+      "limit": {
+        "default": 10,
+        "description": "Maximum number of matches to return (1..50, default 10).",
+        "maximum": 50,
+        "minimum": 1,
+        "type": "integer"
+      },
+      "max_chars": {
+        "description": "When fetching by id, maximum characters of content to return (default 8000).",
+        "maximum": 32000,
+        "minimum": 100,
+        "type": "integer"
+      },
+      "offset": {
+        "description": "When fetching by id, 1-based starting line number of the message content.",
+        "minimum": 1,
+        "type": "integer"
+      },
+      "query": {
+        "description": "Search query (BM25 + case-insensitive substring; no regex). Provide query to search or id to fetch.",
+        "type": "string"
+      }
+    },
     "type": "object"
   },
   "engine:shell": {

@@ -526,7 +526,7 @@ export function buildScorecardNudge(
   const recallHitRate = turnRecallCalls > 0 ? turnRecallHits / turnRecallCalls : 1;
 
   if (repeatReadsDelta > 0) {
-    return `Tip: you re-read files this turn; use search_session_log to recall prior reads.`;
+    return `Tip: you re-read files this turn; use search_transcript to recover prior output or search_session_log for other session events.`;
   }
   if (noOpToolsDelta > 0) {
     return `Tip: a tool call made no changes; verify arguments before retrying.`;
