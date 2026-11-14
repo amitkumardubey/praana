@@ -84,10 +84,18 @@ const SCANNED_FIELDS = ["name", "description", "body"] as const;
 const FIELD_READ_REFUSAL = "Memory fields could not be read";
 /** The strict detector needs a matching END line, so a truncated or header-only key would
  * otherwise be stored. Any private-key header is refused, whatever its case, dash count or
- * inner spacing, including the PGP, OpenSSH, SSH2 and secret-key block forms. The type words
- * are matched by consecutive non-overlapping groups, so the scan stays linear on a long run
- * of whitespace: the previous `\s*` + `[A-Z0-9 ]*` pair backtracked quadratically. */
-export const PRIVATE_KEY_HEADER = /-{4,5}[ \t]*BEGIN(?:[ \t]+[A-Z0-9]+)*[ \t]+(?:PRIVATE[ \t]+KEY(?:[ \t]+BLOCK)?|SECRET[ \t]+KEY[ \t]+BLOCK)[ \t]*-{4,5}/i;
+ * inner spacing, including the PGP, OpenSSH, SSH2 and secret-key block forms; the type words
+ * may be separated by any whitespace (newlines included), and the closing dashes may be
+ * absent or short. The class covers U+0020, U+00A0, U+2007, U+202F and U+3000; other
+ * lookalikes are out of scope. Consecutive non-overlapping groups keep the scan linear on a
+ * long run of whitespace, where the previous `\s*` + `[A-Z0-9 ]*` pair backtracked. */
+const SPACE = "[\\s\\u2007]";
+export const PRIVATE_KEY_HEADER = new RegExp(
+  `-{4,5}${SPACE}*BEGIN(?:${SPACE}+[A-Z0-9]+)*${SPACE}+` +
+  `(?:PRIVATE${SPACE}+KEY(?:${SPACE}+BLOCK)?|SECRET${SPACE}+KEY${SPACE}+BLOCK)` +
+  `(?:${SPACE}*-{4,5}|${SPACE}*(?:-{1,3})?)`,
+  "i",
+);
 /** Read each allowed field exactly once, before anything is validated, scanned or
  * serialized: a getter or Proxy cannot answer the scan with clean text and the write
  * with a secret when the writer only ever sees this snapshot. */

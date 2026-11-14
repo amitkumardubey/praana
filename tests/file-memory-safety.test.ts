@@ -371,3 +371,44 @@ test("the private key header check stays linear on adversarial whitespace", asyn
   expect(result).toEqual({ ok: false, error: "Description must be one line and at most 300 characters" });
   expect(elapsed).toBeLessThan(200);
 });
+
+/** A header is refused even when it wraps between type words, is truncated before its
+ * closing dashes, or uses a Unicode space instead of U+0020. */
+const EXTENDED_KEY_HEADERS = [
+  ["newline between type words", "-----BEGIN RSA\nPRIVATE KEY-----"],
+  ["tab between type words", "-----BEGIN\tPRIVATE KEY-----"],
+  ["newline inside the block suffix", "-----BEGIN PGP PRIVATE\nKEY BLOCK-----"],
+  ["no closing dashes", "-----BEGIN PRIVATE KEY"],
+  ["truncated closing dashes", "-----BEGIN PRIVATE KEY--"],
+  ["no-break space", "-----BEGIN\u00a0PRIVATE\u00a0KEY-----"],
+  ["narrow no-break space", "-----BEGIN RSA\u202fPRIVATE\u202fKEY-----"],
+  ["figure space", "-----BEGIN\u2007PRIVATE\u2007KEY-----"],
+  ["ideographic space", "-----BEGIN PRIVATE\u3000KEY-----"],
+] as const;
+
+test("the header refusal covers newlines, truncation and Unicode spaces", async () => {
+  const home = await homeDir();
+  const store = make(home);
+  for (const [label, header] of EXTENDED_KEY_HEADERS) {
+    const cases = [
+      ["body", { body: `${header}\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASC` }],
+      // A description is one line, so a newline variant is refused by that cap first.
+      ...(header.includes("\n") ? [] : [["description", { description: header }]]),
+    ] as Array<[string, Record<string, string>]>;
+    for (const [field, extra] of cases) {
+      const result = await store.write({ ...entry, name: "key-variant", ...extra });
+      expect([label, field, result.ok]).toEqual([label, field, false]);
+      if (result.ok) continue;
+      expect([label, result.error]).toEqual([label, `Secret-shaped content refused in ${field}. Remove the secret-shaped text before retrying`]);
+    }
+  }
+  expect(await storedText(home)).not.toContain("PRIVATE");
+  // Ordinary prose, and near-miss headers, still pass.
+  for (const [name, description, body] of [
+    ["key-prose", "Notes about the private key rotation", "We rotate the private key each year."],
+    ["key-cert", "Certificate header notes", "-----BEGIN CERTIFICATE-----\nMIIB"],
+    ["key-public", "Public key header notes", "-----BEGIN PUBLIC KEY-----\nMIIB"],
+  ] as const) {
+    expect([name, (await store.write({ ...entry, name, description, body })).ok]).toEqual([name, true]);
+  }
+});
