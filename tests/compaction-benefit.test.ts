@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { CanonicalWriter } from "../src/canonical-transcript.js";
 import { buildTurns, materializeHistory, runCompaction, type CompactionOutcome } from "../src/compaction.js";
 import { EventLog } from "../src/event-log.js";
-import { appendCommit, buildSummaryInstruction, checkSummary, readCommits, renderSummaryMessage, restoreFrozenStateFromLog, SESSION_START_EPOCH, SUMMARY_HEADINGS, summaryCapTokens } from "../src/frozen-summary.js";
+import { appendCommit, buildSummaryInstruction, checkSummary, minimumValidSummary, readCommits, renderSummaryMessage, restoreFrozenStateFromLog, SESSION_START_EPOCH, summaryCapTokens } from "../src/frozen-summary.js";
 import type { ConversationMessage, StreamRequest } from "../src/llm/types.js";
 import { estimateTokens } from "../src/token-estimate.js";
 
@@ -27,7 +27,7 @@ function openLog() {
 }
 
 function summary(active = "ok"): string {
-  return SUMMARY_HEADINGS.map((heading, index) => `### ${heading}${index === 0 ? `\n${active}` : ""}`).join("\n\n");
+  return minimumValidSummary().replace("\nok", () => `\n${active}`);
 }
 
 const liveRequest: StreamRequest = { model: "claude-sonnet-4-20250514", provider: "anthropic", messages: [] };
@@ -189,6 +189,26 @@ test("a useful minimum still pays for a summary", async () => {
   expect(outcome.status).toBe("rewritten");
   expectNoDiscard(outcome);
   expect(inputTokens(messages(log))).toBeLessThan(beforeTokens);
+});
+
+test.each([168, 172])("pre-check estimate matches minimumValidSummary at the benefit boundary for %i bytes", async (completedSize) => {
+  const frozen = await import("../src/frozen-summary.js");
+  expect(frozen.minimumValidSummary).toBeFunction();
+  const minimum = frozen.minimumValidSummary();
+  const source = readFileSync(new URL("../src/compaction.ts", import.meta.url), "utf8");
+  expect(source.includes("const minValidSummary = minimumValidSummary();")).toBe(true);
+  const { log } = await nearCapacity("C".repeat(completedSize), 3400);
+  const before = inputTokens(messages(log));
+  const best = inputTokens([renderSummaryMessage(minimum), ...buildTurns(log).at(-1)!.messages]);
+  expect(before - best).toBe((completedSize - 168) / 4);
+  let calls = 0;
+  const outcome = await runCompaction({
+    log, liveRequest, contextWindowTokens, options,
+    runSummary: async () => { calls++; return { text: minimum, finishReason: "stop", usage: null, toolCalls: [] }; },
+  });
+  expect(calls).toBe(before > best ? 1 : 0);
+  expect(outcome.status).toBe(before > best ? "rewritten" : "unchanged_fits");
+  expectNoDiscard(outcome);
 });
 
 test("an equal-size minimum skips the paid summary", async () => {

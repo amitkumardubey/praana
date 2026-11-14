@@ -16,10 +16,10 @@ import {
   buildSummaryInstruction,
   checkSummary,
   FrozenSummaryError,
+  minimumValidSummary,
   renderSummaryMessage,
   restoreFrozenState,
   SESSION_START_EPOCH,
-  SUMMARY_HEADINGS,
   summaryCapTokens,
   type CompactionCommit,
   type FrozenState,
@@ -816,7 +816,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
   if (completedTurns.length > 0) {
     const preFoldFill = measureCandidate({ ...state, stubSet: toStubSet(step1StubMap) });
     const capTokens = summaryCapTokens(initialFill.usableTokens);
-    const minValidSummary = SUMMARY_HEADINGS.map((h, i) => `### ${h}${i === 0 ? "\nok" : ""}`).join("\n\n");
+    const minValidSummary = minimumValidSummary();
     const minValidSummaryTokens = estimateTokens(minValidSummary);
     const minSummaryMessageTokens = estimateMessageTokens(renderSummaryMessage(minValidSummary));
     const summaryAllowanceTokens = estimateMessageTokens(renderSummaryMessage("")) + capTokens;
