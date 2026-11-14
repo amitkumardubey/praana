@@ -586,7 +586,13 @@ function buildShapedCandidate(
   } else {
     headSlice = sliceHeadWithLineCount(lines, lines.length, headByteBudget, rawText);
     tailSlice = sliceTailWithLineCount(lines, lines.length, tailByteBudget, rawText);
-    if (headSlice.keptLines + tailSlice.keptLines > contentLineBudget) {
+    const totalPhysicalLines =
+      (headSlice.text ? headSlice.text.split("\n").length : 0) +
+      (tailSlice.text ? tailSlice.text.split("\n").length : 0);
+    if (
+      headSlice.keptLines + tailSlice.keptLines > contentLineBudget ||
+      totalPhysicalLines > contentLineBudget
+    ) {
       headSlice = sliceHeadWithLineCount(lines, effHeadLines, headByteBudget);
       tailSlice = sliceTailWithLineCount(lines, effTailLines, tailByteBudget);
     }
@@ -613,29 +619,85 @@ function convergeShapedCandidate(
   artifactIdForMarker?: string,
 ): ShapedCandidate | null {
   const maxLinesCap = Math.max(0, opts.maxLines);
+  if (maxLinesCap === 0) return null;
   const targetMaxBytes = Math.min(opts.maxBytes, totalBytes - 1);
+  let lineCap = maxLinesCap;
   let overheadGuess =
     Buffer.byteLength(formatElisionMarker(lines.length, totalBytes, artifactIdForMarker), "utf8") + 2;
-  for (let attempt = 0; attempt < 4; attempt++) {
+
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const effOpts = lineCap === opts.maxLines ? opts : { ...opts, maxLines: lineCap };
     const cand = buildShapedCandidate(
       rawText,
       lines,
       totalBytes,
       exceedsLines,
-      opts,
+      effOpts,
       overheadGuess,
       artifactIdForMarker,
     );
-    if (!cand) return null;
+    if (!cand) break;
     const candBytes = Buffer.byteLength(cand.text, "utf8");
     const candLines = cand.text.split("\n").length;
-    if (candBytes <= targetMaxBytes && candLines <= maxLinesCap) {
+    if (
+      candBytes <= targetMaxBytes &&
+      candLines <= maxLinesCap &&
+      cand.text.length < rawText.length
+    ) {
       return cand;
     }
+
     const actualOverhead =
       candBytes - (Buffer.byteLength(cand.head, "utf8") + Buffer.byteLength(cand.tail, "utf8"));
-    if (actualOverhead <= overheadGuess) return null;
-    overheadGuess = actualOverhead;
+    const remainingBudget = Math.max(0, targetMaxBytes - overheadGuess);
+    if (candBytes > targetMaxBytes) {
+      const overBy = candBytes - targetMaxBytes;
+      overheadGuess = Math.max(
+        actualOverhead,
+        overheadGuess + Math.max(overBy, Math.ceil(remainingBudget / 2)),
+      );
+    }
+    if (candLines > maxLinesCap) {
+      lineCap = Math.max(1, Math.min(lineCap - 1, Math.floor(lineCap / 2)));
+    }
+    if (cand.text.length >= rawText.length) {
+      overheadGuess += Math.max(1, Math.ceil(remainingBudget / 2));
+    }
+  }
+
+  // Fallback: try marker plus a tiny head/tail, then pure marker-only.
+  const bareMarker = formatElisionMarker(lines.length, totalBytes, artifactIdForMarker);
+  const bareMarkerBytes = Buffer.byteLength(bareMarker, "utf8");
+  if (bareMarkerBytes <= targetMaxBytes && maxLinesCap >= 3) {
+    const smallBudget = Math.min(64, targetMaxBytes - bareMarkerBytes - 2);
+    if (smallBudget > 0) {
+      const smallCand = buildShapedCandidate(
+        rawText,
+        lines,
+        totalBytes,
+        true,
+        { ...opts, maxLines: 3, headLines: 1, tailLines: 1 },
+        targetMaxBytes - smallBudget,
+        artifactIdForMarker,
+      );
+      if (
+        smallCand &&
+        Buffer.byteLength(smallCand.text, "utf8") <= targetMaxBytes &&
+        smallCand.text.split("\n").length <= maxLinesCap &&
+        smallCand.text.length < rawText.length
+      ) {
+        return smallCand;
+      }
+    }
+  }
+  if (bareMarkerBytes <= targetMaxBytes && bareMarker.length < rawText.length) {
+    return {
+      head: "",
+      tail: "",
+      text: bareMarker,
+      omittedLines: lines.length,
+      omittedBytes: totalBytes,
+    };
   }
   return null;
 }

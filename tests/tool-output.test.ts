@@ -741,6 +741,49 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
         }
       }
 
+      // Adversarial cases:
+      // - head ends with newline, tail starts with newline
+      // - long runs of blank lines
+      // - CJK/emoji at the cut
+      const adversarialInputs = [
+        // Head ends with newline + tail starts with newline around large body
+        [
+          ...Array.from({ length: 19 }, (_, idx) => `h-${idx}`),
+          "",
+          "M".repeat(maxBytes + 500),
+          "",
+          ...Array.from({ length: 19 }, (_, idx) => `t-${idx}`),
+        ].join("\n"),
+        // Long runs of blank lines exceeding maxLines and maxBytes
+        `${"\n".repeat(maxLines + 20)}${"B".repeat(maxBytes + 200)}${"\n".repeat(maxLines + 20)}`,
+        // Cut right at CJK / emoji boundaries
+        `${"漢".repeat(Math.ceil(maxBytes / 3) + 50)}\n${"🧪".repeat(100)}`,
+        // CJK single line just above maxBytes where ASCII marker could inflate char length
+        "漢".repeat(Math.ceil(maxBytes / 3) + 150),
+        // Cut landing on newlines inside <= maxLines input
+        ["a", "b".repeat(maxBytes), "c".repeat(maxBytes), "d"].join("\n"),
+      ];
+
+      for (const adv of adversarialInputs) {
+        const advRes = shapeToolOutput({
+          toolName: "shell",
+          command: "ls -la",
+          text: adv,
+          storeArtifact: () => `art_adv_${String(i).padStart(8, "0")}`,
+          options: {
+            inlineThresholdTokens: 50,
+            maxBytes,
+            headBytes: Math.floor(maxBytes / 2),
+            tailBytes: maxBytes - Math.floor(maxBytes / 2),
+            maxLines,
+            headLines: Math.floor(maxLines / 2),
+            tailLines: maxLines - Math.floor(maxLines / 2),
+          },
+        });
+        expect(Buffer.byteLength(advRes.text, "utf8")).toBeLessThanOrEqual(maxBytes);
+        expect(advRes.text.split("\n").length).toBeLessThanOrEqual(maxLines + 1);
+      }
+
       const withArtifact = i % 3 !== 0;
       let storeCalls = 0;
       const res = shapeToolOutput({
@@ -1538,6 +1581,58 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
       expect(resUnshaped.shaped).toBe(false);
       expect(resUnshaped.text).toBe(raw);
       expect(unshapedCalls).toBe(0);
+    }
+  });
+
+  test("never lets oversized input pass through unshaped even with adversarial newlines, small line caps, 3 MB inputs, or dense CJK", () => {
+    // 1. Cut newlines pushing line count over maxLines when raw lines <= maxLines
+    const cutNewlineRaw = ["a".repeat(376), "x".repeat(2000), "y".repeat(2000), "d".repeat(376)].join("\n");
+    const cutNewlineRes = shapeToolOutput({
+      toolName: "shell",
+      command: "ls -la",
+      text: cutNewlineRaw,
+      storeArtifact: () => "art_cut_nl",
+      options: { inlineThresholdTokens: 50, maxLines: 4, headLines: 2, tailLines: 2, maxBytes: 1024 },
+    });
+    expect(cutNewlineRes.shaped).toBe(true);
+    expect(Buffer.byteLength(cutNewlineRes.text, "utf8")).toBeLessThanOrEqual(1024);
+    expect(cutNewlineRes.text.split("\n").length).toBeLessThanOrEqual(5);
+
+    // 2. Dense CJK just over maxBytes (byte length > maxBytes while UTF-16 length < maxBytes)
+    const denseCjk = "漢".repeat(700); // 2100 UTF-8 bytes, 700 chars
+    const cjkRes = shapeToolOutput({
+      toolName: "shell",
+      command: "ls -la",
+      text: denseCjk,
+      storeArtifact: () => "art_dense_cjk",
+      options: { inlineThresholdTokens: 50, maxBytes: 2000, maxLines: 20 },
+    });
+    expect(cjkRes.shaped).toBe(true);
+    expect(Buffer.byteLength(cjkRes.text, "utf8")).toBeLessThanOrEqual(2000);
+    expect(cjkRes.text.split("\n").length).toBeLessThanOrEqual(21);
+
+    // 3. Adversarial 3 MB single line, 3 MB tiny lines, blank runs, and head/tail cut newlines
+    const threeMbLine = "Q".repeat(3 * 1024 * 1024);
+    const threeMbTinyLines = Array.from({ length: 800_000 }, () => "abc").join("\n"); // ~3.2 MB
+    const blankRuns = `${"\n".repeat(100)}${"Z".repeat(20_000)}${"\n".repeat(100)}`;
+    const headTailNewlines = [
+      ...Array.from({ length: 39 }, (_, i) => `h-${i}`),
+      "",
+      "M".repeat(20_000),
+      "",
+      ...Array.from({ length: 39 }, (_, i) => `t-${i}`),
+    ].join("\n");
+
+    for (const raw of [threeMbLine, threeMbTinyLines, blankRuns, headTailNewlines]) {
+      const res = shapeToolOutput({
+        toolName: "shell",
+        command: "ls -la",
+        text: raw,
+        storeArtifact: () => "art_adv_3mb",
+      });
+      expect(res.shaped).toBe(true);
+      expect(Buffer.byteLength(res.text, "utf8")).toBeLessThanOrEqual(DEFAULT_SHAPE_MAX_BYTES);
+      expect(res.text.split("\n").length).toBeLessThanOrEqual(DEFAULT_SHAPE_MAX_LINES + 1);
     }
   });
 });
