@@ -750,9 +750,14 @@ function logBestEffortFailure(
   }
 }
 
+/** Why a settings write failed: `"write"` is a failure inside the atomic write path (the error
+ * message already names the target and a remedy); `"rejected"` is a pre-write rejection (the
+ * message does not name the replacement intent). */
+export type AtomicWriteFailureKind = "write" | "rejected";
+
 type WriteAtomicResult =
   | { ok: true }
-  | { ok: false; error: string; actionable: boolean };
+  | { ok: false; error: string; kind: AtomicWriteFailureKind };
 
 /**
  * Atomically replace `path` with `doc` via an exclusive temp file + rename.
@@ -781,7 +786,7 @@ function writeDocumentAtomic(
   try {
     serialized = JSON.stringify(doc, null, 2) + "\n";
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err), actionable: false };
+    return { ok: false, error: err instanceof Error ? err.message : String(err), kind: "rejected" };
   }
 
   const bytes = Buffer.from(serialized, "utf8");
@@ -789,7 +794,7 @@ function writeDocumentAtomic(
     return {
       ok: false,
       error: `Serialized settings document (${bytes.byteLength} bytes) exceeds maximum size of ${MAX_SETTINGS_BYTES} bytes`,
-      actionable: false,
+      kind: "rejected",
     };
   }
 
@@ -833,7 +838,7 @@ function writeDocumentAtomic(
           tmpPath,
         },
       ),
-      actionable: true,
+      kind: "write",
     };
   }
   return res;
@@ -965,7 +970,7 @@ export type UpdateSettingsDocumentResult =
       targetPath?: string;
       message?: string;
     }
-  | { ok: false; error: string; state?: SettingsReadState; actionable?: boolean };
+  | { ok: false; error: string; state?: SettingsReadState; kind?: AtomicWriteFailureKind };
 
 export function updateSettingsDocument(
   patch: Record<string, unknown>,
@@ -1056,7 +1061,7 @@ export function updateSettingsDocument(
         return {
           ok: false,
           error: formatFailedWriteAfterBackup(targetPath, written),
-          actionable: written.actionable,
+          kind: written.kind,
         };
       }
       return written;
@@ -1134,9 +1139,11 @@ function buildBackupInfo(
 
 export function formatFailedWriteAfterBackup(
   targetPath: string,
-  writeResult: { ok: false; error: string; actionable: boolean },
+  writeResult: { ok: false; error: string; kind: AtomicWriteFailureKind },
 ): string {
-  return writeResult.actionable
+  // A write-path error already names the target and its remedy; only pre-write rejections need
+  // the "Failed to replace" context.
+  return writeResult.kind === "write"
     ? writeResult.error
     : `Failed to replace ${targetPath}: ${writeResult.error}`;
 }

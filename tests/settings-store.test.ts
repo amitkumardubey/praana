@@ -2638,42 +2638,45 @@ console.log(JSON.stringify(res));
     }
   });
 
-  test("classifies write/backup results by typed actionable flag rather than targetPath substring, and classifies ELOOP/EISDIR in one place regardless of errno text", async () => {
+  test("classifies write/backup results by error kind rather than targetPath substring, and classifies ELOOP/EISDIR in one place regardless of errno text", async () => {
     const store = await storeApi();
     const {
       createSettingsFs,
       readSettingsDocument,
       replaceSettingsDocument,
+      updateSettingsDocument,
       MAX_SETTINGS_BYTES,
     } = store;
     const formatFailedWriteAfterBackup = (store as Record<string, unknown>)
       .formatFailedWriteAfterBackup as (
       targetPath: string,
-      writeResult: { ok: false; error: string; actionable: boolean },
+      writeResult: { ok: false; error: string; kind: "write" | "rejected" },
     ) => string;
     expect(formatFailedWriteAfterBackup).toBeTypeOf("function");
 
-    // 1. Substring trap: a non-actionable error mentioning sibling `<target>.corrupt-...` must still be prefixed.
+    // 1. Substring trap: a rejected (pre-write) error mentioning sibling `<target>.corrupt-...` must still be prefixed.
     const siblingCorruptPath = `${settingsPath}.corrupt-1700000000000-abcd1234`;
     const nonActionableSiblingErr = `Unexpected failure involving ${siblingCorruptPath}`;
     expect(
       formatFailedWriteAfterBackup(settingsPath, {
         ok: false,
         error: nonActionableSiblingErr,
-        actionable: false,
+        kind: "rejected",
       }),
     ).toBe(`Failed to replace ${settingsPath}: ${nonActionableSiblingErr}`);
 
-    // Actionable result with reworded message is NOT prefixed even when it doesn't contain targetPath.
+    // A write-path result already names the target; it is NOT prefixed even when the message
+    // doesn't contain targetPath.
     expect(
       formatFailedWriteAfterBackup(settingsPath, {
         ok: false,
-        error: "Reworded actionable message",
-        actionable: true,
+        error: "Reworded write error",
+        kind: "write",
       }),
-    ).toBe("Reworded actionable message");
+    ).toBe("Reworded write error");
 
-    // 2. End-to-end corrupt replace with oversized doc (non-actionable pre-write error) prefixes Failed to replace.
+    // 2. End-to-end corrupt replace with oversized doc (rejected pre-write error) prefixes Failed to replace
+    //    and never leaks an `actionable` flag.
     writeFileSync(settingsPath, "{corrupt-before-oversize", "utf-8");
     const oversizeReplace = replaceSettingsDocument(
       { huge: "x".repeat(MAX_SETTINGS_BYTES + 1) },
@@ -2682,9 +2685,11 @@ console.log(JSON.stringify(res));
     expect(oversizeReplace.ok).toBe(false);
     if (!oversizeReplace.ok) {
       expect(oversizeReplace.error).toContain(`Failed to replace ${settingsPath}:`);
+      expect((oversizeReplace as Record<string, unknown>).actionable).toBeUndefined();
     }
 
-    // 3. Reworded errno text on EACCES still classifies by code and is actionable (no Failed to replace prefix).
+    // 3. Reworded errno text on EACCES still classifies by code, is a write-kind error (no Failed to
+    //    replace prefix), and the store result never leaks an `actionable` flag.
     const rewordedEaccesFs = createSettingsFs({
       rename() {
         const err = new Error("completely custom reworded message") as NodeJS.ErrnoException;
@@ -2701,6 +2706,15 @@ console.log(JSON.stringify(res));
       expect(rewordedReplace.error).toContain(`${settingsPath} cannot be updated: permission denied (EACCES)`);
       expect(rewordedReplace.error).not.toContain("Failed to replace");
       expect(rewordedReplace.error).not.toContain("completely custom reworded message");
+      expect((rewordedReplace as Record<string, unknown>).actionable).toBeUndefined();
+    }
+
+    writeFileSync(settingsPath, '{"thinking":true}\n', "utf-8");
+    const failedUpdate = updateSettingsDocument({ debug: true }, { fs: rewordedEaccesFs });
+    expect(failedUpdate.ok).toBe(false);
+    if (!failedUpdate.ok) {
+      expect(failedUpdate.error).toContain(`${settingsPath} cannot be updated: permission denied (EACCES)`);
+      expect((failedUpdate as Record<string, unknown>).actionable).toBeUndefined();
     }
 
     // 4. Reworded ELOOP/EISDIR texts: unresolved ELOOP -> loop, resolved readBounded open ELOOP -> swapped,
