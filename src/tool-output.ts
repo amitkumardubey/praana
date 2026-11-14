@@ -134,6 +134,9 @@ const ARTIFACT_ID_EXACT_RE = new RegExp(`^${ARTIFACT_ID_GRAMMAR}$`);
 const ELIDED_MARKER_LINE_RE = new RegExp(
   `^\\.\\.\\. \\[elided (?:[1-9]\\d* lines? / )?\\d+ bytes(?: \\(partial lines at cut truncated\\))?; full output stored in artifact (${ARTIFACT_ID_GRAMMAR}) — call retrieve_artifact\\("\\1"\\) to inspect\\] \\.\\.\\.$`,
 );
+/** Marker text emitted when no artifact holds the elided middle. */
+const UNKEPT_ELISION_ADVICE = "no artifact available, elided content was not kept";
+const UNKEPT_ELISION_PREFIX = "... [elided ";
 const CARD_WHOLE_TEXT_RE = new RegExp(
   `^\\[artifact:\\s*(${ARTIFACT_ID_GRAMMAR})\\s*\\|[^\\n]*\\](?:\\nRetrieve: retrieve_artifact\\("\\1"\\))?$`,
 );
@@ -522,7 +525,15 @@ function formatElisionMarker(
   if (validId) {
     return `... [${elidedSummary}; full output stored in artifact ${validId} — call retrieve_artifact("${validId}") to inspect] ...`;
   }
-  return `... [${elidedSummary}; artifact store unavailable — use search_transcript to inspect full output] ...`;
+  return `... [${elidedSummary}; ${UNKEPT_ELISION_ADVICE}] ...`;
+}
+
+/** True when `text` carries a marker saying the elided middle is not recoverable anywhere. */
+function hasUnkeptElision(text: string): boolean {
+  const suffix = `${UNKEPT_ELISION_ADVICE}] ...`;
+  return text
+    .split("\n")
+    .some((line) => line.startsWith(UNKEPT_ELISION_PREFIX) && line.endsWith(suffix));
 }
 
 function extractArtifactIdFromText(text: string): string | undefined {
@@ -829,11 +840,23 @@ export function shapeToolOutput(input: ShapeToolOutputInput): ShapeToolOutputRes
 export function buildToolResultStub(candidate: StubCandidate): string {
   const artifactId = extractArtifactIdFromText(candidate.text);
   const artifactClause = artifactId ? `, artifact ${artifactId}` : "";
+  return `[tool_result ${candidate.eventId} (${candidate.toolName}, ~${candidate.estimatedTokens} tokens${artifactClause}) stubbed — ${buildStubAdvice(candidate, artifactId)}]`;
+}
+
+/**
+ * Recovery advice for a stub. Only an artifact makes the elided middle
+ * recoverable; the canonical record holds the shaped text, so a shaped result
+ * without an artifact cannot be completed by fetching it back.
+ */
+function buildStubAdvice(candidate: StubCandidate, artifactId: string | undefined): string {
   const transcriptHint = `search_transcript({ id: "${candidate.eventId}" })`;
-  const retrieveClause = artifactId
-    ? `use ${transcriptHint} or retrieve_artifact("${artifactId}") to inspect`
-    : `use ${transcriptHint} to inspect`;
-  return `[tool_result ${candidate.eventId} (${candidate.toolName}, ~${candidate.estimatedTokens} tokens${artifactClause}) stubbed — ${retrieveClause}]`;
+  if (artifactId) {
+    return `use ${transcriptHint} or retrieve_artifact("${artifactId}") to inspect`;
+  }
+  if (hasUnkeptElision(candidate.text)) {
+    return `use ${transcriptHint} to inspect the shaped record; ${UNKEPT_ELISION_ADVICE}`;
+  }
+  return `use ${transcriptHint} to inspect`;
 }
 
 /**

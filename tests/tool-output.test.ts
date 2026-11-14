@@ -252,7 +252,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     });
     expect(degraded.shaped).toBe(true);
     expect(degraded.artifactId).toBeUndefined();
-    expect(degraded.text).toContain("search_transcript");
+    expect(degraded.text).toContain("no artifact available, elided content was not kept");
   });
 
   test("exposes only the shaper, buildToolResultStub, planToolResultStubs, and constants", async () => {
@@ -345,6 +345,52 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     });
     expect(withoutArtifact).toContain('search_transcript({ id: "res-obj-2" })');
     expect(withoutArtifact).not.toContain('search_transcript("');
+  });
+
+  test("no-artifact elision marker states the elided content was not kept and the stub repeats it", () => {
+    const raw = Array.from(
+      { length: 200 },
+      (_, i) => `row-${i}: ${i === 100 ? "UNIQUE_DEGRADED_NEEDLE " : ""}${"payload-filler ".repeat(8)}`,
+    ).join("\n");
+    const shaped = shapeToolOutput({
+      toolName: "shell",
+      command: "ls -la",
+      text: raw,
+      storeArtifact: () => null,
+      options: { inlineThresholdTokens: 50, maxLines: 20, headLines: 10, tailLines: 10 },
+    });
+    expect(shaped.shaped).toBe(true);
+    expect(shaped.artifactId).toBeUndefined();
+    expect(shaped.text).not.toContain("UNIQUE_DEGRADED_NEEDLE");
+    expect(shaped.text).toContain("no artifact available, elided content was not kept");
+    // No false recovery advice: nothing outside the record can produce the elided middle.
+    expect(shaped.text).not.toContain("use search_transcript to inspect full output");
+    expect(toolOutput.extractShapedArtifactId(shaped.text)).toBeUndefined();
+
+    const degradedStub = buildToolResultStub({
+      eventId: "ev-not-kept",
+      turnId: 1,
+      callId: "call-not-kept",
+      toolName: "shell",
+      text: shaped.text,
+      isError: false,
+      estimatedTokens: 500,
+    });
+    expect(degradedStub).toContain("elided content was not kept");
+    expect(degradedStub).not.toContain("retrieve_artifact");
+
+    // A complete result with no marker keeps the plain fetch-by-id hint.
+    const completeStub = buildToolResultStub({
+      eventId: "ev-complete",
+      turnId: 1,
+      callId: "call-complete",
+      toolName: "shell",
+      text: "A".repeat(1600),
+      isError: false,
+      estimatedTokens: 400,
+    });
+    expect(completeStub).toContain('search_transcript({ id: "ev-complete" })');
+    expect(completeStub).not.toContain("was not kept");
   });
 
   test("planToolResultStubs honours minTokens and keepRecent, re-exports compaction constants, and satisfies StubPlanner", async () => {
@@ -1629,7 +1675,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     expect(calls200).toBe(1);
     expect(res200.shaped).toBe(true);
     expect(res200.artifactId).toBeUndefined();
-    expect(res200.text).toContain("artifact store unavailable");
+    expect(res200.text).toContain("no artifact available, elided content was not kept");
     expect(Buffer.byteLength(res200.text, "utf8")).toBeLessThanOrEqual(350);
 
     // 3. Throwing storeArtifact never propagates; falls back to unavailable marker and is called once.
@@ -1647,7 +1693,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     expect(throwCalls).toBe(1);
     expect(resThrow.shaped).toBe(true);
     expect(resThrow.artifactId).toBeUndefined();
-    expect(resThrow.text).toContain("artifact store unavailable");
+    expect(resThrow.text).toContain("no artifact available, elided content was not kept");
 
     // 4. When output cannot fit the worst-case reserved marker (returned unshaped), storeArtifact is never called.
     for (const smallMaxBytes of [80, 240]) {
