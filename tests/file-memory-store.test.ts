@@ -475,6 +475,29 @@ describe("file memory store", () => {
     const probing = createFileMemoryStore({ ...options, fs: failingClose((path) => path === join(dir, "coffee.md")) });
     expect(await probing.read({ name: "coffee", scope: "global" })).toMatchObject({ ok: true, memory: { name: "coffee" } });
   });
+  test("a sync failure on the replacement wins over a failing close", async () => {
+    const { home, store, dir } = await setup();
+    expect((await store.write(input)).ok).toBe(true);
+    const before = await fs.readFile(join(dir, "coffee.md"), "utf8");
+    const options = { home, cwd: home, findRoot: (cwd: string) => cwd, now: () => new Date("2026-05-01T00:00:00Z") };
+    const both = new Proxy(fs, { get(base, key) {
+      if (key !== "open") return Reflect.get(base, key);
+      return async (...args: Parameters<typeof fs.open>) => {
+        const handle = await fs.open(...args);
+        if (!String(args[0]).includes(".coffee.md.tmp-")) return handle;
+        return new Proxy(handle, { get(h, method) {
+          if (method === "sync") return async () => { throw Object.assign(new Error("ENOSPC: sync failed"), { code: "ENOSPC" }); };
+          if (method === "close") return async () => { await h.close(); throw Object.assign(new Error("EIO: close failed"), { code: "EIO" }); };
+          const value = Reflect.get(h, method);
+          return typeof value === "function" ? value.bind(h) : value;
+        } });
+      };
+    } }) as typeof fs;
+    const closing = createFileMemoryStore({ ...options, fs: both });
+    expect(await closing.write({ ...input, body: "Never durable" })).toEqual({ ok: false, error: "ENOSPC: sync failed" });
+    expect(await fs.readFile(join(dir, "coffee.md"), "utf8")).toBe(before);
+    expect((await fs.readdir(dir)).filter((name) => name.includes(".tmp-"))).toEqual([]);
+  });
   test("ignores malformed, oversized, symlink and temp files", async () => {
     const { store, dir, home } = await setup();
     await store.write(input);
