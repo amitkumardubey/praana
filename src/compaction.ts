@@ -324,7 +324,13 @@ export function shouldRewrite(fill: RequestFill, options: Partial<CompactionOpti
   return fill.ratio >= threshold;
 }
 
-export type UnchangedFitsReason = "fold_not_possible" | "fold_insufficient" | "no_eligible_results" | "planner_declined";
+/**
+ * fold_not_possible: the minimum summary cannot fit or the source cannot be folded.
+ * fold_not_beneficial: a fold cannot shrink the request, even if it would fit.
+ * fold_insufficient: an accepted fold still exceeds capacity after in-flight stubbing.
+ * The remaining reasons distinguish missing eligible results from a declined stub plan.
+ */
+export type UnchangedFitsReason = "fold_not_possible" | "fold_not_beneficial" | "fold_insufficient" | "no_eligible_results" | "planner_declined";
 
 /** Contracts for rewrite orchestration; defining outcomes does not execute or commit a rewrite. */
 export type CompactionOutcome =
@@ -334,7 +340,7 @@ export type CompactionOutcome =
   | { status: "rewritten"; state: FrozenState; fill: RequestFill }
   /** A stubs-only commit: one generation increment, existing summary/boundary preserved. */
   | { status: "stubbed"; state: FrozenState; fill: RequestFill; summaryDiscarded?: true; discardedSummary?: DiscardedSummary }
-  /** No useful change, but the unchanged request fits usable capacity. */
+  /** No useful change, but the unchanged request fits; reason distinguishes impossible, unhelpful and oversized folds. */
   | { status: "unchanged_fits"; state: FrozenState; fill: RequestFill; reason: UnchangedFitsReason; summaryDiscarded?: true; discardedSummary?: DiscardedSummary }
   /** Summary failure/timeout; previous state retained and the unchanged request fits. */
   | { status: "summary_failed_fits"; state: FrozenState; fill: RequestFill; reason: string }
@@ -845,8 +851,10 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
     // Necessary-condition filter: even the shortest tail and minimum valid summary must beat the request after Step 1.
     // A realistic summary is larger, so a paid summary can still be discarded by the commit rule;
     // this only avoids clearly hopeless folds, not every unhelpful summary call.
-    if (foldAloneBestCase >= preFoldFill.inputTokens || capTokens < minValidSummaryTokens || stubbedFoldBestCase > initialFill.usableTokens) {
+    if (capTokens < minValidSummaryTokens || stubbedFoldBestCase > initialFill.usableTokens) {
       unchangedReason = "fold_not_possible";
+    } else if (foldAloneBestCase >= preFoldFill.inputTokens) {
+      unchangedReason = "fold_not_beneficial";
     } else {
       // Shrink completed turns in the tail from Math.min(tailTurns, completedTurns.length) down to 0
       // until frame + summary allowance + tail fits the target.
@@ -1047,7 +1055,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
           text: acceptedSummary,
           request: summaryRequestMeta,
         };
-        unchangedReason = "fold_insufficient";
+        unchangedReason = postFoldFill.fits ? "fold_not_beneficial" : "fold_insufficient";
       }
     }
   }

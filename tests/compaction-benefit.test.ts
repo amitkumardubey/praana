@@ -103,7 +103,7 @@ test("a tiny completed turn skips the paid summary when even the minimum cannot 
     runSummary: async () => { calls++; return { text: accepted, finishReason: "stop", usage: null, toolCalls: [] }; },
   });
   expect(calls).toBe(0);
-  expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "fold_not_possible" });
+  expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "fold_not_beneficial" });
   expectNoDiscard(outcome);
   expect(messages(log)).toEqual(before);
   expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
@@ -146,6 +146,37 @@ test.each([
   expectNoDiscard(outcome);
 });
 
+test("an impossible minimum remains fold_not_possible even when the fold also cannot shrink", async () => {
+  const { log } = await nearCapacity("old", 4400);
+  expect(inputTokens(messages(log))).toBeLessThanOrEqual(usableTokens);
+  const minimumFold = inputTokens([renderSummaryMessage(summary()), ...buildTurns(log).at(-1)!.messages]);
+  expect(minimumFold).toBeGreaterThan(usableTokens);
+  let calls = 0;
+  const outcome = await runCompaction({
+    log, liveRequest, contextWindowTokens, options,
+    runSummary: async () => { calls++; return { text: summary(), finishReason: "stop", usage: null, toolCalls: [] }; },
+  });
+  expect(calls).toBe(0);
+  expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "fold_not_possible" });
+  expectNoDiscard(outcome);
+});
+
+test("an insufficient summary cap remains fold_not_possible", async () => {
+  const { log } = await nearCapacity("C".repeat(520), 1);
+  const beforeTokens = inputTokens(messages(log));
+  expect(beforeTokens).toBeGreaterThanOrEqual(224 * 0.80);
+  expect(beforeTokens).toBeLessThanOrEqual(224);
+  expect(summaryCapTokens(224)).toBeLessThan(estimateTokens(summary()));
+  let calls = 0;
+  const outcome = await runCompaction({
+    log, liveRequest, contextWindowTokens: 424, options,
+    runSummary: async () => { calls++; return { text: summary(), finishReason: "stop", usage: null, toolCalls: [] }; },
+  });
+  expect(calls).toBe(0);
+  expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "fold_not_possible" });
+  expectNoDiscard(outcome);
+});
+
 test("a useful minimum still pays for a summary", async () => {
   const { log } = await nearCapacity("C".repeat(700), 3400);
   const beforeTokens = inputTokens(messages(log));
@@ -171,7 +202,7 @@ test("an equal-size minimum skips the paid summary", async () => {
     runSummary: async () => { calls++; return { text: summary(), finishReason: "stop", usage: null, toolCalls: [] }; },
   });
   expect(calls).toBe(0);
-  expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "fold_not_possible" });
+  expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "fold_not_beneficial" });
   expectNoDiscard(outcome);
 });
 
@@ -211,7 +242,7 @@ test("an accepted equal-size fold is discarded", async () => {
     runSummary: async () => { calls++; return { text: accepted, finishReason: "stop", usage: null, toolCalls: [] }; },
   });
   expect(calls).toBe(1);
-  expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "fold_insufficient", summaryDiscarded: true });
+  expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "fold_not_beneficial", summaryDiscarded: true });
   expectDiscarded(outcome, log, accepted);
   expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
 });
@@ -288,7 +319,7 @@ test("a fitting fold that grows the request is discarded", async () => {
     runSummary: async () => { calls++; return { text: accepted, finishReason: "stop", usage: null, toolCalls: [] }; },
   });
   expect(calls).toBe(1);
-  expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "fold_insufficient", summaryDiscarded: true });
+  expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "fold_not_beneficial", summaryDiscarded: true });
   expectDiscarded(outcome, log, accepted);
   expect(inputTokens(messages(log))).toBe(beforeTokens);
   expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
