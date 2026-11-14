@@ -222,7 +222,8 @@ describe("settings store", () => {
     expect(failedReset.ok).toBe(false);
     expect(readFileSync(settingsPath, "utf-8")).toBe(corruptBytes);
 
-    // Normal resetUserSettings backs up the corrupt file (unique name, 0600) and writes defaults.
+    // Normal resetUserSettings backs up the corrupt file (unique name, 0600) and preserves settingsPath's mode.
+    const priorMode = process.platform !== "win32" ? statSync(settingsPath).mode & 0o777 : 0o600;
     const reset = resetUserSettings();
     expect(reset.ok).toBe(true);
     const files = readdirSync(homeDir);
@@ -232,7 +233,7 @@ describe("settings store", () => {
     expect(readFileSync(backupFile, "utf-8")).toBe(corruptBytes);
     if (process.platform !== "win32") {
       expect(statSync(backupFile).mode & 0o777).toBe(0o600);
-      expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
+      expect(statSync(settingsPath).mode & 0o777).toBe(priorMode);
     }
     expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual(DEFAULT_USER_SETTINGS);
 
@@ -284,7 +285,7 @@ describe("settings store", () => {
       "write",
     ]);
 
-    // Pre-existing 0644 file becomes 0600 after update and replace; every touched path is inside root.
+    // Pre-existing 0644 file preserves 0644 after update; every touched path is inside root.
     const touchedPaths: string[] = [];
     const trackingFs = createSettingsFs({
       openExclusive(p, mode) {
@@ -309,7 +310,7 @@ describe("settings store", () => {
 
     expect(updateSettingsDocument({ debug: true }, { fs: trackingFs }).ok).toBe(true);
     if (process.platform !== "win32") {
-      expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
+      expect(statSync(settingsPath).mode & 0o777).toBe(0o644);
     }
 
     // Verify isolation: every path touched by the store is inside the test PRAANA_HOME.
@@ -1903,6 +1904,113 @@ console.log(JSON.stringify(res));
       }
     } finally {
       spy.mockRestore();
+    }
+  });
+
+  test("preserves existing target permission bits (0640 plain and symlinked), uses 0600 for new files, and temp file is never wider than target", async () => {
+    const { createSettingsFs, updateSettingsDocument, replaceSettingsDocument } = await storeApi();
+    const baseFs = createSettingsFs();
+
+    // 1. New file (target does not exist) gets 0600.
+    const newModes: number[] = [];
+    const newSpyFs = createSettingsFs({
+      openExclusive(p, mode) {
+        newModes.push(mode);
+        return baseFs.openExclusive(p, mode);
+      },
+    });
+    expect(updateSettingsDocument({ thinking: true }, { fs: newSpyFs }).ok).toBe(true);
+    expect(newModes).toEqual([0o600]);
+    if (process.platform !== "win32") {
+      expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
+    }
+
+    if (process.platform === "win32") return;
+
+    // 2. Plain target 0640 stays 0640 after update and replace, and temp file never exceeds 0640.
+    chmodSync(settingsPath, 0o640);
+    expect(statSync(settingsPath).mode & 0o777).toBe(0o640);
+
+    const openModesPlain: number[] = [];
+    const tempModesDuringWrite: number[] = [];
+    let activeTempPath: string | undefined;
+    const spyPlainFs = createSettingsFs({
+      openExclusive(p, mode) {
+        openModesPlain.push(mode);
+        if (p.includes(".tmp-")) activeTempPath = p;
+        return baseFs.openExclusive(p, mode);
+      },
+      write(fd, data) {
+        if (activeTempPath) {
+          const tempMode = statSync(activeTempPath).mode & 0o777;
+          tempModesDuringWrite.push(tempMode);
+          expect(tempMode & ~0o640).toBe(0);
+          activeTempPath = undefined;
+        }
+        return baseFs.write(fd, data);
+      },
+    });
+
+    expect(updateSettingsDocument({ debug: true }, { fs: spyPlainFs }).ok).toBe(true);
+    expect(openModesPlain).toEqual([0o640]);
+    expect(tempModesDuringWrite).toEqual([0o640]);
+    expect(statSync(settingsPath).mode & 0o777).toBe(0o640);
+
+    // 3. Symlinked target 0640 stays 0640 after update, temp file is never wider than 0640, and symlink remains intact.
+    rmSync(settingsPath, { force: true });
+    const dotfilesDir = join(root, "dotfiles-perms");
+    mkdirSync(dotfilesDir, { recursive: true });
+    const targetPath = join(dotfilesDir, "settings.json");
+    writeFileSync(targetPath, '{"thinking":true}\n', "utf-8");
+    chmodSync(targetPath, 0o640);
+    symlinkSync(targetPath, settingsPath);
+
+    const openModesLink: number[] = [];
+    const tempModesLink: number[] = [];
+    const spyLinkFs = createSettingsFs({
+      openExclusive(p, mode) {
+        openModesLink.push(mode);
+        if (p.includes(".tmp-")) activeTempPath = p;
+        return baseFs.openExclusive(p, mode);
+      },
+      write(fd, data) {
+        if (activeTempPath) {
+          const tempMode = statSync(activeTempPath).mode & 0o777;
+          tempModesLink.push(tempMode);
+          expect(tempMode & ~0o640).toBe(0);
+          activeTempPath = undefined;
+        }
+        return baseFs.write(fd, data);
+      },
+    });
+
+    expect(updateSettingsDocument({ incognito: true }, { fs: spyLinkFs }).ok).toBe(true);
+    expect(openModesLink).toEqual([0o640]);
+    expect(tempModesLink).toEqual([0o640]);
+    expect(lstatSync(settingsPath).isSymbolicLink()).toBe(true);
+    expect(statSync(targetPath).mode & 0o777).toBe(0o640);
+
+    // 4. Special mode bits (e.g., 0o4640) are masked to 0o777 so temp file is never wider than 0o640,
+    //    and corrupt backup stays 0600 even when the target is 0640.
+    chmodSync(targetPath, 0o4640);
+    writeFileSync(targetPath, "{corrupt-with-0640", "utf-8");
+    chmodSync(targetPath, 0o4640);
+    const replaceModes: number[] = [];
+    const replaceSpyFs = createSettingsFs({
+      openExclusive(p, mode) {
+        replaceModes.push(mode);
+        return baseFs.openExclusive(p, mode);
+      },
+    });
+    const replaced = replaceSettingsDocument(
+      { ...DEFAULT_USER_SETTINGS },
+      { fs: replaceSpyFs, backupCorrupt: true },
+    );
+    expect(replaced.ok).toBe(true);
+    expect(replaceModes).toEqual([0o600, 0o640]);
+    expect(statSync(targetPath).mode & 0o777).toBe(0o640);
+    if (replaced.ok && replaced.backupPath) {
+      expect(statSync(replaced.backupPath).mode & 0o777).toBe(0o600);
     }
   });
 });

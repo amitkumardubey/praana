@@ -5,11 +5,13 @@
  * `.settings.json.lock.db` SQLite lock file, bounded wait, released in `finally`)
  * serialises every read-modify-write (`updateSettingsDocument` and
  * `replaceSettingsDocument`), combined with atomic replacement (exclusive
- * `.settings.json.tmp-<pid>-<rand>` temp file in the same directory with mode
- * 0600, fsync, close, atomic rename, and best-effort directory fsync).
+ * `.settings.json.tmp-<pid>-<rand>` temp file in the target's directory with
+ * the existing target's permission bits or mode 0600 when creating a new file,
+ * fsync, close, atomic rename, and best-effort directory fsync).
  *
- * Note on permissions: mode 0600 is enforced on POSIX filesystems. On Windows,
- * POSIX mode bits do not provide equivalent ACL privacy.
+ * Note on permissions: mode 0600 (and preserved POSIX mode bits) are enforced
+ * on POSIX filesystems. On Windows, POSIX mode bits do not provide equivalent
+ * ACL privacy.
  */
 
 import { randomBytes } from "node:crypto";
@@ -276,11 +278,15 @@ function symlinkResolutionError(
   };
 }
 
+function permissionModeFromStat(stat: Stats): number {
+  return typeof stat.mode === "number" ? stat.mode & 0o777 : 0o600;
+}
+
 function resolveSettingsTarget(
   path: string,
   fs: SettingsFs,
 ):
-  | { ok: true; targetPath: string; isSymlink: boolean }
+  | { ok: true; targetPath: string; isSymlink: boolean; targetMode: number }
   | { ok: false; result: ReadSettingsDocumentResult; targetPath: string } {
   let stat: Stats;
   try {
@@ -320,7 +326,7 @@ function resolveSettingsTarget(
         targetPath: path,
       };
     }
-    return { ok: true, targetPath: path, isSymlink: false };
+    return { ok: true, targetPath: path, isSymlink: false, targetMode: permissionModeFromStat(stat) };
   }
 
   let targetPath: string;
@@ -368,18 +374,18 @@ function resolveSettingsTarget(
     };
   }
 
-  return { ok: true, targetPath, isSymlink: true };
+  return { ok: true, targetPath, isSymlink: true, targetMode: permissionModeFromStat(targetStat) };
 }
 
 function readSettingsDocumentWithBytes(
   path: string,
   fs: SettingsFs,
-): { result: ReadSettingsDocumentResult; rawBytes?: Buffer; targetPath: string } {
+): { result: ReadSettingsDocumentResult; rawBytes?: Buffer; targetPath: string; targetMode?: number } {
   const resolved = resolveSettingsTarget(path, fs);
   if (!resolved.ok) {
     return { result: resolved.result, targetPath: resolved.targetPath };
   }
-  const { targetPath, isSymlink } = resolved;
+  const { targetPath, isSymlink, targetMode } = resolved;
 
   let rawBytes: Buffer;
   try {
@@ -457,6 +463,7 @@ function readSettingsDocumentWithBytes(
       result: { doc: {}, state: "corrupt", error: `Settings file (${path}) is not valid UTF-8` },
       rawBytes,
       targetPath,
+      targetMode,
     };
   }
 
@@ -470,6 +477,7 @@ function readSettingsDocumentWithBytes(
       result: { doc: {}, state: "corrupt", error: `Corrupt settings file (${path})` },
       rawBytes,
       targetPath,
+      targetMode,
     };
   }
 
@@ -482,10 +490,11 @@ function readSettingsDocumentWithBytes(
       },
       rawBytes,
       targetPath,
+      targetMode,
     };
   }
 
-  return { result: { doc: parsed, state: "ok" }, rawBytes, targetPath };
+  return { result: { doc: parsed, state: "ok" }, rawBytes, targetPath, targetMode };
 }
 
 export function readSettingsDocument(options?: SettingsStoreOptions): ReadSettingsDocumentResult {
@@ -498,11 +507,13 @@ function writeExclusiveFile(
   filePath: string,
   bytes: Buffer,
   fs: SettingsFs,
+  mode: number = 0o600,
   afterClose?: () => void,
 ): { ok: true } | { ok: false; error: string } {
+  const safeMode = mode & 0o777;
   let fd: number;
   try {
-    fd = fs.openExclusive(filePath, 0o600);
+    fd = fs.openExclusive(filePath, safeMode);
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -513,7 +524,7 @@ function writeExclusiveFile(
     fs.fsync(fd);
     closed = true;
     fs.close(fd);
-    // Created exclusively with mode 0o600 by openExclusive; no post-close chmod is needed.
+    // Created exclusively with safeMode by openExclusive; no post-close chmod is needed.
     afterClose?.();
     return { ok: true };
   } catch (err) {
@@ -553,10 +564,20 @@ function logBestEffortFailure(
   }
 }
 
+/**
+ * Atomically replace `path` with `doc` via an exclusive temp file + rename.
+ *
+ * Permissions: when replacing an existing regular file, the caller supplies its
+ * permission bits (`mode & 0o777`), so the temp file is opened exclusively with
+ * that mode and never widened beyond the target; when creating a new file, mode
+ * `0o600` is used. Ownership and hard links are NOT preserved: a save replaces
+ * the file atomically, so hard-link siblings diverge.
+ */
 function writeDocumentAtomic(
   path: string,
   doc: Record<string, unknown>,
   fs: SettingsFs,
+  mode: number = 0o600,
 ): { ok: true } | { ok: false; error: string } {
   // Caller-supplied input is validated before it reaches the merge (`updateSettingsDocument`
   // patch/base and `replaceSettingsDocument` input). The merged document is not re-scanned:
@@ -582,8 +603,8 @@ function writeDocumentAtomic(
   const base = basename(path);
   const tmpPath = join(dir, `.${base}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`);
 
-  return writeExclusiveFile(tmpPath, bytes, fs, () => {
-    // The renamed inode already has mode 0o600 from openExclusive.
+  return writeExclusiveFile(tmpPath, bytes, fs, mode, () => {
+    // The renamed inode already has the target's preserved mode (or 0o600 for new files) from openExclusive.
     fs.rename(tmpPath, path);
     try {
       // Best effort: the rename has already committed, so a directory fsync failure must
@@ -736,7 +757,7 @@ export function updateSettingsDocument(
   const path = resolveSettingsPath(options);
   const fs = options?.fs ?? defaultFs;
   return withSettingsLock<UpdateSettingsDocumentResult>(path, () => {
-    const { result: current, rawBytes, targetPath } = readSettingsDocumentWithBytes(path, fs);
+    const { result: current, rawBytes, targetPath, targetMode } = readSettingsDocumentWithBytes(path, fs);
 
     if (current.state === "unreadable") {
       return {
@@ -800,7 +821,7 @@ export function updateSettingsDocument(
       }
     }
 
-    const written = writeDocumentAtomic(targetPath, nextDoc, fs);
+    const written = writeDocumentAtomic(targetPath, nextDoc, fs, targetMode);
     if (!written.ok) {
       if (backupPath) discardCorruptBackup(backupPath, fs);
       return written;
@@ -820,7 +841,7 @@ function writeCorruptBackup(
   bytes: Buffer,
   fs: SettingsFs,
 ): { ok: true } | { ok: false; error: string } {
-  const res = writeExclusiveFile(backupPath, bytes, fs);
+  const res = writeExclusiveFile(backupPath, bytes, fs, 0o600);
   if (!res.ok) {
     return { ok: false, error: `Failed to back up corrupt settings file (${path}): ${res.error}` };
   }
@@ -875,7 +896,7 @@ export function replaceSettingsDocument(
   const path = resolveSettingsPath(options);
   const fs = options?.fs ?? defaultFs;
   return withSettingsLock(path, () => {
-    const { result: current, rawBytes, targetPath } = readSettingsDocumentWithBytes(path, fs);
+    const { result: current, rawBytes, targetPath, targetMode } = readSettingsDocumentWithBytes(path, fs);
 
     if (current.state === "unreadable") {
       return {
@@ -892,7 +913,7 @@ export function replaceSettingsDocument(
     }
 
     const copy = { ...doc };
-    const written = writeDocumentAtomic(targetPath, copy, fs);
+    const written = writeDocumentAtomic(targetPath, copy, fs, targetMode);
     if (!written.ok) {
       if (backupPath) discardCorruptBackup(backupPath, fs);
       return written;
