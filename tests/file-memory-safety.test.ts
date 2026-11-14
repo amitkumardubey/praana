@@ -56,16 +56,24 @@ test("refuses a write when strict redaction throws", async () => {
   expect((await make(home).list({})).entries).toHaveLength(0);
 });
 
-test("dangling .praana symlink returns a clear typed error without creating its target", async () => {
+test("dangling .praana symlink is reported exactly, creates nothing and skips every scope", async () => {
   const home = await homeDir();
+  const base = join(home, ".praana");
   const target = join(home, "missing-target");
-  await fs.symlink(target, join(home, ".praana"));
+  await fs.symlink(target, base);
   const store = make(home);
-  for (const result of [await store.write(entry), await store.list(), await store.read({ name: entry.name })]) {
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toMatch(/dangling.*\.praana.*symlink/i);
+  const expected = `Dangling .praana symlink: ${base}`;
+  // The diagnostic must reach the caller instead of being swallowed as a failed lstat.
+  expect(await store.write(entry)).toEqual({ ok: false, error: expected });
+  for (const scope of ["global", "project"] as const) {
+    expect(await store.list({ scope })).toEqual({ ok: false, error: `${scope}: ${expected}`, skippedScopes: [{ scope, reason: expected }], entries: [], skipped: 0 });
   }
+  expect(await store.list()).toEqual({ ok: false, error: `project: ${expected}; global: ${expected}`, skippedScopes: [{ scope: "project", reason: expected }, { scope: "global", reason: expected }], entries: [], skipped: 0 });
+  expect((await store.read({ name: entry.name })).ok).toBe(false);
+  // Nothing was created behind the dangling link.
   expect(await fs.exists(target)).toBe(false);
+  expect(await fs.exists(join(base, "memory"))).toBe(false);
+  expect((await fs.lstat(base)).isSymbolicLink()).toBe(true);
 });
 
 test("trusts symlinked .praana and symlinks above it", async () => {
