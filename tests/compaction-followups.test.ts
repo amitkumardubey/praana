@@ -1,7 +1,8 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
 import * as requestsApi from "../src/compaction-requests.js";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { userInfo } from "node:os";
 import { join } from "node:path";
 import { CanonicalWriter } from "../src/canonical-transcript.js";
 import * as compaction from "../src/compaction.js";
@@ -16,7 +17,9 @@ afterEach(() => {
   for (const { log, root } of fixtures.splice(0)) { log.close(); rmSync(root, { recursive: true, force: true }); }
 });
 function fixture() {
-  const root = mkdtempSync(join("/home/amit/.cache/compfollow", "fixture-"));
+  const cache = join(userInfo().homedir, ".cache");
+  mkdirSync(cache, { recursive: true });
+  const root = mkdtempSync(join(cache, "praana-compaction-test-"));
   const log = new EventLog("followups", root);
   fixtures.push({ log, root });
   return { log, writer: new CanonicalWriter(log, error => { throw error; }) };
