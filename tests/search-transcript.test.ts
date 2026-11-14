@@ -18,6 +18,7 @@ import { runTurn } from "../src/turn.js";
 import { isLoopExempt } from "../src/circuit/loop-gate.js";
 import { EventLog } from "../src/event-log.js";
 import { StateGraph } from "../src/state-graph.js";
+import { shapeToolOutput } from "../src/tool-output.js";
 import { summarizeArgs } from "../src/tool-summary.js";
 import { createAllTools, describeTools } from "../src/tools/index.js";
 import * as searchTranscriptModule from "../src/tools/search-transcript.js";
@@ -330,6 +331,126 @@ describe("search_transcript tool (PR3)", () => {
     expect(entry.unrecoveredStub).toBe(true);
     expect(searchTranscriptModule.indexSessionTranscript(log).entries.filter((entry) => entry.kind !== "tool_result")
       .every((entry) => !entry.unrecoveredStub)).toBe(true);
+  });
+
+  test("recognizes real shapeToolOutput markers (N lines, 1 line, no-line-count, custom id) as unrecovered stubs and recovers them", async () => {
+    const oneLineRaw = [
+      "short-0",
+      "H".repeat(6000),
+      "UNIQUE_ONE_LINE_NEEDLE_901",
+      "T".repeat(6000),
+      "short-4",
+    ].join("\n");
+    const singleLineRaw = `${"A".repeat(9000)}UNIQUE_SINGLE_LINE_NEEDLE_902${"B".repeat(9000)}`;
+    const multiLineRaw = Array.from(
+      { length: 140 },
+      (_, i) => `row-${i}: ${i === 70 ? "UNIQUE_MULTI_LINE_NEEDLE_903" : "padding-output ".repeat(8)}`,
+    ).join("\n");
+
+    const cases = [
+      {
+        name: "multi-line",
+        rawText: multiLineRaw,
+        artifactId: "art_shaped_multi_01",
+        needle: "UNIQUE_MULTI_LINE_NEEDLE_903",
+        expectedOmittedLines: (n: number) => n > 1,
+      },
+      {
+        name: "1-line",
+        rawText: oneLineRaw,
+        artifactId: "art_shaped_one_02",
+        needle: "UNIQUE_ONE_LINE_NEEDLE_901",
+        expectedOmittedLines: (n: number) => n === 1,
+      },
+      {
+        name: "no-line-count",
+        rawText: singleLineRaw,
+        artifactId: "art_shaped_single_03",
+        needle: "UNIQUE_SINGLE_LINE_NEEDLE_902",
+        expectedOmittedLines: (n: number) => n === 0,
+      },
+      {
+        name: "custom-non-art-id",
+        rawText: multiLineRaw,
+        artifactId: "custom-blob:42/raw",
+        needle: "UNIQUE_MULTI_LINE_NEEDLE_903",
+        expectedOmittedLines: (n: number) => n > 1,
+      },
+    ] as const;
+
+    for (const c of cases) {
+      const shaped = shapeToolOutput({
+        toolName: "shell",
+        command: "ls -la",
+        text: c.rawText,
+        storeArtifact: () => c.artifactId,
+      });
+      expect(shaped.shaped).toBe(true);
+      expect(shaped.artifactId).toBe(c.artifactId);
+      expect(c.expectedOmittedLines(shaped.omittedLines)).toBe(true);
+      expect(shaped.text).not.toContain(c.needle);
+
+      // Without paired raw tool_result, canonical entry is flagged unrecoveredStub
+      const { log: unrecoveredLog } = openLog(`unrecovered-${c.name}`);
+      const unrecoveredId = await writeCanonicalToolResult(unrecoveredLog, "shell", `call-${c.name}`, shaped.text);
+      const unrecoveredEntry = searchTranscriptModule.indexSessionTranscript(unrecoveredLog).entries
+        .find((e) => e.id === unrecoveredId)!;
+      expect(unrecoveredEntry.artifactId).toBe(c.artifactId);
+      expect(unrecoveredEntry.unrecoveredStub).toBe(true);
+
+      // With paired raw tool_result event, full output is recovered and searchable
+      const { log: recoveredLog } = openLog(`recovered-${c.name}`);
+      const recoveredId = await writeCanonicalToolResult(recoveredLog, "shell", `call-${c.name}`, shaped.text);
+      recoveredLog.append({
+        kind: "tool_result",
+        actor: "tool",
+        payload: { toolCallId: `call-${c.name}`, tool: "shell", result: c.rawText },
+      });
+      const recoveredEntry = searchTranscriptModule.indexSessionTranscript(recoveredLog).entries
+        .find((e) => e.id === recoveredId)!;
+      expect(recoveredEntry.artifactId).toBe(c.artifactId);
+      expect(recoveredEntry.unrecoveredStub).toBe(false);
+      expect(recoveredEntry.text).toBe(c.rawText);
+
+      const tool = searchTranscriptModule.createSearchTranscriptTool({ eventLog: recoveredLog }).search_transcript;
+      const search = await tool.execute({ query: c.needle });
+      if (!search.ok || search.mode !== "search") throw new Error("Expected search");
+      expect(search.matches.map((m) => m.id)).toEqual([recoveredId]);
+      expect(search.matches[0]?.artifactId).toBe(c.artifactId);
+    }
+  });
+
+  test("does not treat a body quoting a shaped elision marker in head/tail as a stub", async () => {
+    const quotedHead = [
+      'const example = `... [elided 10 lines / 500 bytes (partial lines at cut truncated); full output stored in artifact art_quoted_head — call retrieve_artifact("art_quoted_head") to inspect] ...`;',
+      "normal middle line",
+      '  ... [elided 1 line / 40 bytes (partial lines at cut truncated); full output stored in artifact art_quoted_tail — call retrieve_artifact("art_quoted_tail") to inspect] ...',
+    ].join("\n");
+    const { log } = openLog();
+    const id = await writeCanonicalToolResult(log, "shell", "quoted-call", quotedHead);
+    const entry = searchTranscriptModule.indexSessionTranscript(log).entries.find((e) => e.id === id)!;
+    expect(entry.unrecoveredStub).toBe(false);
+
+    // When a result containing quoted markers IS shaped by shapeToolOutput, the outer real artifact id wins
+    const rawWithQuotes = [
+      'const example = `... [elided 10 lines / 500 bytes (partial lines at cut truncated); full output stored in artifact art_quoted_head — call retrieve_artifact("art_quoted_head") to inspect] ...`;',
+      ...Array.from({ length: 120 }, (_, i) => `middle-${i}: ${"payload ".repeat(10)}`),
+      'note: ... [elided 200 bytes (partial lines at cut truncated); full output stored in artifact art_quoted_tail — call retrieve_artifact("art_quoted_tail") to inspect] ...',
+    ].join("\n");
+    const shaped = shapeToolOutput({
+      toolName: "shell",
+      command: "ls -la",
+      text: rawWithQuotes,
+      storeArtifact: () => "art_real_outer_77",
+      options: { inlineThresholdTokens: 50, maxLines: 20, headLines: 8, tailLines: 10 },
+    });
+    expect(shaped.shaped).toBe(true);
+    const { log: shapedLog } = openLog("shaped-with-quotes");
+    const shapedId = await writeCanonicalToolResult(shapedLog, "shell", "shaped-quoted-call", shaped.text);
+    const shapedEntry = searchTranscriptModule.indexSessionTranscript(shapedLog).entries
+      .find((e) => e.id === shapedId)!;
+    expect(shapedEntry.artifactId).toBe("art_real_outer_77");
+    expect(shapedEntry.unrecoveredStub).toBe(true);
   });
 
   test.each([
