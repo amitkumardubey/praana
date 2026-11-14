@@ -84,7 +84,7 @@ export function loadUserSettings(options?: SettingsStoreOptions): LoadUserSettin
           warning: `${written.error}; using defaults`,
         };
       }
-      if (written.state === "unreadable") {
+      if (written.state === "unreadable" || written.actionable) {
         return {
           settings,
           warning: written.error,

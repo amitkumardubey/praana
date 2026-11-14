@@ -635,27 +635,86 @@ function writeExclusiveFile(
   }
 }
 
-const ATOMIC_WRITE_ERRNO_CAUSES: Record<string, string> = {
-  EACCES: "permission denied (EACCES)",
-  EPERM: "operation not permitted (EPERM)",
-  EROFS: "read-only filesystem (EROFS)",
-  EBUSY: "target is busy (EBUSY)",
-  EXDEV: "cross-device rename (EXDEV)",
+interface AtomicWriteErrnoInfo {
+  cause: string;
+  remedy: (dir: string, isSymlink: boolean) => string;
+}
+
+const ATOMIC_WRITE_ERRNO_INFO: Record<string, AtomicWriteErrnoInfo> = {
+  EACCES: {
+    cause: "permission denied (EACCES)",
+    remedy: (dir, isSymlink) =>
+      isSymlink
+        ? `Make ${dir} writable or replace the symlink with a regular file.`
+        : `Make ${dir} writable.`,
+  },
+  EPERM: {
+    cause: "operation not permitted (EPERM)",
+    remedy: (dir, isSymlink) =>
+      isSymlink
+        ? `Make ${dir} writable or replace the symlink with a regular file.`
+        : `Make ${dir} writable.`,
+  },
+  EROFS: {
+    cause: "read-only filesystem (EROFS)",
+    remedy: () => "The file system is read-only.",
+  },
+  EBUSY: {
+    cause: "target is busy (EBUSY)",
+    remedy: () =>
+      "The file is in use or a mount point (a bind-mounted file cannot be replaced; edit it in place or unmount).",
+  },
+  EXDEV: {
+    cause: "cross-device rename (EXDEV)",
+    remedy: () => "The target is on another file system than its directory entry.",
+  },
+  ENOSPC: {
+    cause: "no space left on device (ENOSPC)",
+    remedy: () => "Free disk space and retry.",
+  },
+  EDQUOT: {
+    cause: "disk quota exceeded (EDQUOT)",
+    remedy: () => "Free disk space or check your disk quota and retry.",
+  },
+  ENOTDIR: {
+    cause: "a path component is not a directory (ENOTDIR)",
+    remedy: (dir) => `Ensure ${dir} and its parent path are directories.`,
+  },
+  ENOENT: {
+    cause: "parent directory does not exist (ENOENT)",
+    remedy: (dir) => `Ensure ${dir} exists and retry.`,
+  },
+  EMFILE: {
+    cause: "too many open files (EMFILE)",
+    remedy: () => "Close unused files or raise the file descriptor limit and retry.",
+  },
+  EIO: {
+    cause: "I/O error (EIO)",
+    remedy: () => "Check disk health and retry.",
+  },
 };
 
+function sanitizeTempPathFromMessage(message: string, tmpPath?: string): string {
+  let cleaned = tmpPath ? message.split(tmpPath).join("temporary file") : message;
+  cleaned = cleaned.replace(/\.tmp-\d+-[0-9a-f]+/gi, "temporary file");
+  return cleaned;
+}
+
 function formatAtomicWriteError(
-  settingsPath: string,
-  targetPath: string,
-  isSymlink: boolean,
-  code: string,
-): string | undefined {
-  const causeClass = ATOMIC_WRITE_ERRNO_CAUSES[code];
-  if (!causeClass) return undefined;
-  const dir = dirname(targetPath);
-  if (isSymlink) {
-    return `${settingsPath} (-> ${targetPath}) cannot be updated: ${causeClass}. Make ${dir} writable or replace the symlink with a regular file.`;
+  target: { settingsPath: string; targetPath: string; isSymlink: boolean },
+  failure: { code?: string; error: string; tmpPath?: string },
+): string {
+  const { settingsPath, targetPath, isSymlink } = target;
+  const { code, error: rawError, tmpPath } = failure;
+  const subject = isSymlink ? `${settingsPath} (-> ${targetPath})` : settingsPath;
+  const info = code ? ATOMIC_WRITE_ERRNO_INFO[code] : undefined;
+  if (info) {
+    const dir = dirname(targetPath);
+    return `${subject} cannot be updated: ${info.cause}. ${info.remedy(dir, isSymlink)}`;
   }
-  return `${settingsPath} cannot be updated: ${causeClass}. Make ${dir} writable.`;
+  const sanitized = sanitizeTempPathFromMessage(rawError, tmpPath);
+  const codeSuffix = code && !sanitized.includes(code) ? ` (${code})` : "";
+  return `${subject} cannot be updated: ${sanitized}${codeSuffix}`;
 }
 
 function logBestEffortFailure(
@@ -677,6 +736,10 @@ function logBestEffortFailure(
   }
 }
 
+type WriteAtomicResult =
+  | { ok: true }
+  | { ok: false; error: string; actionable: boolean };
+
 /**
  * Atomically replace `path` with `doc` via an exclusive temp file + rename.
  *
@@ -693,7 +756,7 @@ function writeDocumentAtomic(
   fs: SettingsFs,
   mode?: number,
   targetInfo: { settingsPath: string; isSymlink: boolean } = { settingsPath: path, isSymlink: false },
-): { ok: true } | { ok: false; error: string } {
+): WriteAtomicResult {
   // Caller-supplied input is validated before it reaches the merge (`updateSettingsDocument`
   // patch/base and `replaceSettingsDocument` input). The merged document is not re-scanned:
   // keys that came from disk are own properties produced by `JSON.parse`, so they cannot
@@ -703,7 +766,7 @@ function writeDocumentAtomic(
   try {
     serialized = JSON.stringify(doc, null, 2) + "\n";
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    return { ok: false, error: err instanceof Error ? err.message : String(err), actionable: false };
   }
 
   const bytes = Buffer.from(serialized, "utf8");
@@ -711,13 +774,13 @@ function writeDocumentAtomic(
     return {
       ok: false,
       error: `Serialized settings document (${bytes.byteLength} bytes) exceeds maximum size of ${MAX_SETTINGS_BYTES} bytes`,
+      actionable: false,
     };
   }
 
   const dir = dirname(path);
   const base = basename(path);
   const tmpPath = join(dir, `.${base}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`);
-
   const preserveMode = mode !== undefined ? mode & 0o777 : undefined;
   const openMode = preserveMode ?? 0o600;
 
@@ -741,9 +804,23 @@ function writeDocumentAtomic(
     }
   });
 
-  if (!res.ok && (res.stage === "open" || res.stage === "afterClose") && res.code) {
-    const actionable = formatAtomicWriteError(targetInfo.settingsPath, path, targetInfo.isSymlink, res.code);
-    if (actionable) return { ok: false, error: actionable };
+  if (!res.ok) {
+    return {
+      ok: false,
+      error: formatAtomicWriteError(
+        {
+          settingsPath: targetInfo.settingsPath,
+          targetPath: path,
+          isSymlink: targetInfo.isSymlink,
+        },
+        {
+          code: res.code,
+          error: res.error,
+          tmpPath,
+        },
+      ),
+      actionable: true,
+    };
   }
   return res;
 }
@@ -874,7 +951,7 @@ export type UpdateSettingsDocumentResult =
       targetPath?: string;
       message?: string;
     }
-  | { ok: false; error: string; state?: SettingsReadState };
+  | { ok: false; error: string; state?: SettingsReadState; actionable?: boolean };
 
 export function updateSettingsDocument(
   patch: Record<string, unknown>,
@@ -962,7 +1039,11 @@ export function updateSettingsDocument(
     if (!written.ok) {
       if (backupPath) {
         discardCorruptBackup(backupPath, fs);
-        return { ok: false, error: formatFailedWriteAfterBackup(targetPath, written.error) };
+        return {
+          ok: false,
+          error: formatFailedWriteAfterBackup(targetPath, written.error),
+          actionable: written.actionable,
+        };
       }
       return written;
     }

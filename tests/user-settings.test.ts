@@ -444,4 +444,30 @@ describe("user-settings", () => {
       rmSync(settingsPath, { recursive: true, force: true });
     }
   });
+
+  it("loadUserSettings names the settings path only once when initial creation fails", () => {
+    const settingsPath = getUserSettingsPath();
+    const baseFs = createSettingsFs();
+    const countOccurrences = (haystack: string, needle: string): number =>
+      haystack.split(needle).length - 1;
+
+    for (const code of ["EACCES", "EROFS", "ENOSPC", "EIO"] as const) {
+      const failCreateFs = createSettingsFs({
+        openExclusive(p, mode) {
+          if (p.includes(".tmp-")) {
+            const err = new Error(`${code}: open failed '${p}'`) as NodeJS.ErrnoException;
+            err.code = code;
+            throw err;
+          }
+          return baseFs.openExclusive(p, mode);
+        },
+      });
+      const res = loadUserSettings({ fs: failCreateFs });
+      expect(res.createdDefaults).toBeUndefined();
+      expect(res.warning).toBeDefined();
+      expect(res.warning).toContain(code);
+      expect(countOccurrences(res.warning!, settingsPath)).toBe(1);
+      expect(res.warning).not.toContain(".tmp-");
+    }
+  });
 });

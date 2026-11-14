@@ -13,7 +13,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 import { APP_HOME_DIR } from "../src/app-identity.js";
 import { resolveActiveModelAndProvider } from "../src/llm/resolver.js";
@@ -2055,7 +2055,11 @@ console.log(JSON.stringify(res));
           expect(countOccurrences(res.error, settingsPath)).toBe(1);
           expect(res.error).toContain(`${settingsPath} cannot be updated:`);
           expect(res.error).toContain(code);
-          expect(res.error).toContain(`Make ${homeDir} writable.`);
+          if (code === "EACCES" || code === "EPERM") {
+            expect(res.error).toContain(`Make ${homeDir} writable.`);
+          } else {
+            expect(res.error).not.toContain(`Make ${homeDir} writable.`);
+          }
           expect(res.error).not.toContain(".tmp-");
           expect(res.error).not.toContain("replace the symlink");
         }
@@ -2096,9 +2100,13 @@ console.log(JSON.stringify(res));
             expect(countOccurrences(res.error, targetPath)).toBe(1);
             expect(res.error).toContain(`${settingsPath} (-> ${targetPath}) cannot be updated:`);
             expect(res.error).toContain(code);
-            expect(res.error).toContain(
-              `Make ${dotfilesDir} writable or replace the symlink with a regular file.`,
-            );
+            if (code === "EACCES" || code === "EPERM") {
+              expect(res.error).toContain(
+                `Make ${dotfilesDir} writable or replace the symlink with a regular file.`,
+              );
+            } else {
+              expect(res.error).not.toContain(`Make ${dotfilesDir} writable`);
+            }
             expect(res.error).not.toContain(".tmp-");
           }
           expect(readdirSync(dotfilesDir).filter((f) => f.includes(".tmp-"))).toEqual([]);
@@ -2405,6 +2413,146 @@ console.log(JSON.stringify(res));
       expect(statSync(targetPath).mode & 0o777).toBe(0o664);
     } finally {
       process.umask(prevUmask);
+    }
+  });
+
+  test("keys atomic write remedies by errno code and formats open/body/rename errors (ENOSPC/EDQUOT/ENOTDIR/ENOENT/EMFILE/EIO) without leaking temp paths", async () => {
+    const { createSettingsFs, updateSettingsDocument, replaceSettingsDocument } = await storeApi();
+    const baseFs = createSettingsFs();
+    const countOccurrences = (haystack: string, needle: string): number =>
+      haystack.split(needle).length - 1;
+
+    const makeErrno = (code: string, syscall: string, p: string): Error => {
+      const err = new Error(`${code}: ${syscall} failed on '${p}'`) as NodeJS.ErrnoException;
+      err.code = code;
+      return err;
+    };
+
+    writeFileSync(settingsPath, '{"thinking":true}\n', "utf-8");
+
+    // 1. Code-specific remedies for EACCES, EPERM, EROFS, EBUSY, EXDEV
+    const remedyChecks: Array<{
+      code: string;
+      match: RegExp;
+      forbidden?: RegExp;
+    }> = [
+      { code: "EACCES", match: new RegExp(`Make ${homeDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} writable\\.`) },
+      { code: "EPERM", match: new RegExp(`Make ${homeDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} writable\\.`) },
+      { code: "EROFS", match: /file system is read-only/i, forbidden: /Make .* writable/i },
+      {
+        code: "EBUSY",
+        match: /in use or a mount point.*bind-mounted file cannot be replaced; edit it in place or unmount/i,
+        forbidden: /Make .* writable/i,
+      },
+      {
+        code: "EXDEV",
+        match: /another file system than its directory entry/i,
+        forbidden: /Make .* writable/i,
+      },
+    ];
+
+    for (const { code, match, forbidden } of remedyChecks) {
+      const seamFs = createSettingsFs({
+        rename(oldP) {
+          throw makeErrno(code, "rename", oldP);
+        },
+      });
+      const res = updateSettingsDocument({ debug: true }, { fs: seamFs });
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(countOccurrences(res.error, settingsPath)).toBe(1);
+        expect(res.error).toContain(code);
+        expect(res.error).toMatch(match);
+        if (forbidden) expect(res.error).not.toMatch(forbidden);
+        expect(res.error).not.toContain(".tmp-");
+      }
+    }
+
+    // 2. ENOSPC, EDQUOT, ENOTDIR, ENOENT, EMFILE, EIO across open (including mkdirSync), body (write/fsync), and rename
+    const otherCodes = ["ENOSPC", "EDQUOT", "ENOTDIR", "ENOENT", "EMFILE", "EIO"] as const;
+    for (const code of otherCodes) {
+      for (const stage of ["open", "write", "fsync", "rename"] as const) {
+        const seamFs = createSettingsFs({
+          openExclusive(p, mode) {
+            if (stage === "open" && p.includes(".tmp-")) {
+              throw makeErrno(code, "open", p);
+            }
+            return baseFs.openExclusive(p, mode);
+          },
+          write(fd, data) {
+            if (stage === "write") {
+              throw makeErrno(code, "write", join(homeDir, ".settings.json.tmp-fake"));
+            }
+            return baseFs.write(fd, data);
+          },
+          fsync(fd) {
+            if (stage === "fsync") {
+              throw makeErrno(code, "fsync", join(homeDir, ".settings.json.tmp-fake"));
+            }
+            return baseFs.fsync(fd);
+          },
+          rename(oldP, newP) {
+            if (stage === "rename") {
+              throw makeErrno(code, "rename", oldP);
+            }
+            return baseFs.rename(oldP, newP);
+          },
+        });
+
+        const res = updateSettingsDocument({ debug: true }, { fs: seamFs });
+        expect(res.ok).toBe(false);
+        if (!res.ok) {
+          expect(countOccurrences(res.error, settingsPath)).toBe(1);
+          expect(res.error).toContain(`${settingsPath} cannot be updated:`);
+          expect(res.error).toContain(code);
+          expect(res.error).not.toContain(".tmp-");
+        }
+        expect(readdirSync(homeDir).filter((f) => f.includes(".tmp-"))).toEqual([]);
+      }
+    }
+
+    // 3. Symlinked target: names both settingsPath and targetPath once, never .tmp-, even on body write failure and mkdirSync ENOTDIR
+    if (process.platform !== "win32") {
+      rmSync(settingsPath, { force: true });
+      const dotfilesDir = join(root, "dotfiles-other-errnos");
+      mkdirSync(dotfilesDir, { recursive: true });
+      const targetPath = join(dotfilesDir, "settings.json");
+      writeFileSync(targetPath, '{"thinking":true}\n', "utf-8");
+      symlinkSync(targetPath, settingsPath);
+
+      for (const code of otherCodes) {
+        const bodyFailFs = createSettingsFs({
+          write() {
+            throw makeErrno(code, "write", join(dotfilesDir, ".settings.json.tmp-fake"));
+          },
+        });
+        const res = replaceSettingsDocument({ ...DEFAULT_USER_SETTINGS }, { fs: bodyFailFs });
+        expect(res.ok).toBe(false);
+        if (!res.ok) {
+          expect(countOccurrences(res.error, settingsPath)).toBe(1);
+          expect(countOccurrences(res.error, targetPath)).toBe(1);
+          expect(res.error).toContain(`${settingsPath} (-> ${targetPath}) cannot be updated:`);
+          expect(res.error).toContain(code);
+          expect(res.error).not.toContain(".tmp-");
+        }
+      }
+
+      // Real mkdirSync ENOTDIR inside default openExclusive when target directory component is a regular file
+      rmSync(settingsPath, { force: true });
+      const blockingFile = join(root, "not-a-directory");
+      writeFileSync(blockingFile, "x", "utf-8");
+      const enotdirFs = createSettingsFs({
+        openExclusive(p, mode) {
+          return baseFs.openExclusive(join(blockingFile, "sub", basename(p)), mode);
+        },
+      });
+      const mkdirRes = updateSettingsDocument({ debug: true }, { fs: enotdirFs });
+      expect(mkdirRes.ok).toBe(false);
+      if (!mkdirRes.ok) {
+        expect(countOccurrences(mkdirRes.error, settingsPath)).toBe(1);
+        expect(mkdirRes.error).toContain("ENOTDIR");
+        expect(mkdirRes.error).not.toContain(".tmp-");
+      }
     }
   });
 });
