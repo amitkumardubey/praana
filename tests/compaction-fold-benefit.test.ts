@@ -89,6 +89,107 @@ for (const largePrevious of [true, false]) {
   });
 }
 
+for (const useful of [false, true]) {
+  test(`Step 1 baseline ${useful ? "accepts a smaller fold" : "discards a fold that only beats unstubbed history"}`, async () => {
+    const { log, writer } = fixture();
+    const old = await writer.startTurn("C".repeat(400));
+    await writer.assistant(old, { role: "assistant", content: "", toolCalls: [{ id: "old", name: "shell", args: {} }] });
+    await writer.result(old, "old", "shell", "R".repeat(4000), false);
+    const resultId = log.readAll({ includeInternal: true }).at(-1)!.event_id;
+    const retained = await writer.startTurn("D".repeat(400));
+    await writer.assistant(retained, { role: "assistant", content: "done" });
+    const cut = log.readAll({ includeInternal: true }).at(-1)!.event_id;
+    await writer.startTurn("U".repeat(16000));
+    const before = restored(log);
+    const step1Stubs = [{ eventId: resultId, stubText: "s" }];
+    const afterStep1 = { ...before, stubSet: step1Stubs };
+    const text = useful ? minimumValidSummary() : summary("S".repeat(2400));
+    const foldOnly = { ...before, boundaryEventId: cut, summary: text };
+    const initialTokens = tokens(log, before);
+    const baselineTokens = tokens(log, afterStep1);
+    const foldedTokens = tokens(log, foldOnly);
+    expect(baselineTokens).toBeLessThan(initialTokens);
+    expect(baselineTokens / 5800).toBeGreaterThan(0.65);
+    expect(foldedTokens).toBeLessThan(initialTokens);
+    expect(foldedTokens < baselineTokens).toBe(useful);
+    const measured: FrozenState[] = [];
+    const phases: string[] = [];
+    let calls = 0;
+    const outcome = await compaction.runCompaction({
+      log, liveRequest, contextWindowTokens: 6000,
+      options: { effectiveMaxTokens: 200, tailTurns: 1, stubMinTokens: 50 },
+      planStubs: (candidates, options) => {
+        phases.push(options.phase);
+        expect(candidates.map((c) => c.eventId)).toEqual([resultId]);
+        return step1Stubs;
+      },
+      materialize: (state, source) => {
+        measured.push(structuredClone(state));
+        return compaction.materializeHistory(state, source);
+      },
+      runSummary: async () => { calls++; return response(text); },
+    });
+    expect(calls).toBe(1);
+    expect(phases).toEqual(["stale"]);
+    expect(measured.map((state) => state.stubSet)).toEqual([[], step1Stubs, []]);
+    expect(outcome.status).toBe(useful ? "rewritten" : "stubbed");
+    if (useful) {
+      // Folded result IDs cannot remain in a committed stub set.
+      expect(restored(log)).toMatchObject({ generation: 1, boundaryEventId: cut, summary: text, stubSet: [] });
+    } else {
+      expect(outcome).toMatchObject({ summaryDiscarded: true, discardedSummary: { text } });
+      expect(restored(log)).toMatchObject({ generation: 1, boundaryEventId: null, summary: null, stubSet: step1Stubs });
+    }
+    expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(1);
+    if (!("fill" in outcome)) throw new Error(outcome.status);
+    expect(outcome.fill.inputTokens).toBe(useful ? foldedTokens : baselineTokens);
+  });
+}
+
+for (const addStubs of [false, true]) {
+  test(`a discarded fold ${addStubs ? "commits Step 1 stubs only through fallback" : "returns unchanged_fits without tentative stubs"}`, async () => {
+    const { log, writer } = fixture();
+    const old = await writer.startTurn("C".repeat(400));
+    await writer.assistant(old, { role: "assistant", content: "", toolCalls: [{ id: "old", name: "shell", args: {} }] });
+    await writer.result(old, "old", "shell", "R".repeat(400), false);
+    const resultId = log.readAll({ includeInternal: true }).at(-1)!.event_id;
+    await writer.startTurn("U".repeat(16000));
+    const before = restored(log);
+    let calls = 0;
+    const outcome = await compaction.runCompaction({
+      log, liveRequest, contextWindowTokens: 6000,
+      options: { effectiveMaxTokens: 200, tailTurns: 0, stubMinTokens: 50, contextLimitRatio: 0.7 },
+      planStubs: () => addStubs ? [{ eventId: resultId, stubText: "s" }] : [],
+      runSummary: async () => { calls++; return response(summary("S".repeat(2400))); },
+    });
+    expect(calls).toBe(1);
+    expect(outcome).toMatchObject(addStubs
+      ? { status: "stubbed", summaryDiscarded: true }
+      : { status: "unchanged_fits", reason: "fold_not_beneficial", state: before, summaryDiscarded: true });
+    const commits = readCommits(log.readAll({ includeInternal: true }));
+    expect(commits).toHaveLength(addStubs ? 1 : 0);
+    expect(restored(log).stubSet).toEqual(addStubs ? [{ eventId: resultId, stubText: "s" }] : []);
+    expect(restored(log).boundaryEventId).toBeNull();
+  });
+}
+
+test("a skipped fold returns unchanged_fits without adding stale stubs", async () => {
+  const { log, writer } = fixture();
+  await writer.startTurn("");
+  await writer.startTurn("U".repeat(20000));
+  const before = restored(log);
+  let calls = 0;
+  const outcome = await compaction.runCompaction({
+    log, liveRequest, contextWindowTokens: 6000,
+    options: { effectiveMaxTokens: 200, tailTurns: 0 },
+    runSummary: async () => { calls++; return response(minimumValidSummary()); },
+  });
+  expect(calls).toBe(0);
+  expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "fold_not_beneficial", state: before });
+  expect(restored(log)).toEqual(before);
+  expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
+});
+
 for (const scenario of [
   { name: "non-beneficial fitting", oldChars: 900, currentChars: 40, summaryChars: 2400, beneficial: false, foldFits: true },
   { name: "non-beneficial oversized", oldChars: 900, currentChars: 21000, summaryChars: 2400, beneficial: false, foldFits: false },
