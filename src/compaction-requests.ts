@@ -1,4 +1,4 @@
-import { estimateMessageTokens, requestFill, type CapacityErrorOutcome, type CompactionTurn, type RequestFill } from "./compaction.js";
+import { estimateMessageTokens, requestFill, type CapacityErrorOutcome, type CompactionTurn, type RequestFill } from "./compaction-types.js";
 import { buildRepairInstruction, buildSummaryInstruction, checkSummary, type SummaryFailure, type SummaryInstructionOptions } from "./frozen-summary.js";
 import type { ConversationMessage, ProviderUsage, StreamRequest, ToolCall } from "./llm/types.js";
 import { serializeToolResult } from "./llm/serialize.js";

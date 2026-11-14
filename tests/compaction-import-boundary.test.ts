@@ -25,6 +25,21 @@ function importClosure(): Map<string, string[]> {
   return graph;
 }
 
+test("compaction imports are acyclic", () => {
+  const graph = importClosure();
+  const visited = new Set<string>();
+  const visiting = new Set<string>();
+  const visit = (file: string) => {
+    expect(visiting.has(file)).toBe(false);
+    if (visited.has(file)) return;
+    visiting.add(file);
+    for (const dependency of graph.get(file) ?? []) visit(dependency);
+    visiting.delete(file);
+    visited.add(file);
+  };
+  for (const root of ROOTS) visit(resolve(SRC, root));
+});
+
 test("compaction modules never reach src/memory/ or checkpoint.ts, even transitively, and do not self-import", () => {
   const graph = importClosure();
   const reached = [...graph.keys()].map((file) => relative(SRC, file));
