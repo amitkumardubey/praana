@@ -24,6 +24,10 @@ import { isOAuthOnlyProvider, supportsOAuthLogin } from "./oauth.js";
 import { getCuratedModels, getModelCatalogEntry } from "./llm/catalog.js";
 import { DEFAULT_MODELS as NATIVE_DEFAULT_MODELS } from "./llm/resolver.js";
 import { openaiChatOverrideCompat, openaiUsesResponses, shouldUseOpenAIResponses } from "./llm/openai-routing.js";
+import {
+  parseReasoningEffort,
+  type ReasoningEffortLevel,
+} from "./reasoning-levels.js";
 
 export {
   resolveContextWindowSync,
@@ -314,27 +318,13 @@ export function resolveModel(modelString: string) {
 
 // ── Reasoning / thinking-level helpers ────────────────────────
 
-export const REASONING_EFFORT_LEVELS = [
-  "off",
-  "minimal",
-  "low",
-  "medium",
-  "high",
-  "xhigh",
-] as const;
-
-export type ReasoningEffortLevel = (typeof REASONING_EFFORT_LEVELS)[number];
+export {
+  REASONING_EFFORT_LEVELS,
+  parseReasoningEffort,
+  type ReasoningEffortLevel,
+} from "./reasoning-levels.js";
 
 const DEFAULT_REASONING_LEVEL: ReasoningEffortLevel = "medium";
-
-export function parseReasoningEffort(raw: string): ReasoningEffortLevel | null {
-  const normalized = raw.trim().toLowerCase();
-  if (normalized === "none") return "off";
-  if ((REASONING_EFFORT_LEVELS as readonly string[]).includes(normalized)) {
-    return normalized as ReasoningEffortLevel;
-  }
-  return null;
-}
 
 export function getReasoningEffort(
   model: Record<string, unknown>,

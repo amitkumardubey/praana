@@ -1,8 +1,9 @@
-import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from "node:fs";
+import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { APP_HOME_DIR } from "../src/app-identity.js";
+import { createSettingsFs, updateSettingsDocument } from "../src/settings/store.js";
 import {
   DEFAULT_USER_SETTINGS,
   getUserSettingsPath,
@@ -86,6 +87,24 @@ describe("user-settings", () => {
     expect(loadUserSettings().settings.thinking).toBe(false);
   });
 
+  it("updateUserSettings refuses to overwrite a corrupt file and preserves unknown top-level keys", () => {
+    writeFileSync(getUserSettingsPath(), "{corrupt", "utf-8");
+    const badUpdate = updateUserSettings({ thinking: false });
+    expect(badUpdate.ok).toBe(false);
+    expect(readFileSync(getUserSettingsPath(), "utf-8")).toBe("{corrupt");
+
+    writeFileSync(
+      getUserSettingsPath(),
+      JSON.stringify({ thinking: true, extra_future_key: { nested: 42 } }, null, 2) + "\n",
+      "utf-8",
+    );
+    const okUpdate = updateUserSettings({ thinking: false });
+    expect(okUpdate.ok).toBe(true);
+    const onDisk = JSON.parse(readFileSync(getUserSettingsPath(), "utf-8"));
+    expect(onDisk.thinking).toBe(false);
+    expect(onDisk.extra_future_key).toEqual({ nested: 42 });
+  });
+
   it("resetUserSettings restores defaults", () => {
     saveUserSettings({
       model: "x",
@@ -139,5 +158,316 @@ describe("user-settings", () => {
     expect(parseSettingsSetValue("auto_update", "off")).toEqual({ ok: true, value: false });
     const created = loadUserSettings();
     expect(created.settings.auto_update).toBe(false);
+  });
+
+  it("resetUserSettings keeps a file repaired before the locked read and creates no backup", async () => {
+    const settingsPath = getUserSettingsPath();
+    const lockPath = join(root, APP_HOME_DIR, ".settings.json.lock.db");
+    // Pre-create the lock file from an earlier call so the test cannot rely on
+    // `!existsSync(lockPath)` to distinguish locked from unlocked reads.
+    expect(saveUserSettings({ ...DEFAULT_USER_SETTINGS }).ok).toBe(true);
+    expect(existsSync(lockPath)).toBe(true);
+
+    const repairedDoc = {
+      thinking: false,
+      default_model: { provider: "anthropic", model: "claude-sonnet-4-20250514" },
+      config_overrides: { "edit.confirm": true },
+      custom_key: "preserve-me",
+    };
+    writeFileSync(settingsPath, "{corrupt-before-repair", "utf-8");
+
+    const lockMod = await import("../src/credential-lock.js");
+    const realAcquireSync = lockMod.acquireSync;
+    let lockHeld = false;
+    const lockSpy = spyOn(lockMod, "acquireSync").mockImplementation((p, opts) => {
+      const lock = realAcquireSync(p, opts);
+      lockHeld = true;
+      return {
+        release() {
+          try {
+            lock.release();
+          } finally {
+            lockHeld = false;
+          }
+        },
+      };
+    });
+
+    const baseFs = createSettingsFs();
+    let readCount = 0;
+    let lockedReadCount = 0;
+    const interleavingFs = createSettingsFs({
+      readBounded(p, maxBytes) {
+        if (p === settingsPath) {
+          readCount++;
+          if (!lockHeld) {
+            // Unlocked pre-read observes corrupt bytes, then another process repairs the file before the locked read.
+            const bytes = baseFs.readBounded(p, maxBytes);
+            writeFileSync(settingsPath, JSON.stringify(repairedDoc, null, 2) + "\n", "utf-8");
+            return bytes;
+          }
+          // Locked read: the file was repaired before the lock was acquired.
+          lockedReadCount++;
+          writeFileSync(settingsPath, JSON.stringify(repairedDoc, null, 2) + "\n", "utf-8");
+        }
+        return baseFs.readBounded(p, maxBytes);
+      },
+    });
+
+    try {
+      const reset = resetUserSettings({ fs: interleavingFs });
+      expect(reset.ok).toBe(true);
+      expect(lockHeld).toBe(false);
+      // Exactly one read, taken inside the lock: no unlocked read can make the corrupt
+      // decision stale.
+      expect(readCount).toBe(1);
+      expect(lockedReadCount).toBe(1);
+      const homeDir = join(root, APP_HOME_DIR);
+      expect(readdirSync(homeDir).filter((f) => f.startsWith("settings.json.corrupt-"))).toEqual([]);
+      const onDisk = JSON.parse(readFileSync(settingsPath, "utf-8"));
+      expect(onDisk.custom_key).toBe("preserve-me");
+      expect(onDisk.default_model).toEqual(repairedDoc.default_model);
+      expect(onDisk.config_overrides).toEqual(repairedDoc.config_overrides);
+      // The reset still applies the legacy defaults on top of the repaired document.
+      expect(onDisk.thinking).toBe(DEFAULT_USER_SETTINGS.thinking);
+      expect(onDisk.theme).toBe(DEFAULT_USER_SETTINGS.theme);
+    } finally {
+      lockSpy.mockRestore();
+    }
+  });
+
+  it("resetUserSettings backs up exactly one corrupt file and writes the legacy defaults", () => {
+    const settingsPath = getUserSettingsPath();
+    const corruptBytes = "{corrupt-stays-corrupt";
+    writeFileSync(settingsPath, corruptBytes, "utf-8");
+
+    const reset = resetUserSettings();
+    expect(reset.ok).toBe(true);
+    if (reset.ok) expect(reset.settings).toEqual(DEFAULT_USER_SETTINGS);
+
+    const homeDir = join(root, APP_HOME_DIR);
+    const backups = readdirSync(homeDir).filter((f) => f.startsWith("settings.json.corrupt-"));
+    expect(backups).toHaveLength(1);
+    const backupPath = join(homeDir, backups[0] ?? "");
+    expect(readFileSync(backupPath, "utf-8")).toBe(corruptBytes);
+    if (process.platform !== "win32") {
+      expect(statSync(backupPath).mode & 0o777).toBe(0o600);
+    }
+    expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual(DEFAULT_USER_SETTINGS);
+  });
+
+  it("resetUserSettings leaves no backup and keeps the corrupt file untouched when replacement write fails", () => {
+    const settingsPath = getUserSettingsPath();
+    const corruptBytes = "{corrupt-replacement-fails";
+    writeFileSync(settingsPath, corruptBytes, "utf-8");
+
+    const failRenameFs = createSettingsFs({
+      rename() {
+        throw new Error("injected rename failure");
+      },
+    });
+
+    const reset = resetUserSettings({ fs: failRenameFs });
+    expect(reset.ok).toBe(false);
+    const homeDir = join(root, APP_HOME_DIR);
+    expect(readdirSync(homeDir).filter((f) => f.startsWith("settings.json.corrupt-"))).toEqual([]);
+    expect(readdirSync(homeDir).filter((f) => f.includes(".tmp-"))).toEqual([]);
+    expect(readFileSync(settingsPath, "utf-8")).toBe(corruptBytes);
+  });
+
+  it("loadUserSettings handles a concurrent valid write between initial missing read and lock without rewriting or setting createdDefaults", () => {
+    const settingsPath = getUserSettingsPath();
+    const concurrentDoc = { thinking: false, custom_key: "from-other-process" };
+    const baseFs = createSettingsFs();
+    let lstatCalls = 0;
+    let openExclusiveCalls = 0;
+    let renameCalls = 0;
+
+    const interleavingFs = createSettingsFs({
+      lstat(p) {
+        if (p === settingsPath) {
+          lstatCalls++;
+          if (lstatCalls === 1) {
+            try {
+              return baseFs.lstat(p);
+            } catch (err) {
+              // After returning ENOENT on the unlocked read, another process writes a valid file.
+              writeFileSync(settingsPath, JSON.stringify(concurrentDoc, null, 2) + "\n", "utf-8");
+              throw err;
+            }
+          }
+        }
+        return baseFs.lstat(p);
+      },
+      openExclusive(p, mode) {
+        openExclusiveCalls++;
+        return baseFs.openExclusive(p, mode);
+      },
+      rename(oldPath, newPath) {
+        renameCalls++;
+        return baseFs.rename(oldPath, newPath);
+      },
+    });
+
+    const loaded = loadUserSettings({ fs: interleavingFs });
+    expect(loaded.createdDefaults).toBeUndefined();
+    expect(loaded.warning).toBeUndefined();
+    expect(loaded.settings.thinking).toBe(false);
+    expect(openExclusiveCalls).toBe(0);
+    expect(renameCalls).toBe(0);
+    expect(JSON.parse(readFileSync(settingsPath, "utf-8"))).toEqual(concurrentDoc);
+  });
+
+  it("loadUserSettings reports the underlying error text once and the path once for every corruption kind on both direct and race paths", () => {
+    const settingsPath = getUserSettingsPath();
+    const baseFs = createSettingsFs();
+    const countOccurrences = (haystack: string, needle: string): number =>
+      haystack.split(needle).length - 1;
+
+    const cases = [
+      {
+        kind: "invalid JSON",
+        bytes: "{not-json",
+        expectedError: `Corrupt settings file (${settingsPath})`,
+      },
+      {
+        kind: "non-object root",
+        bytes: "[1, 2, 3]",
+        expectedError: `Corrupt settings file (${settingsPath}): root must be a JSON object`,
+      },
+      {
+        kind: "invalid UTF-8",
+        bytes: Buffer.from([0x7b, 0xff, 0xfe, 0x7d]),
+        expectedError: `Settings file (${settingsPath}) is not valid UTF-8`,
+      },
+    ];
+
+    for (const { bytes, expectedError } of cases) {
+      // 1. Corrupt at initial read
+      writeFileSync(settingsPath, bytes);
+      const direct = loadUserSettings();
+      expect(direct.createdDefaults).toBeUndefined();
+      expect(direct.settings).toEqual(DEFAULT_USER_SETTINGS);
+      expect(direct.warning).toBe(`${expectedError}; using defaults`);
+      expect(countOccurrences(direct.warning ?? "", expectedError)).toBe(1);
+      expect(countOccurrences(direct.warning ?? "", settingsPath)).toBe(1);
+
+      // 2. Missing at initial read, becomes corrupt before locked createOnly
+      rmSync(settingsPath, { force: true });
+      let lstatCalls = 0;
+      const interleavingFs = createSettingsFs({
+        lstat(p) {
+          if (p === settingsPath) {
+            lstatCalls++;
+            if (lstatCalls === 1) {
+              try {
+                return baseFs.lstat(p);
+              } catch (err) {
+                writeFileSync(settingsPath, bytes);
+                throw err;
+              }
+            }
+          }
+          return baseFs.lstat(p);
+        },
+      });
+
+      const raced = loadUserSettings({ fs: interleavingFs });
+      expect(raced.createdDefaults).toBeUndefined();
+      expect(raced.settings).toEqual(DEFAULT_USER_SETTINGS);
+      expect(raced.warning).toBe(`${expectedError}; using defaults`);
+      expect(countOccurrences(raced.warning ?? "", expectedError)).toBe(1);
+      expect(countOccurrences(raced.warning ?? "", settingsPath)).toBe(1);
+      expect(raced.warning).toBe(direct.warning);
+      expect(raced.warning).not.toContain("Could not create settings file");
+      expect(raced.warning).not.toContain("it already exists");
+    }
+  });
+
+  it("updateUserSettings and saveUserSettings append a /settings reset hint on corrupt files, keep the store generic, and omit the hint on non-corrupt failures", () => {
+    const settingsPath = getUserSettingsPath();
+    const hint = "run /settings reset to back it up and restore defaults";
+
+    const corruptCases: Array<{ name: string; bytes: string | Buffer }> = [
+      { name: "invalid JSON", bytes: "{not-json" },
+      { name: "non-object root", bytes: "[1, 2, 3]" },
+      { name: "invalid UTF-8", bytes: Buffer.from([0x7b, 0xff, 0xfe, 0x7d]) },
+    ];
+
+    for (const { bytes } of corruptCases) {
+      writeFileSync(settingsPath, bytes);
+
+      const storeRes = updateSettingsDocument({ debug: true });
+      expect(storeRes.ok).toBe(false);
+      if (!storeRes.ok) {
+        expect(storeRes.state).toBe("corrupt");
+        expect(storeRes.error).not.toContain(hint);
+      }
+
+      const updateRes = updateUserSettings({ debug: true });
+      expect(updateRes.ok).toBe(false);
+      if (!updateRes.ok) {
+        expect(updateRes.error).toContain(hint);
+      }
+
+      const saveRes = saveUserSettings({ ...DEFAULT_USER_SETTINGS, debug: true });
+      expect(saveRes.ok).toBe(false);
+      if (!saveRes.ok) {
+        expect(saveRes.error).toContain(hint);
+      }
+    }
+
+    // Non-corrupt failure 1: invalid value passed to updateUserSettings
+    writeFileSync(settingsPath, JSON.stringify(DEFAULT_USER_SETTINGS), "utf-8");
+    const badValueRes = updateUserSettings({ theme: "   " });
+    expect(badValueRes.ok).toBe(false);
+    if (!badValueRes.ok) {
+      expect(badValueRes.error).not.toContain(hint);
+    }
+
+    // Non-corrupt failure 2: unreadable settings path (directory)
+    rmSync(settingsPath, { force: true });
+    mkdirSync(settingsPath);
+    try {
+      const unreadableUpdate = updateUserSettings({ debug: true });
+      expect(unreadableUpdate.ok).toBe(false);
+      if (!unreadableUpdate.ok) {
+        expect(unreadableUpdate.error).not.toContain(hint);
+      }
+
+      const unreadableSave = saveUserSettings({ ...DEFAULT_USER_SETTINGS, debug: true });
+      expect(unreadableSave.ok).toBe(false);
+      if (!unreadableSave.ok) {
+        expect(unreadableSave.error).not.toContain(hint);
+      }
+    } finally {
+      rmSync(settingsPath, { recursive: true, force: true });
+    }
+  });
+
+  it("loadUserSettings names the settings path only once when initial creation fails", () => {
+    const settingsPath = getUserSettingsPath();
+    const baseFs = createSettingsFs();
+    const countOccurrences = (haystack: string, needle: string): number =>
+      haystack.split(needle).length - 1;
+
+    for (const code of ["EACCES", "EROFS", "ENOSPC", "EIO"] as const) {
+      const failCreateFs = createSettingsFs({
+        openExclusive(p, mode) {
+          if (p.includes(".tmp-")) {
+            const err = new Error(`${code}: open failed '${p}'`) as NodeJS.ErrnoException;
+            err.code = code;
+            throw err;
+          }
+          return baseFs.openExclusive(p, mode);
+        },
+      });
+      const res = loadUserSettings({ fs: failCreateFs });
+      expect(res.createdDefaults).toBeUndefined();
+      expect(res.warning).toBeDefined();
+      expect(res.warning).toContain(code);
+      expect(countOccurrences(res.warning!, settingsPath)).toBe(1);
+      expect(res.warning).not.toContain(".tmp-");
+    }
   });
 });
