@@ -274,6 +274,7 @@ describe("settings store", () => {
       "chmod",
       "close",
       "copyFile",
+      "fchmod",
       "fsync",
       "fsyncDir",
       "lstat",
@@ -1833,42 +1834,88 @@ console.log(JSON.stringify(res));
     }
   });
 
-  test("writeExclusiveFile opens new files and corrupt backups with 0o600 without chmod, and chmods only the temp file when replacing an existing target", async () => {
+  test("writeExclusiveFile opens new files and corrupt backups with 0o600 without chmod, and sets the mode via fchmod on the open temp fd when replacing an existing target", async () => {
     const { createSettingsFs, updateSettingsDocument, replaceSettingsDocument } = await storeApi();
     const baseFs = createSettingsFs();
     const chmodCalls: string[] = [];
+    const fchmodCalls: Array<{ fd: number; mode: number }> = [];
     const openModes: number[] = [];
+    const fdToPath = new Map<number, string>();
 
     const spyFs = createSettingsFs({
       openExclusive(p, mode) {
         openModes.push(mode);
-        return baseFs.openExclusive(p, mode);
+        const fd = baseFs.openExclusive(p, mode);
+        fdToPath.set(fd, p);
+        return fd;
       },
       chmod(p, mode) {
         chmodCalls.push(p);
         return baseFs.chmod(p, mode);
+      },
+      fchmod(fd, mode) {
+        fchmodCalls.push({ fd, mode });
+        return baseFs.fchmod(fd, mode);
       },
     });
 
     const updated = updateSettingsDocument({ thinking: false }, { fs: spyFs });
     expect(updated.ok).toBe(true);
     expect(chmodCalls).toEqual([]);
+    expect(fchmodCalls).toEqual([]);
     expect(openModes).toEqual([0o600]);
     if (process.platform !== "win32") {
       expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
     }
 
-    // Corrupt backup opens with 0o600 without chmod; replacing the existing target chmods only the .tmp- file.
+    // Corrupt backup opens with 0o600 without chmod; replacing the existing target applies the mode
+    // via fchmod on the still-open temp fd, never by path after close.
     writeFileSync(settingsPath, "{corrupt-for-chmod-check", "utf-8");
     const replaced = replaceSettingsDocument({ ...DEFAULT_USER_SETTINGS }, { fs: spyFs, backupCorrupt: true });
     expect(replaced.ok).toBe(true);
-    expect(chmodCalls.some((p) => p.includes(".corrupt-"))).toBe(false);
-    expect(chmodCalls).toHaveLength(1);
-    expect(chmodCalls[0]).toContain(".tmp-");
+    expect(chmodCalls).toEqual([]);
+    expect(fchmodCalls).toHaveLength(1);
+    expect(fchmodCalls[0]!.mode).toBe(0o600);
+    expect(fdToPath.get(fchmodCalls[0]!.fd)).toContain(".tmp-");
     expect(openModes).toEqual([0o600, 0o600, 0o600]);
     if (process.platform !== "win32" && replaced.ok && replaced.backupPath) {
       expect(statSync(replaced.backupPath).mode & 0o777).toBe(0o600);
     }
+  });
+
+  test("the replaced target's mode is applied via fchmod while the temp fd is still open, before close and rename", async () => {
+    const { createSettingsFs, updateSettingsDocument } = await storeApi();
+    const baseFs = createSettingsFs();
+    writeFileSync(settingsPath, '{"thinking":true}\n', "utf-8");
+    chmodSync(settingsPath, 0o640);
+
+    const events: string[] = [];
+    let tempFd: number | undefined;
+    const spyFs = createSettingsFs({
+      openExclusive(p, mode) {
+        tempFd = baseFs.openExclusive(p, mode);
+        return tempFd;
+      },
+      fchmod(fd, mode) {
+        expect(fd).toBe(tempFd);
+        expect(mode).toBe(0o640);
+        events.push("fchmod");
+        return baseFs.fchmod(fd, mode);
+      },
+      close(fd) {
+        events.push("close");
+        return baseFs.close(fd);
+      },
+      rename(oldP, newP) {
+        events.push("rename");
+        return baseFs.rename(oldP, newP);
+      },
+    });
+
+    const updated = updateSettingsDocument({ debug: true }, { fs: spyFs });
+    expect(updated.ok).toBe(true);
+    expect(events).toEqual(["fchmod", "close", "rename"]);
+    expect(statSync(settingsPath).mode & 0o777).toBe(0o640);
   });
 
   test("withSettingsLock wraps non-timeout lock errors with 'Settings lock unavailable (<cause>)' while preserving timeouts", async () => {
@@ -2321,17 +2368,22 @@ console.log(JSON.stringify(res));
     }
   });
 
-  test("preserves exact target permission bits under real umasks via pre-rename chmod, keeps new files at 0600 without chmod, and aborts cleanly when chmod fails", async () => {
+  test("preserves exact target permission bits under real umasks via fchmod on the open fd before close, keeps new files at 0600 without chmod, and aborts cleanly when fchmod fails", async () => {
     if (process.platform === "win32") return;
     const { createSettingsFs, updateSettingsDocument, replaceSettingsDocument } = await storeApi();
     const baseFs = createSettingsFs();
 
-    // 1. New file (no existing target) stays 0600 and does not call chmod.
+    // 1. New file (no existing target) stays 0600 and does not call chmod or fchmod.
     const newChmodCalls: string[] = [];
+    const newFchmodCalls: number[] = [];
     const newSpyFs = createSettingsFs({
       chmod(p, mode) {
         newChmodCalls.push(p);
         return baseFs.chmod(p, mode);
+      },
+      fchmod(fd, mode) {
+        newFchmodCalls.push(fd);
+        return baseFs.fchmod(fd, mode);
       },
     });
     const prevUmask = process.umask(0o022);
@@ -2339,6 +2391,7 @@ console.log(JSON.stringify(res));
       const created = updateSettingsDocument({ thinking: true }, { fs: newSpyFs });
       expect(created.ok).toBe(true);
       expect(newChmodCalls).toEqual([]);
+      expect(newFchmodCalls).toEqual([]);
       expect(statSync(settingsPath).mode & 0o777).toBe(0o600);
 
       // 2. Existing targets keep exact permission bits under restrictive umasks:
@@ -2356,9 +2409,9 @@ console.log(JSON.stringify(res));
 
         const events: string[] = [];
         const orderFs = createSettingsFs({
-          chmod(p, mode) {
-            events.push("chmod");
-            return baseFs.chmod(p, mode);
+          fchmod(fd, mode) {
+            events.push("fchmod");
+            return baseFs.fchmod(fd, mode);
           },
           rename(oldP, newP) {
             events.push("rename");
@@ -2369,17 +2422,17 @@ console.log(JSON.stringify(res));
         const updated = updateSettingsDocument({ debug: true, umask_case: targetMode }, { fs: orderFs });
         expect(updated.ok).toBe(true);
         expect(statSync(settingsPath).mode & 0o777).toBe(targetMode);
-        expect(events).toEqual(["chmod", "rename"]);
+        expect(events).toEqual(["fchmod", "rename"]);
       }
 
-      // 3. Failing chmod aborts the save before rename, returns actionable error, and leaves no temp file.
+      // 3. Failing fchmod aborts the save before rename and close, returns actionable error, and leaves no temp file.
       process.umask(0o022);
       chmodSync(settingsPath, 0o664);
       const beforeFail = readFileSync(settingsPath, "utf-8");
       let renameCalled = false;
-      const failChmodFs = createSettingsFs({
-        chmod(p) {
-          const err = new Error(`EPERM: operation not permitted, chmod '${p}'`) as NodeJS.ErrnoException;
+      const failFchmodFs = createSettingsFs({
+        fchmod(_fd) {
+          const err = new Error(`EPERM: operation not permitted, fchmod`) as NodeJS.ErrnoException;
           err.code = "EPERM";
           throw err;
         },
@@ -2388,7 +2441,7 @@ console.log(JSON.stringify(res));
           return baseFs.rename(oldP, newP);
         },
       });
-      const failed = replaceSettingsDocument({ ...DEFAULT_USER_SETTINGS, debug: false }, { fs: failChmodFs });
+      const failed = replaceSettingsDocument({ ...DEFAULT_USER_SETTINGS, debug: false }, { fs: failFchmodFs });
       expect(failed.ok).toBe(false);
       if (!failed.ok) {
         expect(failed.error).toContain(settingsPath);

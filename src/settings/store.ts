@@ -20,6 +20,7 @@ import {
   closeSync,
   constants,
   copyFileSync,
+  fchmodSync,
   fsyncSync,
   fstatSync,
   lstatSync,
@@ -111,6 +112,7 @@ export interface SettingsFs {
   unlink: (path: string) => void;
   copyFile: (src: string, dest: string) => void;
   chmod: (path: string, mode: number) => void;
+  fchmod: (fd: number, mode: number) => void;
   lstat: (path: string) => Stats;
   realpath: (path: string) => string;
   readBounded: (path: string, maxBytes: number) => Buffer;
@@ -162,6 +164,9 @@ export function createSettingsFs(
     },
     chmod(path: string, mode: number): void {
       chmodSync(path, mode);
+    },
+    fchmod(fd: number, mode: number): void {
+      fchmodSync(fd, mode);
     },
     lstat(path: string): Stats {
       return lstatSync(path);
@@ -243,6 +248,7 @@ export function createSettingsFs(
     unlink: overrides.unlink ?? base.unlink,
     copyFile: overrides.copyFile ?? base.copyFile,
     chmod: overrides.chmod ?? base.chmod,
+    fchmod: overrides.fchmod ?? base.fchmod,
     lstat: overrides.lstat ?? base.lstat,
     realpath: overrides.realpath ?? base.realpath,
     readBounded: overrides.readBounded ?? base.readBounded,
@@ -579,6 +585,7 @@ function writeExclusiveFile(
   bytes: Buffer,
   fs: SettingsFs,
   mode: number = 0o600,
+  finalMode?: number,
   afterClose?: () => void,
 ): { ok: true } | { ok: false; error: string; code?: string; stage: WriteExclusiveStage } {
   const safeMode = mode & 0o777;
@@ -599,9 +606,13 @@ function writeExclusiveFile(
   try {
     fs.write(fd, bytes);
     fs.fsync(fd);
+    // Set the mode on the still-open fd: a by-path chmod after close would follow a swapped
+    // temp name. Callers replacing an existing target pass its permission bits here.
+    if (finalMode !== undefined) {
+      fs.fchmod(fd, finalMode & 0o777);
+    }
     closed = true;
     fs.close(fd);
-    // Opened with safeMode (subject to process umask); callers replacing an existing target chmod in afterClose before rename.
     stage = "afterClose";
     afterClose?.();
     return { ok: true };
@@ -744,10 +755,11 @@ type WriteAtomicResult =
  *
  * Permissions: when replacing an existing regular file, the caller supplies its
  * permission bits (`mode & 0o777`), so the temp file is opened exclusively with
- * that mode (masked by process umask) and explicitly chmodded to `mode & 0o777`
- * before the rename; when creating a new file (`mode === undefined`), mode
- * `0o600` is used without an extra chmod. Ownership and hard links are NOT
- * preserved: a save replaces the file atomically, so hard-link siblings diverge.
+ * that mode (masked by process umask) and the mode is applied again via
+ * `fchmod` on the still-open fd before it is closed and renamed; when creating
+ * a new file (`mode === undefined`), mode `0o600` is used without an extra
+ * chmod. Ownership and hard links are NOT preserved: a save replaces the file
+ * atomically, so hard-link siblings diverge.
  */
 function writeDocumentAtomic(
   path: string,
@@ -783,10 +795,7 @@ function writeDocumentAtomic(
   const preserveMode = mode !== undefined ? mode & 0o777 : undefined;
   const openMode = preserveMode ?? 0o600;
 
-  const res = writeExclusiveFile(tmpPath, bytes, fs, openMode, () => {
-    if (preserveMode !== undefined) {
-      fs.chmod(tmpPath, preserveMode);
-    }
+  const res = writeExclusiveFile(tmpPath, bytes, fs, openMode, preserveMode, () => {
     fs.rename(tmpPath, path);
     try {
       // Best effort: the rename has already committed, so a directory fsync failure must
