@@ -1087,4 +1087,73 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     expect(reshaped.text).toBe(shaped.text);
     expect(secondStoreCalled).toBe(false);
   });
+
+  test("elision marker reports omitted bytes always and whole omitted lines only when > 0, noting cut truncation", () => {
+    // 1. Single 20 KB line: 0 whole lines omitted -> never prints "0 lines", mentions partial line truncation.
+    const singleLong = "A".repeat(20 * 1024);
+    const singleRes = shapeToolOutput({
+      toolName: "shell",
+      text: singleLong,
+      storeArtifact: () => "art_single20kb",
+    });
+    expect(singleRes.shaped).toBe(true);
+    expect(singleRes.omittedLines).toBe(0);
+    expect(singleRes.omittedBytes).toBeGreaterThan(0);
+    expect(singleRes.text).not.toMatch(/0\s+lines?/i);
+    expect(singleRes.text).toContain(`${singleRes.omittedBytes} bytes`);
+    expect(singleRes.text).toMatch(/partial.*truncated/i);
+
+    // 2. Many short lines: reports exact whole omitted lines + omitted bytes.
+    const manyShort = Array.from({ length: 200 }, (_, i) => `short-${i}: ${"d".repeat(60)}`).join("\n");
+    const manyRes = shapeToolOutput({
+      toolName: "shell",
+      text: manyShort,
+      storeArtifact: () => "art_manyshort",
+      options: { inlineThresholdTokens: 50, maxLines: 20, headLines: 10, tailLines: 9 },
+    });
+    expect(manyRes.shaped).toBe(true);
+    expect(manyRes.omittedLines).toBe(181);
+    expect(manyRes.omittedBytes).toBeGreaterThan(0);
+    expect(manyRes.text).toContain(`181 lines / ${manyRes.omittedBytes} bytes`);
+    expect(manyRes.text).toMatch(/partial.*truncated/i);
+
+    // 3a. Mixed with huge middle line reached from both ends: 0 whole lines omitted.
+    const mixedSharedMiddle = [
+      "short-head-0",
+      "short-head-1",
+      "M".repeat(20 * 1024),
+      "short-tail-3",
+      "short-tail-4",
+    ].join("\n");
+    const mixedSharedRes = shapeToolOutput({
+      toolName: "shell",
+      text: mixedSharedMiddle,
+      storeArtifact: () => "art_mixed_shared",
+    });
+    expect(mixedSharedRes.shaped).toBe(true);
+    expect(mixedSharedRes.omittedLines).toBe(0);
+    expect(mixedSharedRes.omittedBytes).toBeGreaterThan(0);
+    expect(mixedSharedRes.text).not.toMatch(/0\s+lines?/i);
+    expect(mixedSharedRes.text).toContain(`${mixedSharedRes.omittedBytes} bytes`);
+    expect(mixedSharedRes.text).toMatch(/partial.*truncated/i);
+
+    // 3b. Mixed with one wholly omitted middle line between two truncated long lines: 1 whole line omitted.
+    const mixedOneOmitted = [
+      "short-0",
+      "H".repeat(6000),
+      "wholly-omitted-middle-line",
+      "T".repeat(6000),
+      "short-4",
+    ].join("\n");
+    const mixedOneRes = shapeToolOutput({
+      toolName: "shell",
+      text: mixedOneOmitted,
+      storeArtifact: () => "art_mixed_one",
+    });
+    expect(mixedOneRes.shaped).toBe(true);
+    expect(mixedOneRes.omittedLines).toBe(1);
+    expect(mixedOneRes.omittedBytes).toBeGreaterThan(0);
+    expect(mixedOneRes.text).toContain(`1 line / ${mixedOneRes.omittedBytes} bytes`);
+    expect(mixedOneRes.text).toMatch(/partial.*truncated/i);
+  });
 });

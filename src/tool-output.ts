@@ -236,15 +236,26 @@ function sliceTailLinesFromArray(lines: readonly string[], maxLines: number): st
   return lines.slice(lines.length - maxLines).join("\n");
 }
 
+function countTouchedLines(fragment: string, trimLeading: boolean, trimTrailing: boolean): number {
+  if (!fragment) return 0;
+  let count = fragment.split("\n").length;
+  if (trimLeading && fragment.startsWith("\n")) count--;
+  if (trimTrailing && fragment.endsWith("\n")) count--;
+  return Math.max(0, count);
+}
+
 function formatElisionMarker(
   omittedLines: number,
   omittedBytes: number,
   artifactId?: string,
 ): string {
+  const unit = omittedLines === 1 ? "line" : "lines";
+  const lineSummary = omittedLines > 0 ? `${omittedLines} ${unit} / ` : "";
+  const elidedSummary = `elided ${lineSummary}${omittedBytes} bytes (partial lines at cut truncated)`;
   if (artifactId) {
-    return `... [elided ${omittedLines} lines / ${omittedBytes} bytes; full output stored in artifact ${artifactId} — call retrieve_artifact("${artifactId}") to inspect] ...`;
+    return `... [${elidedSummary}; full output stored in artifact ${artifactId} — call retrieve_artifact("${artifactId}") to inspect] ...`;
   }
-  return `... [elided ${omittedLines} lines / ${omittedBytes} bytes; artifact store unavailable — use search_transcript to inspect full output] ...`;
+  return `... [${elidedSummary}; artifact store unavailable — use search_transcript to inspect full output] ...`;
 }
 
 function extractArtifactIdFromText(text: string): string | undefined {
@@ -318,11 +329,9 @@ function buildShapedCandidate(
     }
   }
 
-  const keptHeadLines = head ? head.split("\n").length : 0;
-  const keptTailLines = tail ? tail.split("\n").length : 0;
-  const omittedLines = exceedsLines
-    ? Math.max(1, lines.length - keptHeadLines - keptTailLines)
-    : Math.max(0, lines.length - keptHeadLines - keptTailLines);
+  const keptHeadLines = countTouchedLines(head, false, true);
+  const keptTailLines = countTouchedLines(tail, true, false);
+  const omittedLines = Math.max(0, lines.length - keptHeadLines - keptTailLines);
   const keptBytes = Buffer.byteLength(head, "utf8") + Buffer.byteLength(tail, "utf8");
   const omittedBytes = Math.max(0, totalBytes - keptBytes);
   if (omittedBytes === 0) return null;
