@@ -7,7 +7,7 @@ import { CanonicalWriter } from "../src/canonical-transcript.js";
 import * as compaction from "../src/compaction.js";
 import { EventLog } from "../src/event-log.js";
 import { cutDescription, planBatchSummaries } from "../src/compaction-requests.js";
-import { appendCommit, buildSummaryInstruction, minimumValidSummary, renderSummaryMessage, restoreFrozenStateFromLog, summaryCapTokens } from "../src/frozen-summary.js";
+import { appendCommit, buildSummaryInstruction, minimumValidSummary, renderSummaryMessage, restoreFrozenState, restoreFrozenStateFromLog, summaryCapTokens } from "../src/frozen-summary.js";
 import type { StreamRequest } from "../src/llm/types.js";
 
 const fixtures: { log: EventLog; root: string }[] = [];
@@ -240,6 +240,36 @@ test("summary failure discards computed stale stubs when the unmodified request 
   expect(outcome.status).toBe("summary_failed_fits");
   expect(log.readAll({ includeInternal: true })).toEqual(before);
   expect(state(log).stubSet).toEqual([]);
+});
+
+test("commits reject stubs at or before the folded boundary on append and restore", async () => {
+  const { log, writer } = fixture();
+  const old = await writer.startTurn("old");
+  const ids: string[] = [];
+  for (const id of ["before", "boundary"]) {
+    await writer.assistant(old, { role: "assistant", content: "", toolCalls: [{ id, name: "shell", args: {} }] });
+    await writer.result(old, id, "shell", "result", false);
+    ids.push(log.readAll({ includeInternal: true }).at(-1)!.event_id);
+  }
+  const tail = await writer.startTurn("retained");
+  await writer.assistant(tail, { role: "assistant", content: "", toolCalls: [{ id: "tail", name: "shell", args: {} }] });
+  await writer.result(tail, "tail", "shell", "retained result", false);
+  const tailId = log.readAll({ includeInternal: true }).at(-1)!.event_id;
+  const commit = { formatVersion: 1 as const, ...state(log), generation: 1, boundaryEventId: ids[1], summary: minimumValidSummary(),
+    summaryRequest: { cutDescription: "old", capTokens: 100, instructionSha256: "a".repeat(64), usage: null },
+    stubSet: [{ eventId: tailId, stubText: "stub" }],
+  };
+  const before = log.readAll({ includeInternal: true });
+  for (const eventId of ids) {
+    expect(appendCommit(log, { ...commit, stubSet: [{ eventId, stubText: "stub" }] })).toMatchObject({ status: "rejected", error: { code: "invalid_commit" } });
+    expect(log.readAll({ includeInternal: true })).toEqual(before);
+  }
+  expect(appendCommit(log, commit).status).toBe("committed");
+  for (const eventId of ids) {
+    const events = log.readAll({ includeInternal: true }).map(event => event.kind === "compaction_commit"
+      ? { ...event, payload: { ...event.payload, stubSet: [{ eventId, stubText: "stub" }] } } : event);
+    expect(restoreFrozenState(events)).toMatchObject({ ok: false, error: { code: "invalid_commit" } });
+  }
 });
 
 for (const length of [80, 200]) for (const previous of [false, true]) {

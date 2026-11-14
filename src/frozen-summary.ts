@@ -332,8 +332,9 @@ export function restoreFrozenState(events: readonly Event[]): FrozenRestoreResul
         const nextBoundaryIndex = boundary?.index ?? -1;
         if (nextBoundaryIndex < boundaryIndex) commitError("boundary_regression", index, "boundary moved backwards in log order");
         for (const stub of commit.stubSet) {
-          const target = canonical.get(stub.eventId)?.event;
-          if (!target || target.payload.kind !== "tool_result") commitError("invalid_stub", index, `stub ${stub.eventId} must reference an earlier canonical tool result in this epoch`);
+          const target = canonical.get(stub.eventId);
+          if (!target || target.event.payload.kind !== "tool_result") commitError("invalid_stub", index, `stub ${stub.eventId} must reference an earlier canonical tool result in this epoch`);
+          if (target.index <= nextBoundaryIndex) commitError("invalid_commit", index, "stubs must reference results after the folded boundary");
         }
         if (sameRewrite(state, commit)) commitError("unchanged_commit", index, "a no-op must not increment generation");
         // Commits never clear a summary: /clear starts a new reset epoch instead.
