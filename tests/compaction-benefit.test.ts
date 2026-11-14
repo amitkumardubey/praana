@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { CanonicalWriter } from "../src/canonical-transcript.js";
 import { buildTurns, materializeHistory, runCompaction, type CompactionOutcome } from "../src/compaction.js";
 import { EventLog } from "../src/event-log.js";
-import { checkSummary, readCommits, renderSummaryMessage, restoreFrozenStateFromLog, SUMMARY_HEADINGS, summaryCapTokens } from "../src/frozen-summary.js";
+import { appendCommit, buildSummaryInstruction, checkSummary, readCommits, renderSummaryMessage, restoreFrozenStateFromLog, SESSION_START_EPOCH, SUMMARY_HEADINGS, summaryCapTokens } from "../src/frozen-summary.js";
 import type { ConversationMessage, StreamRequest } from "../src/llm/types.js";
 import { estimateTokens } from "../src/token-estimate.js";
 
@@ -72,6 +72,9 @@ function expectDiscarded(outcome: CompactionOutcome, log: EventLog, text: string
     summaryDiscarded: true,
     discardedSummary: {
       boundaryEventId,
+      resetEpoch: SESSION_START_EPOCH,
+      baseGeneration: 0,
+      previousSummarySha256: null,
       text,
       request: {
         cutDescription: `through canonical event ${boundaryEventId} (end of turn 1)`,
@@ -315,6 +318,9 @@ test("a capacity error exposes the accepted summary and its paid request metadat
     status: "capacity_error", kind: "request_exceeds_capacity", summaryDiscarded: true,
     discardedSummary: {
       boundaryEventId,
+      resetEpoch: SESSION_START_EPOCH,
+      baseGeneration: 0,
+      previousSummarySha256: null,
       text: accepted,
       request: {
         cutDescription: `through canonical event ${boundaryEventId} (end of turn 1)`,
@@ -325,6 +331,62 @@ test("a capacity error exposes the accepted summary and its paid request metadat
     },
   });
   expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
+});
+
+test.each(["unchanged_fits", "stubbed", "capacity_error"] as const)("discarded summary records the frozen base for %s", async (status) => {
+  const { log, writer } = openLog();
+  log.append({ kind: "system_note", actor: "kernel", payload: { type: "reset_boundary", command: "/clear" } });
+  const resetEpoch = log.readAll({ includeInternal: true }).at(-1)!.event_id;
+  const seed = await writer.startTurn("seed");
+  await writer.assistant(seed, { role: "assistant", content: "done" });
+  const old = await writer.startTurn("C".repeat(220));
+  const baseBoundary = buildTurns(log)[0].eventIds.at(-1)!;
+  const previousSummary = summary("base\n雪");
+  expect(appendCommit(log, {
+    formatVersion: 1, resetEpoch, generation: 1,
+    boundaryEventId: baseBoundary, summary: previousSummary, stubSet: [],
+    summaryRequest: {
+      cutDescription: "seed cut", capTokens: 150,
+      instructionSha256: createHash("sha256").update(buildSummaryInstruction({ cutDescription: "seed cut", capTokens: 150 })).digest("hex"),
+      usage: null,
+    },
+  })).toEqual({ status: "committed" });
+  await writer.assistant(old, { role: "assistant", content: "done" });
+  const current = await writer.startTurn("now");
+  await writer.assistant(current, { role: "assistant", content: "running", toolCalls: [{ id: "call", name: "shell", args: {} }] });
+  await writer.result(current, "call", "shell", "R".repeat(status === "capacity_error" ? 4300 : 3400), false);
+  if (status === "stubbed") {
+    await writer.assistant(current, { role: "assistant", content: "", toolCalls: [{ id: "newest", name: "shell", args: {} }] });
+    await writer.result(current, "newest", "shell", "ok", false);
+  }
+  const base = restoreFrozenStateFromLog(log);
+  if (!base.ok) throw base.error;
+  const boundaryEventId = buildTurns(log)[1].eventIds.at(-1)!;
+  const accepted = summary("D".repeat(380));
+  const outcome = await runCompaction({
+    log, liveRequest, contextWindowTokens, options: { ...options, stubKeepRecent: 1 },
+    runSummary: async () => ({ text: accepted, finishReason: "stop", usage: null, toolCalls: [] }),
+  });
+  expect(outcome.status).toBe(status);
+  expect(outcome).toMatchObject({
+    summaryDiscarded: true,
+    discardedSummary: {
+      boundaryEventId, resetEpoch, baseGeneration: base.state.generation,
+      previousSummarySha256: createHash("sha256").update(previousSummary).digest("hex"),
+      text: accepted,
+    },
+  });
+  if (!("discardedSummary" in outcome) || !outcome.discardedSummary) throw new Error("Expected discarded summary");
+  const currentState = restoreFrozenStateFromLog(log);
+  if (!currentState.ok) throw currentState.error;
+  expect(currentState.state.summary).toBe(previousSummary);
+  expect(currentState.state.boundaryEventId).toBe(baseBoundary);
+  if (status === "stubbed") {
+    expect(outcome.discardedSummary.baseGeneration).not.toBe(currentState.state.generation);
+    expect(currentState.state.generation).toBe(base.state.generation + 1);
+  } else {
+    expect(outcome.discardedSummary.baseGeneration).toBe(currentState.state.generation);
+  }
 });
 
 test.each([

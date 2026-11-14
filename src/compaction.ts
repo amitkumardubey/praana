@@ -237,9 +237,16 @@ export type CapacityErrorKind = "reserve_exceeds_window" | "invalid_capacity" | 
 
 export type SummaryRequestMeta = NonNullable<FrozenState["summaryRequest"]>;
 
-/** An accepted, uncommitted summary. Reuse is valid only while its boundary event id is unchanged. */
+/**
+ * An accepted, uncommitted summary. Callers may reuse it only when all four match:
+ * boundaryEventId is still the intended cut, and resetEpoch, baseGeneration and
+ * previousSummarySha256 match the current frozen state (hash null for no summary).
+ */
 export interface DiscardedSummary {
   boundaryEventId: string;
+  resetEpoch: string;
+  baseGeneration: number;
+  previousSummarySha256: string | null;
   text: string;
   request: SummaryRequestMeta | null;
 }
@@ -1029,7 +1036,14 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
           if (committed.status === "commit_rejected" || committed.status === "commit_uncertain") return committed;
           return { status: "rewritten", state: committed.state, fill: postFoldFill };
         }
-        discardedSummary = { boundaryEventId: newBoundaryEventId, text: acceptedSummary, request: summaryRequestMeta };
+        discardedSummary = {
+          boundaryEventId: newBoundaryEventId,
+          resetEpoch: state.resetEpoch,
+          baseGeneration: state.generation,
+          previousSummarySha256: state.summary === null ? null : createHash("sha256").update(state.summary).digest("hex"),
+          text: acceptedSummary,
+          request: summaryRequestMeta,
+        };
         unchangedReason = "fold_insufficient";
       }
     }
