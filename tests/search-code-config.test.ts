@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { loadConfig } from '../src/config.js';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { getConfigWarnings, loadConfig } from '../src/config.js';
 import { createTestLogger, setAppLogger } from '../src/logger.js';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -14,6 +14,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // drain warnings provoked here so they cannot leak into the next test file's assertions
+  getConfigWarnings();
   rmSync(dir, { recursive: true, force: true });
 });
 

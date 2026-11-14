@@ -80,7 +80,7 @@ test.each([false, true])("legacy resumed turns never record or repair, partial=%
     return stream({ role: "assistant", content: "done" });
   });
   await runTurn(resumed, "hello", undefined, { sink: {} });
-  expect(canonical.readFullSessionCanonicalRecords(resumed.eventLog.readAll({ includeCanonical: true }))).toEqual(before);
+  expect(canonical.readFullSessionCanonicalRecords(resumed.eventLog.readAll({ includeInternal: true }))).toEqual(before);
   expect(requests[0].at(-1)).toEqual({ role: "user", content: "hello" });
   expect(resumed.eventLog.readAll().some((e) => e.kind === "user_message")).toBe(true);
 });
@@ -94,7 +94,7 @@ test("resumed canonical turns continue the session sequence", async () => {
   spyOn(resumed, "ensureModelContextWindow").mockResolvedValue(128000);
   spyOn(nativeLlm, "streamLlmResponse").mockImplementation(() => stream({ role: "assistant", content: "done" }));
   await runTurn(resumed, "second", undefined, { sink: {} });
-  expect(canonical.readFullSessionCanonicalRecords(resumed.eventLog.readAll({ includeCanonical: true })).map((record) => record.turnId)).toEqual([1, 2, 2]);
+  expect(canonical.readFullSessionCanonicalRecords(resumed.eventLog.readAll({ includeInternal: true })).map((record) => record.turnId)).toEqual([1, 2, 2]);
 });
 
 test("canonical write failure warns once without a UI error", async () => {

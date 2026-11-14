@@ -47,6 +47,7 @@ const UNICODE_ICONS: Record<string, string> = {
   soft_unload: "⊟",
   hard_unload: "⊠",
   search_session_log: "⌂",
+  search_transcript: "⌂",
   retrieve_artifact: "⊞",
 };
 
@@ -85,6 +86,7 @@ const ASCII_ICONS: Record<string, string> = {
   soft_unload: "su",
   hard_unload: "hu",
   search_session_log: "sl",
+  search_transcript: "st",
   retrieve_artifact: "ar",
 };
 
@@ -122,6 +124,7 @@ const TOOL_SHORT: Record<string, string> = {
   soft_unload: "unload",
   hard_unload: "drop",
   search_session_log: "log",
+  search_transcript: "transcript",
   retrieve_artifact: "artifact",
 };
 

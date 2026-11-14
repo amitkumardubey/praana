@@ -78,7 +78,7 @@ export function buildClassicSystemFrame(
     "",
     "## Memory",
     "",
-    "Use recall() to search Cognitive Memory. Use search_session_log() to search this session's event log.",
+    "Use recall() to search Cognitive Memory. Use search_transcript() for canonical session records and search_session_log() for other session events.",
     "Session event log file: ~/.praana/sessions/<session_id>/events.jsonl",
   );
 

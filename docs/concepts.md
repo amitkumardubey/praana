@@ -70,9 +70,9 @@ When `context_engine.enabled = true`, PRAANA maintains a **SessionCheckpoint** �
 
 ### Conversational context
 
-Turns 0–2 appear verbatim in the prompt. Turns 3–6 appear as scored digests. From turn 7 onward, information only survives if the checkpoint captured it. The narrative, plan history, retained decision rationale, and implicit constraint extraction address the most common gaps where conversational knowledge was previously lost.
+Turns aged 0–2 appear verbatim in the prompt; turns aged 3–6 can appear as scored digests. Older content may leave the prompt unless captured by the checkpoint, but canonical session records remain searchable with `search_transcript`, including compacted/stubbed turns (current reset epoch by default; `include_previous_resets=true` accesses earlier `/clear` epochs). The narrative, plan history, retained decision rationale, and implicit constraint extraction keep useful context in the prompt without replacing transcript recovery.
 
-The checkpoint is written from `TurnDigest` data only — never by the LLM — to prevent summarisation drift. For deep reasoning chains or full exploration history, the agent should still use `search_turn_events` or `retrieve_artifact`.
+The checkpoint is written from `TurnDigest` data only — never by the LLM — to prevent summarisation drift. For deep reasoning chains or full exploration history, use `search_transcript` to search canonical records or fetch full/ranged content and neighbors by ID; `search_turn_events` searches turn summaries and `retrieve_artifact` retrieves stored tool output. Legacy sessions without a canonical transcript must use `search_session_log` instead. Transcript search excludes assistant messages calling `search_transcript` and `search_transcript` results (ID fetch still works); artifact-backed results use logged output paired by tool and call ID in the same reset epoch and retain `artifactId`.
 
 ### Current status (honest)
 
@@ -182,7 +182,7 @@ PRAANA's tool surface is small and deliberately shared across modes. The goal: e
 | Git | `git_status`, `git_diff`, `git_commit`, `git_branches`, `git_log` (structured JSON; prefer over `shell git …`). `git_commit` is blocked in plan mode. Large diffs are lossless artifacts with stub cards — retrieve via `retrieve_artifact` | Both |
 | File mutation | `write_file`, `edit_file`, `batch_write`, `batch_edit` (concurrent batches OK; same-path mutators fail). Missing/unread `edit_file` is fail-fast with fuzzy suggestions (#577). Opt-in `[verify]` (issue #576) attaches syntax / scoped tsc / affected-test results on the same tool result | Both |
 | Shell | `shell` (with optional sandbox allowlist; timeout kills the process group). First-token PATH / cwd checked before execute (#577) | Both |
-| Session search | `search_session_log` (in-session events) | Both |
+| Session search | `search_session_log` (other in-session events), `search_transcript` (BM25 + substring over canonical session records, including compacted/stubbed turns; current reset epoch by default, `include_previous_resets=true` crosses `/clear`; full/ranged content and neighbors by ID) | Both |
 | Cognitive Memory | `recall`, `remember`, `forget_memory` | Both |
 | Adaptive Context | `create_task`, `decide`, `add_constraint`, `add_note`, `hydrate`, `soft_unload`, `hard_unload`, `list_state` | Engine |
 | Context engine | `retrieve_artifact`, `context_summary`, `search_turn_events`, `event_lineage` | Engine |

@@ -1,5 +1,5 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { EventLog, eventsAfterResetBoundary, findLastResetBoundaryIndex, findLastResetBoundaryTurn } from "../src/event-log.js";
@@ -14,6 +14,12 @@ import { loadConfig } from "../src/config.js";
 import { CanonicalWriter, readFullSessionCanonicalRecords } from "../src/canonical-transcript.js";
 import { findReplayStartIndex, loadStateGraphCheckpoint } from "../src/state-graph-checkpoint.js";
 import { createMemoryTools } from "../src/tools/memory.js";
+
+test("raw read options expose only the internal opt-in", () => {
+  const source = readFileSync(new URL("../src/event-log.ts", import.meta.url), "utf8");
+  const options = /export interface EventReadOptions \{([^}]+)\}/.exec(source)![1];
+  expect([...options.matchAll(/(\w+)\?: boolean/g)].map(match => match[1])).toEqual(["includeInternal"]);
+});
 
 const roots: string[] = [];
 const logs: EventLog[] = [];
@@ -47,7 +53,7 @@ test("default search excludes canonical matches before its limit break, includin
   expect(JSON.stringify(result)).not.toContain("canonical_message");
 });
 
-test("all bounded generic read paths filter before slicing while explicit canonical access is complete", () => {
+test("all bounded generic read paths filter before slicing while explicit internal access is complete", () => {
   const { log } = setup();
   legacy(log, "legitimate");
   noise(log, 10);
@@ -55,7 +61,7 @@ test("all bounded generic read paths filter before slicing while explicit canoni
     expect(result.map((e) => e.event_id)).toEqual(["legitimate"]);
   }
   expect(log.getLastEvent()?.event_id).toBe("legitimate");
-  const raw = log.readAll({ includeCanonical: true });
+  const raw = log.readAll({ includeInternal: true });
   expect(raw).toHaveLength(11);
   expect(readFullSessionCanonicalRecords(raw)).toHaveLength(10);
 });
@@ -142,8 +148,8 @@ test("checkpoint resume resolves a canonical event id without exposing its paylo
   session.incrementTurn();
   session.persistStateGraphCheckpoint();
   const checkpoint = loadStateGraphCheckpoint(join(root, "session"))!;
-  expect(checkpoint.last_event_id).toBe(session.eventLog.getLastEvent({ includeCanonical: true })!.event_id);
-  expect(findReplayStartIndex(session.eventLog.readAll({ includeCanonical: true }), checkpoint.last_event_id)).toBe(1);
+  expect(checkpoint.last_event_id).toBe(session.eventLog.getLastEvent({ includeInternal: true })!.event_id);
+  expect(findReplayStartIndex(session.eventLog.readAll({ includeInternal: true }), checkpoint.last_event_id)).toBe(1);
   session.eventLog.append({ kind: "context_action", actor: "kernel", payload: { action: "update", id: task.id, statePayload: { title: "after anchor" }, updated: Date.now() } });
   session.eventLog.close();
   const resumed = await Session.resume(session.id, root, config, { suppressLoggerStderr: true });
@@ -160,7 +166,7 @@ test("reset boundary indices are resolved within each view and turn counts do no
   legacy(log, "new");
   const visible = log.readAll();
   expect(visible.some((e) => e.kind === "canonical_message")).toBe(false);
-  const raw = log.readAll({ includeCanonical: true });
+  const raw = log.readAll({ includeInternal: true });
   for (const events of [visible, raw]) {
     expect(findLastResetBoundaryTurn(events)).toBe(0);
     expect(events[findLastResetBoundaryIndex(events)].payload.type).toBe("reset_boundary");
