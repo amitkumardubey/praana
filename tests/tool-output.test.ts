@@ -1015,4 +1015,35 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     expect(treeRes.shaped).toBe(true);
     expect(treeRes.artifactId).toBe("art_shell_tree");
   });
+
+  test("shapes 3 MB single-line and 3 MB many-lines inputs in linear time (< 500 ms)", () => {
+    const threeMbSingleLine = "x".repeat(3 * 1024 * 1024);
+    const threeMbManyLines = Array.from(
+      { length: 100_000 },
+      (_, i) => `line-${String(i).padStart(6, "0")}: ${"a".repeat(16)}`,
+    ).join("\n");
+
+    const t0 = performance.now();
+    const singleRes = shapeToolOutput({
+      toolName: "shell",
+      command: "xxd huge.bin",
+      text: threeMbSingleLine,
+      storeArtifact: () => "art_perf_single",
+    });
+    const singleElapsedMs = performance.now() - t0;
+
+    const t1 = performance.now();
+    const manyRes = shapeToolOutput({
+      toolName: "shell",
+      command: "find .",
+      text: threeMbManyLines,
+      storeArtifact: () => "art_perf_many",
+    });
+    const manyElapsedMs = performance.now() - t1;
+
+    expect(singleRes.shaped).toBe(true);
+    expect(manyRes.shaped).toBe(true);
+    expect(singleElapsedMs).toBeLessThan(500);
+    expect(manyElapsedMs).toBeLessThan(500);
+  });
 });

@@ -189,51 +189,53 @@ function isExactBytesTool(
 
 function sliceHeadByUtf8Bytes(text: string, maxBytes: number): string {
   if (maxBytes <= 0 || text.length === 0) return "";
-  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
-  const chars = Array.from(text);
-  let low = 0;
-  let high = chars.length;
-  while (low < high) {
-    const mid = Math.ceil((low + high) / 2);
-    const candidate = chars.slice(0, mid).join("");
-    if (Buffer.byteLength(candidate, "utf8") <= maxBytes) {
-      low = mid;
-    } else {
-      high = mid - 1;
+  let endIdx = maxBytes + 4;
+  let window = text;
+  if (text.length > endIdx) {
+    const lastCode = text.charCodeAt(endIdx - 1);
+    if (lastCode >= 0xd800 && lastCode <= 0xdbff && endIdx < text.length) {
+      endIdx++;
     }
+    window = text.slice(0, endIdx);
   }
-  return chars.slice(0, low).join("");
+  const buf = Buffer.from(window, "utf8");
+  if (buf.length <= maxBytes) return window;
+  let cut = maxBytes;
+  while (cut > 0 && ((buf[cut] ?? 0) & 0xc0) === 0x80) {
+    cut--;
+  }
+  return buf.subarray(0, cut).toString("utf8");
 }
 
 function sliceTailByUtf8Bytes(text: string, maxBytes: number): string {
   if (maxBytes <= 0 || text.length === 0) return "";
-  if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
-  const chars = Array.from(text);
-  let low = 0;
-  let high = chars.length;
-  while (low < high) {
-    const mid = Math.floor((low + high) / 2);
-    const candidate = chars.slice(mid).join("");
-    if (Buffer.byteLength(candidate, "utf8") <= maxBytes) {
-      high = mid;
-    } else {
-      low = mid + 1;
+  let window = text;
+  if (text.length > maxBytes + 4) {
+    let startIdx = text.length - (maxBytes + 4);
+    const firstCode = text.charCodeAt(startIdx);
+    if (firstCode >= 0xdc00 && firstCode <= 0xdfff && startIdx + 1 < text.length) {
+      startIdx++;
     }
+    window = text.slice(startIdx);
   }
-  return chars.slice(low).join("");
+  const buf = Buffer.from(window, "utf8");
+  if (buf.length <= maxBytes) return window;
+  let start = buf.length - maxBytes;
+  while (start < buf.length && ((buf[start] ?? 0) & 0xc0) === 0x80) {
+    start++;
+  }
+  return buf.subarray(start).toString("utf8");
 }
 
-function sliceHeadByLines(text: string, maxLines: number): string {
-  if (maxLines <= 0 || text.length === 0) return "";
-  const lines = text.split("\n");
-  if (lines.length <= maxLines) return text;
+function sliceHeadLinesFromArray(lines: readonly string[], maxLines: number): string {
+  if (maxLines <= 0 || lines.length === 0) return "";
+  if (lines.length <= maxLines) return lines.join("\n");
   return lines.slice(0, maxLines).join("\n");
 }
 
-function sliceTailByLines(text: string, maxLines: number): string {
-  if (maxLines <= 0 || text.length === 0) return "";
-  const lines = text.split("\n");
-  if (lines.length <= maxLines) return text;
+function sliceTailLinesFromArray(lines: readonly string[], maxLines: number): string {
+  if (maxLines <= 0 || lines.length === 0) return "";
+  if (lines.length <= maxLines) return lines.join("\n");
   return lines.slice(lines.length - maxLines).join("\n");
 }
 
@@ -292,16 +294,16 @@ function buildShapedCandidate(
   let head: string;
   let tail: string;
   if (exceedsLines) {
-    head = sliceHeadByUtf8Bytes(sliceHeadByLines(rawText, effHeadLines), headByteBudget);
-    tail = sliceTailByUtf8Bytes(sliceTailByLines(rawText, effTailLines), tailByteBudget);
+    head = sliceHeadByUtf8Bytes(sliceHeadLinesFromArray(lines, effHeadLines), headByteBudget);
+    tail = sliceTailByUtf8Bytes(sliceTailLinesFromArray(lines, effTailLines), tailByteBudget);
   } else {
     head = sliceHeadByUtf8Bytes(rawText, headByteBudget);
     tail = sliceTailByUtf8Bytes(rawText, tailByteBudget);
     const keptHead = head ? head.split("\n").length : 0;
     const keptTail = tail ? tail.split("\n").length : 0;
     if (keptHead + keptTail > maxLinesCap) {
-      head = sliceHeadByUtf8Bytes(sliceHeadByLines(rawText, effHeadLines), headByteBudget);
-      tail = sliceTailByUtf8Bytes(sliceTailByLines(rawText, effTailLines), tailByteBudget);
+      head = sliceHeadByUtf8Bytes(sliceHeadLinesFromArray(lines, effHeadLines), headByteBudget);
+      tail = sliceTailByUtf8Bytes(sliceTailLinesFromArray(lines, effTailLines), tailByteBudget);
     }
   }
 
