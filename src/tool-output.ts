@@ -536,20 +536,41 @@ function hasUnkeptElision(text: string): boolean {
     .some((line) => line.startsWith(UNKEPT_ELISION_PREFIX) && line.endsWith(suffix));
 }
 
+/** True for a line shaped like either elision marker form. */
+function isMarkerShapedLine(line: string): boolean {
+  return (
+    ELIDED_MARKER_LINE_RE.test(line) ||
+    (line.startsWith(UNKEPT_ELISION_PREFIX) && line.endsWith(`${UNKEPT_ELISION_ADVICE}] ...`))
+  );
+}
+
+/**
+ * Kept head/tail text is raw tool output, so a line there can already look like
+ * an elision marker. Swap its first character for one of the same byte width so
+ * only the marker the shaper inserts can match, without changing any byte count.
+ */
+function neutralizeMarkerLines(text: string): string {
+  if (!text.includes("... [elided ")) return text;
+  return text
+    .split("\n")
+    .map((line) => (isMarkerShapedLine(line) ? `,${line.slice(1)}` : line))
+    .join("\n");
+}
+
 function extractArtifactIdFromText(text: string): string | undefined {
   const cardMatch = CARD_WHOLE_TEXT_RE.exec(text);
   if (cardMatch?.[1]) return normalizeArtifactId(cardMatch[1]);
-  const lines = text.split("\n");
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i];
-    if (!line) continue;
+  let found: string | undefined;
+  for (const line of text.split("\n")) {
     const elidedMatch = ELIDED_MARKER_LINE_RE.exec(line);
-    if (elidedMatch?.[1]) {
-      const validId = normalizeArtifactId(elidedMatch[1]);
-      if (validId) return validId;
-    }
+    if (!elidedMatch?.[1]) continue;
+    const validId = normalizeArtifactId(elidedMatch[1]);
+    if (!validId) continue;
+    // More than one full marker line is ambiguous: refuse to pick one.
+    if (found !== undefined) return undefined;
+    found = validId;
   }
-  return undefined;
+  return found;
 }
 
 export function extractShapedArtifactId(text: string): string | undefined {
@@ -629,8 +650,8 @@ function buildShapedCandidate(
     }
   }
 
-  const head = headSlice.text;
-  const tail = tailSlice.text;
+  const head = neutralizeMarkerLines(headSlice.text);
+  const tail = neutralizeMarkerLines(tailSlice.text);
   const omittedLines = Math.max(0, lines.length - headSlice.keptLines - tailSlice.keptLines);
   const keptBytes = Buffer.byteLength(head, "utf8") + Buffer.byteLength(tail, "utf8");
   const omittedBytes = Math.max(0, totalBytes - keptBytes);
