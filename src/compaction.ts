@@ -1000,7 +1000,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
           postFoldState = { ...postFoldState, stubSet: finalStubSet };
         }
 
-        if (postFoldFill.fits) {
+        if (postFoldFill.fits && postFoldFill.inputTokens < preFoldFill.inputTokens) {
           const committed = tryCommitRewrite(
             input.log,
             state,

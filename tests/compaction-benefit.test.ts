@@ -133,7 +133,48 @@ test("benefit is measured after stale stubs, not against the original request", 
   expect(outcome.state.summary).toBeNull();
 });
 
-test("a reachable fitting fold can increase the request tokens", async () => {
+test("an accepted equal-size fold is discarded", async () => {
+  const { log } = await nearCapacity("C".repeat(264), 3400);
+  const beforeTokens = inputTokens(messages(log));
+  const accepted = summary("D".repeat(100));
+  const foldedTokens = inputTokens([renderSummaryMessage(accepted), ...buildTurns(log).at(-1)!.messages]);
+  expect(foldedTokens).toBe(beforeTokens);
+  let calls = 0;
+  const outcome = await runCompaction({
+    log, liveRequest, contextWindowTokens, options,
+    runSummary: async () => { calls++; return { text: accepted, finishReason: "stop", usage: null, toolCalls: [] }; },
+  });
+  expect(calls).toBe(1);
+  expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "fold_insufficient", summaryDiscarded: true });
+  expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
+});
+
+test("a fold must shrink relative to stale stubs even when it beats the original request", async () => {
+  const { log, writer } = openLog();
+  const old = await writer.startTurn("C".repeat(100));
+  await writer.assistant(old, { role: "assistant", content: "", toolCalls: [{ id: "c", name: "s", args: {} }] });
+  await writer.result(old, "c", "s", "O".repeat(4000), false);
+  const current = await writer.startTurn("R".repeat(3800));
+  await writer.assistant(current, { role: "assistant", content: "" });
+  const originalTokens = inputTokens(messages(log));
+  const accepted = summary("D".repeat(380));
+  const foldedTokens = inputTokens([renderSummaryMessage(accepted), ...buildTurns(log).at(-1)!.messages]);
+  let calls = 0;
+  const outcome = await runCompaction({
+    log, liveRequest, contextWindowTokens, options: { ...options, stubMinTokens: 50 },
+    planStubs: (candidates) => candidates.map((c) => ({ eventId: c.eventId, stubText: "" })),
+    runSummary: async () => { calls++; return { text: accepted, finishReason: "stop", usage: null, toolCalls: [] }; },
+  });
+  expect(calls).toBe(1);
+  expect(outcome).toMatchObject({ status: "stubbed", summaryDiscarded: true });
+  if (outcome.status !== "stubbed") throw new Error(JSON.stringify(outcome));
+  expect(outcome.fill.inputTokens).toBeLessThan(foldedTokens);
+  expect(foldedTokens).toBeLessThan(originalTokens);
+  expect(foldedTokens).toBeLessThanOrEqual(usableTokens);
+  expect(outcome.state.summary).toBeNull();
+});
+
+test("a fitting fold that grows the request is discarded", async () => {
   const { log } = await nearCapacity("C".repeat(220), 3400);
   const beforeTokens = inputTokens(messages(log));
   const accepted = summary("D".repeat(380));
@@ -149,9 +190,7 @@ test("a reachable fitting fold can increase the request tokens", async () => {
     runSummary: async () => { calls++; return { text: accepted, finishReason: "stop", usage: null, toolCalls: [] }; },
   });
   expect(calls).toBe(1);
-  expect(outcome.status).toBe("rewritten");
-  if (outcome.status !== "rewritten") throw new Error(JSON.stringify(outcome));
-  expect(outcome.fill.inputTokens).toBe(foldedTokens);
-  expect(inputTokens(messages(log))).toBeGreaterThan(beforeTokens);
-  expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(1);
+  expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "fold_insufficient", summaryDiscarded: true });
+  expect(inputTokens(messages(log))).toBe(beforeTokens);
+  expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
 });
