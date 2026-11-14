@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CanonicalRecord } from "../src/canonical-transcript.js";
+import { CanonicalWriter, type CanonicalRecord } from "../src/canonical-transcript.js";
 import {
   buildSameModelSummaryRequest,
   buildSummaryRepairRequest,
@@ -1597,11 +1597,13 @@ test("unchanged_fits carries reason for fold_not_possible, fold_insufficient, an
   // 3. fold_insufficient: summary is generated within capTokens, but post-fold request exceeds usable capacity and is dropped.
   {
     const { log } = openLog();
-    addTurn(log, 1, { inputText: "Tiny completed turn" });
-    addTurn(log, 2, { inputText: "In-flight " + "y".repeat(4400) });
-    // usable = 1200 (capTokens = 150); turn1 (~20) + turn2 (~1115) = 1135 <= 1200 (fits, ratio ~ 0.946 >= 0.80).
-    // Pre-check: turn2 (~1115) + minSummaryMessage (~59) = 1174 <= 1200 (passes).
-    // Returned summary (~130 tokens <= 150) renders to ~148 tokens; turn2 + summary = 1263 > 1200 (dropped).
+    const writer = new CanonicalWriter(log, (error) => { throw error; });
+    const completed = await writer.startTurn("c".repeat(220));
+    await writer.assistant(completed, { role: "assistant", content: "done" });
+    const current = await writer.startTurn("In-flight " + "y".repeat(4400));
+    await writer.assistant(current, { role: "assistant", content: "running" });
+    // The minimum summary would shrink the completed turn; the larger accepted summary overflows.
+    // The original request still fits usable = 1200, and capTokens = 150.
     let summaryCalls = 0;
     const outcome = await runCompaction({
       log,

@@ -60,7 +60,7 @@ async function nearCapacity(completedText: string, resultSize: number) {
   return { log, writer, current };
 }
 
-test("a tiny completed turn wastes one paid summary when the fold overflows", async () => {
+test("a tiny completed turn skips the paid summary when even the minimum cannot shrink", async () => {
   const { log } = await nearCapacity("old", 4100);
   const before = messages(log);
   const beforeTokens = inputTokens(before);
@@ -76,10 +76,61 @@ test("a tiny completed turn wastes one paid summary when the fold overflows", as
     log, liveRequest, contextWindowTokens, options,
     runSummary: async () => { calls++; return { text: accepted, finishReason: "stop", usage: null, toolCalls: [] }; },
   });
-  expect(calls).toBe(1);
-  expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "fold_insufficient", summaryDiscarded: true });
+  expect(calls).toBe(0);
+  expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "fold_not_possible" });
+  expect(outcome).not.toHaveProperty("summaryDiscarded");
   expect(messages(log)).toEqual(before);
   expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
+});
+
+test("a useful minimum still pays for a summary", async () => {
+  const { log } = await nearCapacity("C".repeat(700), 3400);
+  const beforeTokens = inputTokens(messages(log));
+  let calls = 0;
+  const outcome = await runCompaction({
+    log, liveRequest, contextWindowTokens, options,
+    runSummary: async () => { calls++; return { text: summary(), finishReason: "stop", usage: null, toolCalls: [] }; },
+  });
+  expect(calls).toBe(1);
+  expect(outcome.status).toBe("rewritten");
+  expect(inputTokens(messages(log))).toBeLessThan(beforeTokens);
+});
+
+test("an equal-size minimum skips the paid summary", async () => {
+  const { log } = await nearCapacity("C".repeat(168), 3400);
+  const beforeTokens = inputTokens(messages(log));
+  const bestTokens = inputTokens([renderSummaryMessage(summary()), ...buildTurns(log).at(-1)!.messages]);
+  expect(bestTokens).toBe(beforeTokens);
+  let calls = 0;
+  const outcome = await runCompaction({
+    log, liveRequest, contextWindowTokens, options,
+    runSummary: async () => { calls++; return { text: summary(), finishReason: "stop", usage: null, toolCalls: [] }; },
+  });
+  expect(calls).toBe(0);
+  expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "fold_not_possible" });
+});
+
+test("benefit is measured after stale stubs, not against the original request", async () => {
+  const { log, writer } = openLog();
+  const old = await writer.startTurn("");
+  await writer.assistant(old, { role: "assistant", content: "", toolCalls: [{ id: "c", name: "s", args: {} }] });
+  await writer.result(old, "c", "s", "O".repeat(4000), false);
+  const current = await writer.startTurn("R".repeat(4000));
+  await writer.assistant(current, { role: "assistant", content: "" });
+  const originalTokens = inputTokens(messages(log));
+  let calls = 0;
+  const outcome = await runCompaction({
+    log, liveRequest, contextWindowTokens, options: { ...options, stubMinTokens: 50 },
+    planStubs: (candidates) => candidates.map((c) => ({ eventId: c.eventId, stubText: "" })),
+    runSummary: async () => { calls++; return { text: summary(), finishReason: "stop", usage: null, toolCalls: [] }; },
+  });
+  expect(calls).toBe(0);
+  expect(outcome.status).toBe("stubbed");
+  if (outcome.status !== "stubbed") throw new Error(JSON.stringify(outcome));
+  const bestTokens = inputTokens([renderSummaryMessage(summary()), ...buildTurns(log).at(-1)!.messages]);
+  expect(outcome.fill.inputTokens).toBeLessThan(originalTokens);
+  expect(bestTokens).toBeGreaterThanOrEqual(outcome.fill.inputTokens);
+  expect(outcome.state.summary).toBeNull();
 });
 
 test("a reachable fitting fold can increase the request tokens", async () => {

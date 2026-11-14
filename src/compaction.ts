@@ -785,17 +785,19 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
   let summaryDiscarded = false;
 
   if (completedTurns.length > 0) {
+    const preFoldFill = measureCandidate({ ...state, stubSet: toStubSet(step1StubMap) });
     const capTokens = summaryCapTokens(initialFill.usableTokens);
-    const minValidSummary = SUMMARY_HEADINGS.map((h) => `### ${h}`).join("\n\n") + "\nok";
+    const minValidSummary = SUMMARY_HEADINGS.map((h, i) => `### ${h}${i === 0 ? "\nok" : ""}`).join("\n\n");
     const minValidSummaryTokens = estimateTokens(minValidSummary);
     const minSummaryMessageTokens = estimateMessageTokens(renderSummaryMessage(minValidSummary));
     const summaryAllowanceTokens = estimateMessageTokens(renderSummaryMessage("")) + capTokens;
 
     // Pre-check whether the in-flight turn (after maximal Step 3 stubbing down to keepRecent=1) + frame + minimum valid summary can fit usable capacity.
-    const inFlightMinMap = new Map(baseActiveStubs);
+    const inFlightMinMap = new Map(step1StubMap);
     const inFlightCandidates = collectToolResults([inFlightTurn]);
     const unstubbedInFlightMessages = emitCanonicalTranscript(applyStubs(inFlightTurn, inFlightMinMap));
-    let minInFlightTokens = estimateRequestTokens(frame, unstubbedInFlightMessages);
+    const bestCaseTokens = estimateRequestTokens(frame, unstubbedInFlightMessages) + minSummaryMessageTokens;
+    let minInFlightTokens = bestCaseTokens - minSummaryMessageTokens;
     if (minInFlightTokens + minSummaryMessageTokens > initialFill.usableTokens && inFlightCandidates.length > 1) {
       const eligibleOldInFlight = inFlightCandidates
         .slice(0, -1)
@@ -815,7 +817,8 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
       }
     }
 
-    if (capTokens < minValidSummaryTokens || minInFlightTokens + minSummaryMessageTokens > initialFill.usableTokens) {
+    // Even the shortest tail and minimum summary must beat the request after stale stubbing.
+    if (bestCaseTokens >= preFoldFill.inputTokens || capTokens < minValidSummaryTokens || minInFlightTokens + minSummaryMessageTokens > initialFill.usableTokens) {
       unchangedReason = "fold_not_possible";
     } else {
       // Shrink completed turns in the tail from Math.min(tailTurns, completedTurns.length) down to 0
