@@ -137,9 +137,12 @@ const ELIDED_MARKER_LINE_RE = new RegExp(
 /** Marker text emitted when no artifact holds the elided middle. */
 const UNKEPT_ELISION_ADVICE = "no artifact available, elided content was not kept";
 const UNKEPT_ELISION_PREFIX = "... [elided ";
-/** Whole-text artifact card as `buildArtifactCard` writes it: header with `tokens raw` and the retrieve footer. */
+/**
+ * Whole-text artifact card as `buildArtifactCard` writes it: header with `tokens raw` and the
+ * retrieve footer. The label can span lines (a multi-line shell command), so it is `[\s\S]*`.
+ */
 const CARD_WHOLE_TEXT_RE = new RegExp(
-  `^\\[artifact:\\s*(${ARTIFACT_ID_GRAMMAR})\\s*\\|[^\\n]* tokens raw\\]\\nRetrieve: retrieve_artifact\\("\\1"\\)$`,
+  `^\\[artifact:\\s*(${ARTIFACT_ID_GRAMMAR})\\s*\\|[\\s\\S]* tokens raw\\]\\nRetrieve: retrieve_artifact\\("\\1"\\)$`,
 );
 
 export interface ShapeToolOutputOptions {
@@ -253,17 +256,32 @@ function splitShellCommandSegments(command: string): string[] | null {
       if (ch === "'") quote = null;
       continue;
     }
+    const next = command[i + 1] ?? "";
     if (ch === "\\") {
+      // Backslash-newline outside single quotes is a line continuation: the shell removes both.
+      if (next === "\n") {
+        i++;
+        continue;
+      }
+      if (next === "\r" && command[i + 2] === "\n") {
+        i += 2;
+        continue;
+      }
       current += ch;
       escaped = true;
       continue;
     }
-    const next = command[i + 1] ?? "";
     // Command substitution runs inside double quotes too.
     if (ch === "`" || (ch === "$" && next === "(")) return null;
     if (quote !== null) {
       current += ch;
       if (ch === quote) quote = null;
+      continue;
+    }
+    // An unquoted `#` at the start of a word starts a comment that runs to the end of the line;
+    // quotes inside it are text, and the newline still separates commands.
+    if (ch === "#" && (current.length === 0 || /\s/.test(current[current.length - 1] ?? ""))) {
+      while (i + 1 < command.length && command[i + 1] !== "\n" && command[i + 1] !== "\r") i++;
       continue;
     }
     if (ch === "'" || ch === '"') {
@@ -380,6 +398,13 @@ function isSegmentFileRead(segment: string): boolean {
     const tok = tokens[idx] ?? "";
     if (tok === "!" || /^[A-Za-z_][A-Za-z0-9_]*=/.test(tok)) {
       idx++;
+      continue;
+    }
+    // A redirection before the command word (`< foo.ts cat`, `2>&1 rg x`). A bare operator
+    // takes the next word as its target; `2>&1` or `<foo.ts` carries it.
+    const redirection = /^(?:\d+|&)?(?:<<<|<<-?|<>|<&|>&|>>|>\||<|>)(.*)$/.exec(tok);
+    if (redirection) {
+      idx += redirection[1] ? 1 : 2;
       continue;
     }
     const bareTok = tok.includes("/") ? (tok.split("/").pop() ?? tok) : tok;
@@ -581,8 +606,18 @@ function neutralizeMarkerLines(text: string): string {
 }
 
 function extractArtifactIdFromText(text: string): string | undefined {
+  // Elision markers decide first: a shaped text is never a card, even when its raw head and
+  // tail together look like one across the inserted marker.
+  if (hasUnkeptElision(text)) return undefined;
+  const markerId = extractMarkerArtifactId(text);
+  if (markerId !== null) return markerId;
   const cardMatch = CARD_WHOLE_TEXT_RE.exec(text);
   if (cardMatch?.[1]) return normalizeArtifactId(cardMatch[1]);
+  return undefined;
+}
+
+/** Id from the full elision marker lines: `null` when there is none, `undefined` when ambiguous. */
+function extractMarkerArtifactId(text: string): string | undefined | null {
   let found: string | undefined;
   for (const line of text.split("\n")) {
     const elidedMatch = ELIDED_MARKER_LINE_RE.exec(line);
@@ -593,7 +628,7 @@ function extractArtifactIdFromText(text: string): string | undefined {
     if (found !== undefined) return undefined;
     found = validId;
   }
-  return found;
+  return found ?? null;
 }
 
 export function extractShapedArtifactId(text: string): string | undefined {
