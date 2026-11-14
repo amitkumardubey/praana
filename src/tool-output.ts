@@ -117,11 +117,11 @@ export const DEFAULT_EXACT_BYTES_TOOLS: ReadonlySet<string> = new Set(
 /** Shared artifact ID token grammar used by marker formatting and extraction. */
 const ARTIFACT_ID_GRAMMAR = "[A-Za-z0-9][A-Za-z0-9_.:/-]*";
 const ARTIFACT_ID_EXACT_RE = new RegExp(`^${ARTIFACT_ID_GRAMMAR}$`);
-const ELIDED_ARTIFACT_ID_RE = new RegExp(
-  `full output stored in artifact (${ARTIFACT_ID_GRAMMAR})(?=\\s|—|$)`,
+const ELIDED_MARKER_LINE_RE = new RegExp(
+  `^\\.\\.\\. \\[elided (?:[1-9]\\d* lines? / )?\\d+ bytes \\(partial lines at cut truncated\\); full output stored in artifact (${ARTIFACT_ID_GRAMMAR}) — call retrieve_artifact\\("\\1"\\) to inspect\\] \\.\\.\\.$`,
 );
-const CARD_ARTIFACT_ID_RE = new RegExp(
-  `\\[artifact:\\s*(${ARTIFACT_ID_GRAMMAR})(?=[\\s|\\],;]|$)`,
+const CARD_WHOLE_TEXT_RE = new RegExp(
+  `^\\[artifact:\\s*(${ARTIFACT_ID_GRAMMAR})\\s*\\|[^\\n]*\\](?:\\nRetrieve: retrieve_artifact\\("\\1"\\))?$`,
 );
 
 export interface ShapeToolOutputOptions {
@@ -282,10 +282,15 @@ function formatElisionMarker(
 }
 
 function extractArtifactIdFromText(text: string): string | undefined {
-  const elidedMatch = ELIDED_ARTIFACT_ID_RE.exec(text);
-  if (elidedMatch?.[1]) return elidedMatch[1];
-  const cardMatch = CARD_ARTIFACT_ID_RE.exec(text);
+  const cardMatch = CARD_WHOLE_TEXT_RE.exec(text);
   if (cardMatch?.[1]) return cardMatch[1];
+  const lines = text.split("\n");
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (!line) continue;
+    const elidedMatch = ELIDED_MARKER_LINE_RE.exec(line);
+    if (elidedMatch?.[1]) return elidedMatch[1];
+  }
   return undefined;
 }
 
