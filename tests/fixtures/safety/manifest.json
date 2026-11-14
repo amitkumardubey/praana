@@ -30,7 +30,7 @@
     "src/hooks/registry.ts": "27af39a838c79d2611122450a2acc5800800972973da0099c25a5123d0d2aa89",
     "src/hooks/types.ts": "96b1f29ae6911d224c374809b9170be5e19a9df30a6ad5434305585eee06b764",
     "src/plan-mode.ts": "b5bd3bf403a3fe3dbf382834525fdc7de1dba0b3f82f7d49e1cf3e989b975e8f",
-    "src/redact/secrets.ts": "7acc0eabe0ed7681523664515874260a4aa44f65784ecce40cdda3fe1e5679cf",
+    "src/redact/secrets.ts": "be4f8e903270264bf82b60c6aa37c0cce2f8f5009c89831e09d14251339143df",
     "src/risk/classes.ts": "6062455a425b9b15322147efee6593a3ea6f7b8acac48a36a967424a0bbd8fb2",
     "src/risk/classify.ts": "f1a937d49099d6f60aa06d9fe8174c06a2efba0259da45babf931a6b4b9143df",
     "src/session.ts": "2f248974049870f1c1ed5ccec1c2861304bac419c111a955761e4c18c8eaaddb",

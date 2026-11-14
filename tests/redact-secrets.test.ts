@@ -1,6 +1,59 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
-import { redactSecrets } from "../src/redact/secrets.js";
+import { redactSecrets, redactSecretsStrict } from "../src/redact/secrets.js";
+
+describe("redactSecretsStrict", () => {
+  it("uses the same redaction walk", () => {
+    const value = { key: "AKIAIOSFODNN7EXAMPLE" };
+    expect(redactSecretsStrict(value)).toEqual(redactSecrets(value));
+  });
+
+  it("fails closed at the walk depth limit without changing the non-strict redactor", () => {
+    for (const depth of [8, 9, 20]) {
+      let value: unknown = "AKIAIOSFODNN7EXAMPLE";
+      for (let i = 0; i < depth; i++) value = { nested: value };
+      expect(() => redactSecretsStrict(value)).toThrow("depth");
+      expect(redactSecrets(value)).toEqual(value);
+    }
+  });
+
+  it("propagates errors rather than returning the original value", () => {
+    const value = Object.defineProperty({}, "broken", {
+      enumerable: true,
+      get() { throw new Error("walk failed"); },
+    });
+    expect(redactSecrets(value)).toBe(value);
+    expect(() => redactSecretsStrict(value)).toThrow("walk failed");
+  });
+
+  it("walks null-prototype objects and arrays of them in strict mode", () => {
+    const token = "ghp_" + "a".repeat(36);
+    const inner = Object.assign(Object.create(null), { token });
+    const outer = Object.assign(Object.create(null), { nested: inner });
+    const walked = redactSecretsStrict(outer) as { nested: { token: string } };
+    expect(walked.nested.token).toBe("[REDACTED:github-token]");
+    const listed = redactSecretsStrict([inner]) as Array<{ token: string }>;
+    expect(listed[0]!.token).toBe("[REDACTED:github-token]");
+  });
+
+  it("throws a TypeError naming any object it cannot walk in strict mode", () => {
+    class Custom { value = "ghp_" + "a".repeat(36); }
+    const kinds: Array<[string, unknown]> = [
+      ["Custom", new Custom()],
+      ["Map", new Map()],
+      ["Set", new Set()],
+      ["Date", new Date(0)],
+      ["Uint8Array", new Uint8Array(1)],
+      ["function", () => "x"],
+    ];
+    for (const [type, value] of kinds) {
+      expect(() => redactSecretsStrict(value)).toThrow(TypeError);
+      expect(() => redactSecretsStrict(value)).toThrow(type);
+      // Non-strict behaviour is unchanged: the value is returned as it is.
+      expect(redactSecrets(value)).toBe(value);
+    }
+  });
+});
 
 describe("redactSecrets", () => {
   it("redacts AWS, GitHub, GitLab, OpenAI, Anthropic", () => {
