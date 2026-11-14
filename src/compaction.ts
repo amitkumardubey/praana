@@ -16,10 +16,10 @@ import {
   buildSummaryInstruction,
   checkSummary,
   FrozenSummaryError,
+  minimumValidSummary,
   renderSummaryMessage,
   restoreFrozenState,
   SESSION_START_EPOCH,
-  SUMMARY_HEADINGS,
   summaryCapTokens,
   type CompactionCommit,
   type FrozenState,
@@ -235,20 +235,50 @@ export interface RequestFill {
 
 export type CapacityErrorKind = "reserve_exceeds_window" | "invalid_capacity" | "request_exceeds_capacity";
 
+export type SummaryRequestMeta = NonNullable<FrozenState["summaryRequest"]>;
+
+/**
+ * An accepted, uncommitted summary. Its base identity is resetEpoch + baseBoundaryEventId +
+ * previousSummarySha256 (null when there was no summary). Reuse requires that identity to match
+ * the current frozen state and boundaryEventId to remain the intended cut. Generation is irrelevant:
+ * stubs-only commits preserve this base.
+ *
+ * The text was produced from the live request and stateObjects as they stood when generated.
+ * A reusing caller must run fresh fit and benefit checks against the CURRENT state and use the
+ * normal commit path, never insert the cached text straight into a commit. No code in src/
+ * consumes this field for reuse yet.
+ */
+export interface DiscardedSummary {
+  boundaryEventId: string;
+  resetEpoch: string;
+  baseBoundaryEventId: string | null;
+  previousSummarySha256: string | null;
+  text: string;
+  request: SummaryRequestMeta | null;
+}
+
 /** Values only: the integration layer must make terminal capacity stops exit headless runs non-zero. */
 export interface CapacityErrorOutcome {
   status: "capacity_error";
   kind: CapacityErrorKind;
   message: string;
   summaryDiscarded?: true;
+  discardedSummary?: DiscardedSummary;
 }
 
 export type RequestFillResult = { ok: true; fill: RequestFill } | { ok: false; error: CapacityErrorOutcome };
 
+function withDiscardedSummary<T extends object>(
+  outcome: T,
+  discardedSummary?: DiscardedSummary,
+): T & { summaryDiscarded?: true; discardedSummary?: DiscardedSummary } {
+  return discardedSummary ? { ...outcome, summaryDiscarded: true, discardedSummary } : outcome;
+}
+
 function capacityError(
   kind: CapacityErrorKind,
   detail: string,
-  summaryDiscarded?: boolean,
+  discardedSummary?: DiscardedSummary,
 ): { ok: false; error: CapacityErrorOutcome } {
   const guidance = kind === "invalid_capacity"
     ? "Correct the configuration or model catalog entry before continuing."
@@ -258,8 +288,7 @@ function capacityError(
     kind,
     message: `${detail} ${guidance}`,
   };
-  if (summaryDiscarded) error.summaryDiscarded = true;
-  return { ok: false, error };
+  return { ok: false, error: withDiscardedSummary(error, discardedSummary) };
 }
 
 /**
@@ -301,7 +330,13 @@ export function shouldRewrite(fill: RequestFill, options: Partial<CompactionOpti
   return fill.ratio >= threshold;
 }
 
-export type UnchangedFitsReason = "fold_not_possible" | "fold_insufficient" | "no_eligible_results" | "planner_declined";
+/**
+ * fold_not_possible: the minimum summary cannot fit or the source cannot be folded.
+ * fold_not_beneficial: a fold cannot shrink the request, even if it would fit.
+ * fold_insufficient: an accepted fold still exceeds capacity after in-flight stubbing.
+ * The remaining reasons distinguish missing eligible results from a declined stub plan.
+ */
+export type UnchangedFitsReason = "fold_not_possible" | "fold_not_beneficial" | "fold_insufficient" | "no_eligible_results" | "planner_declined";
 
 /** Contracts for rewrite orchestration; defining outcomes does not execute or commit a rewrite. */
 export type CompactionOutcome =
@@ -310,9 +345,9 @@ export type CompactionOutcome =
   /** A committed summary rewrite, with exactly one generation increment. */
   | { status: "rewritten"; state: FrozenState; fill: RequestFill }
   /** A stubs-only commit: one generation increment, existing summary/boundary preserved. */
-  | { status: "stubbed"; state: FrozenState; fill: RequestFill; summaryDiscarded?: true }
-  /** No useful change, but the unchanged request fits usable capacity. */
-  | { status: "unchanged_fits"; state: FrozenState; fill: RequestFill; reason: UnchangedFitsReason; summaryDiscarded?: true }
+  | { status: "stubbed"; state: FrozenState; fill: RequestFill; summaryDiscarded?: true; discardedSummary?: DiscardedSummary }
+  /** No useful change, but the unchanged request fits; reason distinguishes impossible, unhelpful and oversized folds. */
+  | { status: "unchanged_fits"; state: FrozenState; fill: RequestFill; reason: UnchangedFitsReason; summaryDiscarded?: true; discardedSummary?: DiscardedSummary }
   /** Summary failure/timeout; previous state retained and the unchanged request fits. */
   | { status: "summary_failed_fits"; state: FrozenState; fill: RequestFill; reason: string }
   /** Nothing committed by this run. State is pre-race; callers must re-restore from the log before continuing. */
@@ -645,9 +680,11 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
   }
 
   // Materialize each distinct (resetEpoch, boundaryEventId, summary, stubSet) state at most once per run:
-  // 1 initial state + at most 1 Step 1 stale-stub state + at most 1 Step 2 post-fold state +
-  // at most stubKeepRecent in-flight stub states after folding in Step 2 + at most stubKeepRecent
-  // in-flight stub states in Step 3 if the fold still does not fit (at most 3 + 2 * stubKeepRecent materialisations per run).
+  // Worst case: 1 initial + 1 Step 1 stale-stub + 1 fold-only + stubKeepRecent post-fold
+  // stub states + stubKeepRecent unfolded fallback stub states = 3 + 2 * stubKeepRecent.
+  // The pre-fold baseline reuses the initial or Step 1 measurement; the fallback starts there too.
+  // Non-beneficial folds skip post-fold stubbing. The full bound is reached only when a useful fold
+  // remains oversized after stubbing, then the unfolded fallback also exhausts its keepRecent steps.
   const measuredByState = new Map<string, RequestFill>([
     [stateCacheKey(state), initialFill],
     [stateCacheKey({ ...state, stubSet: toStubSet(baseActiveStubs) }), initialFill],
@@ -782,21 +819,24 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
   // --- STEP 2: Choose the tail, then fold once (only when completedTurns.length > 0) ---
   let summaryFailureReason: string | undefined;
   let unchangedReason: UnchangedFitsReason | undefined;
-  let summaryDiscarded = false;
+  let discardedSummary: DiscardedSummary | undefined;
 
   if (completedTurns.length > 0) {
     const capTokens = summaryCapTokens(initialFill.usableTokens);
-    const minValidSummary = SUMMARY_HEADINGS.map((h) => `### ${h}`).join("\n\n") + "\nok";
+    const minValidSummary = minimumValidSummary();
     const minValidSummaryTokens = estimateTokens(minValidSummary);
     const minSummaryMessageTokens = estimateMessageTokens(renderSummaryMessage(minValidSummary));
     const summaryAllowanceTokens = estimateMessageTokens(renderSummaryMessage("")) + capTokens;
 
     // Pre-check whether the in-flight turn (after maximal Step 3 stubbing down to keepRecent=1) + frame + minimum valid summary can fit usable capacity.
-    const inFlightMinMap = new Map(baseActiveStubs);
+    const inFlightMinMap = new Map(step1StubMap);
     const inFlightCandidates = collectToolResults([inFlightTurn]);
     const unstubbedInFlightMessages = emitCanonicalTranscript(applyStubs(inFlightTurn, inFlightMinMap));
-    let minInFlightTokens = estimateRequestTokens(frame, unstubbedInFlightMessages);
-    if (minInFlightTokens + minSummaryMessageTokens > initialFill.usableTokens && inFlightCandidates.length > 1) {
+    // Frame + shortest tail + minimum valid summary, after Step 1 but without new in-flight stubs: benefit baseline.
+    const foldAloneBestCase = estimateRequestTokens(frame, unstubbedInFlightMessages) + minSummaryMessageTokens;
+    // The same request with maximal in-flight stubbing (keepRecent=1): capacity lower bound.
+    let stubbedFoldBestCase = foldAloneBestCase;
+    if (stubbedFoldBestCase > initialFill.usableTokens && inFlightCandidates.length > 1) {
       const eligibleOldInFlight = inFlightCandidates
         .slice(0, -1)
         .filter((c) => !inFlightMinMap.has(c.eventId) && c.estimatedTokens >= opts.stubMinTokens);
@@ -811,12 +851,21 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
         if (signal?.aborted) return { status: "cancelled", state, reason: "aborted" };
         for (const entry of plannedMin) inFlightMinMap.set(entry.eventId, entry.stubText);
         const inFlightMinMessages = emitCanonicalTranscript(applyStubs(inFlightTurn, inFlightMinMap));
-        minInFlightTokens = estimateRequestTokens(frame, inFlightMinMessages);
+        stubbedFoldBestCase = estimateRequestTokens(frame, inFlightMinMessages) + minSummaryMessageTokens;
       }
     }
 
-    if (capTokens < minValidSummaryTokens || minInFlightTokens + minSummaryMessageTokens > initialFill.usableTokens) {
+    // Necessary-condition filter: even the shortest tail and minimum valid summary must beat the request after Step 1.
+    // A realistic summary is larger, so a paid summary can still be discarded by the commit rule;
+    // this only avoids clearly hopeless folds, not every unhelpful summary call.
+    const foldNotPossible = capTokens < minValidSummaryTokens || stubbedFoldBestCase > initialFill.usableTokens;
+    // Reuse the request measured after Step 1, only after the cheap impossibility checks.
+    // unchanged_fits returns the original state unless the Step 3 fallback commits the stubs.
+    const preFold = foldNotPossible ? null : measureCandidate({ ...state, stubSet: toStubSet(step1StubMap) });
+    if (preFold === null) {
       unchangedReason = "fold_not_possible";
+    } else if (foldAloneBestCase >= preFold.inputTokens) {
+      unchangedReason = "fold_not_beneficial";
     } else {
       // Shrink completed turns in the tail from Math.min(tailTurns, completedTurns.length) down to 0
       // until frame + summary allowance + tail fits the target.
@@ -966,7 +1015,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
       }
 
       if (acceptedSummary !== undefined) {
-        const summaryRequestMeta: NonNullable<FrozenState["summaryRequest"]> = {
+        const summaryRequestMeta: SummaryRequestMeta = {
           cutDescription: cutText,
           capTokens,
           instructionSha256,
@@ -981,10 +1030,12 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
           stubSet: finalStubSet,
           summaryRequest: summaryRequestMeta,
         };
-        let postFoldFill = measureCandidate(postFoldState);
+        const foldOnlyFill = measureCandidate(postFoldState);
+        const foldBeneficial = foldOnlyFill.inputTokens < preFold.inputTokens;
+        let postFoldFill = foldOnlyFill;
 
-        // If folding alone did not reach the target, run Step 3 (stub inside the in-flight turn).
-        if (!postFoldFill.fits || postFoldFill.ratio > targetRatio) {
+        // Only spend Step 3 work on a fold that can be committed and has not reached the target.
+        if (foldBeneficial && (!postFoldFill.fits || postFoldFill.ratio > targetRatio)) {
           const inFlightStubbed = runInFlightStubbing(
             newBoundaryEventId,
             acceptedSummary,
@@ -997,7 +1048,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
           postFoldState = { ...postFoldState, stubSet: finalStubSet };
         }
 
-        if (postFoldFill.fits) {
+        if (postFoldFill.fits && foldBeneficial) {
           const committed = tryCommitRewrite(
             input.log,
             state,
@@ -1008,8 +1059,15 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
           if (committed.status === "commit_rejected" || committed.status === "commit_uncertain") return committed;
           return { status: "rewritten", state: committed.state, fill: postFoldFill };
         }
-        summaryDiscarded = true;
-        unchangedReason = "fold_insufficient";
+        discardedSummary = {
+          boundaryEventId: newBoundaryEventId,
+          resetEpoch: state.resetEpoch,
+          baseBoundaryEventId: state.boundaryEventId,
+          previousSummarySha256: state.summary === null ? null : createHash("sha256").update(state.summary).digest("hex"),
+          text: acceptedSummary,
+          request: summaryRequestMeta,
+        };
+        unchangedReason = foldBeneficial ? "fold_insufficient" : "fold_not_beneficial";
       }
     }
   }
@@ -1042,8 +1100,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
       state: committed.state,
       fill: step3Result.fill,
     };
-    if (summaryDiscarded) outcome.summaryDiscarded = true;
-    return outcome;
+    return withDiscardedSummary(outcome, discardedSummary);
   }
 
   // --- STEP 4: Unchanged fits or terminal capacity error ---
@@ -1054,8 +1111,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
       fill: initialFill,
       reason: unchangedReason ?? (sawEligibleResults ? "planner_declined" : "no_eligible_results"),
     };
-    if (summaryDiscarded) outcome.summaryDiscarded = true;
-    return outcome;
+    return withDiscardedSummary(outcome, discardedSummary);
   }
 
   return capacityError(
@@ -1063,6 +1119,6 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
     summaryFailureReason
       ? `Summary generation failed (${summaryFailureReason}) and the request exceeds usable context capacity.`
       : "The in-flight turn and request frame exceed usable context capacity.",
-    summaryDiscarded,
+    discardedSummary,
   ).error;
 }

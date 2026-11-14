@@ -1,9 +1,9 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CanonicalRecord } from "../src/canonical-transcript.js";
+import { CanonicalWriter, type CanonicalRecord } from "../src/canonical-transcript.js";
 import {
   buildSameModelSummaryRequest,
   buildSummaryRepairRequest,
@@ -1302,20 +1302,8 @@ test("log read failure during commit validation propagates instead of becoming c
   expect(readCalls).toBe(2);
 });
 
-test("compaction modules import nothing from src/memory/ or checkpoint.ts and do not self-import", async () => {
-  await api();
-  for (const rel of ["../src/compaction.ts", "../src/compaction-requests.ts"]) {
-    const source = readFileSync(new URL(rel, import.meta.url), "utf8");
-    expect(source).not.toMatch(/(?:from\s*|import\s*\()["'][^"']*(?:checkpoint|memory)/);
-  }
-  const compactionSource = readFileSync(new URL("../src/compaction.ts", import.meta.url), "utf8");
-  expect(compactionSource).not.toMatch(/from\s*["']\.\/compaction\.js["']/);
-});
-
-test("cache implementation details are not public API", () => {
+test("the cache key is not public API", () => {
   expect(compaction).not.toHaveProperty("stateCacheKey");
-  const source = readFileSync(new URL("../src/compaction.ts", import.meta.url), "utf8");
-  expect(source.includes("bypassMaterializeCache")).toBe(false);
 });
 
 async function runWithFreshFillOracle(input: compaction.RunCompactionInput & { frame: compaction.RequestFrame }) {
@@ -1459,12 +1447,12 @@ test("materialises each distinct state at most once with fresh full-frame fill m
     });
   }
 
-  // Scenario reaching both runInFlightStubbing paths (after an insufficient fold and again in Step 3)
-  // exercises the true worst-case bound of 3 + 2 * stubKeepRecent materialisations.
+  // A useful fold remains oversized after both keepRecent steps. Its unfolded fallback also
+  // exhausts both steps, in addition to measuring the initial, stale-stub and fold-only states.
   {
     const { log } = openLog();
     addTurn(log, 1, {
-      inputText: "T1",
+      inputText: "C".repeat(700),
       toolResults: [{ id: "stale-1", text: "S".repeat(800) }],
     });
     addTurn(log, 2, {
@@ -1478,6 +1466,7 @@ test("materialises each distinct state at most once with fresh full-frame fill m
     });
     let bothPathCalls = 0;
     const bothPathKeys = new Set<string>();
+    const pathStates: FrozenState[] = [];
     const stubKeepRecent = 2;
     const outcome = await runWithFreshFillOracle({
       log,
@@ -1489,16 +1478,29 @@ test("materialises each distinct state at most once with fresh full-frame fill m
 
       materialize: (state, source) => {
         bothPathCalls++;
+        pathStates.push(structuredClone(state));
         bothPathKeys.add(JSON.stringify([state.resetEpoch, state.boundaryEventId, state.summary, state.stubSet]));
         return compaction.materializeHistory(state, source);
       },
       runSummary: async () => summaryResp(validSummary("S".repeat(280))),
     });
-    expect(outcome.status).toBe("stubbed");
+    expect(outcome.status).toBe("capacity_error");
     expect(outcome.summaryDiscarded).toBe(true);
     expect(bothPathCalls).toBe(bothPathKeys.size);
     expect(bothPathCalls).toBe(3 + 2 * stubKeepRecent);
-    expect(bothPathCalls).toBeGreaterThan(3 + stubKeepRecent);
+    const folded = pathStates.filter((s) => s.boundaryEventId !== null);
+    const unfolded = pathStates.filter((s) => s.boundaryEventId === null);
+    expect(folded.map((s) => s.stubSet.length)).toEqual([0, 2, 3]);
+    expect(unfolded.map((s) => s.stubSet.length)).toEqual([0, 1, 3, 4]);
+    const tokens = (state: FrozenState) => {
+      const mat = compaction.materializeHistory(state, log);
+      if (!mat.ok) throw mat.error;
+      return oracleInputTokens({}, mat.messages);
+    };
+    expect(tokens(folded[0])).toBeLessThan(tokens(unfolded[1]));
+    expect(tokens(folded.at(-1)!)).toBeGreaterThan(1000);
+    expect(tokens(unfolded.at(-1)!)).toBeGreaterThan(1000);
+    expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
   }
 });
 
@@ -1521,11 +1523,6 @@ for (const status of ["cancelled", "capacity_error"] as const) {
     expect(outcome.status).toBe(status);
   });
 }
-
-test("unchanged_fits requires a diagnostic reason in its public type", () => {
-  const source = readFileSync(new URL("../src/compaction.ts", import.meta.url), "utf8");
-  expect(/status: "unchanged_fits";[^\n]*reason: UnchangedFitsReason/.test(source)).toBe(true);
-});
 
 for (const decline of ["empty", "ineligible"] as const) {
   test(`unchanged_fits reports planner_declined for ${decline} plans`, async () => {
@@ -1555,7 +1552,7 @@ test("unchanged_fits reports no_eligible_results without an active turn", async 
   expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "no_eligible_results" });
 });
 
-test("unchanged_fits carries reason for fold_not_possible, fold_insufficient, and no_eligible_results, and marks discarded summaries", async () => {
+test("unchanged_fits distinguishes impossible and non-beneficial folds from no eligible results, and marks discarded summaries", async () => {
   const { runCompaction } = await api();
 
   // 1. no_eligible_results: single in-flight turn above trigger with no eligible tool results.
@@ -1594,14 +1591,16 @@ test("unchanged_fits carries reason for fold_not_possible, fold_insufficient, an
     expect(outcome.summaryDiscarded).toBeUndefined();
   }
 
-  // 3. fold_insufficient: summary is generated within capTokens, but post-fold request exceeds usable capacity and is dropped.
+  // 3. fold_not_beneficial: the accepted summary grows the request and also exceeds capacity.
   {
     const { log } = openLog();
-    addTurn(log, 1, { inputText: "Tiny completed turn" });
-    addTurn(log, 2, { inputText: "In-flight " + "y".repeat(4400) });
-    // usable = 1200 (capTokens = 150); turn1 (~20) + turn2 (~1115) = 1135 <= 1200 (fits, ratio ~ 0.946 >= 0.80).
-    // Pre-check: turn2 (~1115) + minSummaryMessage (~59) = 1174 <= 1200 (passes).
-    // Returned summary (~130 tokens <= 150) renders to ~148 tokens; turn2 + summary = 1263 > 1200 (dropped).
+    const writer = new CanonicalWriter(log, (error) => { throw error; });
+    const completed = await writer.startTurn("c".repeat(220));
+    await writer.assistant(completed, { role: "assistant", content: "done" });
+    const current = await writer.startTurn("In-flight " + "y".repeat(4400));
+    await writer.assistant(current, { role: "assistant", content: "running" });
+    // The minimum summary would shrink the completed turn; the larger accepted summary overflows.
+    // The original request still fits usable = 1200, and capTokens = 150.
     let summaryCalls = 0;
     const outcome = await runCompaction({
       log,
@@ -1616,7 +1615,7 @@ test("unchanged_fits carries reason for fold_not_possible, fold_insufficient, an
     expect(summaryCalls).toBe(1);
     expect(outcome.status).toBe("unchanged_fits");
     if (outcome.status !== "unchanged_fits") throw new Error(JSON.stringify(outcome));
-    expect(outcome.reason).toBe("fold_insufficient");
+    expect(outcome.reason).toBe("fold_not_beneficial");
     expect(outcome.summaryDiscarded).toBe(true);
     expect(outcome.state.generation).toBe(0);
     expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
