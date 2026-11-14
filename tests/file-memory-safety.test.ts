@@ -57,7 +57,92 @@ test("a field that cannot be read is refused, never thrown", async () => {
   expect(reads).toBe(1);
 });
 
+/** Every path the seam is handed, so a test can prove a hostile field never reaches the
+ * filesystem outside the memory directory. */
+function recordingSeam(touched: string[]): typeof fs {
+  return new Proxy(fs, { get(target, key) {
+    const original = Reflect.get(target, key);
+    if (typeof original !== "function") return original;
+    return (...args: unknown[]) => {
+      if (typeof args[0] === "string") touched.push(args[0]);
+      return (original as (...a: unknown[]) => unknown).apply(target, args);
+    };
+  } }) as typeof fs;
+}
+const outsideHome = (home: string, path: string) => { const rel = relative(home, path); return rel.startsWith("..") || isAbsolute(rel); };
+/** A name that reads as a real memory first and as a traversal afterwards. */
+function twoFacedName(first: string, then: string) {
+  let reads = 0;
+  const input = { scope: "global" as const } as Record<string, unknown>;
+  Object.defineProperty(input, "name", { enumerable: true, get() { reads++; return reads === 1 ? first : then; } });
+  return { input, reads: () => reads };
+}
+
 const SECRET_TEXT = "key=AKIAIOSFODNN7EXAMPLE and more";
+test("read snapshots the name, so a getter cannot validate one name and open another", async () => {
+  const home = await homeDir();
+  expect((await make(home).write(entry)).ok).toBe(true);
+  const victim = join(home, "victim.md");
+  await fs.writeFile(victim, "outside the memory directory");
+  const touched: string[] = [];
+  const { input, reads } = twoFacedName(entry.name, "../../victim");
+  const result = await make(home, recordingSeam(touched)).read(input as unknown as { name: string });
+  expect(result).toMatchObject({ ok: true, memory: { name: entry.name, scope: "global" } });
+  expect(reads()).toBe(1);
+  expect(touched.filter((path) => outsideHome(home, path))).toEqual([]);
+  expect(await fs.readFile(victim, "utf8")).toBe("outside the memory directory");
+});
+
+test("remove snapshots the name, so a getter cannot probe one file and unlink another", async () => {
+  const home = await homeDir();
+  expect((await make(home).write(entry)).ok).toBe(true);
+  const victim = join(home, "victim.md");
+  await fs.writeFile(victim, "outside the memory directory");
+  const touched: string[] = [];
+  const { input, reads } = twoFacedName(entry.name, "../../victim");
+  const result = await make(home, recordingSeam(touched)).remove(input as unknown as { name: string });
+  expect(result).toMatchObject({ ok: true });
+  expect(reads()).toBe(1);
+  expect(await fs.readFile(victim, "utf8")).toBe("outside the memory directory");
+  expect(await fs.exists(join(home, ".praana/memory/alpha.md"))).toBe(false);
+  expect(touched.filter((path) => outsideHome(home, path))).toEqual([]);
+});
+
+test("recall snapshots query, name and scope, so a getter cannot validate one query and rank another", async () => {
+  const home = await homeDir();
+  expect((await make(home).write(entry)).ok).toBe(true);
+  const reads: Record<string, number> = {};
+  const input: Record<string, unknown> = {};
+  for (const field of ["name", "scope"]) {
+    Object.defineProperty(input, field, { enumerable: true, get() { reads[field] = (reads[field] ?? 0) + 1; return undefined; } });
+  }
+  let queryReads = 0;
+  Object.defineProperty(input, "query", { enumerable: true, get() { queryReads++; return queryReads === 1 ? "complete" : "zzzz"; } });
+  const result = await make(home).recall(input as never);
+  expect(result).toMatchObject({ ok: true, matches: [{ name: entry.name }] });
+  expect(queryReads).toBe(1);
+  expect(reads).toEqual({ name: 1, scope: 1 });
+});
+
+test("a field that cannot be read is refused by read, remove and recall, never thrown", async () => {
+  const home = await homeDir();
+  const store = make(home);
+  expect((await store.write(entry)).ok).toBe(true);
+  const throwing = (field: string) => Object.defineProperty({ scope: "global", name: entry.name } as Record<string, unknown>, field, { enumerable: true, get() { throw new Error("getter failed"); } });
+  const calls = [
+    ["read", ["name", "scope"], (input: never) => store.read(input)],
+    ["remove", ["name", "scope"], (input: never) => store.remove(input)],
+    ["recall", ["query", "name", "scope"], (input: never) => store.recall(input)],
+  ] as const;
+  for (const [label, fields, call] of calls) {
+    for (const field of fields) {
+      const result = await call(throwing(field) as never);
+      expect([label, field, result]).toEqual([label, field, { ok: false, error: "Memory fields could not be read" }]);
+    }
+  }
+  expect((await store.list({})).entries.map(({ name }) => name)).toEqual([entry.name]);
+});
+
 const clean = "A clean description";
 /** A getter that answers with clean text for the reads the old code made before the
  * write, and with a secret from then on. */

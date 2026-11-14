@@ -69,19 +69,38 @@ const inside = (parent: string, child: string) => { const p = relative(parent, c
 const DUPLICATE_MIN_TOKENS = 3;
 const DUPLICATE_JACCARD = 0.75;
 const WRITE_FIELDS = ["scope", "type", "name", "description", "body"] as const;
+const READ_FIELDS = ["scope", "name"] as const;
+const RECALL_FIELDS = ["query", "name", "scope"] as const;
 const SCANNED_FIELDS = ["name", "description", "body"] as const;
+const FIELD_READ_REFUSAL = "Memory fields could not be read";
 /** The strict detector needs a matching END line, so a truncated or header-only key would
  * otherwise be stored. Any private-key header is refused, including the PGP block form. */
 const PRIVATE_KEY_HEADER = /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/;
 /** Read each allowed field exactly once, before anything is validated, scanned or
  * serialized: a getter or Proxy cannot answer the scan with clean text and the write
  * with a secret when the writer only ever sees this snapshot. */
+function snapshotFields<K extends string>(input: Record<string, unknown>, fields: readonly K[]): Record<K, unknown> {
+  const draft = {} as Record<K, unknown>;
+  for (const field of fields) draft[field] = input[field];
+  return draft;
+}
+
+/** Every operation snapshots its input the same way, so no field is read twice and a
+ * throwing getter becomes a refusal instead of an exception out of the store. */
+/** Every operation snapshots its input the same way, so no field is read twice and a
+ * throwing getter becomes a refusal instead of an exception out of the store. */
+function snapshotInput<K extends string>(input: unknown, fields: readonly K[]): Record<K, unknown> | null {
+  try {
+    // SAFETY: an operation input is a plain record of the named fields; a hostile object
+    // throws on the property read below and is reported as a refusal instead.
+    return snapshotFields(input as Record<string, unknown>, fields);
+  } catch { return null; }
+}
+
 function snapshotWrite(input: Record<string, unknown>): MemoryInput & { scope: MemoryScope } {
-  const draft: Record<string, unknown> = {};
-  for (const field of WRITE_FIELDS) draft[field] = input[field];
   // SAFETY: the snapshot only carries values read from the input; validateMemory and the
   // scope check below narrow name, type, description and body before anything uses them.
-  return draft as unknown as MemoryInput & { scope: MemoryScope };
+  return snapshotFields(input, WRITE_FIELDS) as unknown as MemoryInput & { scope: MemoryScope };
 }
 
 /** Atomic replacement is last-writer-wins. Duplicate and created results are advisory under races.
@@ -278,18 +297,22 @@ export function createFileMemoryStore(options: StoreOptions) {
   }
 
   async function read(input: { scope?: MemoryScope; name: string }): Promise<({ ok: true; memory: Memory & { scope: MemoryScope } } & ScopeWarnings) | ResultError> {
-    if (!validName(input.name)) return { ok: false, error: "Invalid memory name" };
-    const scanned = await visitScopes(input.scope, async (scope) => {
+    const fields = snapshotInput(input, READ_FIELDS);
+    if (!fields) return { ok: false, error: FIELD_READ_REFUSAL };
+    const name = fields.name;
+    const requested = fields.scope as MemoryScope | undefined;
+    if (!validName(name)) return { ok: false, error: "Invalid memory name" };
+    const scanned = await visitScopes(requested, async (scope) => {
       const dir = await directory(scope, false);
       if (!dir) return { scope, memory: null };
-      const { memory, failure } = await readFile(dir, input.name);
+      const { memory, failure } = await readFile(dir, name);
       return { scope, memory, failure };
     });
     const warnings = scopeWarnings(scanned.skippedScopes ?? []);
     // Every scope failed, so no explicit scope could succeed either.
     if (!scanned.ok) return scanned;
     // Project takes precedence, so only a failed project scan can hide the answer.
-    const refusal = refuseUnlessExplicit(!input.scope, scanned.skippedScopes, "answer", (reasons) => `Cannot resolve "${input.name}" safely because a scope scan failed; pass an explicit scope to read: ${reasons}`);
+    const refusal = refuseUnlessExplicit(!requested, scanned.skippedScopes, "answer", (reasons) => `Cannot resolve "${name}" safely because a scope scan failed; pass an explicit scope to read: ${reasons}`);
     if (refusal) return refusal;
     // Walk the scopes in precedence order: the first scope holding the name answers, so an
     // unreadable lower-precedence copy cannot hide a higher-precedence hit. A per-file
@@ -306,16 +329,20 @@ export function createFileMemoryStore(options: StoreOptions) {
 
   async function remove(input: { scope?: MemoryScope; name: string }): Promise<({ ok: true; skipped?: SkippedScope[] } & ScopeWarnings) | ResultError> {
     if (options.incognito) return incognitoRefusal("removal");
-    if (!validName(input.name)) return { ok: false, error: "Invalid memory name" };
+    const fields = snapshotInput(input, READ_FIELDS);
+    if (!fields) return { ok: false, error: FIELD_READ_REFUSAL };
+    const name = fields.name;
+    const requested = fields.scope as MemoryScope | undefined;
+    if (!validName(name)) return { ok: false, error: "Invalid memory name" };
     try {
       const skipped: SkippedScope[] = [];
       const skip = (scope: MemoryScope) => skipped.push({ scope, reason: "Only regular, non-symlink memory files can be removed" });
-      const scanned = await visitScopes(input.scope, async (scope) => {
+      const scanned = await visitScopes(requested, async (scope) => {
         const dir = await directory(scope, false);
         if (!dir) return null;
         let handle: nodeFs.FileHandle | undefined;
         try {
-          const path = join(dir, `${input.name}.md`);
+          const path = join(dir, `${name}.md`);
           const stat = await fs.lstat(path);
           if (!stat.isFile() || stat.isSymbolicLink()) { skip(scope); return null; }
           handle = await fs.open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
@@ -331,13 +358,13 @@ export function createFileMemoryStore(options: StoreOptions) {
       if (!scanned.ok) return scanned;
       const warnings = scopeWarnings(scanned.skippedScopes ?? []);
       // A failed scan cannot rule out a same-named memory in that scope, so an unscoped delete is unsafe.
-      const refusal = refuseUnlessExplicit(!input.scope, scanned.skippedScopes, "removal", (reasons) => `Cannot rule out another "${input.name}" memory because a scope scan failed; pass an explicit scope to delete: ${reasons}`);
+      const refusal = refuseUnlessExplicit(!requested, scanned.skippedScopes, "removal", (reasons) => `Cannot rule out another "${name}" memory because a scope scan failed; pass an explicit scope to delete: ${reasons}`);
       if (refusal) return refusal;
       const found = scanned.values.filter((match) => match !== null);
       if (found.length > 1) return { ok: false, error: "Memory exists in both project and global scopes; specify scope", ...warnings };
       const match = found[0];
       if (!match) return { ok: false, error: skipped.length ? `Only regular, non-symlink memory files can be removed; skipped ${skipped.map(({ scope }) => scope).join(", ")} scopes` : "Memory not found", ...warnings };
-      await fs.unlink(join(match.dir, `${input.name}.md`));
+      await fs.unlink(join(match.dir, `${name}.md`));
       await refreshIndexFile(match.scope);
       return { ok: true, ...warnings, ...(skipped.length ? { skipped } : {}) };
     } catch (error) { return errorResult(error); }
@@ -367,12 +394,17 @@ export function createFileMemoryStore(options: StoreOptions) {
     return { ok: true, ...scopeWarnings(data.skippedScopes ?? []), ...renderMemoryIndex({ entries: data.entries }) };
   }
   async function recall(input: { query?: string; name?: string; scope?: MemoryScope }): Promise<({ ok: true; memory: ScopedMemory } & ScopeWarnings) | ({ ok: true; matches: RecallMatch[] } & ScopeWarnings) | ResultError> {
-    if ((input.query !== undefined) === (input.name !== undefined)) return { ok: false, error: "Provide exactly one of query or name" };
-    if (input.name !== undefined) return read({ name: input.name, scope: input.scope });
+    const fields = snapshotInput(input, RECALL_FIELDS);
+    if (!fields) return { ok: false, error: FIELD_READ_REFUSAL };
+    const query = fields.query;
+    const name = fields.name as string | undefined;
+    const scope = fields.scope as MemoryScope | undefined;
+    if ((query !== undefined) === (name !== undefined)) return { ok: false, error: "Provide exactly one of query or name" };
+    if (name !== undefined) return read({ name, scope });
     // A query always searches both scopes, so a scope here would be silently ignored.
-    if (input.scope !== undefined) return { ok: false, error: "scope applies only to a name lookup" };
-    if (typeof input.query !== "string") return { ok: false, error: "Query must be a string" };
-    const invalid = validateQueryPolicy(input.query);
+    if (scope !== undefined) return { ok: false, error: "scope applies only to a name lookup" };
+    if (typeof query !== "string") return { ok: false, error: "Query must be a string" };
+    const invalid = validateQueryPolicy(query);
     if (invalid) return { ok: false, error: invalid };
     try {
       const memories: ScopedMemory[] = [];
@@ -381,7 +413,7 @@ export function createFileMemoryStore(options: StoreOptions) {
       for (const { scope, memories: entries } of scanned.values) {
         for (const memory of entries) memories.push({ ...memory, scope });
       }
-      return { ok: true, matches: rankMemories(memories, input.query), ...scopeWarnings(scanned.skippedScopes ?? []) };
+      return { ok: true, matches: rankMemories(memories, query), ...scopeWarnings(scanned.skippedScopes ?? []) };
     } catch (error) { return errorResult(error); }
   }
   /** Derived convenience copy only. A failed refresh is observable here but never
