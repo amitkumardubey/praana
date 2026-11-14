@@ -246,7 +246,9 @@ export function createFileMemoryStore(options: StoreOptions) {
       const handle = await fs.open(temp, "wx", 0o600);
       createdTemp = true;
       try { await handle.writeFile(text, "utf8"); await handle.sync(); }
-      finally { await handle.close(); }
+      // A close that fails after a complete write must not discard the replacement: the
+      // rename below still commits, and the original error (if any) still wins.
+      finally { try { await handle.close(); } catch { /* The write result stands. */ } }
       await fs.rename(temp, target);
       createdTemp = false;
       try { const handle = await fs.open(dir, "r"); try { await handle.sync(); } finally { await handle.close(); } } catch { /* Directory fsync is best-effort. */ }
@@ -352,7 +354,7 @@ export function createFileMemoryStore(options: StoreOptions) {
           if ((error as NodeJS.ErrnoException).code === "ELOOP") skip(scope);
           else if (!missing(error)) throw error;
         }
-        finally { if (handle) await handle.close(); }
+        finally { if (handle) { try { await handle.close(); } catch { /* The probe result stands. */ } } }
         return null;
       });
       if (!scanned.ok) return scanned;

@@ -398,6 +398,36 @@ describe("file memory store", () => {
     expect(stillListed.entries.map((entry) => entry.name)).toEqual(["tea"]);
     expect(stillListed.skipped).toBe(1);
   });
+  /** A seam whose handle close fails for every path `match` accepts, so a probe or a temp
+   * file can be targeted without knowing its name. */
+  function failingClose(match: (path: string) => boolean): typeof fs {
+    return new Proxy(fs, { get(base, key) {
+      if (key !== "open") return Reflect.get(base, key);
+      return async (...args: Parameters<typeof fs.open>) => {
+        const handle = await fs.open(...args);
+        if (!match(String(args[0]))) return handle;
+        return new Proxy(handle, { get(h, method) {
+          if (method === "close") return async () => { await h.close(); throw Object.assign(new Error("EIO: close failed"), { code: "EIO" }); };
+          const value = Reflect.get(h, method);
+          return typeof value === "function" ? value.bind(h) : value;
+        } });
+      };
+    } });
+  }
+  test("a failing close never discards a removal probe or a committed write", async () => {
+    const { home, store, dir } = await setup();
+    expect((await store.write(input)).ok).toBe(true);
+    const options = { home, cwd: home, findRoot: (cwd: string) => cwd, now: () => new Date("2026-05-01T00:00:00Z") };
+    // The probe's own handle closing badly must not turn a removable memory into a failed scope.
+    const probing = createFileMemoryStore({ ...options, fs: failingClose((path) => path === join(dir, "coffee.md")) });
+    expect(await probing.remove({ name: "coffee", scope: "global" })).toEqual({ ok: true });
+    expect(await fs.exists(join(dir, "coffee.md"))).toBe(false);
+    // The replacement temp file's handle closing badly must not discard a written memory.
+    const writing = createFileMemoryStore({ ...options, fs: failingClose((path) => path.includes(".tea.md.tmp-")) });
+    expect(await writing.write({ ...input, name: "tea", description: "Tea is also welcome" })).toEqual({ ok: true, name: "tea", scope: "global", created: true });
+    expect((await store.read({ name: "tea", scope: "global" })).ok).toBe(true);
+    expect((await fs.readdir(dir)).filter((name) => name.includes(".tmp-"))).toEqual([]);
+  });
   test("ignores malformed, oversized, symlink and temp files", async () => {
     const { store, dir, home } = await setup();
     await store.write(input);
