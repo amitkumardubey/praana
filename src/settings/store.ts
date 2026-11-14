@@ -39,6 +39,11 @@ import {
 } from "../credential-lock.js";
 import { getAppLogger } from "../logger.js";
 import {
+  parseReasoningEffort,
+  REASONING_EFFORT_LEVELS,
+  type ReasoningEffortLevel,
+} from "../reasoning-levels.js";
+import {
   parseConfigOverrides,
   type AcceptedOverrides,
   type RejectedOverride,
@@ -899,8 +904,8 @@ export function replaceSettingsDocument(
   });
 }
 
-export const REASONING_LEVELS = ["off", "none", "minimal", "low", "medium", "high", "xhigh"] as const;
-export type ReasoningLevel = (typeof REASONING_LEVELS)[number];
+export const REASONING_LEVELS = REASONING_EFFORT_LEVELS;
+export type ReasoningLevel = ReasoningEffortLevel;
 
 export interface DefaultModel {
   provider: string;
@@ -938,11 +943,9 @@ export function parseDefaultModel(raw: unknown): {
 
   let reasoning: ReasoningLevel | undefined;
   if (raw.reasoning !== undefined) {
-    if (
-      typeof raw.reasoning === "string" &&
-      (REASONING_LEVELS as readonly string[]).includes(raw.reasoning)
-    ) {
-      reasoning = raw.reasoning as ReasoningLevel;
+    const parsedReasoning = typeof raw.reasoning === "string" ? parseReasoningEffort(raw.reasoning) : null;
+    if (parsedReasoning !== null) {
+      reasoning = parsedReasoning;
     } else {
       errors.push({
         key: "default_model.reasoning",

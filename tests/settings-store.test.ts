@@ -1788,4 +1788,47 @@ console.log(JSON.stringify(res));
       rmSync(settingsPath, { force: true });
     }
   });
+
+  test("default_model.reasoning shares REASONING_EFFORT_LEVELS and parseReasoningEffort with llm.ts without diverging", async () => {
+    const { REASONING_LEVELS, parseDefaultModel, updateSettingsDocument, loadSettingsFile } =
+      await storeApi();
+    const { REASONING_EFFORT_LEVELS, parseReasoningEffort } = await import("../src/llm.js");
+
+    // The two lists cannot diverge: same canonical entries.
+    expect([...REASONING_LEVELS]).toEqual([...REASONING_EFFORT_LEVELS]);
+    expect(REASONING_LEVELS).toBe(REASONING_EFFORT_LEVELS);
+
+    // Every canonical level and alias ("none", whitespace/case variants) matches llm.ts normalization and round-trips.
+    const acceptedInputs = [...REASONING_EFFORT_LEVELS, "none", "NONE", " high "];
+    for (const token of acceptedInputs) {
+      const expected = parseReasoningEffort(token);
+      expect(expected).not.toBeNull();
+      const parsed = parseDefaultModel({ provider: "openai", model: "gpt-4o", reasoning: token });
+      expect(parsed.errors).toEqual([]);
+      expect(parsed.value).toEqual({
+        provider: "openai",
+        model: "gpt-4o",
+        reasoning: expected!,
+      });
+
+      const saved = updateSettingsDocument({
+        default_model: parsed.value,
+      });
+      expect(saved.ok).toBe(true);
+      const loaded = loadSettingsFile();
+      expect(loaded.invalidKeys).toEqual([]);
+      expect(loaded.defaultModel).toEqual({
+        provider: "openai",
+        model: "gpt-4o",
+        reasoning: expected!,
+      });
+    }
+
+    // Unknown or non-string reasoning levels are rejected.
+    for (const badToken of ["bogus", "", "   ", 123, null]) {
+      const badParsed = parseDefaultModel({ provider: "openai", model: "gpt-4o", reasoning: badToken });
+      expect(badParsed.value).toBeNull();
+      expect(badParsed.errors.map((e) => e.key)).toContain("default_model.reasoning");
+    }
+  });
 });
