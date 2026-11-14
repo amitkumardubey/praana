@@ -1,6 +1,6 @@
 {
   "name": "praana",
-  "version": "0.20.0",
+  "version": "0.21.0",
   "description": "Terminal coding agent with adaptive context and cross-session memory",
   "license": "MIT",
   "repository": {
@@ -83,7 +83,7 @@
     "@opentui/core-linux-x64-musl": "0.8.0",
     "@opentui/core-win32-arm64": "0.8.0",
     "@opentui/core-win32-x64": "0.8.0",
-    "@praana/natives": "0.20.0"
+    "@praana/natives": "0.21.0"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
