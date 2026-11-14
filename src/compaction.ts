@@ -756,7 +756,6 @@ async function runCompactionChecked(input: RunCompactionInput): Promise<Compacti
       if (!lastFoldedTurn || !newBoundaryEventId) {
         throw new Error("Expected at least one folded turn with a boundary event id.");
       }
-      const cutText = cutDescription(countUserMessages(foldedTurns), retainedTurns[0]);
 
       // Drop any stubs pointing into foldedTurns; retain only stubs in retainedTurns.
       const retainedResultIds = new Set(collectToolResults(retainedTurns).map((c) => c.eventId));
@@ -768,21 +767,32 @@ async function runCompactionChecked(input: RunCompactionInput): Promise<Compacti
       // Build and run the summary request (same-model if it fits, else batch fallback).
       const liveMessages = input.liveRequest.messages.length > 0 ? input.liveRequest.messages : initialMat.messages;
       const liveForSummary: StreamRequest = { ...input.liveRequest, messages: liveMessages };
+      // The retained turns end the live history, so every other user message in it (a snapshot,
+      // the previous summary, folded turns) comes before the first retained one.
+      const userMessagesBeforeTail = Math.max(0,
+        liveMessages.filter((message) => message.role === "user").length - countUserMessages(retainedTurns));
+      const cutText = cutDescription(userMessagesBeforeTail, retainedTurns[0]);
       const instructionOptions: SummaryInstructionOptions = {
         cutDescription: cutText,
         capTokens,
       };
       if (state.summary !== null) instructionOptions.previousSummary = state.summary;
       if (input.stateObjects !== undefined) instructionOptions.stateObjects = input.stateObjects;
-      const first = liveMessages[0];
-      const summaryInPrefix = state.summary !== null && first?.role === "user" &&
-        first.content === renderSummaryMessage(state.summary).content;
+      // The previous summary can follow a snapshot or other prefix messages; look for it anywhere.
+      const renderedPrevious = state.summary === null ? undefined : renderSummaryMessage(state.summary).content;
+      const summaryInPrefix = renderedPrevious !== undefined &&
+        liveMessages.some((message) => message.role === "user" && message.content === renderedPrevious);
       const instruction = buildSummaryInstruction(summaryInPrefix
         ? { ...instructionOptions, previousSummary: undefined, previousSummaryInMessages: true }
         : instructionOptions);
       let instructionSha256 = createHash("sha256").update(instruction).digest("hex");
       const sameModelReq = buildSameModelSummaryRequest(liveForSummary, instruction);
-      const sameModelFill = requestFill(frame, sameModelReq.messages, input.contextWindowTokens, opts);
+      // A live request may already embed the snapshot as a message; do not count it twice.
+      const summaryFrame = frame.snapshot !== undefined && input.liveRequest.messages.length > 0 &&
+        liveMessages.some((message) => message.role === "user" && message.content === frame.snapshot)
+        ? { ...frame, snapshot: undefined }
+        : frame;
+      const sameModelFill = requestFill(summaryFrame, sameModelReq.messages, input.contextWindowTokens, opts);
       if (!sameModelFill.ok) return sameModelFill.error;
 
       let acceptedSummary: string | undefined;
@@ -811,7 +821,7 @@ async function runCompactionChecked(input: RunCompactionInput): Promise<Compacti
             if (repairBuilt.status !== "repair") {
               summaryFailureReason = check.reason;
             } else {
-              const repairFrameFill = requestFill(frame, repairBuilt.request.messages, input.contextWindowTokens, opts);
+              const repairFrameFill = requestFill(summaryFrame, repairBuilt.request.messages, input.contextWindowTokens, opts);
               if (!repairFrameFill.ok) return repairFrameFill.error;
               if (!repairFrameFill.fill.fits) {
                 summaryFailureReason = "summary repair request exceeds capacity";

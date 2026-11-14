@@ -1813,7 +1813,7 @@ test("seeded 500-scenario randomized test maintains all ladder, boundary, capaci
     const completed = activeTurns.slice(0, -1);
     const foldedSpec = completed.slice(0, foldedCount);
     const prefix = JSON.stringify(Array.from(activeTurns[foldedCount].userText.split(/\r\n|\r|\n/, 1)[0] ?? "").slice(0, 80).join(""));
-    const cutText = `the first ${foldedCount} user messages are folded; the retained tail starts at user message ${foldedCount + 1} (counting user messages after any leading previous-summary message), which begins ${prefix}; summarize only what comes before it`;
+    const cutText = `the retained tail starts at user message ${foldedCount + (prevState.summary !== null ? 1 : 0) + 1} (counting every user message above), which begins ${prefix}; summarize only what comes before it`;
     const liveReq: StreamRequest = {
       model: "claude-sonnet-4-20250514",
       provider: "anthropic",

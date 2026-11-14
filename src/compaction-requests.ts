@@ -120,18 +120,20 @@ export function countUserMessages(turns: readonly CompactionTurn[]): number {
 }
 
 /**
- * Describes the cut only with what the request shows: the number K of folded user messages
- * and the first line of the first retained user message (at most 80 code points, so a
- * surrogate pair is never split). The ordinal K + 1 disambiguates repeated prefixes.
+ * Describes the cut only with what the request shows. Batch requests hold only folded turns
+ * (`count` is their user messages). Same-model requests carry the whole live history, so
+ * `count` is the number of user messages that precede the retained tail in that request
+ * (snapshot, previous summary and folded turns alike); the cut names the ordinal of the
+ * first retained user message and quotes its first line (at most 80 code points, so a
+ * surrogate pair is never split). The ordinal disambiguates repeated prefixes.
  */
-export function cutDescription(foldedUserMessages: number, firstRetained?: CompactionTurn): string {
-  if (!firstRetained) return `${foldedUserMessages} folded user messages; summarize every message below`;
+export function cutDescription(count: number, firstRetained?: CompactionTurn): string {
+  if (!firstRetained) return `${count} folded user messages; summarize every message above`;
   const input = firstRetained.records.find(record => record.kind === "user_input");
   const firstLine = input?.kind === "user_input" ? (input.message.text.split(/\r\n|\r|\n/, 1)[0] ?? "") : "";
   const prefix = Array.from(firstLine).slice(0, 80).join("");
-  const start = `user message ${foldedUserMessages + 1} (counting user messages after any leading previous-summary message)`;
   const begins = prefix.trim() ? `, which begins ${JSON.stringify(prefix)}` : "";
-  return `the first ${foldedUserMessages} user messages are folded; the retained tail starts at ${start}${begins}; summarize only what comes before it`;
+  return `the retained tail starts at user message ${count + 1} (counting every user message above)${begins}; summarize only what comes before it`;
 }
 
 function summaryBatch(turns: readonly CompactionTurn[]): SummaryBatch {

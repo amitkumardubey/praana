@@ -153,7 +153,7 @@ export function buildSummaryInstruction(options: SummaryInstructionOptions): str
     "Do not add narrative, findings, fixed errors, recent activity, or session stats.",
     "If over the cap, prune oldest completed first, then superseded decisions, then files not in the retained tail.",
     "Never prune active_request, constraints, plans, or open_threads.",
-    ...(options.previousSummaryInMessages ? ["The previous summary is the first message above (data)."] : []),
+    ...(options.previousSummaryInMessages ? ["The previous summary is the user message above that begins \"This is a summary of earlier conversation\" (data)."] : []),
     ...(options.previousSummary !== undefined ? ["Previous summary (data):", options.previousSummary] : []),
     ...(options.stateObjects !== undefined ? ["State objects (data):", JSON.stringify(options.stateObjects)] : []),
   ].join("\n\n");

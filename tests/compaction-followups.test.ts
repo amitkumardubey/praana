@@ -42,7 +42,7 @@ test("cut quotes the first line of the retained message and batch cut counts fol
   const plan = planBatchSummaries(live, [turns[0]], { capTokens: 100, contextWindowTokens: 12000, effectiveMaxTokens: 200 });
   expect(plan.status).toBe("planned");
   if (plan.status !== "planned") throw new Error(plan.status);
-  expect(plan.plan.batches[0].cutDescription).toBe("1 folded user messages; summarize every message below");
+  expect(plan.plan.batches[0].cutDescription).toBe("1 folded user messages; summarize every message above");
 });
 test("cut counts wrap-ups as user messages and quotes whole code points of a non-empty first line", async () => {
   const { log, writer } = fixture();
@@ -56,11 +56,11 @@ test("cut counts wrap-ups as user messages and quotes whole code points of a non
   expect(folded).toBe(turns[0].messages.filter(message => message.role === "user").length);
   expect(folded).toBe(2);
   const cut = cutDescription(folded, turns[1]);
-  expect(cut).toContain("the first 2 user messages are folded; the retained tail starts at user message 3");
+  expect(cut).toContain("the retained tail starts at user message 3 (counting every user message above)");
   expect(cut).toContain(`begins ${JSON.stringify("x".repeat(79) + "\u{1F600}")}`);
   expect(cut).not.toContain("\\ud83d");
   expect(planBatchSummaries(live, [turns[0]], { capTokens: 100, contextWindowTokens: 12000, effectiveMaxTokens: 200 }))
-    .toMatchObject({ status: "planned", plan: { batches: [{ cutDescription: "2 folded user messages; summarize every message below" }] } });
+    .toMatchObject({ status: "planned", plan: { batches: [{ cutDescription: "2 folded user messages; summarize every message above" }] } });
 });
 test("cut omits the quote when the retained message starts with a blank line", async () => {
   const { log, writer } = fixture();
@@ -152,7 +152,7 @@ for (const batch of [false, true]) test(`previous summary is sent once with batc
   else {
     expect(request.messages[0]).toEqual(renderSummaryMessage(previous));
     expect(last.content).not.toContain(previous);
-    expect(last.content).toContain("previous summary is the first message above");
+    expect(last.content).toContain('previous summary is the user message above that begins "This is a summary of earlier conversation"');
     expect(JSON.stringify(request.messages)).not.toContain("no retained tail");
   }
 });
@@ -357,10 +357,45 @@ for (const length of [80, 200]) for (const previous of [false, true]) {
     expect(request).toBeDefined();
     const instruction = String((request!.messages.at(-1) as { content: string }).content);
     const quote = JSON.stringify(text.slice(0, 80));
-    expect(instruction).toContain("the first 3 user messages are folded; the retained tail starts at user message 4");
+    expect(instruction).toContain(`the retained tail starts at user message ${previous ? 5 : 4} (counting every user message above)`);
     expect(instruction).toContain(`begins ${quote}`);
     expect(request!.messages.slice(0, -1).filter(message => message.role === "user" && typeof message.content === "string" && message.content.startsWith(text.slice(0, 80)))).toHaveLength(1);
     expect(request!.messages.slice(0, -1).filter(message => message.role === "user")).toHaveLength(previous ? 5 : 4);
     expect(instruction).not.toContain("canonical event");
   });
 }
+
+test("a live request with a leading snapshot keeps the summary single, the ordinal exact and the snapshot counted once", async () => {
+  const { log, writer } = fixture();
+  await seed(log, writer);
+  for (const label of ["one", "two", "three"]) {
+    const turn = await writer.startTurn(`folded ${label}`);
+    await writer.assistant(turn, { role: "assistant", content: "x".repeat(800) });
+  }
+  await writer.startTurn("retained input");
+  const restored = restoreFrozenStateFromLog(log);
+  if (!restored.ok) throw restored.error;
+  const materialized = compaction.materializeHistory(restored.state, log.readAll({ includeInternal: true }));
+  if (!materialized.ok) throw materialized.error;
+  const snapshot = "SNAPSHOT " + "s ".repeat(12000);
+  const liveRequest: StreamRequest = { ...live, messages: [{ role: "user", content: snapshot }, ...materialized.messages] };
+  let request: StreamRequest | undefined;
+  const run = (frame?: { snapshot: string }) => compaction.runCompaction({ log, liveRequest, contextWindowTokens: 12000, options,
+    ...(frame ? { frame } : {}),
+    runSummary: async req => { request = req; return response(); },
+  });
+  await run({ snapshot });
+  expect(request).toBeDefined();
+  const messages = request!.messages;
+  const instruction = String((messages.at(-1) as { content: string }).content);
+  const previous = restored.state.summary!;
+  expect(messages.filter(m => typeof m.content === "string" && m.content.includes(previous)).length).toBe(1);
+  expect(instruction).toContain('previous summary is the user message above that begins "This is a summary of earlier conversation"');
+  // snapshot, previous summary and three folded inputs come before the retained input.
+  expect(instruction).toContain('the retained tail starts at user message 6 (counting every user message above), which begins "retained input"');
+  const users = messages.slice(0, -1).filter(m => m.role === "user");
+  expect(String(users[5]?.content)).toBe("retained input");
+  // The embedded snapshot is counted once: counted twice, this request would not fit and
+  // the fold would fall back to batch summaries without the snapshot message.
+  expect(messages[0]).toEqual({ role: "user", content: snapshot });
+});
