@@ -3,7 +3,7 @@ import { mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, existsSync
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { APP_HOME_DIR } from "../src/app-identity.js";
-import { createSettingsFs } from "../src/settings/store.js";
+import { createSettingsFs, updateSettingsDocument } from "../src/settings/store.js";
 import {
   DEFAULT_USER_SETTINGS,
   getUserSettingsPath,
@@ -381,6 +381,67 @@ describe("user-settings", () => {
       expect(raced.warning).toBe(direct.warning);
       expect(raced.warning).not.toContain("Could not create settings file");
       expect(raced.warning).not.toContain("it already exists");
+    }
+  });
+
+  it("updateUserSettings and saveUserSettings append a /settings reset hint on corrupt files, keep the store generic, and omit the hint on non-corrupt failures", () => {
+    const settingsPath = getUserSettingsPath();
+    const hint = "run /settings reset to back it up and restore defaults";
+
+    const corruptCases: Array<{ name: string; bytes: string | Buffer }> = [
+      { name: "invalid JSON", bytes: "{not-json" },
+      { name: "non-object root", bytes: "[1, 2, 3]" },
+      { name: "invalid UTF-8", bytes: Buffer.from([0x7b, 0xff, 0xfe, 0x7d]) },
+    ];
+
+    for (const { bytes } of corruptCases) {
+      writeFileSync(settingsPath, bytes);
+
+      const storeRes = updateSettingsDocument({ debug: true });
+      expect(storeRes.ok).toBe(false);
+      if (!storeRes.ok) {
+        expect(storeRes.state).toBe("corrupt");
+        expect(storeRes.error).not.toContain(hint);
+      }
+
+      const updateRes = updateUserSettings({ debug: true });
+      expect(updateRes.ok).toBe(false);
+      if (!updateRes.ok) {
+        expect(updateRes.error).toContain(hint);
+      }
+
+      const saveRes = saveUserSettings({ ...DEFAULT_USER_SETTINGS, debug: true });
+      expect(saveRes.ok).toBe(false);
+      if (!saveRes.ok) {
+        expect(saveRes.error).toContain(hint);
+      }
+    }
+
+    // Non-corrupt failure 1: invalid value passed to updateUserSettings
+    writeFileSync(settingsPath, JSON.stringify(DEFAULT_USER_SETTINGS), "utf-8");
+    const badValueRes = updateUserSettings({ theme: "   " });
+    expect(badValueRes.ok).toBe(false);
+    if (!badValueRes.ok) {
+      expect(badValueRes.error).not.toContain(hint);
+    }
+
+    // Non-corrupt failure 2: unreadable settings path (directory)
+    rmSync(settingsPath, { force: true });
+    mkdirSync(settingsPath);
+    try {
+      const unreadableUpdate = updateUserSettings({ debug: true });
+      expect(unreadableUpdate.ok).toBe(false);
+      if (!unreadableUpdate.ok) {
+        expect(unreadableUpdate.error).not.toContain(hint);
+      }
+
+      const unreadableSave = saveUserSettings({ ...DEFAULT_USER_SETTINGS, debug: true });
+      expect(unreadableSave.ok).toBe(false);
+      if (!unreadableSave.ok) {
+        expect(unreadableSave.error).not.toContain(hint);
+      }
+    } finally {
+      rmSync(settingsPath, { recursive: true, force: true });
     }
   });
 });

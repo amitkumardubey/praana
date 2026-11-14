@@ -132,6 +132,16 @@ export function loadUserSettings(options?: SettingsStoreOptions): LoadUserSettin
   return { settings };
 }
 
+function formatSaveFailure(updated: { ok: false; error: string; state?: string }): { ok: false; error: string } {
+  if (updated.state === "corrupt") {
+    return {
+      ok: false,
+      error: `${updated.error}; run /settings reset to back it up and restore defaults`,
+    };
+  }
+  return { ok: false, error: updated.error };
+}
+
 /**
  * Replace only the seven legacy fields in the document on disk; every other key
  * (`default_model`, `config_overrides`, unknown keys) is preserved. Never
@@ -145,7 +155,7 @@ export function saveUserSettings(settings: UserSettings): { ok: true } | { ok: f
   const updated = updateSettingsDocument(patch, {
     baseDefaultsIfMissing: { ...DEFAULT_USER_SETTINGS },
   });
-  if (!updated.ok) return updated;
+  if (!updated.ok) return formatSaveFailure(updated);
   return { ok: true };
 }
 
@@ -171,7 +181,7 @@ export function updateUserSettings(
   const updated = updateSettingsDocument(sparsePatch, {
     baseDefaultsIfMissing: { ...DEFAULT_USER_SETTINGS },
   });
-  if (!updated.ok) return updated;
+  if (!updated.ok) return formatSaveFailure(updated);
   const { settings } = normalizeUserSettings(updated.doc);
   return { ok: true, settings };
 }
