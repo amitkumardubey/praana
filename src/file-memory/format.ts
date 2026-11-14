@@ -35,18 +35,23 @@ export function validateQueryPolicy(query: string): string | null {
   return searchTokens(query).length ? null : "Query is empty or contains only stop-words";
 }
 
+const DESCRIPTION_POLICY_ERROR = "Description must be one line and at most 300 characters";
 export function validateMemoryPolicy(input: MemoryInput): string | null {
-  if (!input.description.trim() || Array.from(input.description).length > 300 || /[\r\n]/.test(input.description)) return "Description must be one line and at most 300 characters";
+  if (!input.description.trim() || Array.from(input.description).length > 300 || /[\r\n]/.test(input.description)) return DESCRIPTION_POLICY_ERROR;
   if ((input.type === "feedback" || input.type === "project") && (!/^\*\*Why:\*\*[ \t]*\S/m.test(input.body) || !/^\*\*How to apply:\*\*[ \t]*\S/m.test(input.body))) return "Add **Why:** and **How to apply:** lines";
   return null;
 }
 
 export function validateMemory(input: MemoryInput): string | null {
-  if (!validName(input.name)) return "Invalid memory name";
-  if (!types.has(input.type)) return "Invalid memory type";
+  // The cheap caps come before the name rule: the store runs this ahead of any scan, so an
+  // unbounded description must be refused by its length, not walked by a pattern first.
   if (typeof input.description !== "string" || typeof input.body !== "string") return "Description and body must be strings";
+  const description = validateMemoryPolicy(input);
+  if (description === DESCRIPTION_POLICY_ERROR) return description;
   if (Buffer.byteLength(input.body, "utf8") > 2048) return "Body exceeds 2048 bytes; split or tighten it";
-  return validateMemoryPolicy(input);
+  if (!types.has(input.type)) return "Invalid memory type";
+  if (!validName(input.name)) return "Invalid memory name";
+  return description;
 }
 
 export function serializeMemory(memory: Memory): string {

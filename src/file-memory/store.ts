@@ -84,8 +84,10 @@ const SCANNED_FIELDS = ["name", "description", "body"] as const;
 const FIELD_READ_REFUSAL = "Memory fields could not be read";
 /** The strict detector needs a matching END line, so a truncated or header-only key would
  * otherwise be stored. Any private-key header is refused, whatever its case, dash count or
- * inner spacing, including the PGP, OpenSSH, SSH2 and secret-key block forms. */
-const PRIVATE_KEY_HEADER = /-{4,5}\s*BEGIN\s+[A-Z0-9 ]*(?:PRIVATE\s+KEY(?:\s+BLOCK)?|SECRET\s+KEY\s+BLOCK)\s*-{4,5}/i;
+ * inner spacing, including the PGP, OpenSSH, SSH2 and secret-key block forms. The type words
+ * are matched by consecutive non-overlapping groups, so the scan stays linear on a long run
+ * of whitespace: the previous `\s*` + `[A-Z0-9 ]*` pair backtracked quadratically. */
+export const PRIVATE_KEY_HEADER = /-{4,5}[ \t]*BEGIN(?:[ \t]+[A-Z0-9]+)*[ \t]+(?:PRIVATE[ \t]+KEY(?:[ \t]+BLOCK)?|SECRET[ \t]+KEY[ \t]+BLOCK)[ \t]*-{4,5}/i;
 /** Read each allowed field exactly once, before anything is validated, scanned or
  * serialized: a getter or Proxy cannot answer the scan with clean text and the write
  * with a secret when the writer only ever sees this snapshot. */
@@ -288,11 +290,13 @@ export function createFileMemoryStore(options: StoreOptions) {
       if (!input || typeof input !== "object" || Reflect.ownKeys(input).some((key) => !allowed.has(String(key)))) return { ok: false, error: "Unknown write input key; allowed keys: scope, type, name, description, body" };
       let draft: MemoryInput & { scope: MemoryScope };
       try { draft = snapshotWrite(input); } catch { return { ok: false, error: "Memory fields could not be read" }; }
-      const secret = secretRefusal(draft);
-      if (secret) return { ok: false, error: secret };
+      // The cheap types and length caps run first, so an unbounded field is refused before
+      // any scan can walk it.
       const invalid = validateMemory(draft);
       if (invalid) return { ok: false, error: invalid };
       if (!scopes.includes(draft.scope)) return { ok: false, error: "Invalid scope" };
+      const secret = secretRefusal(draft);
+      if (secret) return { ok: false, error: secret };
       const existingDir = await directory(draft.scope, false);
       let filenames: string[] = [];
       if (existingDir) {

@@ -219,8 +219,10 @@ test("a private key header is refused in any case, dash count or spacing, even t
     const result = await store.write({ ...entry, name: `key-${label}`, ...extra });
     expect([label, result.ok]).toEqual([label, false]);
     if (result.ok) continue;
-    expect(result.error).toContain(field);
-    expect(result.error).toContain("Remove the secret-shaped text");
+    // The cheap name rule runs before the scan now, so a header in the name is refused by
+    // validation; the description and body cases still reach the header check.
+    expect([label, result.error.includes(field)]).toEqual([label, true]);
+    expect(result.error).toContain(field === "name" ? "Invalid memory name" : "Remove the secret-shaped text");
     expect(result.error).not.toContain("MIIE");
   }
   expect(await storedText(home)).not.toContain("PRIVATE KEY");
@@ -230,8 +232,8 @@ test("a private key header is refused in any case, dash count or spacing, even t
 
 test("the header check and the strict scan refuse through one message listing every field", async () => {
   const home = await homeDir();
-  const result = await make(home).write({ ...entry, name: "-----BEGIN PRIVATE KEY-----", body: "sk-abcdefghijklmnopqrstuvwxyz123456" });
-  expect(result).toEqual({ ok: false, error: "Secret-shaped content refused in name, body. Remove the secret-shaped text before retrying" });
+  const result = await make(home).write({ ...entry, description: "-----BEGIN PRIVATE KEY-----", body: "sk-abcdefghijklmnopqrstuvwxyz123456" });
+  expect(result).toEqual({ ok: false, error: "Secret-shaped content refused in description, body. Remove the secret-shaped text before retrying" });
 });
 
 test("dangling .praana symlink is reported exactly, creates nothing and skips every scope", async () => {
@@ -343,4 +345,29 @@ test("list reports ages and stale boundary", async () => {
   await fs.writeFile(join(dir, "fresh.md"), format("fresh", "2025-10-03"));
   const result = await make(home).list({ scope: "global" });
   expect(result.entries.map(({ name, age, stale }) => ({ name, age, stale }))).toEqual([{ name: "fresh", age: 90, stale: false }, { name: "old", age: 91, stale: true }]);
+});
+
+/** The private-key header check runs on user text, so it must stay linear: a run of spaces
+ * after `-----BEGIN` used to backtrack through the overlapping type-word class. */
+test("the private key header check stays linear on adversarial whitespace", async () => {
+  const { PRIVATE_KEY_HEADER } = await import("../src/file-memory/store.js");
+  const measure = (size: number) => {
+    const text = `-----BEGIN${" ".repeat(size)}x`;
+    const started = performance.now();
+    const matched = PRIVATE_KEY_HEADER.test(text);
+    return { matched, ms: performance.now() - started };
+  };
+  const small = measure(10_000), large = measure(100_000);
+  expect(small.matched).toBe(false);
+  expect(large.matched).toBe(false);
+  expect(large.ms).toBeLessThan(200);
+  expect(large.ms).toBeLessThan(small.ms * 30 + 50);
+  // A 80k-space description is refused by the length cap, and fast: the cheap validation
+  // runs before any scan, so an unbounded string never reaches the regex.
+  const home = await homeDir();
+  const started = performance.now();
+  const result = await make(home).write({ ...entry, description: `-----BEGIN${" ".repeat(80_000)}x` });
+  const elapsed = performance.now() - started;
+  expect(result).toEqual({ ok: false, error: "Description must be one line and at most 300 characters" });
+  expect(elapsed).toBeLessThan(200);
 });
