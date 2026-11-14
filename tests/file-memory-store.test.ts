@@ -216,6 +216,38 @@ describe("file memory store", () => {
     expect((await store.remove({ scope: "project", name: input.name })).ok).toBe(true);
     expect((await store.remove({ scope: "project", name: input.name })).ok).toBe(false);
   });
+  test("one unreadable memory file is skipped instead of failing its whole scope", async () => {
+    const { home, store, dir } = await setup();
+    expect((await store.write(input)).ok).toBe(true);
+    const unreadable = join(dir, "poison.md");
+    await fs.writeFile(unreadable, "---\nname: poison\ndescription: Unreadable file\ntype: user\nupdated: '2026-05-01'\n---\nBody\n");
+    const seam = new Proxy(fs, { get(target, key) {
+      if (key !== "lstat") return Reflect.get(target, key);
+      return async (...args: Parameters<typeof fs.lstat>) => {
+        if (args[0] === unreadable) throw Object.assign(new Error(`EACCES: permission denied, lstat '${unreadable}'`), { code: "EACCES" });
+        return fs.lstat(...args);
+      };
+    } });
+    const failing = createFileMemoryStore({ home, cwd: home, fs: seam, findRoot: (cwd) => cwd, now: () => new Date("2026-05-01T00:00:00Z") });
+    const listed = await failing.list();
+    expect(listed).toMatchObject({ ok: true, skipped: 1 });
+    expect(listed.ok && listed.entries.map((entry) => entry.name)).toEqual(["coffee"]);
+    expect(listed.ok && listed.skippedScopes).toBeUndefined();
+    expect(await failing.recall({ query: "coffee" })).toMatchObject({ ok: true, matches: [{ name: "coffee" }] });
+    expect(await failing.write({ ...input, name: "tea", description: "Tea is also welcome" })).toEqual({ ok: true, name: "tea", scope: "global", created: true });
+    expect((await failing.refreshIndexFile("global")).ok).toBe(true);
+    const index = await fs.readFile(join(dir, "MEMORY.md"), "utf8");
+    expect(index).toContain("coffee");
+    expect(index).not.toContain("poison");
+    const unreadableRead = await failing.read({ name: "poison", scope: "global" });
+    expect(unreadableRead.ok).toBe(false);
+    if (!unreadableRead.ok) {
+      expect(unreadableRead.error).toContain("poison");
+      expect(unreadableRead.error).toContain("permission denied");
+      expect(unreadableRead.error).not.toContain(home);
+    }
+    expect(await failing.read({ name: "coffee" })).toMatchObject({ ok: true, memory: { name: "coffee" } });
+  });
   test("ignores malformed, oversized, symlink and temp files", async () => {
     const { store, dir, home } = await setup();
     await store.write(input);

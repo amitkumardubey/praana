@@ -51,6 +51,16 @@ const blockingScopes = (skippedScopes: SkippedScope[], rule: "answer" | "removal
   return clean < 0 ? scopes : scopes.slice(0, clean);
 };
 const missing = (error: unknown) => (error as NodeJS.ErrnoException)?.code === "ENOENT";
+/** Path-free cause class for a single unreadable memory file. */
+const readCause = (error: unknown): string => {
+  switch ((error as NodeJS.ErrnoException)?.code) {
+    case "EACCES": case "EPERM": return "permission denied";
+    case "EIO": return "input/output error";
+    case "EISDIR": return "not a regular file";
+    case "EMFILE": case "ENFILE": return "too many open files";
+    default: { const code = (error as NodeJS.ErrnoException)?.code; return code ? `read failed (${code})` : "read failed"; }
+  }
+};
 const errorResult = (error: unknown): ResultError => ({ ok: false, error: error instanceof Error ? error.message : String(error) });
 const inside = (parent: string, child: string) => { const p = relative(parent, child); return p === "" || (!p.startsWith(`..${sep}`) && p !== ".." && !isAbsolute(p)); };
 
@@ -103,15 +113,17 @@ export function createFileMemoryStore(options: StoreOptions) {
     return path;
   }
 
-  async function readFile(dir: string, name: string, frontmatterOnly = false): Promise<Memory | null> {
+  /** One file that cannot be read is reported, never thrown: a single bad file must not
+   * take out its whole scope. `failure` is path-free so it can reach a result message. */
+  async function readFile(dir: string, name: string, frontmatterOnly = false): Promise<{ memory: Memory | null; failure?: string }> {
     const path = join(dir, `${name}.md`);
     let handle: nodeFs.FileHandle | undefined;
     try {
       const stat = await fs.lstat(path);
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 65536) return null;
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 65536) return { memory: null };
       handle = await fs.open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
       const actual = await handle.stat();
-      if (!actual.isFile() || actual.size > 65536) return null;
+      if (!actual.isFile() || actual.size > 65536) return { memory: null };
       const buffer = Buffer.alloc(65537);
       let length = 0;
       while (length < buffer.length) {
@@ -124,18 +136,19 @@ export function createFileMemoryStore(options: StoreOptions) {
           const closing = (length >= actual.size ? /\n---(?:\n|$)/ : /\n---\n/).exec(header.slice(4));
           if (closing) {
             const memory = parseMemory(header.slice(0, closing.index + 4 + closing[0].length));
-            return memory?.name === name ? memory : null;
+            return { memory: memory?.name === name ? memory : null };
           }
           // Raw CRLF frontmatter can be up to twice the normalized byte bound.
-          if (length > 16390) return null;
+          if (length > 16390) return { memory: null };
         }
       }
-      if (length > 65536) return null;
+      if (length > 65536) return { memory: null };
       const memory = parseMemory(buffer.subarray(0, length).toString("utf8"));
-      return memory?.name === name ? memory : null;
+      return { memory: memory?.name === name ? memory : null };
     } catch (error) {
-      if (missing(error) || (error as NodeJS.ErrnoException).code === "ELOOP") return null;
-      throw error;
+      // Absent and looping paths are an ordinary miss; anything else is a per-file skip.
+      if (missing(error) || (error as NodeJS.ErrnoException).code === "ELOOP") return { memory: null };
+      return { memory: null, failure: `Memory "${name}" is unreadable: ${readCause(error)}` };
     } finally { if (handle) await handle.close(); }
   }
 
@@ -150,7 +163,7 @@ export function createFileMemoryStore(options: StoreOptions) {
       if (file.startsWith(".") || file === "MEMORY.md" || !file.endsWith(".md")) continue;
       const name = file.slice(0, -3);
       if (!validName(name)) { skipped++; continue; }
-      const memory = await readFile(dir, name, frontmatterOnly);
+      const { memory } = await readFile(dir, name, frontmatterOnly);
       if (memory) memories.push(memory); else skipped++;
     }
     return { memories, skipped, filenames };
@@ -231,8 +244,9 @@ export function createFileMemoryStore(options: StoreOptions) {
     if (!validName(input.name)) return { ok: false, error: "Invalid memory name" };
     const scanned = await visitScopes(input.scope, async (scope) => {
       const dir = await directory(scope, false);
-      const memory = dir && await readFile(dir, input.name);
-      return memory ? { ...memory, scope } : null;
+      if (!dir) return { scope, memory: null };
+      const { memory, failure } = await readFile(dir, input.name);
+      return { scope, memory, failure };
     });
     const warnings = scopeWarnings(scanned.skippedScopes ?? []);
     // Every scope failed, so no explicit scope could succeed either.
@@ -240,7 +254,12 @@ export function createFileMemoryStore(options: StoreOptions) {
     // Project takes precedence, so only a failed project scan can hide the answer.
     const refusal = refuseUnlessExplicit(!input.scope, scanned.skippedScopes, "answer", (reasons) => `Cannot resolve "${input.name}" safely because a scope scan failed; pass an explicit scope to read: ${reasons}`);
     if (refusal) return refusal;
-    const memory = scanned.values.find((memory) => memory !== null);
+    // The first scope holding the name in precedence order answers; an unreadable copy of
+    // that name is reported instead of falling through to a lower-precedence scope.
+    const unreadable = scanned.values.find((value) => value.failure);
+    if (unreadable?.failure) return { ok: false, error: unreadable.failure, ...warnings };
+    const hit = scanned.values.find((value) => value.memory);
+    const memory = hit?.memory ? { ...hit.memory, scope: hit.scope } : undefined;
     if (memory) return { ok: true, memory, ...warnings };
     // A clean project miss falls through to the global result, including its own failure.
     const globalFailure = scanned.skippedScopes?.find(({ scope }) => scope === "global");

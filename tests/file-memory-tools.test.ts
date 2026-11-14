@@ -69,22 +69,15 @@ test("recall tool forwards an explicit scope for by-name lookups after a failed 
   const { home, options, store } = await setup();
   const dirs = memoryDirectories(home, projectKey(home, (cwd) => cwd));
   expect((await store.write({ ...entry, name: "portable" })).ok).toBe(true);
+  // A per-file read error is only counted as skipped, so a failed scan means the directory
+  // itself is unusable: replace the project directory with a contained symlink.
+  const saved = `${dirs.project}-saved`;
   await fs.mkdir(dirs.project, { recursive: true });
-  const unreadable = join(dirs.project, "portable.md");
-  await fs.writeFile(unreadable, "---\nname: portable\ntype: user\ndescription: Unreadable project copy\n---\n\nBody\n");
-  const probes: string[] = [];
-  const seam = new Proxy(fs, { get(target, key) {
-    if (key !== "lstat") return Reflect.get(target, key);
-    return async (...args: Parameters<typeof fs.lstat>) => {
-      probes.push(String(args[0]));
-      if (args[0] === unreadable) throw Object.assign(new Error(`EACCES: permission denied, lstat '${unreadable}'`), { code: "EACCES" });
-      return fs.lstat(...args);
-    };
-  } });
-  const tools = createFileMemoryTools(createFileMemoryStore({ ...options, fs: seam }));
+  await fs.rename(dirs.project, saved);
+  await fs.symlink(saved, dirs.project);
+  const tools = createFileMemoryTools(createFileMemoryStore(options));
   const unscoped = await tools.recall.execute({ name: "portable" });
-  expect(probes).toContain(unreadable);
-  expect(unscoped).toMatchObject({ ok: false, error: expect.stringMatching(/explicit scope/i), skippedScopes: [{ scope: "project", reason: expect.stringContaining(unreadable) }] });
+  expect(unscoped).toMatchObject({ ok: false, error: expect.stringMatching(/explicit scope/i), skippedScopes: [{ scope: "project", reason: expect.stringContaining(dirs.project) }] });
   expect(await tools.recall.execute({ name: "portable", scope: "global" })).toMatchObject({ ok: true, memory: { name: "portable", scope: "global" } });
   refused(await tools.recall.execute({ query: "coffee", scope: "global" }));
 });
