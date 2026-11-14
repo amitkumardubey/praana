@@ -87,7 +87,7 @@ export function loadUserSettings(options?: SettingsStoreOptions): LoadUserSettin
       if (written.state === "unreadable") {
         return {
           settings,
-          warning: `Could not read settings file (${path}): ${written.error}`,
+          warning: written.error,
         };
       }
       return {
@@ -111,7 +111,7 @@ export function loadUserSettings(options?: SettingsStoreOptions): LoadUserSettin
   if (read.state === "unreadable") {
     return {
       settings: { ...DEFAULT_USER_SETTINGS },
-      warning: `Could not read settings file (${path}): ${read.error}`,
+      warning: read.error,
     };
   }
 

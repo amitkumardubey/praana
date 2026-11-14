@@ -107,12 +107,12 @@ describe("settings store", () => {
     expect(readSettingsDocument().state).toBe("unreadable");
     rmSync(settingsPath, { recursive: true, force: true });
 
-    // 6. unreadable: symlink (ordinary and dangling)
+    // 6. symlink: link to regular file is ok; dangling symlink is unreadable
     if (process.platform !== "win32") {
       const targetFile = join(root, "outside.json");
       writeFileSync(targetFile, '{"thinking":true}', "utf-8");
       symlinkSync(targetFile, settingsPath);
-      expect(readSettingsDocument().state).toBe("unreadable");
+      expect(readSettingsDocument()).toEqual({ doc: { thinking: true }, state: "ok" });
       rmSync(settingsPath, { force: true });
 
       symlinkSync(join(root, "dangling-target.json"), settingsPath);
@@ -245,14 +245,15 @@ describe("settings store", () => {
     rmSync(settingsPath, { recursive: true, force: true });
 
     if (process.platform !== "win32") {
-      const outside = join(root, "outside-target.json");
-      writeFileSync(outside, '{"keep":true}', "utf-8");
-      symlinkSync(outside, settingsPath);
+      // Unreadable symlinks (dangling, directory, loop) are NEVER replaced even by resetUserSettings or replaceSettingsDocument.
+      const danglingTarget = join(root, "dangling-target-unreadable.json");
+      symlinkSync(danglingTarget, settingsPath);
       expect(updateUserSettings({ thinking: false }).ok).toBe(false);
       expect(saveUserSettings(DEFAULT_USER_SETTINGS).ok).toBe(false);
       expect(resetUserSettings().ok).toBe(false);
+      expect(replaceSettingsDocument({ thinking: true }).ok).toBe(false);
       expect(lstatSync(settingsPath).isSymbolicLink()).toBe(true);
-      expect(readFileSync(outside, "utf-8")).toBe('{"keep":true}');
+      expect(existsSync(danglingTarget)).toBe(false);
       rmSync(settingsPath, { force: true });
     }
 
@@ -264,7 +265,7 @@ describe("settings store", () => {
     expect(readFileSync(settingsPath, "utf-8")).toBe(originalValid);
   });
 
-  test("filesystem seam exposes the 11 operations, enforces 0600 permissions, closes descriptors, and preserves original bytes on failure", async () => {
+  test("filesystem seam exposes the 12 operations, enforces 0600 permissions, closes descriptors, and preserves original bytes on failure", async () => {
     const { createSettingsFs, updateSettingsDocument, replaceSettingsDocument } = await storeApi();
 
     const defaultFs = createSettingsFs();
@@ -277,6 +278,7 @@ describe("settings store", () => {
       "lstat",
       "openExclusive",
       "readBounded",
+      "realpath",
       "rename",
       "unlink",
       "write",
@@ -1638,6 +1640,152 @@ console.log(JSON.stringify(res));
       if (!failedUpdate.ok) expect(failedUpdate.error).toContain("injected rename failure");
     } finally {
       warnSpy.mockRestore();
+    }
+  });
+
+  test("symlinked settings.json follows symlink on read, replaces target atomically on write, keeps backups and lock next to settings path, and rejects invalid symlink targets with one actionable message", async () => {
+    if (process.platform === "win32") return;
+    const { readSettingsDocument, updateSettingsDocument, createSettingsFs } = await storeApi();
+    const countOccurrences = (haystack: string, needle: string): number =>
+      haystack.split(needle).length - 1;
+
+    const dotfilesDir = join(root, "dotfiles");
+    mkdirSync(dotfilesDir, { recursive: true });
+    const targetPath = join(dotfilesDir, "settings.json");
+
+    // 1. Symlink -> regular file loads without warning, preserves unknown keys, and updates target while keeping symlink intact.
+    writeFileSync(targetPath, JSON.stringify({ thinking: false, custom_keep: "yes" }, null, 2) + "\n", "utf-8");
+    symlinkSync(targetPath, settingsPath);
+
+    const loaded = loadUserSettings();
+    expect(loaded.warning).toBeUndefined();
+    expect(loaded.createdDefaults).toBeUndefined();
+    expect(loaded.settings.thinking).toBe(false);
+
+    const updated = updateUserSettings({ debug: true });
+    expect(updated.ok).toBe(true);
+    expect(lstatSync(settingsPath).isSymbolicLink()).toBe(true);
+    const updatedTarget = JSON.parse(readFileSync(targetPath, "utf-8"));
+    expect(updatedTarget.debug).toBe(true);
+    expect(updatedTarget.thinking).toBe(false);
+    expect(updatedTarget.custom_keep).toBe("yes");
+
+    // Lock file stays next to settingsPath (in homeDir), NOT in dotfilesDir; no temp files left behind.
+    expect(existsSync(join(homeDir, ".settings.json.lock.db"))).toBe(true);
+    expect(existsSync(join(dotfilesDir, ".settings.json.lock.db"))).toBe(false);
+    expect(readdirSync(dotfilesDir).filter((f) => f.includes(".tmp-"))).toEqual([]);
+    expect(readdirSync(homeDir).filter((f) => f.includes(".tmp-"))).toEqual([]);
+
+    // Verify temp file is created in target's directory and readBounded is called on resolved target path.
+    const baseFs = createSettingsFs();
+    const openedPaths: string[] = [];
+    const readPaths: string[] = [];
+    const spyFs = createSettingsFs({
+      openExclusive(p, mode) {
+        openedPaths.push(p);
+        return baseFs.openExclusive(p, mode);
+      },
+      readBounded(p, maxBytes) {
+        readPaths.push(p);
+        return baseFs.readBounded(p, maxBytes);
+      },
+    });
+    expect(updateSettingsDocument({ incognito: true }, { fs: spyFs }).ok).toBe(true);
+    expect(readPaths).toEqual([targetPath]);
+    expect(openedPaths.length).toBe(1);
+    expect(dirname(openedPaths[0]!)).toBe(dotfilesDir);
+
+    // 2. Reset of a corrupt target backs up corrupt bytes at <settings dir>/settings.json.corrupt-* (0600) and rewrites target.
+    const corruptBytes = "{corrupt-dotfiles-target";
+    writeFileSync(targetPath, corruptBytes, "utf-8");
+    const reset = resetUserSettings();
+    expect(reset.ok).toBe(true);
+    expect(lstatSync(settingsPath).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(readFileSync(targetPath, "utf-8"))).toEqual(DEFAULT_USER_SETTINGS);
+    const homeBackups = readdirSync(homeDir).filter((f) => f.startsWith("settings.json.corrupt-"));
+    const dotfileBackups = readdirSync(dotfilesDir).filter((f) => f.includes(".corrupt-"));
+    expect(homeBackups).toHaveLength(1);
+    expect(dotfileBackups).toEqual([]);
+    const backupFile = join(homeDir, homeBackups[0]!);
+    expect(readFileSync(backupFile, "utf-8")).toBe(corruptBytes);
+    expect(statSync(backupFile).mode & 0o777).toBe(0o600);
+
+    // 3. Read-only target directory fails cleanly with no stray temp file and leaves symlink/target intact.
+    if (process.getuid?.() !== 0) {
+      const beforeReadOnly = readFileSync(targetPath, "utf-8");
+      chmodSync(dotfilesDir, 0o555);
+      try {
+        const roUpdate = updateUserSettings({ debug: false });
+        expect(roUpdate.ok).toBe(false);
+        expect(lstatSync(settingsPath).isSymbolicLink()).toBe(true);
+        expect(readdirSync(dotfilesDir).filter((f) => f.includes(".tmp-"))).toEqual([]);
+        expect(readdirSync(homeDir).filter((f) => f.includes(".tmp-"))).toEqual([]);
+      } finally {
+        chmodSync(dotfilesDir, 0o755);
+      }
+      expect(readFileSync(targetPath, "utf-8")).toBe(beforeReadOnly);
+    }
+
+    // 4. Invalid symlink targets (dangling, directory, loop, FIFO) each give ONE actionable message naming settingsPath ONCE.
+    rmSync(settingsPath, { force: true });
+
+    // Dangling link
+    symlinkSync(join(dotfilesDir, "does-not-exist.json"), settingsPath);
+    const danglingRead = readSettingsDocument();
+    expect(danglingRead.state).toBe("unreadable");
+    expect(countOccurrences(danglingRead.error ?? "", settingsPath)).toBe(1);
+    const danglingLoad = loadUserSettings();
+    expect(danglingLoad.warning).toBeDefined();
+    expect(countOccurrences(danglingLoad.warning ?? "", settingsPath)).toBe(1);
+    expect(danglingLoad.warning).toMatch(/missing|dangling|create|remove/i);
+    const danglingUpdate = updateSettingsDocument({ debug: true });
+    expect(danglingUpdate.ok).toBe(false);
+    if (!danglingUpdate.ok) {
+      expect(danglingUpdate.state).toBe("unreadable");
+      expect(countOccurrences(danglingUpdate.error, settingsPath)).toBe(1);
+    }
+    rmSync(settingsPath, { force: true });
+
+    // Link to directory
+    const dirTarget = join(dotfilesDir, "subdir");
+    mkdirSync(dirTarget, { recursive: true });
+    symlinkSync(dirTarget, settingsPath);
+    const dirRead = readSettingsDocument();
+    expect(dirRead.state).toBe("unreadable");
+    expect(countOccurrences(dirRead.error ?? "", settingsPath)).toBe(1);
+    const dirLoad = loadUserSettings();
+    expect(dirLoad.warning).toBeDefined();
+    expect(countOccurrences(dirLoad.warning ?? "", settingsPath)).toBe(1);
+    expect(dirLoad.warning).toMatch(/directory/i);
+    rmSync(settingsPath, { force: true });
+
+    // Symlink loop
+    const loopOther = join(dotfilesDir, "loop-b");
+    symlinkSync(loopOther, settingsPath);
+    symlinkSync(settingsPath, loopOther);
+    const loopRead = readSettingsDocument();
+    expect(loopRead.state).toBe("unreadable");
+    expect(countOccurrences(loopRead.error ?? "", settingsPath)).toBe(1);
+    const loopLoad = loadUserSettings();
+    expect(loopLoad.warning).toBeDefined();
+    expect(countOccurrences(loopLoad.warning ?? "", settingsPath)).toBe(1);
+    expect(loopLoad.warning).toMatch(/loop/i);
+    rmSync(settingsPath, { force: true });
+    rmSync(loopOther, { force: true });
+
+    // Link to FIFO
+    const fifoTarget = join(dotfilesDir, "settings.fifo");
+    const mkfifo = Bun.spawnSync(["mkfifo", fifoTarget]);
+    if (mkfifo.exitCode === 0) {
+      symlinkSync(fifoTarget, settingsPath);
+      const fifoRead = readSettingsDocument();
+      expect(fifoRead.state).toBe("unreadable");
+      expect(countOccurrences(fifoRead.error ?? "", settingsPath)).toBe(1);
+      const fifoLoad = loadUserSettings();
+      expect(fifoLoad.warning).toBeDefined();
+      expect(countOccurrences(fifoLoad.warning ?? "", settingsPath)).toBe(1);
+      expect(fifoLoad.warning).toMatch(/regular file/i);
+      rmSync(settingsPath, { force: true });
     }
   });
 });

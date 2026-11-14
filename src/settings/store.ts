@@ -24,6 +24,7 @@ import {
   mkdirSync,
   openSync,
   readSync,
+  realpathSync,
   renameSync,
   type Stats,
   unlinkSync,
@@ -88,6 +89,7 @@ export interface SettingsFs {
   copyFile: (src: string, dest: string) => void;
   chmod: (path: string, mode: number) => void;
   lstat: (path: string) => Stats;
+  realpath: (path: string) => string;
   readBounded: (path: string, maxBytes: number) => Buffer;
   fsyncDir: (dirPath: string) => void;
 }
@@ -140,6 +142,9 @@ export function createSettingsFs(
     },
     lstat(path: string): Stats {
       return lstatSync(path);
+    },
+    realpath(path: string): string {
+      return realpathSync(path);
     },
     readBounded(path: string, maxBytes: number): Buffer {
       const openFn = readSeam?.open ?? openSync;
@@ -206,6 +211,7 @@ export function createSettingsFs(
     copyFile: overrides.copyFile ?? base.copyFile,
     chmod: overrides.chmod ?? base.chmod,
     lstat: overrides.lstat ?? base.lstat,
+    realpath: overrides.realpath ?? base.realpath,
     readBounded: overrides.readBounded ?? base.readBounded,
     fsyncDir: overrides.fsyncDir ?? base.fsyncDir,
   };
@@ -237,47 +243,193 @@ function resolveSettingsPath(options?: SettingsStoreOptions): string {
 
 const UTF8_FATAL = new TextDecoder("utf-8", { fatal: true });
 
-function readSettingsDocumentWithBytes(
+function symlinkResolutionError(
+  path: string,
+  err: unknown,
+  fallbackPrefix: string,
+): ReadSettingsDocumentResult {
+  const code = (err as NodeJS.ErrnoException)?.code;
+  if (code === "ENOENT") {
+    return {
+      doc: {},
+      state: "unreadable",
+      error: `Settings file symlink (${path}) points to a missing target; create the target file or remove the symlink`,
+    };
+  }
+  if (code === "ELOOP") {
+    return {
+      doc: {},
+      state: "unreadable",
+      error: `Settings file symlink (${path}) forms a symlink loop; fix or remove the symlink`,
+    };
+  }
+  const msg = err instanceof Error ? err.message : String(err);
+  return {
+    doc: {},
+    state: "unreadable",
+    error: `${fallbackPrefix} (${path}): ${msg}`,
+  };
+}
+
+function resolveSettingsTarget(
   path: string,
   fs: SettingsFs,
-): { result: ReadSettingsDocumentResult; rawBytes?: Buffer } {
+):
+  | { ok: true; targetPath: string; isSymlink: boolean }
+  | { ok: false; result: ReadSettingsDocumentResult; targetPath: string } {
   let stat: Stats;
   try {
     stat = fs.lstat(path);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException)?.code;
     if (code === "ENOENT") {
-      return { result: { doc: {}, state: "missing" } };
+      return { ok: false, result: { doc: {}, state: "missing" }, targetPath: path };
+    }
+    if (code === "ELOOP") {
+      return {
+        ok: false,
+        result: symlinkResolutionError(path, err, "Cannot stat settings file"),
+        targetPath: path,
+      };
     }
     const msg = err instanceof Error ? err.message : String(err);
     return {
+      ok: false,
       result: { doc: {}, state: "unreadable", error: `Cannot stat settings file (${path}): ${msg}` },
+      targetPath: path,
     };
   }
 
-  if (stat.isSymbolicLink()) {
-    return { result: { doc: {}, state: "unreadable", error: `Settings path is a symlink (${path})` } };
+  if (!stat.isSymbolicLink()) {
+    if (stat.isDirectory()) {
+      return {
+        ok: false,
+        result: { doc: {}, state: "unreadable", error: `Settings path is a directory (${path})` },
+        targetPath: path,
+      };
+    }
+    if (!stat.isFile()) {
+      return {
+        ok: false,
+        result: { doc: {}, state: "unreadable", error: `Settings path is not a regular file (${path})` },
+        targetPath: path,
+      };
+    }
+    return { ok: true, targetPath: path, isSymlink: false };
   }
-  if (stat.isDirectory()) {
-    return { result: { doc: {}, state: "unreadable", error: `Settings path is a directory (${path})` } };
-  }
-  if (!stat.isFile()) {
+
+  let targetPath: string;
+  try {
+    targetPath = fs.realpath(path);
+  } catch (err) {
     return {
-      result: { doc: {}, state: "unreadable", error: `Settings path is not a regular file (${path})` },
+      ok: false,
+      result: symlinkResolutionError(path, err, "Cannot resolve settings file symlink"),
+      targetPath: path,
     };
   }
+
+  let targetStat: Stats;
+  try {
+    targetStat = fs.lstat(targetPath);
+  } catch (err) {
+    return {
+      ok: false,
+      result: symlinkResolutionError(path, err, "Cannot stat target of settings file symlink"),
+      targetPath,
+    };
+  }
+
+  if (targetStat.isDirectory()) {
+    return {
+      ok: false,
+      result: {
+        doc: {},
+        state: "unreadable",
+        error: `Settings file symlink (${path}) points to a directory; point it to a regular file or remove the symlink`,
+      },
+      targetPath,
+    };
+  }
+  if (!targetStat.isFile()) {
+    return {
+      ok: false,
+      result: {
+        doc: {},
+        state: "unreadable",
+        error: `Settings file symlink (${path}) does not point to a regular file; point it to a regular file or remove the symlink`,
+      },
+      targetPath,
+    };
+  }
+
+  return { ok: true, targetPath, isSymlink: true };
+}
+
+function readSettingsDocumentWithBytes(
+  path: string,
+  fs: SettingsFs,
+): { result: ReadSettingsDocumentResult; rawBytes?: Buffer; targetPath: string } {
+  const resolved = resolveSettingsTarget(path, fs);
+  if (!resolved.ok) {
+    return { result: resolved.result, targetPath: resolved.targetPath };
+  }
+  const { targetPath, isSymlink } = resolved;
 
   let rawBytes: Buffer;
   try {
-    rawBytes = fs.readBounded(path, MAX_SETTINGS_BYTES);
+    rawBytes = fs.readBounded(targetPath, MAX_SETTINGS_BYTES);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException)?.code;
     if (code === "ENOENT") {
-      return { result: { doc: {}, state: "missing" } };
+      if (isSymlink) {
+        return {
+          result: {
+            doc: {},
+            state: "unreadable",
+            error: `Settings file symlink (${path}) points to a missing target; create the target file or remove the symlink`,
+          },
+          targetPath,
+        };
+      }
+      return { result: { doc: {}, state: "missing" }, targetPath };
+    }
+    if (code === "ELOOP") {
+      return {
+        result: {
+          doc: {},
+          state: "unreadable",
+          error: isSymlink
+            ? `Settings file symlink (${path}) forms a symlink loop; fix or remove the symlink`
+            : `Settings path (${path}) changed to a symlink; retry or replace it`,
+        },
+        targetPath,
+      };
     }
     const msg = err instanceof Error ? err.message : String(err);
+    if (isSymlink && (code === "EISDIR" || msg.includes("Path is a directory"))) {
+      return {
+        result: {
+          doc: {},
+          state: "unreadable",
+          error: `Settings file symlink (${path}) points to a directory; point it to a regular file or remove the symlink`,
+        },
+        targetPath,
+      };
+    }
+    if (isSymlink && msg.includes("Path is not a regular file")) {
+      return {
+        result: {
+          doc: {},
+          state: "unreadable",
+          error: `Settings file symlink (${path}) does not point to a regular file; point it to a regular file or remove the symlink`,
+        },
+        targetPath,
+      };
+    }
     return {
       result: { doc: {}, state: "unreadable", error: `Cannot read settings file (${path}): ${msg}` },
+      targetPath,
     };
   }
 
@@ -288,6 +440,7 @@ function readSettingsDocumentWithBytes(
         state: "unreadable",
         error: `Settings file (${path}) exceeds maximum size of ${MAX_SETTINGS_BYTES} bytes`,
       },
+      targetPath,
     };
   }
 
@@ -298,6 +451,7 @@ function readSettingsDocumentWithBytes(
     return {
       result: { doc: {}, state: "corrupt", error: `Settings file (${path}) is not valid UTF-8` },
       rawBytes,
+      targetPath,
     };
   }
 
@@ -310,6 +464,7 @@ function readSettingsDocumentWithBytes(
     return {
       result: { doc: {}, state: "corrupt", error: `Corrupt settings file (${path})` },
       rawBytes,
+      targetPath,
     };
   }
 
@@ -321,10 +476,11 @@ function readSettingsDocumentWithBytes(
         error: `Corrupt settings file (${path}): root must be a JSON object`,
       },
       rawBytes,
+      targetPath,
     };
   }
 
-  return { result: { doc: parsed, state: "ok" }, rawBytes };
+  return { result: { doc: parsed, state: "ok" }, rawBytes, targetPath };
 }
 
 export function readSettingsDocument(options?: SettingsStoreOptions): ReadSettingsDocumentResult {
@@ -578,7 +734,7 @@ export function updateSettingsDocument(
   const path = resolveSettingsPath(options);
   const fs = options?.fs ?? defaultFs;
   return withSettingsLock<UpdateSettingsDocumentResult>(path, () => {
-    const { result: current, rawBytes } = readSettingsDocumentWithBytes(path, fs);
+    const { result: current, rawBytes, targetPath } = readSettingsDocumentWithBytes(path, fs);
 
     if (current.state === "unreadable") {
       return {
@@ -609,7 +765,7 @@ export function updateSettingsDocument(
           state: current.state,
         };
       }
-      const backedUp = backupCorruptFile(path, rawBytes, fs);
+      const backedUp = backupCorruptFile(path, rawBytes, fs, targetPath);
       if (!backedUp.ok) return backedUp;
       backupPath = backedUp.backupPath;
     }
@@ -642,7 +798,7 @@ export function updateSettingsDocument(
       }
     }
 
-    const written = writeDocumentAtomic(path, nextDoc, fs);
+    const written = writeDocumentAtomic(targetPath, nextDoc, fs);
     if (!written.ok) {
       if (backupPath) discardCorruptBackup(backupPath, fs);
       return written;
@@ -673,11 +829,12 @@ function backupCorruptFile(
   path: string,
   rawBytes: Buffer | undefined,
   fs: SettingsFs,
+  targetPath: string = path,
 ): { ok: true; backupPath: string } | { ok: false; error: string } {
   const backupPath = `${path}.corrupt-${Date.now()}-${randomBytes(4).toString("hex")}`;
   let backupBytes: Buffer;
   try {
-    backupBytes = rawBytes ?? fs.readBounded(path, MAX_SETTINGS_BYTES);
+    backupBytes = rawBytes ?? fs.readBounded(targetPath, MAX_SETTINGS_BYTES);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     return { ok: false, error: `Failed to back up corrupt settings file (${path}): ${msg}` };
@@ -716,7 +873,7 @@ export function replaceSettingsDocument(
   const path = resolveSettingsPath(options);
   const fs = options?.fs ?? defaultFs;
   return withSettingsLock(path, () => {
-    const { result: current, rawBytes } = readSettingsDocumentWithBytes(path, fs);
+    const { result: current, rawBytes, targetPath } = readSettingsDocumentWithBytes(path, fs);
 
     if (current.state === "unreadable") {
       return {
@@ -727,13 +884,13 @@ export function replaceSettingsDocument(
 
     let backupPath: string | undefined;
     if (current.state === "corrupt" && options?.backupCorrupt !== false) {
-      const backedUp = backupCorruptFile(path, rawBytes, fs);
+      const backedUp = backupCorruptFile(path, rawBytes, fs, targetPath);
       if (!backedUp.ok) return backedUp;
       backupPath = backedUp.backupPath;
     }
 
     const copy = { ...doc };
-    const written = writeDocumentAtomic(path, copy, fs);
+    const written = writeDocumentAtomic(targetPath, copy, fs);
     if (!written.ok) {
       if (backupPath) discardCorruptBackup(backupPath, fs);
       return written;
