@@ -10,20 +10,23 @@ export interface Memory {
 }
 export type MemoryInput = Omit<Memory, "updated">;
 
-/** The one name rule: `validName` and the tool JSON schema both read this source, so they
- * cannot drift. The negative lookahead carries the reserved names, because `$` in a
- * JavaScript pattern matches only at the very end, so a trailing newline stays rejected. */
-const RESERVED_NAME_SOURCE = "(?:memory|con|prn|aux|nul|com[1-9]|lpt[1-9])";
+/** The one name rule: a plain slug. `validName` and the tool JSON schema both read this
+ * pattern, so the published schema and the execution-time rule cannot drift. The reserved
+ * device names are a plain set below, checked at execution, so this stays a plain slug with
+ * no lookahead: a structured-output validator may reject one, and the store owns the message. */
 const NAME_SLUG_SOURCE = "[a-z0-9][a-z0-9-]{0,63}";
-export const MEMORY_NAME_PATTERN = new RegExp(`^(?!${RESERVED_NAME_SOURCE}$)${NAME_SLUG_SOURCE}$`);
-/** The shape the tools publish to the model. A structured-output validator may reject a
- * negative lookahead, so this stays the plain slug: the reserved names are listed in the
- * name field description and `validName` still refuses them at execution. */
-export const MEMORY_NAME_SCHEMA_PATTERN = new RegExp(`^${NAME_SLUG_SOURCE}$`);
+export const MEMORY_NAME_PATTERN = new RegExp(`^${NAME_SLUG_SOURCE}$`);
+/** Reserved device and index names, refused by `validName` with the single message
+ * "Invalid memory name" that the tool field description names. */
+const RESERVED_NAMES = new Set([
+  "memory", "con", "prn", "aux", "nul",
+  ...Array.from({ length: 9 }, (_, index) => `com${index + 1}`),
+  ...Array.from({ length: 9 }, (_, index) => `lpt${index + 1}`),
+]);
 const types = new Set(["user", "feedback", "project", "reference"]);
 
 export function validName(name: unknown): name is string {
-  return typeof name === "string" && MEMORY_NAME_PATTERN.test(name);
+  return typeof name === "string" && MEMORY_NAME_PATTERN.test(name) && !RESERVED_NAMES.has(name);
 }
 
 const stopWords = new Set("a an and are as at be been but by for from had has have he her his i if in into is it its me my not of on or our she so than that the their them then there these they this those to too us was we were what when where which who will with you your".split(" "));

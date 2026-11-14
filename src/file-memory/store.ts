@@ -88,7 +88,9 @@ const WRITE_FIELDS = ["scope", "type", "name", "description", "body"] as const;
 const READ_FIELDS = ["scope", "name"] as const;
 const RECALL_FIELDS = ["query", "name", "scope"] as const;
 const SCANNED_FIELDS = ["name", "description", "body"] as const;
-const FIELD_READ_REFUSAL = "Memory fields could not be read";
+export const FIELD_READ_REFUSAL = "Memory fields could not be read";
+/** Reported when the snapshot itself carries a key that is not an allowed write key. */
+const UNKNOWN_WRITE_KEY = `Unknown write input key; allowed keys: ${WRITE_FIELDS.join(", ")}`;
 /** The strict detector needs a matching END line, so a truncated or header-only key would
  * otherwise be stored. Any private-key header is refused, whatever its case, dash count or
  * inner spacing, including the PGP, OpenSSH, SSH2 and secret-key block forms; the type words
@@ -103,24 +105,20 @@ export const PRIVATE_KEY_HEADER = new RegExp(
   `(?:${SPACE}*-{4,5}|${SPACE}*(?:-{1,3})?)`,
   "i",
 );
-/** Read each allowed field exactly once, before anything is validated, scanned or
- * serialized: a getter or Proxy cannot answer the scan with clean text and the write
- * with a secret when the writer only ever sees this snapshot. */
-function snapshotFields<K extends string>(input: Record<string, unknown>, fields: readonly K[]): Record<K, unknown> {
-  const draft = {} as Record<K, unknown>;
-  for (const field of fields) draft[field] = input[field];
-  return draft;
-}
-
 /** Every operation snapshots its input the same way, so no field is read twice and a
- * throwing getter becomes a refusal instead of an exception out of the store. */
-/** Every operation snapshots its input the same way, so no field is read twice and a
- * throwing getter becomes a refusal instead of an exception out of the store. */
-function snapshotInput<K extends string>(input: unknown, fields: readonly K[]): Record<K, unknown> | null {
+ * throwing getter becomes a refusal instead of an exception out of the store. Each allowed
+ * field is read exactly once, before anything is validated, scanned or serialized, and the
+ * input's own keys are enumerated in that same one pass when the caller asks for them: a
+ * getter or Proxy cannot answer the scan with clean text and the write with a secret, nor the
+ * own-key allow-list with a different key list than the one it answered the field reads with. */
+function snapshotInput<K extends string>(input: unknown, fields: readonly K[], readKeys = false): { values: Record<K, unknown>; keys: string[] } | null {
   try {
     // SAFETY: an operation input is a plain record of the named fields; a hostile object
-    // throws on the property read below and is reported as a refusal instead.
-    return snapshotFields(input as Record<string, unknown>, fields);
+    // throws on the reads below and is reported as a refusal instead.
+    const source = input as Record<string, unknown>;
+    const values = {} as Record<K, unknown>;
+    for (const field of fields) values[field] = source[field];
+    return { values, keys: readKeys ? Reflect.ownKeys(source).map(String) : [] };
   } catch { return null; }
 }
 
@@ -138,12 +136,6 @@ function secretRefusal(draft: MemoryInput): string | null {
     if (scanned !== value) refused.push(field);
   }
   return refused.length ? `Secret-shaped content refused in ${refused.join(", ")}. Remove the secret-shaped text before retrying` : null;
-}
-
-function snapshotWrite(input: Record<string, unknown>): MemoryInput & { scope: MemoryScope } {
-  // SAFETY: the snapshot only carries values read from the input; validateMemory and the
-  // scope check below narrow name, type, description and body before anything uses them.
-  return snapshotFields(input, WRITE_FIELDS) as unknown as MemoryInput & { scope: MemoryScope };
 }
 
 /** Atomic replacement is last-writer-wins. Duplicate and created results are advisory under races.
@@ -308,10 +300,15 @@ export function createFileMemoryStore(options: StoreOptions) {
   async function write(input: MemoryInput & { scope: MemoryScope }): Promise<{ ok: true; name: string; scope: MemoryScope; created: boolean } | ResultError> {
     if (options.incognito) return incognitoRefusal("writes");
     try {
-      const allowed = new Set<string>(WRITE_FIELDS);
-      if (!input || typeof input !== "object" || Reflect.ownKeys(input).some((key) => !allowed.has(String(key)))) return { ok: false, error: "Unknown write input key; allowed keys: scope, type, name, description, body" };
-      let draft: MemoryInput & { scope: MemoryScope };
-      try { draft = snapshotWrite(input); } catch { return { ok: false, error: "Memory fields could not be read" }; }
+      // One snapshot: the field reads and the own-key allow-list come from it, so a caller's
+      // ownKeys trap cannot answer them with different keys, and each is read exactly once.
+      const snapshot = snapshotInput(input, WRITE_FIELDS, true);
+      if (!snapshot) return { ok: false, error: FIELD_READ_REFUSAL };
+      const allowed: ReadonlySet<string> = new Set(WRITE_FIELDS);
+      if (snapshot.keys.some((key) => !allowed.has(key))) return { ok: false, error: UNKNOWN_WRITE_KEY };
+      // SAFETY: the snapshot only carries values read from the input; validateMemory, the
+      // scope check and the secret scan below narrow and refuse the rest.
+      const draft = snapshot.values as unknown as MemoryInput & { scope: MemoryScope };
       // The cheap types and length caps run first, so an unbounded field is refused before
       // any scan can walk it.
       const invalid = validateMemory(draft);
@@ -343,12 +340,12 @@ export function createFileMemoryStore(options: StoreOptions) {
   }
 
   async function read(input: { scope?: MemoryScope; name: string }): Promise<({ ok: true; memory: Memory & { scope: MemoryScope } } & ScopeWarnings) | ResultError> {
-    const fields = snapshotInput(input, READ_FIELDS);
-    if (!fields) return { ok: false, error: FIELD_READ_REFUSAL };
-    const invalidScope = scopeRefusal(fields.scope);
+    const snapshot = snapshotInput(input, READ_FIELDS);
+    if (!snapshot) return { ok: false, error: FIELD_READ_REFUSAL };
+    const invalidScope = scopeRefusal(snapshot.values.scope);
     if (invalidScope) return invalidScope;
-    const name = fields.name;
-    const requested = requestedScope(fields.scope);
+    const name = snapshot.values.name;
+    const requested = requestedScope(snapshot.values.scope);
     if (!validName(name)) return { ok: false, error: "Invalid memory name" };
     const scanned = await visitScopes(requested, async (scope) => {
       const dir = await directory(scope, false);
@@ -377,12 +374,12 @@ export function createFileMemoryStore(options: StoreOptions) {
 
   async function remove(input: { scope?: MemoryScope; name: string }): Promise<({ ok: true; skipped?: SkippedScope[] } & ScopeWarnings) | ResultError> {
     if (options.incognito) return incognitoRefusal("removal");
-    const fields = snapshotInput(input, READ_FIELDS);
-    if (!fields) return { ok: false, error: FIELD_READ_REFUSAL };
-    const invalidScope = scopeRefusal(fields.scope);
+    const snapshot = snapshotInput(input, READ_FIELDS);
+    if (!snapshot) return { ok: false, error: FIELD_READ_REFUSAL };
+    const invalidScope = scopeRefusal(snapshot.values.scope);
     if (invalidScope) return invalidScope;
-    const name = fields.name;
-    const requested = requestedScope(fields.scope);
+    const name = snapshot.values.name;
+    const requested = requestedScope(snapshot.values.scope);
     if (!validName(name)) return { ok: false, error: "Invalid memory name" };
     try {
       const skipped: SkippedScope[] = [];
@@ -444,13 +441,13 @@ export function createFileMemoryStore(options: StoreOptions) {
     return { ok: true, ...scopeWarnings(data.skippedScopes ?? []), ...renderMemoryIndex({ entries: data.entries }) };
   }
   async function recall(input: { query?: string; name?: string; scope?: MemoryScope }): Promise<({ ok: true; memory: ScopedMemory } & ScopeWarnings) | ({ ok: true; matches: RecallMatch[] } & ScopeWarnings) | ResultError> {
-    const fields = snapshotInput(input, RECALL_FIELDS);
-    if (!fields) return { ok: false, error: FIELD_READ_REFUSAL };
-    const invalidScope = scopeRefusal(fields.scope);
+    const snapshot = snapshotInput(input, RECALL_FIELDS);
+    if (!snapshot) return { ok: false, error: FIELD_READ_REFUSAL };
+    const invalidScope = scopeRefusal(snapshot.values.scope);
     if (invalidScope) return invalidScope;
-    const query = fields.query;
-    const name = fields.name as string | undefined;
-    const scope = requestedScope(fields.scope);
+    const query = snapshot.values.query;
+    const name = snapshot.values.name as string | undefined;
+    const scope = requestedScope(snapshot.values.scope);
     if ((query !== undefined) === (name !== undefined)) return { ok: false, error: "Provide exactly one of query or name" };
     if (name !== undefined) return read({ name, scope });
     // A query always searches both scopes, so a scope here would be silently ignored.

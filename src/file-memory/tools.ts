@@ -1,15 +1,15 @@
 import { z } from "zod";
 import { defineTool } from "../tools/tool-def.js";
-import { MEMORY_NAME_SCHEMA_PATTERN } from "./format.js";
+import { MEMORY_NAME_PATTERN } from "./format.js";
 import type { createFileMemoryStore } from "./store.js";
 
 type ToolStore = Pick<ReturnType<typeof createFileMemoryStore>, "write" | "recall" | "remove">;
-const NAME_RULE = "Invalid memory name: use a non-reserved lowercase slug of at most 64 characters";
-const NAME_DESCRIPTION = "Non-reserved lowercase slug of at most 64 characters; reserved names such as memory, con, nul are refused";
-// The regex reaches the model as a JSON Schema `pattern`, so it stays the plain slug: a
-// negative lookahead is the riskiest form for a structured-output validator. The reserved
-// names are stated in the field description and refused at execution by the store.
-const name = z.string().regex(MEMORY_NAME_SCHEMA_PATTERN, NAME_RULE).describe(NAME_DESCRIPTION);
+const NAME_RULE = "Invalid memory name";
+// The one name pattern reaches the model as a JSON Schema `pattern`, so the schema and
+// `validName` cannot describe different names. The field description says what the pattern
+// enforces and that the store, not the schema, refuses the reserved names.
+const NAME_DESCRIPTION = "A plain lowercase slug of at most 64 characters: [a-z0-9] first, then [a-z0-9-]. The pattern is the whole name rule; reserved names are refused by the store with the single message \"Invalid memory name\"";
+const name = z.string().regex(MEMORY_NAME_PATTERN, NAME_RULE).describe(NAME_DESCRIPTION);
 const scope = z.enum(["global", "project"]);
 
 function execute<T>(schema: z.ZodType<T>, operation: (args: T) => Promise<unknown>) {
@@ -40,7 +40,7 @@ export function createFileMemoryTools(store: ToolStore) {
 
   return {
     remember: defineTool({
-      description: "Save or update a dated file memory in global or project scope. Name: non-reserved lowercase slug, at most 64 characters. Description: one line, at most 300 code points. Body: at most 2048 UTF-8 bytes; split or tighten longer text. Feedback/project bodies require **Why:** and **How to apply:** lines. Secrets and near-duplicates are refused; update a suggested existing memory instead. Incognito prevents writes.",
+      description: "Save or update a dated file memory in global or project scope. Name: a plain lowercase slug, at most 64 characters (reserved names are refused by the store). Description: one line, at most 300 code points. Body: at most 2048 UTF-8 bytes; split or tighten longer text. Feedback/project bodies require **Why:** and **How to apply:** lines. Secrets and near-duplicates are refused; update a suggested existing memory instead. Incognito prevents writes.",
       parameters: remember,
       execute: execute(remember, async (args) => store.write(args)),
     }),
@@ -50,7 +50,7 @@ export function createFileMemoryTools(store: ToolStore) {
       execute: execute(recall, async (args) => store.recall(args)),
     }),
     forget_memory: defineTool({
-      description: "Hard-delete a file memory by its non-reserved lowercase slug (at most 64 characters). Optional scope is global or project; two removable matches require explicit scope. Missing and non-regular files are refused. Incognito prevents deletion.",
+      description: "Hard-delete a file memory by its plain lowercase slug (at most 64 characters; reserved names are refused by the store). Optional scope is global or project; two removable matches require explicit scope. Missing and non-regular files are refused. Incognito prevents deletion.",
       parameters: forget,
       execute: execute(forget, async (args) => store.remove(args)),
     }),

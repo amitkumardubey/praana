@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { createFileMemoryStore } from "../src/file-memory/store.js";
 import { normalizeToolParameters } from "../src/turn.js";
 import { createFileMemoryTools } from "../src/file-memory/tools.js";
+import { MEMORY_NAME_PATTERN } from "../src/file-memory/format.js";
 import { memoryDirectories, projectKey } from "../src/file-memory/paths.js";
 
 const homes: string[] = [];
@@ -34,16 +35,19 @@ test("three inert file memory tools delegate valid operations and expose their l
   refused(await tools.forget_memory.execute({ name: entry.name }));
 });
 
-test("the generated JSON schema publishes the plain slug and lists the reserved names", async () => {
+test("the generated JSON schema publishes the one name pattern and names the store refusal", async () => {
   const { tools, store } = await setup();
   const nameProperty = (tool: { parameters?: unknown }) => {
     const schema = normalizeToolParameters(tool.parameters) as { properties: Record<string, { pattern?: string; description?: string }> };
     return schema.properties.name;
   };
   for (const tool of [tools.remember, tools.recall, tools.forget_memory]) {
-    // No lookahead: a structured-output validator may reject one, so the published shape is
-    // the plain slug and the reserved names travel in the field description.
-    expect([nameProperty(tool)?.pattern, nameProperty(tool)?.description?.includes("memory, con, nul")]).toEqual(["^[a-z0-9][a-z0-9-]{0,63}$", true]);
+    // The published pattern is the store's one name pattern, a plain slug with no lookahead
+    // (a structured-output validator may reject one); the field description says that the
+    // store refuses the reserved names with its single message.
+    expect(nameProperty(tool)?.pattern).toBe(MEMORY_NAME_PATTERN.source);
+    expect(nameProperty(tool)?.description).toContain("reserved names are refused by the store");
+    expect(nameProperty(tool)?.description).toContain("Invalid memory name");
   }
   const published = new RegExp(nameProperty(tools.remember)?.pattern ?? "");
   expect(published.test("con")).toBe(true);

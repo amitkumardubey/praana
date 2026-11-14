@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { MEMORY_NAME_SCHEMA_PATTERN, parseMemory, sanitizeDescription, serializeMemory, validName, validateMemory } from "../src/file-memory/format.js";
+import { MEMORY_NAME_PATTERN, parseMemory, sanitizeDescription, serializeMemory, validName, validateMemory } from "../src/file-memory/format.js";
 
 const entry = { name: "example", description: "A useful note", type: "user" as const, updated: "2026-01-02", body: "Hello world" };
 
@@ -18,8 +18,8 @@ describe("file memory format", () => {
     expect(parseMemory(serializeMemory({ ...entry, body: "" }).trimEnd())).toEqual({ ...entry, body: "" });
     expect(parseMemory(serializeMemory({ ...entry, body: "" }))).toEqual({ ...entry, body: "" });
   });
-  test("the published name pattern is the plain slug while the validator keeps the reserved names", () => {
-    const published = new RegExp(MEMORY_NAME_SCHEMA_PATTERN.source);
+  test("the one name pattern is the plain slug and the validator keeps the reserved names", () => {
+    const published = new RegExp(MEMORY_NAME_PATTERN.source);
     expect(published.source).toBe("^[a-z0-9][a-z0-9-]{0,63}$");
     // No lookahead: a structured-output validator may reject one.
     expect(published.source).not.toContain("?!");
@@ -35,11 +35,11 @@ describe("file memory format", () => {
       ["two words", false], ["", false], ["a".repeat(65), false],
       ["coffee\n", false], ["coffee\r\n", false], ["memory\n", false], ["con\n", false],
     ];
-    // Both rules are consulted at execution, so a name is accepted only when the published
-    // shape and the validator agree.
+    // The published shape and the reserved-name set are both consulted at execution, so a
+    // name is accepted only when they agree.
     for (const [name, accepted] of names) expect([name, published.test(name) && validName(name)]).toEqual([name, accepted]);
-    // The published pattern itself is exactly the slug shape, so it accepts reserved names
-    // that the validator refuses and nothing the validator would allow.
+    // The one pattern is exactly the slug shape, so it accepts the reserved names that
+    // `validName` refuses and nothing else the validator would allow.
     for (const reserved of ["memory", "con", "prn", "aux", "nul", "com1", "com9", "lpt1", "lpt9"]) {
       expect([reserved, published.test(reserved), validName(reserved)]).toEqual([reserved, true, false]);
     }
