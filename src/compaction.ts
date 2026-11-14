@@ -647,6 +647,8 @@ function tryCommitRewrite(
  *    recent stubKeepRecent results, shrinking to 1 under hard capacity pressure;
  *    the newest result is never stubbed).
  * 4. Stop with capacity_error when the in-flight turn + frame cannot fit usable capacity.
+ * If summarization fails but the unmodified request fits, commit nothing: discard
+ * even the Step 1 stale stubs already computed and return summary_failed_fits.
  */
 export async function runCompaction(input: RunCompactionInput): Promise<CompactionOutcome> {
   try {

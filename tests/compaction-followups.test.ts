@@ -219,6 +219,29 @@ test("rendered summary allowance handles a newline-heavy summary at the cap", as
   expect(outcome).not.toHaveProperty("discardedSummary");
 });
 
+test("summary failure discards computed stale stubs when the unmodified request fits", async () => {
+  const { log, writer } = fixture();
+  const turn = await writer.startTurn("old " + "x".repeat(1000));
+  await writer.assistant(turn, { role: "assistant", content: "", toolCalls: [{ id: "call", name: "shell", args: {} }] });
+  await writer.result(turn, "call", "shell", "r".repeat(2000), false);
+  await writer.startTurn("current");
+  const before = log.readAll({ includeInternal: true });
+  let stalePlans = 0;
+  let summaryCalls = 0;
+  const outcome = await compaction.runCompaction({ log, liveRequest: live, contextWindowTokens: 12000, options,
+    planStubs: (candidates, phase) => {
+      if (phase.phase === "stale") stalePlans++;
+      return candidates.map(candidate => ({ eventId: candidate.eventId, stubText: "stub" }));
+    },
+    runSummary: async () => { summaryCalls++; throw new Error("unavailable"); },
+  });
+  expect(stalePlans).toBe(1);
+  expect(summaryCalls).toBe(1);
+  expect(outcome.status).toBe("summary_failed_fits");
+  expect(log.readAll({ includeInternal: true })).toEqual(before);
+  expect(state(log).stubSet).toEqual([]);
+});
+
 for (const length of [80, 200]) for (const previous of [false, true]) {
   test(`visible cut quotes ${length} characters with previous=${previous}`, async () => {
     const { log, writer } = fixture();
