@@ -2,18 +2,15 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { emitCanonicalTranscript, readFullSessionCanonicalRecords, type CanonicalRecord } from "../src/canonical-transcript.js";
 import { loadConfig } from "../src/config.js";
 import { ArtifactStore } from "../src/context-engine/artifact-store.js";
 import { estimateTokens } from "../src/token-estimate.js";
 import {
-  applyStubsToCanonicalRecords,
+  buildToolResultStub,
   DEFAULT_EXACT_BYTES_TOOLS,
   planToolResultStubs,
-  planTurnBatchStubs,
   shapeToolOutput,
 } from "../src/tool-output.js";
-import type { Event } from "../src/types.js";
 
 const tempDirs: string[] = [];
 const stores: ArtifactStore[] = [];
@@ -233,99 +230,41 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     expect(degraded.text).toContain("search_transcript");
   });
 
-  test("stale-result batch stubber preserves pairing, reproduces on replay, and fires once per trigger not per step", () => {
-    // Build a multi-step canonical transcript with parallel tool calls and shaped results containing artifact IDs.
-    const events: Event[] = [];
-    const add = (id: string, record: CanonicalRecord) => {
-      events.push({ event_id: id, session_id: "s", timestamp: events.length + 1, kind: "canonical_message", actor: "kernel", payload: { ...record } });
-    };
+  test("exposes only the shaper, buildToolResultStub, planToolResultStubs, and constants", async () => {
+    const mod = await import("../src/tool-output.js");
+    expect(Object.keys(mod).sort()).toEqual([
+      "DEFAULT_EXACT_BYTES_TOOLS",
+      "DEFAULT_INLINE_THRESHOLD_TOKENS",
+      "DEFAULT_SHAPE_HEAD_BYTES",
+      "DEFAULT_SHAPE_HEAD_LINES",
+      "DEFAULT_SHAPE_MAX_BYTES",
+      "DEFAULT_SHAPE_MAX_LINES",
+      "DEFAULT_SHAPE_TAIL_BYTES",
+      "DEFAULT_SHAPE_TAIL_LINES",
+      "DEFAULT_STUB_KEEP_RECENT",
+      "DEFAULT_STUB_MIN_TOKENS",
+      "buildToolResultStub",
+      "planToolResultStubs",
+      "shapeToolOutput",
+    ]);
+  });
 
-    add("u1", { formatVersion: 1, kind: "user_input", turnId: 1, message: { text: "Run checks" } });
-    add("a1", {
-      formatVersion: 1,
-      kind: "assistant",
+  test("planToolResultStubs filters by minTokens and builds one-line stubs with event and artifact ids", () => {
+    const stubText = buildToolResultStub({
+      eventId: "res-1",
       turnId: 1,
-      message: {
-        text: "Running parallel checks",
-        toolCalls: [
-          { id: "call-1", name: "shell", args: { cmd: "step1" } },
-          { id: "call-2", name: "shell", args: { cmd: "step2" } },
-        ],
-      },
+      callId: "call-1",
+      toolName: "shell",
+      text: `head\n... [elided 100 lines / 4000 bytes; full output stored in artifact art_abc123def456 — call retrieve_artifact("art_abc123def456") to inspect] ...\n${"A".repeat(1600)}`,
+      isError: false,
+      estimatedTokens: 400,
     });
-    add("res-1", {
-      formatVersion: 1,
-      kind: "tool_result",
-      turnId: 1,
-      message: {
-        callId: "call-1",
-        toolName: "shell",
-        text: `head\n... [elided 100 lines / 4000 bytes; full output stored in artifact art_abc123def456 — call retrieve_artifact("art_abc123def456") to inspect] ...\n${"A".repeat(1600)}`,
-        isError: false,
-      },
-    });
-    add("res-2", {
-      formatVersion: 1,
-      kind: "tool_result",
-      turnId: 1,
-      message: {
-        callId: "call-2",
-        toolName: "shell",
-        text: "B".repeat(1600),
-        isError: true,
-      },
-    });
+    expect(stubText).not.toContain("\n");
+    expect(stubText).toContain("res-1");
+    expect(stubText).toContain("art_abc123def456");
+    expect(stubText).toContain("search_transcript");
+    expect(stubText).toContain("retrieve_artifact");
 
-    // Add 3 more tool steps (so res-1 and res-2 are older than the most recent K=3 results: res-3, res-4, res-5)
-    for (let step = 3; step <= 5; step++) {
-      add(`a${step}`, {
-        formatVersion: 1,
-        kind: "assistant",
-        turnId: 1,
-        message: {
-          text: `Step ${step}`,
-          toolCalls: [{ id: `call-${step}`, name: "shell", args: { step } }],
-        },
-      });
-      add(`res-${step}`, {
-        formatVersion: 1,
-        kind: "tool_result",
-        turnId: 1,
-        message: {
-          callId: `call-${step}`,
-          toolName: "shell",
-          text: `Recent-${step}:${"R".repeat(1600)}`,
-          isError: false,
-        },
-      });
-    }
-
-    // 1. Per-step calls while below trigger (triggered: false) produce NO stubs (append-only preserved).
-    for (let count = 3; count <= events.length; count++) {
-      const stepPlan = planTurnBatchStubs(events.slice(0, count), {
-        triggered: false,
-        keepRecent: 3,
-        minTokens: 100,
-      });
-      expect(stepPlan).toEqual([]);
-    }
-
-    // 2. When the compaction watermark triggers once (triggered: true), stubs all large results older than the most recent K=3 in one batch.
-    const stubSet = planTurnBatchStubs(events, {
-      triggered: true,
-      keepRecent: 3,
-      minTokens: 100,
-    });
-    expect(stubSet.map((s) => s.eventId)).toEqual(["res-1", "res-2"]);
-    for (const entry of stubSet) {
-      expect(entry.stubText).not.toContain("\n");
-      expect(entry.stubText).toContain(entry.eventId);
-      expect(entry.stubText).toContain("search_transcript");
-    }
-    // res-1 carried artifact art_abc123def456, which is preserved in its one-line stub!
-    expect(stubSet[0]?.stubText).toContain("art_abc123def456");
-
-    // 3. Direct compatibility with compaction.ts StubPlanner contract (`planToolResultStubs`)
     const direct = planToolResultStubs(
       [
         {
@@ -333,7 +272,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
           turnId: 1,
           callId: "call-1",
           toolName: "shell",
-          text: "X".repeat(1600),
+          text: `head\n... [elided 100 lines / 4000 bytes; full output stored in artifact art_abc123def456 — call retrieve_artifact("art_abc123def456") to inspect] ...\n${"A".repeat(1600)}`,
           isError: false,
           estimatedTokens: 400,
         },
@@ -349,41 +288,6 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
       ],
       { phase: "stale", minTokens: 256, keepRecent: 3 },
     );
-    expect(direct.map((d) => d.eventId)).toEqual(["res-1"]);
-
-    // 4. Pairing and replay: applying stubSet to canonical records preserves call/result pairing and reproduces identical bytes on replay.
-    const originalRecords = readFullSessionCanonicalRecords(events);
-    const beforeSnapshot = JSON.stringify(originalRecords);
-
-    const replay1 = emitCanonicalTranscript(applyStubsToCanonicalRecords(events, stubSet));
-    const replay2 = emitCanonicalTranscript(applyStubsToCanonicalRecords(events, stubSet));
-    expect(replay1).toEqual(replay2);
-    // Original canonical records are untouched
-    expect(JSON.stringify(originalRecords)).toBe(beforeSnapshot);
-
-    // Parallel call-1 and call-2 still have their paired tool_result messages in order, with isError preserved
-    const toolResultMessages = replay1.filter((m) => m.role === "tool_result");
-    expect(toolResultMessages).toHaveLength(5);
-    expect(toolResultMessages[0]).toEqual({
-      role: "tool_result",
-      toolCallId: "call-1",
-      toolName: "shell",
-      result: stubSet[0]?.stubText ?? "",
-      isError: false,
-    });
-    expect(toolResultMessages[1]).toEqual({
-      role: "tool_result",
-      toolCallId: "call-2",
-      toolName: "shell",
-      result: stubSet[1]?.stubText ?? "",
-      isError: true,
-    });
-    // The 3 most recent results (res-3, res-4, res-5) remain verbatim
-    for (let i = 2; i < 5; i++) {
-      const msg = toolResultMessages[i];
-      if (msg && msg.role === "tool_result") {
-        expect(msg.result).toBe(`Recent-${i + 1}:${"R".repeat(1600)}`);
-      }
-    }
+    expect(direct).toEqual([{ eventId: "res-1", stubText }]);
   });
 });

@@ -1,25 +1,18 @@
 /**
- * Deterministic tool-output ingestion shaper and stale-result batch stubber.
+ * Deterministic tool-output ingestion shaper and stub planner.
  *
  * 1. Ingestion shaping (`shapeToolOutput`): runs once when a tool result enters
  *    the log. Results over `inlineThresholdTokens` keep bounded head and tail
  *    lines/bytes with an elision marker naming the side-file artifact ID
  *    (`retrieve_artifact`). Inputs whose exact bytes the model must reproduce
  *    (`read_file`, LSP location tools, `retrieve_artifact`) are never shaped.
- * 2. Stale-result batch stubbing (`planToolResultStubs`, `planTurnBatchStubs`):
- *    runs as a batch at a compaction trigger (never per step), replacing large
- *    tool results older than the most recent K results with a single-line stub
- *    carrying the canonical event ID (and artifact ID when present) while
- *    preserving call/result pairing.
+ * 2. Result stubbing (`buildToolResultStub`, `planToolResultStubs`):
+ *    provides a `StubPlanner` for compaction, replacing eligible large tool
+ *    results with a single-line stub carrying the canonical event ID (and
+ *    artifact ID when present).
  */
 
-import {
-  readFullSessionCanonicalRecords,
-  type CanonicalRecord,
-} from "./canonical-transcript.js";
-import { eventsAfterResetBoundary } from "./event-log.js";
 import { estimateTokens } from "./token-estimate.js";
-import type { Event } from "./types.js";
 
 export const DEFAULT_INLINE_THRESHOLD_TOKENS = 400;
 export const DEFAULT_SHAPE_MAX_LINES = 80;
@@ -305,84 +298,4 @@ export function planToolResultStubs(
     entries.push({ eventId: candidate.eventId, stubText });
   }
   return entries;
-}
-
-export interface BatchStubOptions {
-  /** Batch stubbing fires only at a compaction watermark trigger, never per step. */
-  triggered: boolean;
-  keepRecent?: number;
-  minTokens?: number;
-}
-
-/**
- * Batch planner over canonical events in the current reset epoch.
- * Returns `[]` unless `triggered` is true (preserving append-only history between
- * rewrites). When triggered, keeps the most recent `keepRecent` (default 3)
- * tool results verbatim and stubs older tool results of at least `minTokens`.
- */
-export function planTurnBatchStubs(
-  events: readonly Event[],
-  options: BatchStubOptions,
-): StubEntry[] {
-  if (!options.triggered) return [];
-  const keepRecent = Math.max(1, options.keepRecent ?? DEFAULT_STUB_KEEP_RECENT);
-  const minTokens = options.minTokens ?? DEFAULT_STUB_MIN_TOKENS;
-
-  const epochEvents = eventsAfterResetBoundary([...events]).filter(
-    (ev) => ev.kind === "canonical_message",
-  );
-  const epochRecords = readFullSessionCanonicalRecords(epochEvents);
-  const allResults: StubCandidate[] = [];
-  for (let i = 0; i < epochRecords.length; i++) {
-    const rec = epochRecords[i];
-    const ev = epochEvents[i];
-    if (!rec || !ev || rec.kind !== "tool_result") continue;
-    allResults.push({
-      eventId: ev.event_id,
-      turnId: rec.turnId,
-      callId: rec.message.callId,
-      toolName: rec.message.toolName,
-      text: rec.message.text,
-      isError: rec.message.isError,
-      estimatedTokens: estimateTokens(rec.message.text),
-    });
-  }
-
-  if (allResults.length <= keepRecent) return [];
-  const staleSlice = allResults.slice(0, allResults.length - keepRecent);
-  return planToolResultStubs(staleSlice, { phase: "stale", minTokens, keepRecent });
-}
-
-/**
- * Pure helper that applies a committed `stubSet` to canonical events in the
- * current reset epoch without mutating the underlying events or breaking
- * `tool_call` / `tool_result` pairing.
- */
-export function applyStubsToCanonicalRecords(
-  events: readonly Event[],
-  stubSet: readonly StubEntry[],
-): CanonicalRecord[] {
-  const stubMap = new Map(stubSet.map((s) => [s.eventId, s.stubText]));
-  const epochEvents = eventsAfterResetBoundary([...events]).filter(
-    (ev) => ev.kind === "canonical_message",
-  );
-  const epochRecords = readFullSessionCanonicalRecords(epochEvents);
-  const records: CanonicalRecord[] = [];
-  for (let i = 0; i < epochRecords.length; i++) {
-    const rec = epochRecords[i];
-    const ev = epochEvents[i];
-    if (!rec || !ev) continue;
-    if (rec.kind === "tool_result" && stubMap.has(ev.event_id)) {
-      const replacement = stubMap.get(ev.event_id);
-      if (replacement !== undefined) {
-        records.push({
-          ...rec,
-          message: { ...rec.message, text: replacement },
-        });
-        continue;
-      }
-    }
-    records.push(rec);
-  }
-  return records;
 }
