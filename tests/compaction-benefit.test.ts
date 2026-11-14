@@ -81,7 +81,7 @@ function expectDiscarded(outcome: CompactionOutcome, log: EventLog, text: string
       previousSummarySha256: null,
       text,
       request: {
-        cutDescription: `1 folded user turns (count user messages, excluding a leading previous-summary message); the retained tail starts at the user message beginning ${prefix}; summarize only what comes before it`,
+        cutDescription: `the first 1 user messages are folded; the retained tail starts at user message 2 (counting user messages after any leading previous-summary message), which begins ${prefix}; summarize only what comes before it`,
         capTokens: summaryCapTokens(usableTokens),
         instructionSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         usage,
@@ -436,7 +436,7 @@ test("a capacity error exposes the accepted summary and its paid request metadat
       previousSummarySha256: null,
       text: accepted,
       request: {
-        cutDescription: '1 folded user turns (count user messages, excluding a leading previous-summary message); the retained tail starts at the user message beginning "now"; summarize only what comes before it',
+        cutDescription: 'the first 1 user messages are folded; the retained tail starts at user message 2 (counting user messages after any leading previous-summary message), which begins "now"; summarize only what comes before it',
         capTokens: summaryCapTokens(usableTokens),
         // This window uses a one-batch fallback, so hash its single primary hash.
         instructionSha256: createHash("sha256").update(createHash("sha256").update(instruction).digest("hex")).digest("hex"),
@@ -459,7 +459,7 @@ test("batch fallback preserves the discarded combined summary and batch request 
     await writer.result(current, id, "shell", text, false);
   }
   const boundaryEventId = buildTurns(log).at(-2)!.eventIds.at(-1)!;
-  const cutDescription = '20 folded user turns (count user messages, excluding a leading previous-summary message); the retained tail starts at the user message beginning "now"; summarize only what comes before it';
+  const cutDescription = 'the first 20 user messages are folded; the retained tail starts at user message 21 (counting user messages after any leading previous-summary message), which begins "now"; summarize only what comes before it';
   const capTokens = summaryCapTokens(5000);
   const requests: StreamRequest[] = [];
   const replies: string[] = [];
@@ -484,7 +484,7 @@ test("batch fallback preserves the discarded combined summary and batch request 
     expect(JSON.stringify(request.messages)).toContain("no retained tail is included");
   }
   const combinedInstruction = buildSummaryInstruction({
-    cutDescription: `${requests.at(-1)!.messages.length / 2 - 0.5} folded user turns; summarize every message below`,
+    cutDescription: `${requests.at(-1)!.messages.length / 2 - 0.5} folded user messages; summarize every message below`,
     capTokens, previousSummary: replies.at(-2)!, tailVisible: false,
   });
   expect(requests.at(-1)!.messages.at(-1)).toEqual({ role: "user", content: combinedInstruction });

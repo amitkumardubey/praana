@@ -9,6 +9,7 @@ import { CanonicalTranscriptError, CanonicalValidator, emitCanonicalTranscript, 
 import {
   buildSameModelSummaryRequest,
   buildSummaryRepairRequest,
+  countUserMessages,
   cutDescription,
   nextBatchSummaryRequest,
   planBatchSummaries,
@@ -754,7 +755,7 @@ async function runCompactionChecked(input: RunCompactionInput): Promise<Compacti
       if (!lastFoldedTurn || !newBoundaryEventId) {
         throw new Error("Expected at least one folded turn with a boundary event id.");
       }
-      const cutText = cutDescription(foldedTurns.length, retainedTurns[0]);
+      const cutText = cutDescription(countUserMessages(foldedTurns), retainedTurns[0]);
 
       // Drop any stubs pointing into foldedTurns; retain only stubs in retainedTurns.
       const retainedResultIds = new Set(collectToolResults(retainedTurns).map((c) => c.eventId));

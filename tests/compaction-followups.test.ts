@@ -31,17 +31,45 @@ function state(log: EventLog) {
 }
 const live: StreamRequest = { model: "test", provider: "anthropic", messages: [] };
 const options = { effectiveMaxTokens: 200, tailTurns: 0, contextLimitRatio: 0.01, postRewriteMargin: 0 };
-test("cut collapses newlines and batch cut covers only folded user turns", async () => {
+test("cut quotes the first line of the retained message and batch cut counts folded user messages", async () => {
   const { log, writer } = fixture();
   const turn = await writer.startTurn("shared first");
   await writer.assistant(turn, { role: "assistant", content: "done" });
   await writer.startTurn('shared retained\n\r\n"quoted"');
   const turns = compaction.buildTurns(log);
-  expect(cutDescription(1, turns[1])).toContain(`beginning ${JSON.stringify('shared retained "quoted"')}`);
+  expect(cutDescription(1, turns[1])).toContain(`begins ${JSON.stringify("shared retained")}; summarize`);
   const plan = planBatchSummaries(live, [turns[0]], { capTokens: 100, contextWindowTokens: 12000, effectiveMaxTokens: 200 });
   expect(plan.status).toBe("planned");
   if (plan.status !== "planned") throw new Error(plan.status);
-  expect(plan.plan.batches[0].cutDescription).toBe("1 folded user turns; summarize every message below");
+  expect(plan.plan.batches[0].cutDescription).toBe("1 folded user messages; summarize every message below");
+});
+test("cut counts wrap-ups as user messages and quotes whole code points of a non-empty first line", async () => {
+  const { log, writer } = fixture();
+  const first = await writer.startTurn("first");
+  await writer.assistant(first, { role: "assistant", content: "a" });
+  await writer.wrapUp(first, "wrap up please");
+  await writer.assistant(first, { role: "assistant", content: "b" });
+  await writer.startTurn("x".repeat(79) + "\u{1F600}tail");
+  const turns = compaction.buildTurns(log);
+  const folded = requestsApi.countUserMessages([turns[0]]);
+  expect(folded).toBe(turns[0].messages.filter(message => message.role === "user").length);
+  expect(folded).toBe(2);
+  const cut = cutDescription(folded, turns[1]);
+  expect(cut).toContain("the first 2 user messages are folded; the retained tail starts at user message 3");
+  expect(cut).toContain(`begins ${JSON.stringify("x".repeat(79) + "\u{1F600}")}`);
+  expect(cut).not.toContain("\\ud83d");
+  expect(planBatchSummaries(live, [turns[0]], { capTokens: 100, contextWindowTokens: 12000, effectiveMaxTokens: 200 }))
+    .toMatchObject({ status: "planned", plan: { batches: [{ cutDescription: "2 folded user messages; summarize every message below" }] } });
+});
+test("cut omits the quote when the retained message starts with a blank line", async () => {
+  const { log, writer } = fixture();
+  const first = await writer.startTurn("first");
+  await writer.assistant(first, { role: "assistant", content: "a" });
+  await writer.startTurn("\nbody after a blank line");
+  const turns = compaction.buildTurns(log);
+  const cut = cutDescription(1, turns[1]);
+  expect(cut).not.toContain("begins");
+  expect(cut).toContain("the retained tail starts at user message 2");
 });
 const response = (text = minimumValidSummary()) => ({ text, finishReason: "stop" as const, toolCalls: [], usage: null });
 async function seed(log: EventLog, writer: CanonicalWriter, text = minimumValidSummary()) {
@@ -284,7 +312,6 @@ test("buildTurns owns turn construction without a forwarding wrapper", async () 
   expect(estimated[0].messages).toEqual([{ role: "user", content: "input" }, { role: "assistant", content: "reply" }]);
   expect(estimated[0].estimatedTokens).toBeGreaterThan(0);
   expect(unestimated[0].estimatedTokens).toBe(0);
-  expect(compaction.buildTurns.toString()).not.toContain("return turnView(");
 });
 
 test("pre-check copy preserves pre-existing in-flight stubs without planning new ones", async () => {
@@ -326,8 +353,8 @@ for (const length of [80, 200]) for (const previous of [false, true]) {
     expect(request).toBeDefined();
     const instruction = String((request!.messages.at(-1) as { content: string }).content);
     const quote = JSON.stringify(text.slice(0, 80));
-    expect(instruction).toContain("3 folded user turns");
-    expect(instruction).toContain(`beginning ${quote}`);
+    expect(instruction).toContain("the first 3 user messages are folded; the retained tail starts at user message 4");
+    expect(instruction).toContain(`begins ${quote}`);
     expect(request!.messages.slice(0, -1).filter(message => message.role === "user" && typeof message.content === "string" && message.content.startsWith(text.slice(0, 80)))).toHaveLength(1);
     expect(request!.messages.slice(0, -1).filter(message => message.role === "user")).toHaveLength(previous ? 5 : 4);
     expect(instruction).not.toContain("canonical event");

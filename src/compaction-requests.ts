@@ -114,11 +114,24 @@ function validateSummaryCap(capTokens: number): void {
   }
 }
 
-export function cutDescription(foldedCount: number, firstRetained?: CompactionTurn): string {
-  if (!firstRetained) return `${foldedCount} folded user turns; summarize every message below`;
+/** User messages as the model sees them (user inputs and wrap-ups), across `turns`. */
+export function countUserMessages(turns: readonly CompactionTurn[]): number {
+  return turns.reduce((count, turn) => count + turn.messages.filter(message => message.role === "user").length, 0);
+}
+
+/**
+ * Describes the cut only with what the request shows: the number K of folded user messages
+ * and the first line of the first retained user message (at most 80 code points, so a
+ * surrogate pair is never split). The ordinal K + 1 disambiguates repeated prefixes.
+ */
+export function cutDescription(foldedUserMessages: number, firstRetained?: CompactionTurn): string {
+  if (!firstRetained) return `${foldedUserMessages} folded user messages; summarize every message below`;
   const input = firstRetained.records.find(record => record.kind === "user_input");
-  const prefix = input?.kind === "user_input" ? input.message.text.replace(/[\r\n]+/g, " ").slice(0, 80) : "";
-  return `${foldedCount} folded user turns (count user messages, excluding a leading previous-summary message); the retained tail starts at the user message beginning ${JSON.stringify(prefix)}; summarize only what comes before it`;
+  const firstLine = input?.kind === "user_input" ? (input.message.text.split(/\r\n|\r|\n/, 1)[0] ?? "") : "";
+  const prefix = Array.from(firstLine).slice(0, 80).join("");
+  const start = `user message ${foldedUserMessages + 1} (counting user messages after any leading previous-summary message)`;
+  const begins = prefix.trim() ? `, which begins ${JSON.stringify(prefix)}` : "";
+  return `the first ${foldedUserMessages} user messages are folded; the retained tail starts at ${start}${begins}; summarize only what comes before it`;
 }
 
 function summaryBatch(turns: readonly CompactionTurn[]): SummaryBatch {
@@ -126,7 +139,7 @@ function summaryBatch(turns: readonly CompactionTurn[]): SummaryBatch {
   const boundaryEventId = last.eventIds.at(-1)!;
   return {
     turnIds: turns.map(turn => turn.turnId), eventIds: turns.flatMap(turn => turn.eventIds), boundaryEventId,
-    cutDescription: cutDescription(turns.length),
+    cutDescription: cutDescription(countUserMessages(turns)),
     messages: turns.flatMap(turn => turn.messages), budgetedInputTokens: 0,
   };
 }
@@ -161,7 +174,7 @@ export function planBatchSummaries(
     const turnTokens = turn.messages.reduce((sum, message) => sum + estimateMessageTokens(renderBatchMessage(message)), 0);
     const measureFrame = () => {
       const request = buildBatchSummaryRequest(template, { messages: [] }, {
-        ...options, cutDescription: cutDescription(pending.length + 1),
+        ...options, cutDescription: cutDescription(countUserMessages([...pending, turn])),
         previousSummary: batches.length ? "" : options.previousSummary,
       });
       return requestFill(request, request.messages, options.contextWindowTokens, options);
