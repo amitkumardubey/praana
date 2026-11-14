@@ -289,9 +289,16 @@ export function createFileMemoryStore(options: StoreOptions) {
       const handle = await fs.open(temp, "wx", 0o600);
       createdTemp = true;
       try { await handle.writeFile(text, "utf8"); await handle.sync(); }
-      // A close that fails after a complete write must not discard the replacement: the
-      // rename below still commits, and the original error (if any) still wins.
-      finally { try { await handle.close(); } catch (error) { logBestEffortFailure("closing a replacement file", error); } }
+      finally {
+        // This handle carries the replacement, so a failed close is an unconfirmed write
+        // (EIO or ENOSPC can surface only here): it aborts, removes the temp file and leaves
+        // the previous memory intact. An error already propagating from the write still wins.
+        try { await handle.close(); }
+        catch (error) {
+          if (createdTemp) { try { await fs.unlink(temp); } catch (unlinkError) { if (!missing(unlinkError)) logBestEffortFailure("removing an unconfirmed replacement", unlinkError); } createdTemp = false; }
+          throw error;
+        }
+      }
       await fs.rename(temp, target);
       createdTemp = false;
       try { const handle = await fs.open(dir, "r"); try { await handle.sync(); } finally { await handle.close(); } } catch { /* Directory fsync is best-effort. */ }

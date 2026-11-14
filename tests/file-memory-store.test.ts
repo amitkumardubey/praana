@@ -415,7 +415,7 @@ describe("file memory store", () => {
       };
     } });
   }
-  test("a failing close never discards a removal probe or a committed write", async () => {
+  test("a failing close never discards a removal probe or a memory that was read", async () => {
     const { home, store, dir } = await setup();
     expect((await store.write(input)).ok).toBe(true);
     const options = { home, cwd: home, findRoot: (cwd: string) => cwd, now: () => new Date("2026-05-01T00:00:00Z") };
@@ -423,11 +423,6 @@ describe("file memory store", () => {
     const probing = createFileMemoryStore({ ...options, fs: failingClose((path) => path === join(dir, "coffee.md")) });
     expect(await probing.remove({ name: "coffee", scope: "global" })).toEqual({ ok: true });
     expect(await fs.exists(join(dir, "coffee.md"))).toBe(false);
-    // The replacement temp file's handle closing badly must not discard a written memory.
-    const writing = createFileMemoryStore({ ...options, fs: failingClose((path) => path.includes(".tea.md.tmp-")) });
-    expect(await writing.write({ ...input, name: "tea", description: "Tea is also welcome" })).toEqual({ ok: true, name: "tea", scope: "global", created: true });
-    expect((await store.read({ name: "tea", scope: "global" })).ok).toBe(true);
-    expect((await fs.readdir(dir)).filter((name) => name.includes(".tmp-"))).toEqual([]);
   });
   test("a tolerated close failure is logged once per failure and never changes the result", async () => {
     const { home, store, dir } = await setup();
@@ -448,12 +443,6 @@ describe("file memory store", () => {
       expect(lines).toHaveLength(1);
       expect(lines[0]).toContain("closing a removal probe");
       expect(lines[0]).not.toContain(home);
-      lines.length = 0;
-      const writing = createFileMemoryStore({ ...options, fs: failingClose((path) => path.includes(".tea.md.tmp-")) });
-      expect((await writing.write({ ...input, name: "tea", description: "Tea is also welcome" })).ok).toBe(true);
-      expect(lines).toHaveLength(1);
-      expect(lines[0]).toContain("closing a replacement file");
-      expect(lines[0]).not.toContain(home);
     } finally { setAppLogger(previous); }
   });
   test("a throwing logger cannot change a tolerated close result", async () => {
@@ -467,9 +456,24 @@ describe("file memory store", () => {
       const closing = createFileMemoryStore({ ...options, fs: failingClose((path) => path === join(dir, "coffee.md")) });
       expect(await closing.read({ name: "coffee", scope: "global" })).toMatchObject({ ok: true, memory: { name: "coffee" } });
       expect(await closing.remove({ name: "coffee", scope: "global" })).toEqual({ ok: true });
-      const writing = createFileMemoryStore({ ...options, fs: failingClose((path) => path.includes(".tea.md.tmp-")) });
-      expect((await writing.write({ ...input, name: "tea", description: "Tea is also welcome" })).ok).toBe(true);
     } finally { setAppLogger(previous); }
+  });
+  test("a failing close of the replacement file aborts the write and keeps the old memory", async () => {
+    const { home, store, dir } = await setup();
+    expect((await store.write(input)).ok).toBe(true);
+    const before = await fs.readFile(join(dir, "coffee.md"), "utf8");
+    const options = { home, cwd: home, findRoot: (cwd: string) => cwd, now: () => new Date("2026-05-01T00:00:00Z") };
+    // EIO/ENOSPC can surface only at close, so an unconfirmed close must not be renamed over
+    // the live memory: the write reports the failure and removes its own temp file.
+    const closing = createFileMemoryStore({ ...options, fs: failingClose((path) => path.includes(".coffee.md.tmp-")) });
+    const result = await closing.write({ ...input, body: "Never durable" });
+    expect(result).toEqual({ ok: false, error: "EIO: close failed" });
+    expect(await fs.readFile(join(dir, "coffee.md"), "utf8")).toBe(before);
+    expect((await fs.readdir(dir)).filter((name) => name.includes(".tmp-"))).toEqual([]);
+    // A fresh write still works, and the read-only probe keeps its tolerant close.
+    expect((await store.write({ ...input, body: "Written later" })).ok).toBe(true);
+    const probing = createFileMemoryStore({ ...options, fs: failingClose((path) => path === join(dir, "coffee.md")) });
+    expect(await probing.read({ name: "coffee", scope: "global" })).toMatchObject({ ok: true, memory: { name: "coffee" } });
   });
   test("ignores malformed, oversized, symlink and temp files", async () => {
     const { store, dir, home } = await setup();
