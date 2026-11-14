@@ -32,6 +32,8 @@ export function summarizeArgs(toolName: string, args: Record<string, unknown>): 
     case "recall":
     case "search_session_log":
       return String(args.query ?? "").slice(0, 60);
+    case "search_transcript":
+      return String(args.query ?? args.id ?? "").slice(0, 60);
     case "remember":
       return String(args.content ?? "").slice(0, 60);
     default:

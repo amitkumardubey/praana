@@ -1817,6 +1817,7 @@ describe("per-turn step budget — config validation", () => {
 
   it("defaults to max_steps=25, pause_after_steps=50, hard_max_steps=300", () => {
     writeTurnConfig("# empty\n");
+    getConfigWarnings(); // drain warnings left by earlier test files before asserting none
     const config = loadConfig();
     const t = config.turn as TurnConfig;
     expect(t.max_steps).toBe(25);
@@ -1829,6 +1830,7 @@ describe("per-turn step budget — config validation", () => {
     writeTurnConfig(
       "[turn]\nmax_steps = 10\npause_after_steps = 7\nhard_max_steps = 99\n",
     );
+    getConfigWarnings(); // drain warnings left by earlier test files before asserting none
     const config = loadConfig();
     const t = config.turn as TurnConfig;
     expect(t.max_steps).toBe(10);

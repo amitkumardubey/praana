@@ -278,7 +278,7 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
               entries: [],
               note:
                 result.notice ??
-                "No Cognitive Memory matches. If this was discussed earlier in this same session, use search_session_log(query, kinds?, limit?) to recover it from events.jsonl.",
+                "No Cognitive Memory matches. For earlier conversation or tool output, use search_transcript(query) over canonical session records, including compacted/stubbed turns (current reset epoch by default; include_previous_resets=true crosses /clear). Use search_session_log for other session events.",
             };
           }
 
@@ -292,7 +292,7 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
           return {
             ok: false,
             error:
-              `${message}. For same-session history, use search_session_log(query, kinds?, limit?) instead of recall.`,
+              `${message}. For same-session history, use search_transcript(query) over canonical session records, including compacted/stubbed turns (current reset epoch by default; include_previous_resets=true crosses /clear), or search_session_log for other session events instead of recall.`,
           };
         }
       },
