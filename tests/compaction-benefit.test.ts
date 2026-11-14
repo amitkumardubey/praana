@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CanonicalWriter } from "../src/canonical-transcript.js";
@@ -104,6 +104,43 @@ test("a tiny completed turn skips the paid summary when even the minimum cannot 
   expectNoDiscard(outcome);
   expect(messages(log)).toEqual(before);
   expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
+});
+
+test("benefit and capacity name and compare their distinct best cases", () => {
+  const source = readFileSync(new URL("../src/compaction.ts", import.meta.url), "utf8");
+  expect(source.includes("const foldAloneBestCase = estimateRequestTokens(frame, unstubbedInFlightMessages) + minSummaryMessageTokens;")).toBe(true);
+  expect(source.includes("let stubbedFoldBestCase = foldAloneBestCase;")).toBe(true);
+  expect(source.includes("stubbedFoldBestCase = estimateRequestTokens(frame, inFlightMinMessages) + minSummaryMessageTokens;")).toBe(true);
+  expect(source.includes("foldAloneBestCase >= preFoldFill.inputTokens")).toBe(true);
+  expect(source.includes("stubbedFoldBestCase > initialFill.usableTokens")).toBe(true);
+  expect(source).not.toMatch(/\b(?:bestCaseTokens|minInFlightTokens)\b/);
+});
+
+test.each([
+  { completed: "old", calls: 0, status: "stubbed" },
+  { completed: "C".repeat(700), calls: 1, status: "rewritten" },
+])("best cases keep benefit independent of stubbing for $status", async (scenario) => {
+  const { log, writer, current } = await nearCapacity(scenario.completed, 4800);
+  await writer.assistant(current, { role: "assistant", content: "", toolCalls: [{ id: "newest", name: "shell", args: {} }] });
+  await writer.result(current, "newest", "shell", "ok", false);
+  const beforeTokens = inputTokens(messages(log));
+  const tail = buildTurns(log).at(-1)!.messages;
+  const foldAlone = inputTokens([renderSummaryMessage(summary()), ...tail]);
+  const stubbedTail = tail.map((message): ConversationMessage => message.role === "tool_result" && message.toolCallId === "call"
+    ? { ...message, result: "s" } : message);
+  const stubbedFold = inputTokens([renderSummaryMessage(summary()), ...stubbedTail]);
+  expect(foldAlone).toBeGreaterThan(usableTokens);
+  expect(stubbedFold).toBeLessThan(usableTokens);
+  expect(foldAlone < beforeTokens).toBe(scenario.calls === 1);
+  let calls = 0;
+  const outcome = await runCompaction({
+    log, liveRequest, contextWindowTokens, options: { ...options, stubKeepRecent: 1 },
+    planStubs: (candidates) => candidates.map((candidate) => ({ eventId: candidate.eventId, stubText: "s" })),
+    runSummary: async () => { calls++; return { text: summary(), finishReason: "stop", usage: null, toolCalls: [] }; },
+  });
+  expect(calls).toBe(scenario.calls);
+  expect(outcome.status).toBe(scenario.status);
+  expectNoDiscard(outcome);
 });
 
 test("a useful minimum still pays for a summary", async () => {

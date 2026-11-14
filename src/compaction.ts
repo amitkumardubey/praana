@@ -809,9 +809,11 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
     const inFlightMinMap = new Map(step1StubMap);
     const inFlightCandidates = collectToolResults([inFlightTurn]);
     const unstubbedInFlightMessages = emitCanonicalTranscript(applyStubs(inFlightTurn, inFlightMinMap));
-    const bestCaseTokens = estimateRequestTokens(frame, unstubbedInFlightMessages) + minSummaryMessageTokens;
-    let minInFlightTokens = bestCaseTokens - minSummaryMessageTokens;
-    if (minInFlightTokens + minSummaryMessageTokens > initialFill.usableTokens && inFlightCandidates.length > 1) {
+    // Frame + shortest tail + minimum valid summary, after Step 1 but without new in-flight stubs: benefit baseline.
+    const foldAloneBestCase = estimateRequestTokens(frame, unstubbedInFlightMessages) + minSummaryMessageTokens;
+    // The same request with maximal in-flight stubbing (keepRecent=1): capacity lower bound.
+    let stubbedFoldBestCase = foldAloneBestCase;
+    if (stubbedFoldBestCase > initialFill.usableTokens && inFlightCandidates.length > 1) {
       const eligibleOldInFlight = inFlightCandidates
         .slice(0, -1)
         .filter((c) => !inFlightMinMap.has(c.eventId) && c.estimatedTokens >= opts.stubMinTokens);
@@ -826,12 +828,14 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
         if (signal?.aborted) return { status: "cancelled", state, reason: "aborted" };
         for (const entry of plannedMin) inFlightMinMap.set(entry.eventId, entry.stubText);
         const inFlightMinMessages = emitCanonicalTranscript(applyStubs(inFlightTurn, inFlightMinMap));
-        minInFlightTokens = estimateRequestTokens(frame, inFlightMinMessages);
+        stubbedFoldBestCase = estimateRequestTokens(frame, inFlightMinMessages) + minSummaryMessageTokens;
       }
     }
 
-    // Even the shortest tail and minimum summary must beat the request after stale stubbing.
-    if (bestCaseTokens >= preFoldFill.inputTokens || capTokens < minValidSummaryTokens || minInFlightTokens + minSummaryMessageTokens > initialFill.usableTokens) {
+    // Necessary-condition filter: even the shortest tail and minimum valid summary must beat the request after Step 1.
+    // A realistic summary is larger, so a paid summary can still be discarded by the commit rule;
+    // this only avoids clearly hopeless folds, not every unhelpful summary call.
+    if (foldAloneBestCase >= preFoldFill.inputTokens || capTokens < minValidSummaryTokens || stubbedFoldBestCase > initialFill.usableTokens) {
       unchangedReason = "fold_not_possible";
     } else {
       // Shrink completed turns in the tail from Math.min(tailTurns, completedTurns.length) down to 0
