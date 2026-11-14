@@ -238,9 +238,15 @@ export type CapacityErrorKind = "reserve_exceeds_window" | "invalid_capacity" | 
 export type SummaryRequestMeta = NonNullable<FrozenState["summaryRequest"]>;
 
 /**
- * An accepted, uncommitted summary. Reuse requires boundaryEventId to remain the intended cut,
- * and resetEpoch, baseBoundaryEventId and previousSummarySha256 to match the current frozen
- * state (hash null for no summary). Generation is irrelevant: stubs-only commits preserve this base.
+ * An accepted, uncommitted summary. Its base identity is resetEpoch + baseBoundaryEventId +
+ * previousSummarySha256 (null when there was no summary). Reuse requires that identity to match
+ * the current frozen state and boundaryEventId to remain the intended cut. Generation is irrelevant:
+ * stubs-only commits preserve this base.
+ *
+ * The text was produced from the live request and stateObjects as they stood when generated.
+ * A reusing caller must run fresh fit and benefit checks against the CURRENT state and use the
+ * normal commit path, never insert the cached text straight into a commit. No code in src/
+ * consumes this field for reuse yet.
  */
 export interface DiscardedSummary {
   boundaryEventId: string;
