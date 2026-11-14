@@ -1411,4 +1411,57 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
       expect(res.artifactId).toBe("art_bulk_ok");
     }
   });
+
+  test("counts kept head and tail lines accurately when cuts fall on blank lines, single long lines, or CRLF input", () => {
+    // 1. 200-line LF output with blank lines at both cut points (line 40 and line 161).
+    const lfLines = Array.from({ length: 200 }, (_, i) => {
+      const lineNum = i + 1;
+      if (lineNum === 40 || lineNum === 161) return "";
+      return `line-${String(lineNum).padStart(3, "0")}: ${"data ".repeat(10)}`;
+    });
+    const lfRes = shapeToolOutput({
+      toolName: "shell",
+      command: "ls -R",
+      text: lfLines.join("\n"),
+      storeArtifact: () => "art_blank_lf",
+      options: {
+        inlineThresholdTokens: 100,
+        maxLines: 81,
+        headLines: 40,
+        tailLines: 40,
+      },
+    });
+    expect(lfRes.shaped).toBe(true);
+    expect(lfRes.omittedLines).toBe(120);
+    expect(lfRes.text).toContain("120 lines /");
+
+    // 2. Same 200-line structure with CRLF line endings.
+    const crlfRes = shapeToolOutput({
+      toolName: "shell",
+      command: "ls -R",
+      text: lfLines.join("\r\n"),
+      storeArtifact: () => "art_blank_crlf",
+      options: {
+        inlineThresholdTokens: 100,
+        maxLines: 81,
+        headLines: 40,
+        tailLines: 40,
+      },
+    });
+    expect(crlfRes.shaped).toBe(true);
+    expect(crlfRes.omittedLines).toBe(120);
+    expect(crlfRes.text).toContain("120 lines /");
+
+    // 3. Single long line (no newlines): 0 whole lines omitted.
+    const singleLine = "X".repeat(25_000);
+    const singleRes = shapeToolOutput({
+      toolName: "shell",
+      command: "xxd out.bin",
+      text: singleLine,
+      storeArtifact: () => "art_single_long",
+    });
+    expect(singleRes.shaped).toBe(true);
+    expect(singleRes.omittedLines).toBe(0);
+    expect(singleRes.text).not.toMatch(/0\s+lines?/i);
+  });
 });

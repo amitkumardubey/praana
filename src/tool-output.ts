@@ -428,24 +428,56 @@ function sliceTailByUtf8Bytes(text: string, maxBytes: number): string {
   return buf.subarray(start).toString("utf8");
 }
 
-function sliceHeadLinesFromArray(lines: readonly string[], maxLines: number): string {
-  if (maxLines <= 0 || lines.length === 0) return "";
-  if (lines.length <= maxLines) return lines.join("\n");
-  return lines.slice(0, maxLines).join("\n");
+function sliceHeadWithLineCount(
+  lines: readonly string[],
+  maxLines: number,
+  maxBytes: number,
+  fullText?: string,
+): { text: string; keptLines: number } {
+  if (maxLines <= 0 || maxBytes <= 0 || lines.length === 0) {
+    return { text: "", keptLines: 0 };
+  }
+  const allSelected = lines.length <= maxLines;
+  const selected = allSelected ? lines : lines.slice(0, maxLines);
+  const joined = allSelected && fullText !== undefined ? fullText : selected.join("\n");
+  const text = sliceHeadByUtf8Bytes(joined, maxBytes);
+  if (text.length === 0) return { text: "", keptLines: 0 };
+  if (text.length === joined.length) {
+    return { text, keptLines: selected.length };
+  }
+  const parts = text.split("\n");
+  // If the byte cut landed right after a newline, the trailing empty segment
+  // belongs to the next line only when that source line itself is empty.
+  if (text.endsWith("\n") && selected[parts.length - 1] !== "") {
+    return { text, keptLines: Math.max(0, parts.length - 1) };
+  }
+  return { text, keptLines: parts.length };
 }
 
-function sliceTailLinesFromArray(lines: readonly string[], maxLines: number): string {
-  if (maxLines <= 0 || lines.length === 0) return "";
-  if (lines.length <= maxLines) return lines.join("\n");
-  return lines.slice(lines.length - maxLines).join("\n");
-}
-
-function countTouchedLines(fragment: string, trimLeading: boolean, trimTrailing: boolean): number {
-  if (!fragment) return 0;
-  let count = fragment.split("\n").length;
-  if (trimLeading && fragment.startsWith("\n")) count--;
-  if (trimTrailing && fragment.endsWith("\n")) count--;
-  return Math.max(0, count);
+function sliceTailWithLineCount(
+  lines: readonly string[],
+  maxLines: number,
+  maxBytes: number,
+  fullText?: string,
+): { text: string; keptLines: number } {
+  if (maxLines <= 0 || maxBytes <= 0 || lines.length === 0) {
+    return { text: "", keptLines: 0 };
+  }
+  const allSelected = lines.length <= maxLines;
+  const selected = allSelected ? lines : lines.slice(lines.length - maxLines);
+  const joined = allSelected && fullText !== undefined ? fullText : selected.join("\n");
+  const text = sliceTailByUtf8Bytes(joined, maxBytes);
+  if (text.length === 0) return { text: "", keptLines: 0 };
+  if (text.length === joined.length) {
+    return { text, keptLines: selected.length };
+  }
+  const parts = text.split("\n");
+  // If the byte cut landed right before a newline, the leading empty segment
+  // belongs to the earlier line only when that source line itself is empty.
+  if (text.startsWith("\n") && selected[selected.length - parts.length] !== "") {
+    return { text, keptLines: Math.max(0, parts.length - 1) };
+  }
+  return { text, keptLines: parts.length };
 }
 
 function normalizeArtifactId(
@@ -535,25 +567,23 @@ function buildShapedCandidate(
   headByteBudget = Math.min(headByteBudget, cfgHeadBytes);
   tailByteBudget = Math.min(tailByteBudget, cfgTailBytes);
 
-  let head: string;
-  let tail: string;
+  let headSlice: { text: string; keptLines: number };
+  let tailSlice: { text: string; keptLines: number };
   if (exceedsLines) {
-    head = sliceHeadByUtf8Bytes(sliceHeadLinesFromArray(lines, effHeadLines), headByteBudget);
-    tail = sliceTailByUtf8Bytes(sliceTailLinesFromArray(lines, effTailLines), tailByteBudget);
+    headSlice = sliceHeadWithLineCount(lines, effHeadLines, headByteBudget);
+    tailSlice = sliceTailWithLineCount(lines, effTailLines, tailByteBudget);
   } else {
-    head = sliceHeadByUtf8Bytes(rawText, headByteBudget);
-    tail = sliceTailByUtf8Bytes(rawText, tailByteBudget);
-    const keptHead = head ? head.split("\n").length : 0;
-    const keptTail = tail ? tail.split("\n").length : 0;
-    if (keptHead + keptTail > contentLineBudget) {
-      head = sliceHeadByUtf8Bytes(sliceHeadLinesFromArray(lines, effHeadLines), headByteBudget);
-      tail = sliceTailByUtf8Bytes(sliceTailLinesFromArray(lines, effTailLines), tailByteBudget);
+    headSlice = sliceHeadWithLineCount(lines, lines.length, headByteBudget, rawText);
+    tailSlice = sliceTailWithLineCount(lines, lines.length, tailByteBudget, rawText);
+    if (headSlice.keptLines + tailSlice.keptLines > contentLineBudget) {
+      headSlice = sliceHeadWithLineCount(lines, effHeadLines, headByteBudget);
+      tailSlice = sliceTailWithLineCount(lines, effTailLines, tailByteBudget);
     }
   }
 
-  const keptHeadLines = countTouchedLines(head, false, true);
-  const keptTailLines = countTouchedLines(tail, true, false);
-  const omittedLines = Math.max(0, lines.length - keptHeadLines - keptTailLines);
+  const head = headSlice.text;
+  const tail = tailSlice.text;
+  const omittedLines = Math.max(0, lines.length - headSlice.keptLines - tailSlice.keptLines);
   const keptBytes = Buffer.byteLength(head, "utf8") + Buffer.byteLength(tail, "utf8");
   const omittedBytes = Math.max(0, totalBytes - keptBytes);
   if (omittedBytes === 0) return null;
