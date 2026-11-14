@@ -165,7 +165,11 @@ export function createFileMemoryStore(options: StoreOptions) {
       // Absent and looping paths are an ordinary miss; anything else is a per-file skip.
       if (missing(error) || (error as NodeJS.ErrnoException).code === "ELOOP") return { memory: null };
       return { memory: null, failure: `Memory "${name}" is unreadable: ${readCause(error)}` };
-    } finally { if (handle) await handle.close(); }
+    } finally {
+      // A close that fails after the read must not discard the memory, and must not replace a
+      // read failure with its own: the outcome of this file is already decided above.
+      if (handle) { try { await handle.close(); } catch { /* The read result stands. */ } }
+    }
   }
 
   async function entries(scope: MemoryScope, frontmatterOnly = false): Promise<{ memories: Memory[]; skipped: number; filenames: string[] }> {

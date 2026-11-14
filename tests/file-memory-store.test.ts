@@ -356,6 +356,48 @@ describe("file memory store", () => {
     }
     expect(await failing.read({ name: "coffee" })).toMatchObject({ ok: true, memory: { name: "coffee" } });
   });
+  /** A handle for one path whose `close` (and optionally `read`) fails. */
+  function handleFailure(target: string, failure: { read?: string; close?: string }): typeof fs {
+    return new Proxy(fs, { get(base, key) {
+      if (key !== "open") return Reflect.get(base, key);
+      return async (...args: Parameters<typeof fs.open>) => {
+        const handle = await fs.open(...args);
+        if (String(args[0]) !== target) return handle;
+        return new Proxy(handle, { get(h, method) {
+          if (method === "close") return async () => { await h.close(); throw Object.assign(new Error(failure.close ?? "EIO: close failed"), { code: "EIO" }); };
+          if (method === "read" && failure.read) return async () => { throw Object.assign(new Error(failure.read), { code: "EIO" }); };
+          const value = Reflect.get(h, method);
+          return typeof value === "function" ? value.bind(h) : value;
+        } });
+      };
+    } });
+  }
+  test("a failing close never discards a memory that was read", async () => {
+    const { home, store, dir } = await setup();
+    expect((await store.write(input)).ok).toBe(true);
+    expect((await store.write({ ...input, name: "tea", description: "Tea is also welcome" })).ok).toBe(true);
+    const options = { home, cwd: home, findRoot: (cwd: string) => cwd, now: () => new Date("2026-05-01T00:00:00Z") };
+    const closing = createFileMemoryStore({ ...options, fs: handleFailure(join(dir, "coffee.md"), { close: "EIO: close failed" }) });
+    // A close that fails after a successful read must not take out the memory or its scope.
+    expect(await closing.read({ name: "coffee" })).toMatchObject({ ok: true, memory: { name: "coffee", body: "Coffee is preferred." } });
+    expect(await closing.read({ name: "coffee", scope: "global" })).toMatchObject({ ok: true, memory: { name: "coffee" } });
+    const listed = await closing.list({ scope: "global" });
+    expect(listed.ok).toBe(true);
+    expect(listed.entries.map((entry) => entry.name)).toEqual(["coffee", "tea"]);
+    expect(listed.skipped).toBe(0);
+    // A close that fails after a read error keeps the original failure.
+    const broken = createFileMemoryStore({ ...options, fs: handleFailure(join(dir, "coffee.md"), { read: "EIO: read failed", close: "EIO: close failed" }) });
+    const result = await broken.read({ name: "coffee", scope: "global" });
+    if (result.ok) throw new Error("Expected the read failure to surface");
+    expect(result.error).toContain("unreadable");
+    expect(result.error).toContain("input/output error");
+    expect(result.error).not.toContain("close failed");
+    expect(result.skippedScopes).toBeUndefined();
+    const stillListed = await broken.list({ scope: "global" });
+    expect(stillListed.ok).toBe(true);
+    expect(stillListed.entries.map((entry) => entry.name)).toEqual(["tea"]);
+    expect(stillListed.skipped).toBe(1);
+  });
   test("ignores malformed, oversized, symlink and temp files", async () => {
     const { store, dir, home } = await setup();
     await store.write(input);
