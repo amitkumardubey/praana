@@ -795,7 +795,9 @@ function writeDocumentAtomic(
   const preserveMode = mode !== undefined ? mode & 0o777 : undefined;
   const openMode = preserveMode ?? 0o600;
 
-  const res = writeExclusiveFile(tmpPath, bytes, fs, openMode, preserveMode, () => {
+  // A new file (no existing target) must also end up exactly at its stated mode: opened with
+  // 0o600 subject to the umask, then set again via fchmod on the still-open fd.
+  const res = writeExclusiveFile(tmpPath, bytes, fs, openMode, preserveMode ?? 0o600, () => {
     fs.rename(tmpPath, path);
     try {
       // Best effort: the rename has already committed, so a directory fsync failure must
@@ -1070,7 +1072,7 @@ function writeCorruptBackup(
   bytes: Buffer,
   fs: SettingsFs,
 ): { ok: true } | { ok: false; error: string } {
-  const res = writeExclusiveFile(backupPath, bytes, fs, 0o600);
+  const res = writeExclusiveFile(backupPath, bytes, fs, 0o600, 0o600);
   if (!res.ok) {
     return { ok: false, error: `Failed to back up corrupt settings file (${path}): ${res.error}` };
   }
