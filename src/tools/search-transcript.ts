@@ -15,6 +15,7 @@ import {
 } from "../canonical-transcript.js";
 import { isResetBoundaryEvent, type EventLog } from "../event-log.js";
 import { redactSecrets } from "../redact/secrets.js";
+import { extractShapedArtifactId, isShapedStubFor } from "../tool-output.js";
 import {
   bm25Score,
   buildBM25StatsFromTokens,
@@ -45,6 +46,8 @@ export interface IndexedTranscriptEntry {
 }
 
 function extractArtifactId(text: string): string | undefined {
+  const shaped = extractShapedArtifactId(text);
+  if (shaped) return shaped;
   const elidedMatch = /full output stored in artifact (art_[A-Za-z0-9_-]+)/.exec(text);
   if (elidedMatch?.[1]) return elidedMatch[1];
   const cardMatch = /\[artifact:\s*(art_[A-Za-z0-9_-]+)/.exec(text);
@@ -53,9 +56,7 @@ function extractArtifactId(text: string): string | undefined {
 }
 
 function isArtifactStub(text: string, artifactId: string): boolean {
-  const card = /^\[artifact:\s*(art_[A-Za-z0-9_-]+)\s*\|[\s\S]* tokens raw\]\nRetrieve: retrieve_artifact\("\1"\)$/.exec(text);
-  const elided = /(?:^|\n)\.\.\. \[elided \d+ lines \/ \d+ bytes; full output stored in artifact (art_[A-Za-z0-9_-]+) — call retrieve_artifact\("\1"\) to inspect\] \.\.\.$/.exec(text);
-  return card?.[1] === artifactId || elided?.[1] === artifactId;
+  return isShapedStubFor(text, artifactId);
 }
 
 function extractRecordTexts(record: CanonicalRecord): {
