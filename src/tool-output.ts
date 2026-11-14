@@ -26,19 +26,92 @@ export const DEFAULT_SHAPE_MAX_BYTES = 8192;
 export const DEFAULT_SHAPE_HEAD_BYTES = 4096;
 export const DEFAULT_SHAPE_TAIL_BYTES = 4096;
 
+export type ToolOutputClassification = "exact-bytes" | "shapeable";
+
+/**
+ * Explicit classification for every registered tool (`createAllTools`).
+ * Unclassified tools default to `"exact-bytes"` so new tools are never shaped by accident.
+ */
+export const TOOL_OUTPUT_CLASSIFICATION: Readonly<Record<string, ToolOutputClassification>> =
+  Object.freeze({
+    // Working memory & session log tools (src/tools/memory.ts)
+    create_task: "exact-bytes", // Returns state object id copied into task/state mutation calls.
+    complete_task: "exact-bytes", // Small status ack or error message; never bulk output.
+    retract_task: "exact-bytes", // Small status ack or error message; never bulk output.
+    add_constraint: "exact-bytes", // Returns state and memory ids copied into follow-up calls.
+    decide: "exact-bytes", // Returns state and memory ids copied into follow-up calls.
+    add_note: "exact-bytes", // Returns state object id and warning metadata; never bulk output.
+    soft_unload: "exact-bytes", // Small status ack or error message; never bulk output.
+    hard_unload: "exact-bytes", // Small status ack or error message; never bulk output.
+    hydrate: "exact-bytes", // Restores exact stored state object payload on demand.
+    list_state: "exact-bytes", // Returns state object ids, kinds, and tiers for state mutations.
+    focus_task: "exact-bytes", // Returns focused state object id; never bulk output.
+    search_session_log: "exact-bytes", // Returns event_ids and artifact ids copied into follow-up lookups.
+
+    // Knowledge & artifact tools (src/tools/knowledge.ts)
+    recall: "exact-bytes", // Returns Cognitive Memory entries with ids needed for forget_memory.
+    remember: "exact-bytes", // Returns created or reinforced memory id for later reference.
+    forget_memory: "exact-bytes", // Small status ack carrying memory id; never bulk output.
+    search_turn_events: "exact-bytes", // Returns turn summaries with artifactIds and file paths.
+    context_summary: "exact-bytes", // Bounded checkpoint summary of active intent, decisions, and errors.
+    retrieve_artifact: "exact-bytes", // Explicit raw artifact retrieval; caller requested exact bytes.
+    event_lineage: "exact-bytes", // Returns artifact ids, turn ids, and file paths in lineage graph.
+
+    // Transcript search (src/tools/search-transcript.ts)
+    search_transcript: "exact-bytes", // Returns canonical event/artifact ids and exact fetched message text.
+
+    // System & file tools (src/tools/system.ts)
+    shell: "shapeable", // Free-form bulk stdout/stderr from arbitrary shell commands.
+    read_file: "exact-bytes", // Source bytes copied verbatim into edit_file/batch_edit oldText.
+    read_and_summarize: "exact-bytes", // Structured JSON with exact path, exported symbol names, and preview lines.
+    load_skill: "exact-bytes", // Skill instructions whose exact commands and rules must stay intact.
+    write_file: "exact-bytes", // Small write confirmation metadata; never bulk output.
+    edit_file: "exact-bytes", // Small edit confirmation metadata; never bulk output.
+    batch_write: "exact-bytes", // Structured list of written file paths; confirmation metadata.
+    batch_edit: "exact-bytes", // Structured list of edited file paths; confirmation metadata.
+
+    // Code & file search tools (src/tools/search-code.ts, src/tools/find-files.ts)
+    search_code: "exact-bytes", // Structured JSON matches with file, line, column, and text for edits.
+    find_files: "exact-bytes", // Structured JSON file paths copied into read_file/edit_file/lsp_* calls.
+
+    // Git tools (src/tools/git.ts)
+    git_status: "exact-bytes", // Structured JSON lists of exact staged/unstaged/untracked/conflicted paths.
+    git_diff: "shapeable", // Bulk diff hunks that can grow arbitrarily large across files.
+    git_commit: "exact-bytes", // Small commit ack with sha, summary, and committed paths.
+    git_branches: "exact-bytes", // Structured branch names, upstreams, and commit refs.
+    git_log: "shapeable", // Bulk commit history log that can grow long.
+
+    // Tree-sitter code intelligence tools (src/tools/code-intel.ts)
+    code_parse: "exact-bytes", // Syntax diagnostic positions (line/column/path) for locating edits.
+    code_imports: "exact-bytes", // Structured import specifiers and file path.
+    code_symbols: "exact-bytes", // Structured symbol names and line ranges for locating edits.
+    code_definition: "exact-bytes", // Exact definition file paths and line/column positions.
+    code_references: "exact-bytes", // Exact reference file paths and line/column positions.
+
+    // LSP tools (src/tools/lsp.ts)
+    lsp_diagnostics: "exact-bytes", // Exact file path and line/column diagnostics for edits.
+    lsp_format: "exact-bytes", // Small format ack with path and changed flag.
+    lsp_hover: "exact-bytes", // Type signature and docs at a single cursor position.
+    lsp_completions: "exact-bytes", // Exact completion labels inserted verbatim into code.
+    lsp_definition: "exact-bytes", // Exact definition file paths and line/column positions.
+    lsp_references: "exact-bytes", // Exact reference file paths and line/column positions.
+    lsp_code_actions: "exact-bytes", // Returns opaque action ids passed verbatim to lsp_apply_code_action.
+    lsp_apply_code_action: "exact-bytes", // Small ack listing modified file paths.
+
+    // Test runner & web fetch (src/tools/run-tests.ts, src/tools/web/tool.ts)
+    run_tests: "shapeable", // Bulk test runner counts and failure output logs.
+    web_fetch: "shapeable", // Free-form bulk markdown/text fetched from web pages.
+  });
+
 /**
  * Tools whose output the model must reproduce verbatim (`edit_file` targets,
  * LSP diagnostic/symbol locations, or explicit artifact retrievals).
  */
-export const DEFAULT_EXACT_BYTES_TOOLS: ReadonlySet<string> = new Set([
-  "read_file",
-  "lsp_diagnostics",
-  "lsp_definition",
-  "lsp_references",
-  "lsp_hover",
-  "lsp_symbols",
-  "retrieve_artifact",
-]);
+export const DEFAULT_EXACT_BYTES_TOOLS: ReadonlySet<string> = new Set(
+  Object.entries(TOOL_OUTPUT_CLASSIFICATION)
+    .filter(([, policy]) => policy === "exact-bytes")
+    .map(([name]) => name),
+);
 
 const ELISION_MARKER_PATTERN =
   /^... \[elided \d+ lines \/ \d+ bytes; (?:full output stored in artifact [^\s—]+ — call retrieve_artifact\("[^"]+"\) to inspect|artifact store unavailable — use search_transcript to inspect full output)\] ...$/m;
@@ -106,9 +179,11 @@ function isExactBytesTool(
   toolName: string,
   custom?: ReadonlySet<string> | readonly string[],
 ): boolean {
-  if (DEFAULT_EXACT_BYTES_TOOLS.has(toolName)) return true;
-  if (!custom) return false;
-  return "has" in custom ? custom.has(toolName) : custom.includes(toolName);
+  if (custom && ("has" in custom ? custom.has(toolName) : custom.includes(toolName))) {
+    return true;
+  }
+  // Unclassified tools are treated as exact-bytes so they are never shaped by accident.
+  return TOOL_OUTPUT_CLASSIFICATION[toolName] !== "shapeable";
 }
 
 function sliceHeadByUtf8Bytes(text: string, maxBytes: number): string {

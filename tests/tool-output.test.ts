@@ -13,9 +13,11 @@ import {
   type StubPlanner,
 } from "../src/compaction.js";
 import { loadConfig } from "../src/config.js";
+import type { ContextEngine } from "../src/context-engine/index.js";
 import { ArtifactStore } from "../src/context-engine/artifact-store.js";
 import { EventLog } from "../src/event-log.js";
 import { restoreFrozenState, SUMMARY_HEADINGS } from "../src/frozen-summary.js";
+import type { StateGraph } from "../src/state-graph.js";
 import { estimateTokens } from "../src/token-estimate.js";
 import * as toolOutput from "../src/tool-output.js";
 import {
@@ -25,7 +27,9 @@ import {
   DEFAULT_SHAPE_MAX_LINES,
   planToolResultStubs,
   shapeToolOutput,
+  TOOL_OUTPUT_CLASSIFICATION,
 } from "../src/tool-output.js";
+import { createAllTools } from "../src/tools/index.js";
 
 const tempDirs: string[] = [];
 const stores: ArtifactStore[] = [];
@@ -167,7 +171,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
       "lsp_definition",
       "lsp_references",
       "lsp_hover",
-      "lsp_symbols",
+      "code_symbols",
       "retrieve_artifact",
     ]) {
       expect(DEFAULT_EXACT_BYTES_TOOLS.has(toolName)).toBe(true);
@@ -260,6 +264,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
       "DEFAULT_SHAPE_TAIL_LINES",
       "DEFAULT_STUB_KEEP_RECENT",
       "DEFAULT_STUB_MIN_TOKENS",
+      "TOOL_OUTPUT_CLASSIFICATION",
       "buildToolResultStub",
       "planToolResultStubs",
       "shapeToolOutput",
@@ -736,5 +741,59 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
       }
     }
     expect(shapedCount).toBeGreaterThan(250);
+  });
+
+  test("classifies every tool registered by createAllTools and treats unclassified tools as exact-bytes", () => {
+    const registered = new Set<string>();
+    for (const classicMode of [true, false]) {
+      for (const contextEngine of [null, {} as unknown as ContextEngine]) {
+        const tools = createAllTools({
+          eventLog: {} as unknown as EventLog,
+          stateGraph: {} as unknown as StateGraph,
+          memoryStore: null,
+          memoryEnabled: true,
+          incognito: false,
+          contextEngine,
+          cwd: process.cwd(),
+          skills: [],
+          skillRuntime: null,
+          classicMode,
+        });
+        for (const name of Object.keys(tools)) registered.add(name);
+      }
+    }
+
+    const missing = [...registered].filter((name) => !Object.hasOwn(TOOL_OUTPUT_CLASSIFICATION, name));
+    expect(missing).toEqual([]);
+
+    for (const [name, policy] of Object.entries(TOOL_OUTPUT_CLASSIFICATION)) {
+      expect(["exact-bytes", "shapeable"]).toContain(policy);
+      expect(DEFAULT_EXACT_BYTES_TOOLS.has(name)).toBe(policy === "exact-bytes");
+    }
+
+    // Unclassified / unknown tools must be treated as exact-bytes (never shaped by accident).
+    const bulkText = "unclassified-output-".repeat(400);
+    for (const unknownTool of ["unregistered_future_tool", "lsp_symbols"]) {
+      const unclassified = shapeToolOutput({
+        toolName: unknownTool,
+        text: bulkText,
+        storeArtifact: () => "art_should_not_store",
+        options: { inlineThresholdTokens: 50, maxBytes: 1024, maxLines: 20 },
+      });
+      expect(unclassified.shaped).toBe(false);
+      expect(unclassified.text).toBe(bulkText);
+    }
+
+    // Every tool classified as shapeable is shaped when over threshold and caps.
+    for (const [name, policy] of Object.entries(TOOL_OUTPUT_CLASSIFICATION)) {
+      if (policy !== "shapeable") continue;
+      const res = shapeToolOutput({
+        toolName: name,
+        text: bulkText,
+        storeArtifact: () => "art_shapeable123",
+        options: { inlineThresholdTokens: 50, maxBytes: 1024, maxLines: 20 },
+      });
+      expect(res.shaped).toBe(true);
+    }
   });
 });
