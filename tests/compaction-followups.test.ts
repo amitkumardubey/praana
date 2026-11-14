@@ -165,6 +165,38 @@ test("batch metadata hashes all three primary instructions in order", async () =
   expect(new Set(hashes).size).toBe(4);
 });
 
+for (const reasoning of [false, true]) test(`native estimates count visible blocks once with reasoning=${reasoning}`, async () => {
+  const { log, writer } = fixture();
+  const turn = await writer.startTurn("inspect");
+  const text = "visible text ".repeat(200);
+  const thinking = "visible reasoning ".repeat(200);
+  const args = { command: "echo ".repeat(300) };
+  await writer.assistant(turn, { role: "assistant", content: text, toolCalls: [{ id: "call", name: "shell", args }],
+    ...(reasoning ? { thinking, thinkingSignature: "opaque".repeat(3000) } : {}),
+    blocks: [
+      ...(reasoning ? [{ type: "thinking" as const, thinking, signature: "opaque".repeat(3000) }] : []),
+      { type: "text", text }, { type: "tool_use", id: "call" },
+    ],
+  });
+  await writer.result(turn, "call", "shell", "done", false);
+  const message = compaction.buildTurns(log)[0].messages[1];
+  if (message.role !== "assistant") throw new Error("Expected assistant");
+  const before = JSON.stringify(message);
+  const estimate = compaction.estimateMessageTokens(message);
+  expect(estimate).toBeLessThan(Math.ceil(before.length / 4));
+  expect(estimate).toBeGreaterThanOrEqual(Math.ceil((text.length + JSON.stringify(args).length + (reasoning ? thinking.length : 0)) / 4));
+  const noSignatures = { ...message, thinkingSignature: "", blocks: message.blocks!.map(block => block.type === "thinking" ? { ...block, signature: "" } : block) };
+  expect(compaction.estimateMessageTokens(noSignatures)).toBe(estimate);
+  expect(compaction.estimateMessageTokens({ ...message, content: text.repeat(3) })).toBe(estimate);
+  const argsChanged = { ...message, toolCalls: message.toolCalls!.map(call => ({ ...call, args: { command: args.command.repeat(2) } })) };
+  expect(compaction.estimateMessageTokens(argsChanged)).toBeGreaterThan(estimate);
+  expect(JSON.stringify(message)).toBe(before);
+  if (reasoning) {
+    const { blocks: _blocks, ...legacy } = message;
+    expect(compaction.estimateMessageTokens({ ...legacy, thinkingSignature: "" })).toBe(compaction.estimateMessageTokens(legacy));
+  }
+});
+
 for (const length of [80, 200]) for (const previous of [false, true]) {
   test(`visible cut quotes ${length} characters with previous=${previous}`, async () => {
     const { log, writer } = fixture();

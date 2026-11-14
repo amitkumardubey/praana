@@ -75,7 +75,7 @@ export interface RequestFrame {
 }
 
 /** Stable object keys, ordered arrays, and normal JSON escaping/toJSON semantics. */
-function estimateJson(value: ConversationMessage | RequestFrame): number {
+function estimateJson(value: unknown): number {
   const ordered = new WeakMap<object, Record<string, unknown>>();
   return estimateTokens(JSON.stringify(value, (_key, item: unknown) => {
     if (item === null || typeof item !== "object" || Array.isArray(item)) return item;
@@ -91,11 +91,28 @@ function estimateJson(value: ConversationMessage | RequestFrame): number {
 /** Fixed visual allowance per image; base64 bytes do not represent text tokens. */
 export const IMAGE_TOKEN_ALLOWANCE = 1600;
 
-/** Provider-independent estimate of all native fields, not an exact wire tokenizer. */
+/** Provider-independent estimate of native content, not an exact wire tokenizer. */
 export function estimateMessageTokens(message: ConversationMessage): number {
+  if (message.role === "assistant") {
+    const { thinkingSignature: _signature, ...unsigned } = message;
+    if (message.blocks !== undefined) {
+      const { content: _content, thinking: _thinking, toolCalls, ...rest } = unsigned;
+      const referenced = new Set(message.blocks.flatMap(block => block.type === "tool_use" ? [block.id] : []));
+      // Ordered blocks replace convenience text/thinking. Tool-use blocks contain
+      // only ids, so expand their arguments once rather than dropping them.
+      const blocks = message.blocks.map(block => {
+        if (block.type === "thinking") return { type: block.type, thinking: block.thinking };
+        if (block.type === "tool_use") return { ...block, call: toolCalls?.find(call => call.id === block.id) };
+        return block;
+      });
+      return estimateJson({ ...rest, blocks, toolCalls: toolCalls?.filter(call => !referenced.has(call.id)) });
+    }
+    return estimateJson(unsigned);
+  }
   if (message.role !== "user" || typeof message.content === "string") return estimateJson(message);
   let imageTokens = 0;
   const content = message.content.map((part) => {
+    if (part.type === "thinking") return { type: part.type, thinking: part.thinking };
     if (part.type !== "image") return part;
     imageTokens += IMAGE_TOKEN_ALLOWANCE;
     const { data: _data, ...metadata } = part;

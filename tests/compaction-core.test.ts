@@ -124,12 +124,12 @@ test("message estimator includes native tool-call names, structured and raw argu
   expect(estimateMessageTokens({ ...withCall, toolCalls: [{ ...withCall.toolCalls![0], rawArgs: "raw".repeat(200) }] })).toBeGreaterThan(estimateMessageTokens(withCall) + 100);
 });
 
-test("message estimator includes thinking and signatures despite empty string content", async () => {
+test("message estimator includes thinking but excludes opaque signatures despite empty string content", async () => {
   const { estimateMessageTokens } = await api();
   const base: ConversationMessage = { role: "assistant", content: "" };
   const thinking = { ...base, thinking: "reason".repeat(200) };
   expect(estimateMessageTokens(thinking)).toBeGreaterThan(estimateMessageTokens(base) + 250);
-  expect(estimateMessageTokens({ ...thinking, thinkingSignature: "sig".repeat(200) })).toBeGreaterThan(estimateMessageTokens(thinking) + 100);
+  expect(estimateMessageTokens({ ...thinking, thinkingSignature: "sig".repeat(200) })).toBe(estimateMessageTokens(thinking));
 });
 
 test("message estimator counts ordered text, thinking, redacted bytes and tool-use blocks", async () => {
