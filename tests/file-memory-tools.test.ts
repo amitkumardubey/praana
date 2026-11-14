@@ -4,6 +4,8 @@ import * as fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createFileMemoryStore } from "../src/file-memory/store.js";
+import { MEMORY_NAME_PATTERN } from "../src/file-memory/format.js";
+import { normalizeToolParameters } from "../src/turn.js";
 import { createFileMemoryTools } from "../src/file-memory/tools.js";
 import { memoryDirectories, projectKey } from "../src/file-memory/paths.js";
 
@@ -31,6 +33,21 @@ test("three inert file memory tools delegate valid operations and expose their l
   expect(await tools.recall.execute({ query: "coffee" })).toMatchObject({ ok: true, matches: [{ name: entry.name }] });
   expect(await tools.forget_memory.execute({ name: entry.name, scope: "global" })).toEqual({ ok: true });
   refused(await tools.forget_memory.execute({ name: entry.name }));
+});
+
+test("the generated JSON schema tells the model the memory name rule", async () => {
+  const { tools } = await setup();
+  const nameProperty = (tool: { parameters?: unknown }) => {
+    const schema = normalizeToolParameters(tool.parameters) as { properties: Record<string, { pattern?: string }> };
+    return schema.properties.name;
+  };
+  expect(MEMORY_NAME_PATTERN.source).toBe("^[a-z0-9][a-z0-9-]{0,63}$");
+  for (const tool of [tools.remember, tools.recall, tools.forget_memory]) {
+    expect(nameProperty(tool)?.pattern).toBe(MEMORY_NAME_PATTERN.source);
+  }
+  // The pattern and the validator cannot drift: the schema now states the rule it enforces.
+  refused(await tools.remember.execute({ ...entry, name: "Upper" }));
+  refused(await tools.remember.execute({ ...entry, name: "con" }));
 });
 
 test("remember execute rejects wrong types, missing fields, bad enums and unknown keys", async () => {

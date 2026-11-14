@@ -1,10 +1,12 @@
 import { z } from "zod";
 import { defineTool } from "../tools/tool-def.js";
-import { validName } from "./format.js";
+import { MEMORY_NAME_PATTERN, validName } from "./format.js";
 import type { createFileMemoryStore } from "./store.js";
 
 type ToolStore = Pick<ReturnType<typeof createFileMemoryStore>, "write" | "recall" | "remove">;
-const name = z.string().refine(validName, "Invalid memory name: use a non-reserved lowercase slug of at most 64 characters");
+const NAME_RULE = "Invalid memory name: use a non-reserved lowercase slug of at most 64 characters";
+// The regex reaches the model as a JSON Schema `pattern`; the refine adds reserved names.
+const name = z.string().regex(MEMORY_NAME_PATTERN, NAME_RULE).refine(validName, NAME_RULE);
 const scope = z.enum(["global", "project"]);
 
 function execute<T>(schema: z.ZodType<T>, operation: (args: T) => Promise<unknown>) {

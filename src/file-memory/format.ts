@@ -10,12 +10,13 @@ export interface Memory {
 }
 export type MemoryInput = Omit<Memory, "updated">;
 
-const namePattern = /^[a-z0-9][a-z0-9-]{0,63}$/;
+/** The one name rule: `validName` and the tool JSON schema both read it, so they cannot drift. */
+export const MEMORY_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{0,63}$/;
 const reserved = /^(?:memory|con|prn|aux|nul|com[1-9]|lpt[1-9])$/;
 const types = new Set(["user", "feedback", "project", "reference"]);
 
 export function validName(name: unknown): name is string {
-  return typeof name === "string" && namePattern.test(name) && !reserved.test(name);
+  return typeof name === "string" && MEMORY_NAME_PATTERN.test(name) && !reserved.test(name);
 }
 
 const stopWords = new Set("a an and are as at be been but by for from had has have he her his i if in into is it its me my not of on or our she so than that the their them then there these they this those to too us was we were what when where which who will with you your".split(" "));
