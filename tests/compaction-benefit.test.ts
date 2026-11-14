@@ -349,6 +349,35 @@ test("a fitting fold that grows the request is discarded", async () => {
   expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
 });
 
+test.each([
+  { completed: "old", resultSize: 4400, accepted: summary(), reason: "fold_not_possible", calls: 0 },
+  { completed: "C".repeat(220), resultSize: 4100, accepted: summary("D".repeat(380)), reason: "fold_not_beneficial", calls: 1 },
+  { completed: "C".repeat(700), resultSize: 3000, accepted: summary(), reason: "fold_insufficient", calls: 1 },
+])("discard reason gives benefit precedence over fit: $reason", async (scenario) => {
+  const { log, writer, current } = await nearCapacity(scenario.completed, scenario.resultSize);
+  if (scenario.reason === "fold_insufficient") {
+    await writer.assistant(current, { role: "assistant", content: "", toolCalls: [{ id: "newest", name: "shell", args: {} }] });
+    await writer.result(current, "newest", "shell", "ok", false);
+  }
+  const before = inputTokens(messages(log));
+  const foldOnly = inputTokens([renderSummaryMessage(scenario.accepted), ...buildTurns(log).at(-1)!.messages]);
+  expect(before).toBeLessThanOrEqual(usableTokens);
+  expect(foldOnly < before).toBe(scenario.reason === "fold_insufficient");
+  if (scenario.reason !== "fold_insufficient") expect(foldOnly).toBeGreaterThan(usableTokens);
+  const runSummary = mock(async () => ({ text: scenario.accepted, finishReason: "stop", usage: null, toolCalls: [] }));
+  const outcome = await runCompaction({
+    log, liveRequest, contextWindowTokens, options: { ...options, stubKeepRecent: 1 },
+    // Same raw token estimate, but JSON escaping grows the request: a useful fold can still fail final fit.
+    planStubs: (candidates) => candidates.map((c) => ({ eventId: c.eventId, stubText: "\\".repeat(c.text.length) })),
+    runSummary,
+  });
+  expect(runSummary).toHaveBeenCalledTimes(scenario.calls);
+  expect(outcome).toMatchObject({ status: "unchanged_fits", reason: scenario.reason });
+  if (scenario.calls) expectDiscarded(outcome, log, scenario.accepted);
+  else expectNoDiscard(outcome);
+  expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
+});
+
 test("a capacity error exposes the accepted summary and its paid request metadata", async () => {
   const { log } = await nearCapacity("C".repeat(220), 4300);
   const boundaryEventId = buildTurns(log)[0].eventIds.at(-1)!;

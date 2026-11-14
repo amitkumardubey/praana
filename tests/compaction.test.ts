@@ -1553,7 +1553,7 @@ test("unchanged_fits reports no_eligible_results without an active turn", async 
   expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "no_eligible_results" });
 });
 
-test("unchanged_fits carries reason for fold_not_possible, fold_insufficient, and no_eligible_results, and marks discarded summaries", async () => {
+test("unchanged_fits distinguishes impossible and non-beneficial folds from no eligible results, and marks discarded summaries", async () => {
   const { runCompaction } = await api();
 
   // 1. no_eligible_results: single in-flight turn above trigger with no eligible tool results.
@@ -1592,7 +1592,7 @@ test("unchanged_fits carries reason for fold_not_possible, fold_insufficient, an
     expect(outcome.summaryDiscarded).toBeUndefined();
   }
 
-  // 3. fold_insufficient: summary is generated within capTokens, but post-fold request exceeds usable capacity and is dropped.
+  // 3. fold_not_beneficial: the accepted summary grows the request and also exceeds capacity.
   {
     const { log } = openLog();
     const writer = new CanonicalWriter(log, (error) => { throw error; });
@@ -1616,7 +1616,7 @@ test("unchanged_fits carries reason for fold_not_possible, fold_insufficient, an
     expect(summaryCalls).toBe(1);
     expect(outcome.status).toBe("unchanged_fits");
     if (outcome.status !== "unchanged_fits") throw new Error(JSON.stringify(outcome));
-    expect(outcome.reason).toBe("fold_insufficient");
+    expect(outcome.reason).toBe("fold_not_beneficial");
     expect(outcome.summaryDiscarded).toBe(true);
     expect(outcome.state.generation).toBe(0);
     expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);

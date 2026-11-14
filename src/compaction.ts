@@ -1057,7 +1057,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
           text: acceptedSummary,
           request: summaryRequestMeta,
         };
-        unchangedReason = postFoldFill.fits ? "fold_not_beneficial" : "fold_insufficient";
+        unchangedReason = foldOnlyFill.inputTokens >= preFoldFill().inputTokens ? "fold_not_beneficial" : "fold_insufficient";
       }
     }
   }
