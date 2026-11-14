@@ -24,7 +24,7 @@ async function checkOverride(toml: string): Promise<void> {
   dir = mkdtempSync(join(tmpdir(), "praana-openai-chat-"));
   const path = join(dir, "praana.config.toml");
   writeFileSync(path, '[llm]\nprovider = "openai"\nmodel = "gpt-6.1-terra"\n' + toml);
-  getConfigWarnings();
+  getConfigWarnings(); // drain warnings left by earlier test files before asserting none
   const config = loadConfig(path);
   expect(getConfigWarnings()).toEqual([]);
   const model = createProvider(config.llm)(config.llm.model!);
