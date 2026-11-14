@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CanonicalWriter } from "../src/canonical-transcript.js";
@@ -313,43 +313,86 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     expect(direct).toEqual([{ eventId: "res-1", stubText }]);
   });
 
-  test("shares StubPlanner types and stub constants from compaction.ts with no local copies or private defaults", () => {
-    const planner: StubPlanner = planToolResultStubs;
-    expect(typeof planner).toBe("function");
-    // No default `= {}` on the options parameter: both parameters are required.
+  test("planToolResultStubs honours minTokens and keepRecent, re-exports compaction constants, and satisfies StubPlanner", async () => {
+    const p: StubPlanner = planToolResultStubs;
+    expect(typeof p).toBe("function");
     expect(planToolResultStubs.length).toBe(2);
 
-    // Constants are re-exported from compaction.ts (single source of truth).
+    // Re-exports exact constants from compaction.ts.
     expect(toolOutput.DEFAULT_STUB_KEEP_RECENT).toBe(compaction.DEFAULT_STUB_KEEP_RECENT);
     expect(toolOutput.DEFAULT_STUB_MIN_TOKENS).toBe(compaction.DEFAULT_STUB_MIN_TOKENS);
 
-    // Type compatibility: StubCandidate and StubEntry from compaction.ts match tool-output.ts.
-    const candidate: StubCandidate = {
-      eventId: "ev-1",
+    const makeCandidate = (eventId: string, estimatedTokens: number): StubCandidate => ({
+      eventId,
       turnId: 1,
-      callId: "call-1",
+      callId: `call-${eventId}`,
       toolName: "shell",
-      text: "A".repeat(1200),
+      text: "A".repeat(Math.max(1200, estimatedTokens * 4)),
       isError: false,
-      estimatedTokens: 300,
-    };
-    const entries: readonly StubEntry[] = planner([candidate], {
-      phase: "stale",
-      minTokens: 200,
-      keepRecent: 3,
+      estimatedTokens,
     });
-    expect(entries).toHaveLength(1);
-    // Respects the caller's minTokens without falling back to a private default.
-    expect(
-      planner([candidate], { phase: "stale", minTokens: 400, keepRecent: 3 }),
-    ).toEqual([]);
 
-    const source = readFileSync(new URL("../src/tool-output.ts", import.meta.url), "utf8");
-    expect(source).toMatch(/import type \{[^}]*\bStubCandidate\b[^}]*\bStubEntry\b[^}]*\bStubPlanner\b[^}]*\} from "\.\/compaction\.js"/);
-    expect(source).not.toMatch(/\b(?:export\s+)?interface StubCandidate\b/);
-    expect(source).not.toMatch(/\b(?:export\s+)?interface StubEntry\b/);
-    expect(source).not.toMatch(/\bDEFAULT_STUB_(?:KEEP_RECENT|MIN_TOKENS)\s*=/);
-    expect(source).not.toMatch(/options\.minTokens\s*\?\?/);
+    // Honours arbitrary minTokens (both below and above DEFAULT_STUB_MIN_TOKENS), including exact boundary.
+    for (const minTokens of [100, compaction.DEFAULT_STUB_MIN_TOKENS, 500]) {
+      const below = makeCandidate(`below-${minTokens}`, minTokens - 1);
+      const exact = makeCandidate(`exact-${minTokens}`, minTokens);
+      const above = makeCandidate(`above-${minTokens}`, minTokens + 1);
+      const planned: readonly StubEntry[] = p([below, exact, above], {
+        phase: "stale",
+        minTokens,
+        keepRecent: compaction.DEFAULT_STUB_KEEP_RECENT,
+      });
+      expect(planned.map((entry) => entry.eventId)).toEqual([
+        `exact-${minTokens}`,
+        `above-${minTokens}`,
+      ]);
+    }
+
+    // Honours keepRecent and minTokens when invoked by runCompaction with compaction.ts defaults.
+    const dir = mkdtempSync(join(tmpdir(), "praana-tool-output-keep-"));
+    tempDirs.push(dir);
+    const log = new EventLog("sess-keep-recent", dir);
+    logs.push(log);
+    const writer = new CanonicalWriter(log, (err) => {
+      throw err;
+    });
+    const t1 = (await writer.startTurn("In-flight turn"))!;
+    const callIds = ["kr-1", "kr-2", "kr-3", "kr-4", "kr-5"];
+    const eventIds: string[] = [];
+    for (const cid of callIds) {
+      await writer.assistant(t1, {
+        role: "assistant",
+        content: `Run ${cid}`,
+        toolCalls: [{ id: cid, name: "shell", args: { cmd: cid } }],
+      });
+      await writer.result(t1, cid, "shell", `${cid}-` + "x".repeat(1200), false);
+      eventIds.push(log.readAll({ includeInternal: true }).at(-1)!.event_id);
+    }
+
+    const events = log.readAll({ includeInternal: true });
+    const restored = restoreFrozenState(events);
+    if (!restored.ok) throw restored.error;
+    const mat0 = materializeHistory(restored.state, events);
+    if (!mat0.ok) throw mat0.error;
+    const fill0 = requestFill({}, mat0.messages, 100_000, { effectiveMaxTokens: 200 });
+    if (!fill0.ok) throw new Error(fill0.error.message);
+    const usable = Math.floor(fill0.fill.inputTokens / 0.9);
+
+    const outcome = await runCompaction({
+      log,
+      liveRequest: { model: "claude-sonnet-4-20250514", provider: "anthropic", messages: [] },
+      contextWindowTokens: usable + 200,
+      options: {
+        effectiveMaxTokens: 200,
+        stubMinTokens: compaction.DEFAULT_STUB_MIN_TOKENS,
+        stubKeepRecent: 2,
+      },
+      planStubs: p,
+    });
+    expect(outcome.status).toBe("stubbed");
+    if (outcome.status !== "stubbed") throw new Error(JSON.stringify(outcome));
+    // Oldest 3 are stubbed; the newest keepRecent=2 remain verbatim.
+    expect(outcome.state.stubSet.map((s) => s.eventId).sort()).toEqual(eventIds.slice(0, 3).sort());
   });
 
   test("integrates with CanonicalWriter and runCompaction across Step 1 (stale) and Step 3 (in-flight)", async () => {
