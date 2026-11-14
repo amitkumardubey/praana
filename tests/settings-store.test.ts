@@ -1867,4 +1867,42 @@ console.log(JSON.stringify(res));
       expect(statSync(replaced.backupPath).mode & 0o777).toBe(0o600);
     }
   });
+
+  test("withSettingsLock wraps non-timeout lock errors with 'Settings lock unavailable (<cause>)' while preserving timeouts", async () => {
+    const { updateSettingsDocument, replaceSettingsDocument } = await storeApi();
+    const lockMod = await import("../src/credential-lock.js");
+
+    const corruptCause = `Credential lock database is corrupt and could not be recovered (${join(homeDir, ".settings.json.lock.db")}): file is not a database`;
+    const spy = spyOn(lockMod, "acquireSync").mockImplementationOnce(() => {
+      throw new Error(corruptCause);
+    });
+    try {
+      const updateRes = updateSettingsDocument({ thinking: false });
+      expect(updateRes.ok).toBe(false);
+      if (!updateRes.ok) {
+        expect(updateRes.error).toBe(`Settings lock unavailable (${corruptCause})`);
+      }
+
+      spy.mockImplementationOnce(() => {
+        throw new Error(corruptCause);
+      });
+      const replaceRes = replaceSettingsDocument({ ...DEFAULT_USER_SETTINGS });
+      expect(replaceRes.ok).toBe(false);
+      if (!replaceRes.ok) {
+        expect(replaceRes.error).toBe(`Settings lock unavailable (${corruptCause})`);
+      }
+
+      spy.mockImplementationOnce((lockPath: string) => {
+        throw new lockMod.CredentialLockTimeoutError(lockPath);
+      });
+      const timeoutRes = updateSettingsDocument({ thinking: false });
+      expect(timeoutRes.ok).toBe(false);
+      if (!timeoutRes.ok) {
+        expect(timeoutRes.error).toContain("Timed out waiting for settings lock");
+        expect(timeoutRes.error).not.toContain("Settings lock unavailable");
+      }
+    } finally {
+      spy.mockRestore();
+    }
+  });
 });
