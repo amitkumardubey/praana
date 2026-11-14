@@ -238,6 +238,32 @@ describe("file memory store", () => {
     // The plain-object path is unchanged.
     expect(await store.write({ ...draft, name: "plain-object" })).toMatchObject({ ok: true, created: true });
   });
+  test("the duplicate check reads frontmatter only, never a whole body", async () => {
+    const { home, store } = await setup();
+    const now = () => new Date("2026-05-01T00:00:00Z");
+    expect((await store.write({ ...input, name: "big", description: "Large body memory", body: "x".repeat(2048) })).ok).toBe(true);
+    const reads: Array<{ path: string; length: number }> = [];
+    const seam = new Proxy(fs, { get(target, key) {
+      if (key !== "open") return Reflect.get(target, key);
+      return async (...args: Parameters<typeof fs.open>) => {
+        const handle = await fs.open(...args);
+        return new Proxy(handle, { get(h, method) {
+          if (method !== "read") { const value = Reflect.get(h, method); return typeof value === "function" ? value.bind(h) : value; }
+          return async (buffer: Buffer, offset: number, length: number, position: number | null) => {
+            reads.push({ path: String(args[0]), length });
+            return handle.read(buffer, offset, length, position);
+          };
+        } });
+      };
+    } });
+    const writer = createFileMemoryStore({ home, cwd: home, fs: seam, findRoot: (cwd) => cwd, now });
+    expect(await writer.write({ ...input, name: "small", description: "Different detail" })).toMatchObject({ ok: true, created: true });
+    // The duplicate decision is unchanged: the same description is still refused.
+    expect(await writer.write({ ...input, name: "another", description: "Large body memory" })).toMatchObject({ ok: false, error: expect.stringMatching(/similar memory exists/i) });
+    const bodyReads = reads.filter((read) => read.path.endsWith("big.md"));
+    expect(bodyReads.length).toBeGreaterThan(0);
+    expect(Math.max(...reads.map((read) => read.length))).toBeLessThanOrEqual(1024);
+  });
   test("version numbers remain distinct but genuine duplicates are refused", async () => {
     const { store } = await setup();
     for (const [name, description] of [["node-18-notes", "Legacy runtime compatibility"], ["node-20-notes", "Modern platform support"], ["release-0-17", "First release information"], ["release-0-18", "Second deployment details"]]) {

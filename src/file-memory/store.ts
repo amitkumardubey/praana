@@ -240,7 +240,8 @@ export function createFileMemoryStore(options: StoreOptions) {
       const targetName = `${input.name}.md`;
       const exists = filenames.includes(targetName);
       if (!exists) {
-        const existing = await entries(input.scope);
+        // Only the name and description matter here, so the check reads frontmatter alone.
+        const existing = await entries(input.scope, true);
         const matches = existing.memories.filter((entry) => entry.name !== input.name && similar(input, entry)).map(({ name, description }) => ({ name, description }));
         if (matches.length) return { ok: false, error: "Similar memory exists; update it instead", similar: matches };
       }
