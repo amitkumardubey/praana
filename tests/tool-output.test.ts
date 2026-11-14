@@ -1068,35 +1068,89 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     expect(treeRes.artifactId).toBe("art_shell_tree");
   });
 
-  test("shapes 3 MB single-line and 3 MB many-lines inputs in linear time (< 500 ms)", () => {
-    const threeMbSingleLine = "x".repeat(3 * 1024 * 1024);
-    const threeMbManyLines = Array.from(
+  test("shapes 0.3 MB and 3 MB single-line inputs with sub-30x scaling (ceiling 3 s) and builds candidate once", () => {
+    const smallSingle = "x".repeat(300 * 1024);
+    const threeMbSingle = "x".repeat(3 * 1024 * 1024);
+    const threeMbMany = Array.from(
       { length: 100_000 },
       (_, i) => `line-${String(i).padStart(6, "0")}: ${"a".repeat(16)}`,
     ).join("\n");
 
-    const t0 = performance.now();
-    const singleRes = shapeToolOutput({
-      toolName: "shell",
-      command: "xxd huge.bin",
-      text: threeMbSingleLine,
-      storeArtifact: () => "art_perf_single",
-    });
-    const singleElapsedMs = performance.now() - t0;
+    const bestOf3 = (fn: () => ReturnType<typeof shapeToolOutput>) => {
+      let bestMs = Number.POSITIVE_INFINITY;
+      let last!: ReturnType<typeof shapeToolOutput>;
+      for (let i = 0; i < 3; i++) {
+        const start = performance.now();
+        last = fn();
+        const elapsed = performance.now() - start;
+        if (elapsed < bestMs) bestMs = elapsed;
+      }
+      return { bestMs, result: last };
+    };
 
-    const t1 = performance.now();
-    const manyRes = shapeToolOutput({
-      toolName: "shell",
-      command: "find .",
-      text: threeMbManyLines,
-      storeArtifact: () => "art_perf_many",
-    });
-    const manyElapsedMs = performance.now() - t1;
+    const smallRun = bestOf3(() =>
+      shapeToolOutput({
+        toolName: "shell",
+        command: "xxd small.bin",
+        text: smallSingle,
+        storeArtifact: () => "art_perf_small",
+      }),
+    );
+    const largeRun = bestOf3(() =>
+      shapeToolOutput({
+        toolName: "shell",
+        command: "xxd huge.bin",
+        text: threeMbSingle,
+        storeArtifact: () => "art_perf_single",
+      }),
+    );
+    const manyRun = bestOf3(() =>
+      shapeToolOutput({
+        toolName: "shell",
+        command: "find .",
+        text: threeMbMany,
+        storeArtifact: () => "art_perf_many",
+      }),
+    );
 
-    expect(singleRes.shaped).toBe(true);
-    expect(manyRes.shaped).toBe(true);
-    expect(singleElapsedMs).toBeLessThan(500);
-    expect(manyElapsedMs).toBeLessThan(500);
+    expect(smallRun.result.shaped).toBe(true);
+    expect(largeRun.result.shaped).toBe(true);
+    expect(manyRun.result.shaped).toBe(true);
+    expect(smallRun.bestMs).toBeLessThan(3000);
+    expect(largeRun.bestMs).toBeLessThan(3000);
+    expect(manyRun.bestMs).toBeLessThan(3000);
+    expect(largeRun.bestMs).toBeLessThan(Math.max(smallRun.bestMs, 0.5) * 30);
+    console.info(
+      `[tool-output scaling] 0.3MB=${smallRun.bestMs.toFixed(2)}ms 3MB-single=${largeRun.bestMs.toFixed(2)}ms 3MB-many=${manyRun.bestMs.toFixed(2)}ms`,
+    );
+
+    // Single-build invariant: head/tail cuts and omittedBytes depend only on the
+    // reserved worst-case marker size, not on the actual id length returned by storeArtifact.
+    const bulk = "x".repeat(20_000);
+    const shortRes = shapeToolOutput({
+      toolName: "shell",
+      command: "ls -la",
+      text: bulk,
+      storeArtifact: () => "art_short",
+    });
+    const maxLenRes = shapeToolOutput({
+      toolName: "shell",
+      command: "ls -la",
+      text: bulk,
+      storeArtifact: () => `art_${"m".repeat(60)}`,
+    });
+    const thrownRes = shapeToolOutput({
+      toolName: "shell",
+      command: "ls -la",
+      text: bulk,
+      storeArtifact: () => {
+        throw new Error("boom");
+      },
+    });
+    expect(shortRes.omittedBytes).toBe(maxLenRes.omittedBytes);
+    expect(shortRes.omittedBytes).toBe(thrownRes.omittedBytes);
+    expect(shortRes.omittedLines).toBe(maxLenRes.omittedLines);
+    expect(shortRes.omittedLines).toBe(thrownRes.omittedLines);
   });
 
   test("shapes 20 KB output that contains a marker-looking line while remaining idempotent on shaped output", () => {

@@ -739,12 +739,18 @@ export function shapeToolOutput(input: ShapeToolOutputInput): ShapeToolOutputRes
   const maxLinesCap = Math.max(0, opts.maxLines);
   const targetMaxBytes = Math.min(opts.maxBytes, totalBytes - 1);
 
-  // Probe with a worst-case marker (MAX_ARTIFACT_ID_LENGTH) before calling
-  // storeArtifact so no valid stored ID can push the final marker over caps.
+  // Build the candidate once with the worst-case reserved marker width
+  // (MAX_ARTIFACT_ID_LENGTH) before calling storeArtifact, then substitute the
+  // resolved artifact ID (or unavailable fallback) without rebuilding.
   const explicitArtifactId = normalizeArtifactId(input.artifactId);
   const probeId = explicitArtifactId || input.storeArtifact ? RESERVED_ARTIFACT_ID : undefined;
-  const probe = convergeShapedCandidate(rawText, lines, totalBytes, exceedsLines, opts, probeId);
-  if (!probe || probe.text.length >= rawText.length || Buffer.byteLength(probe.text, "utf8") > targetMaxBytes) {
+  const candidate = convergeShapedCandidate(rawText, lines, totalBytes, exceedsLines, opts, probeId);
+  if (
+    !candidate ||
+    candidate.text.length >= rawText.length ||
+    Buffer.byteLength(candidate.text, "utf8") > targetMaxBytes ||
+    candidate.text.split("\n").length > maxLinesCap
+  ) {
     return unchanged();
   }
 
@@ -757,26 +763,31 @@ export function shapeToolOutput(input: ShapeToolOutputInput): ShapeToolOutputRes
     }
   }
 
-  const finalCand =
+  const finalMarker = formatElisionMarker(
+    candidate.omittedLines,
+    candidate.omittedBytes,
+    resolvedArtifactId,
+  );
+  const finalText =
     resolvedArtifactId === probeId
-      ? probe
-      : convergeShapedCandidate(rawText, lines, totalBytes, exceedsLines, opts, resolvedArtifactId);
+      ? candidate.text
+      : [candidate.head, finalMarker, candidate.tail].filter((part) => part.length > 0).join("\n");
+
   if (
-    !finalCand ||
-    finalCand.text.length >= rawText.length ||
-    Buffer.byteLength(finalCand.text, "utf8") > targetMaxBytes ||
-    finalCand.text.split("\n").length > maxLinesCap
+    finalText.length >= rawText.length ||
+    Buffer.byteLength(finalText, "utf8") > targetMaxBytes ||
+    finalText.split("\n").length > maxLinesCap
   ) {
     return unchanged();
   }
 
   const out: ShapeToolOutputResult = {
-    text: finalCand.text,
+    text: finalText,
     shaped: true,
     rawTokens,
-    shapedTokens: estimateTokens(finalCand.text),
-    omittedLines: finalCand.omittedLines,
-    omittedBytes: finalCand.omittedBytes,
+    shapedTokens: estimateTokens(finalText),
+    omittedLines: candidate.omittedLines,
+    omittedBytes: candidate.omittedBytes,
   };
   if (resolvedArtifactId) out.artifactId = resolvedArtifactId;
   return out;
