@@ -202,6 +202,36 @@ test("a fold must shrink relative to stale stubs even when it beats the original
   expect(outcome.state.summary).toBeNull();
 });
 
+test("in-flight stubbing cannot make a growing fold look beneficial", async () => {
+  const { log, writer, current } = await nearCapacity("C".repeat(264), 3000);
+  for (let i = 0; i < 3; i++) {
+    const id = `recent-${i}`;
+    await writer.assistant(current, { role: "assistant", content: "", toolCalls: [{ id, name: "shell", args: {} }] });
+    await writer.result(current, id, "shell", "ok", false);
+  }
+  const before = messages(log);
+  const beforeTokens = inputTokens(before);
+  const accepted = summary("D".repeat(380));
+  const foldOnlyTokens = inputTokens([renderSummaryMessage(accepted), ...buildTurns(log).at(-1)!.messages]);
+  expect(beforeTokens / usableTokens).toBeGreaterThanOrEqual(0.80);
+  expect(beforeTokens).toBeLessThanOrEqual(usableTokens);
+  expect(foldOnlyTokens).toBeGreaterThan(beforeTokens);
+  let calls = 0;
+  const outcome = await runCompaction({
+    log, liveRequest, contextWindowTokens, options,
+    runSummary: async () => { calls++; return { text: accepted, finishReason: "stop", usage: null, toolCalls: [] }; },
+  });
+  expect(calls).toBe(1);
+  expect(outcome).toMatchObject({ status: "stubbed", summaryDiscarded: true });
+  expectDiscarded(outcome, log, accepted);
+  if (outcome.status !== "stubbed") throw new Error(JSON.stringify(outcome));
+  expect(outcome.fill.inputTokens).toBeLessThan(beforeTokens);
+  expect(outcome.state.summary).toBeNull();
+  expect(outcome.state.boundaryEventId).toBeNull();
+  expect(messages(log).slice(0, 2)).toEqual(before.slice(0, 2));
+  expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(1);
+});
+
 test("a fitting fold that grows the request is discarded", async () => {
   const { log } = await nearCapacity("C".repeat(220), 3400);
   const beforeTokens = inputTokens(messages(log));

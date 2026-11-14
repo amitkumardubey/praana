@@ -997,7 +997,8 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
           stubSet: finalStubSet,
           summaryRequest: summaryRequestMeta,
         };
-        let postFoldFill = measureCandidate(postFoldState);
+        const foldOnlyFill = measureCandidate(postFoldState);
+        let postFoldFill = foldOnlyFill;
 
         // If folding alone did not reach the target, run Step 3 (stub inside the in-flight turn).
         if (!postFoldFill.fits || postFoldFill.ratio > targetRatio) {
@@ -1013,7 +1014,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
           postFoldState = { ...postFoldState, stubSet: finalStubSet };
         }
 
-        if (postFoldFill.fits && postFoldFill.inputTokens < preFoldFill.inputTokens) {
+        if (postFoldFill.fits && foldOnlyFill.inputTokens < preFoldFill.inputTokens) {
           const committed = tryCommitRewrite(
             input.log,
             state,
