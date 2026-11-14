@@ -285,6 +285,16 @@ describe("file memory store", () => {
       }
     }
   });
+  test("assignment-shaped prose in the body is refused, never silently redacted", async () => {
+    const { store } = await setup();
+    // ASSIGNMENT_RE reads "key: <20+ non-space chars>" as a credential assignment.
+    const body = "Use the index order: sort key: created_at,updated_at,name";
+    const result = await store.write({ ...input, name: "index-order", body });
+    expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/secret-shaped content refused in body/i) });
+    // Refused means nothing is stored, so the prose never lands in a redacted file either.
+    expect((await store.list()).entries).toEqual([]);
+    expect(await store.read({ name: "index-order", scope: "global" })).toMatchObject({ ok: false, error: "Memory not found" });
+  });
   test.each([{ query: "search" }, { query: 42 }, { unknown: "value" }])("write rejects extra keys: %j", async (extra) => {
     const { store } = await setup();
     const result = await store.write({ ...input, description: "bad\nline", ...extra });
