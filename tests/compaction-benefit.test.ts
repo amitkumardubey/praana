@@ -1,9 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CanonicalWriter } from "../src/canonical-transcript.js";
-import { buildTurns, materializeHistory, runCompaction } from "../src/compaction.js";
+import { buildTurns, materializeHistory, runCompaction, type CompactionOutcome } from "../src/compaction.js";
 import { EventLog } from "../src/event-log.js";
 import { checkSummary, readCommits, renderSummaryMessage, restoreFrozenStateFromLog, SUMMARY_HEADINGS, summaryCapTokens } from "../src/frozen-summary.js";
 import type { ConversationMessage, StreamRequest } from "../src/llm/types.js";
@@ -60,6 +61,28 @@ async function nearCapacity(completedText: string, resultSize: number) {
   return { log, writer, current };
 }
 
+function expectNoDiscard(outcome: CompactionOutcome) {
+  expect(outcome).not.toHaveProperty("summaryDiscarded");
+  expect(outcome).not.toHaveProperty("discardedSummary");
+}
+
+function expectDiscarded(outcome: CompactionOutcome, log: EventLog, text: string) {
+  const boundaryEventId = buildTurns(log)[0].eventIds.at(-1)!;
+  expect(outcome).toMatchObject({
+    summaryDiscarded: true,
+    discardedSummary: {
+      boundaryEventId,
+      text,
+      request: {
+        cutDescription: `through canonical event ${boundaryEventId} (end of turn 1)`,
+        capTokens: summaryCapTokens(usableTokens),
+        instructionSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
+        usage: null,
+      },
+    },
+  });
+}
+
 test("a tiny completed turn skips the paid summary when even the minimum cannot shrink", async () => {
   const { log } = await nearCapacity("old", 4100);
   const before = messages(log);
@@ -78,7 +101,7 @@ test("a tiny completed turn skips the paid summary when even the minimum cannot 
   });
   expect(calls).toBe(0);
   expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "fold_not_possible" });
-  expect(outcome).not.toHaveProperty("summaryDiscarded");
+  expectNoDiscard(outcome);
   expect(messages(log)).toEqual(before);
   expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
 });
@@ -93,6 +116,7 @@ test("a useful minimum still pays for a summary", async () => {
   });
   expect(calls).toBe(1);
   expect(outcome.status).toBe("rewritten");
+  expectNoDiscard(outcome);
   expect(inputTokens(messages(log))).toBeLessThan(beforeTokens);
 });
 
@@ -108,6 +132,7 @@ test("an equal-size minimum skips the paid summary", async () => {
   });
   expect(calls).toBe(0);
   expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "fold_not_possible" });
+  expectNoDiscard(outcome);
 });
 
 test("benefit is measured after stale stubs, not against the original request", async () => {
@@ -131,6 +156,7 @@ test("benefit is measured after stale stubs, not against the original request", 
   expect(outcome.fill.inputTokens).toBeLessThan(originalTokens);
   expect(bestTokens).toBeGreaterThanOrEqual(outcome.fill.inputTokens);
   expect(outcome.state.summary).toBeNull();
+  expectNoDiscard(outcome);
 });
 
 test("an accepted equal-size fold is discarded", async () => {
@@ -146,6 +172,7 @@ test("an accepted equal-size fold is discarded", async () => {
   });
   expect(calls).toBe(1);
   expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "fold_insufficient", summaryDiscarded: true });
+  expectDiscarded(outcome, log, accepted);
   expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
 });
 
@@ -167,6 +194,7 @@ test("a fold must shrink relative to stale stubs even when it beats the original
   });
   expect(calls).toBe(1);
   expect(outcome).toMatchObject({ status: "stubbed", summaryDiscarded: true });
+  expectDiscarded(outcome, log, accepted);
   if (outcome.status !== "stubbed") throw new Error(JSON.stringify(outcome));
   expect(outcome.fill.inputTokens).toBeLessThan(foldedTokens);
   expect(foldedTokens).toBeLessThan(originalTokens);
@@ -191,6 +219,72 @@ test("a fitting fold that grows the request is discarded", async () => {
   });
   expect(calls).toBe(1);
   expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "fold_insufficient", summaryDiscarded: true });
+  expectDiscarded(outcome, log, accepted);
   expect(inputTokens(messages(log))).toBe(beforeTokens);
+  expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
+});
+
+test("a capacity error exposes the accepted summary and its paid request metadata", async () => {
+  const { log } = await nearCapacity("C".repeat(220), 4300);
+  const boundaryEventId = buildTurns(log)[0].eventIds.at(-1)!;
+  const accepted = summary("D".repeat(380));
+  const usage = { input: 123, output: 99, totalTokens: 222 };
+  expect(inputTokens(messages(log))).toBeGreaterThan(usableTokens);
+  expect(checkSummary(accepted, { capTokens: summaryCapTokens(usableTokens) }).ok).toBe(true);
+  let calls = 0;
+  let instruction = "";
+  const outcome = await runCompaction({
+    log, liveRequest, contextWindowTokens, options,
+    runSummary: async (request) => {
+      calls++;
+      const last = request.messages.at(-1)!;
+      if (last.role === "tool_result" || typeof last.content !== "string") throw new Error("Expected summary instruction");
+      instruction = last.content;
+      return { text: accepted, finishReason: "stop", usage, toolCalls: [] };
+    },
+  });
+  expect(calls).toBe(1);
+  expect(outcome).toMatchObject({
+    status: "capacity_error", kind: "request_exceeds_capacity", summaryDiscarded: true,
+    discardedSummary: {
+      boundaryEventId,
+      text: accepted,
+      request: {
+        cutDescription: `through canonical event ${boundaryEventId} (end of turn 1)`,
+        capTokens: summaryCapTokens(usableTokens),
+        instructionSha256: createHash("sha256").update(instruction).digest("hex"),
+        usage,
+      },
+    },
+  });
+  expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
+});
+
+test.each([
+  { name: "below trigger", completedSize: 220, resultSize: 1, status: "noop", calls: 0 },
+  { name: "no completed turns", completedSize: null, resultSize: 3800, status: "unchanged_fits", calls: 0 },
+  { name: "summary failure", completedSize: 220, resultSize: 3400, status: "summary_failed_fits", calls: 1 },
+  { name: "unfoldable overflow", completedSize: 220, resultSize: 4800, status: "capacity_error", calls: 0 },
+  { name: "invalid reserve", completedSize: 220, resultSize: 3400, status: "capacity_error", calls: 0 },
+])("$name does not expose a discarded summary", async (scenario) => {
+  const { log, writer } = openLog();
+  if (scenario.completedSize !== null) {
+    const old = await writer.startTurn("C".repeat(scenario.completedSize));
+    await writer.assistant(old, { role: "assistant", content: "done" });
+  }
+  const current = await writer.startTurn("now");
+  await writer.assistant(current, {
+    role: "assistant", content: "running", toolCalls: [{ id: "call", name: "shell", args: {} }],
+  });
+  await writer.result(current, "call", "shell", "R".repeat(scenario.resultSize), false);
+  let calls = 0;
+  const outcome = await runCompaction({
+    log, liveRequest, contextWindowTokens,
+    options: scenario.name === "invalid reserve" ? { ...options, effectiveMaxTokens: contextWindowTokens } : options,
+    runSummary: async () => { calls++; throw new Error("unavailable"); },
+  });
+  expect(calls).toBe(scenario.calls);
+  expect(outcome.status).toBe(scenario.status);
+  expectNoDiscard(outcome);
   expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
 });

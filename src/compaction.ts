@@ -235,12 +235,22 @@ export interface RequestFill {
 
 export type CapacityErrorKind = "reserve_exceeds_window" | "invalid_capacity" | "request_exceeds_capacity";
 
+export type SummaryRequestMeta = NonNullable<FrozenState["summaryRequest"]>;
+
+/** An accepted, uncommitted summary. Reuse is valid only while its boundary event id is unchanged. */
+export interface DiscardedSummary {
+  boundaryEventId: string;
+  text: string;
+  request: SummaryRequestMeta | null;
+}
+
 /** Values only: the integration layer must make terminal capacity stops exit headless runs non-zero. */
 export interface CapacityErrorOutcome {
   status: "capacity_error";
   kind: CapacityErrorKind;
   message: string;
   summaryDiscarded?: true;
+  discardedSummary?: DiscardedSummary;
 }
 
 export type RequestFillResult = { ok: true; fill: RequestFill } | { ok: false; error: CapacityErrorOutcome };
@@ -248,7 +258,7 @@ export type RequestFillResult = { ok: true; fill: RequestFill } | { ok: false; e
 function capacityError(
   kind: CapacityErrorKind,
   detail: string,
-  summaryDiscarded?: boolean,
+  discardedSummary?: DiscardedSummary,
 ): { ok: false; error: CapacityErrorOutcome } {
   const guidance = kind === "invalid_capacity"
     ? "Correct the configuration or model catalog entry before continuing."
@@ -258,7 +268,10 @@ function capacityError(
     kind,
     message: `${detail} ${guidance}`,
   };
-  if (summaryDiscarded) error.summaryDiscarded = true;
+  if (discardedSummary) {
+    error.summaryDiscarded = true;
+    error.discardedSummary = discardedSummary;
+  }
   return { ok: false, error };
 }
 
@@ -310,9 +323,9 @@ export type CompactionOutcome =
   /** A committed summary rewrite, with exactly one generation increment. */
   | { status: "rewritten"; state: FrozenState; fill: RequestFill }
   /** A stubs-only commit: one generation increment, existing summary/boundary preserved. */
-  | { status: "stubbed"; state: FrozenState; fill: RequestFill; summaryDiscarded?: true }
+  | { status: "stubbed"; state: FrozenState; fill: RequestFill; summaryDiscarded?: true; discardedSummary?: DiscardedSummary }
   /** No useful change, but the unchanged request fits usable capacity. */
-  | { status: "unchanged_fits"; state: FrozenState; fill: RequestFill; reason: UnchangedFitsReason; summaryDiscarded?: true }
+  | { status: "unchanged_fits"; state: FrozenState; fill: RequestFill; reason: UnchangedFitsReason; summaryDiscarded?: true; discardedSummary?: DiscardedSummary }
   /** Summary failure/timeout; previous state retained and the unchanged request fits. */
   | { status: "summary_failed_fits"; state: FrozenState; fill: RequestFill; reason: string }
   /** Nothing committed by this run. State is pre-race; callers must re-restore from the log before continuing. */
@@ -782,7 +795,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
   // --- STEP 2: Choose the tail, then fold once (only when completedTurns.length > 0) ---
   let summaryFailureReason: string | undefined;
   let unchangedReason: UnchangedFitsReason | undefined;
-  let summaryDiscarded = false;
+  let discardedSummary: DiscardedSummary | undefined;
 
   if (completedTurns.length > 0) {
     const preFoldFill = measureCandidate({ ...state, stubSet: toStubSet(step1StubMap) });
@@ -969,7 +982,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
       }
 
       if (acceptedSummary !== undefined) {
-        const summaryRequestMeta: NonNullable<FrozenState["summaryRequest"]> = {
+        const summaryRequestMeta: SummaryRequestMeta = {
           cutDescription: cutText,
           capTokens,
           instructionSha256,
@@ -1011,7 +1024,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
           if (committed.status === "commit_rejected" || committed.status === "commit_uncertain") return committed;
           return { status: "rewritten", state: committed.state, fill: postFoldFill };
         }
-        summaryDiscarded = true;
+        discardedSummary = { boundaryEventId: newBoundaryEventId, text: acceptedSummary, request: summaryRequestMeta };
         unchangedReason = "fold_insufficient";
       }
     }
@@ -1045,7 +1058,10 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
       state: committed.state,
       fill: step3Result.fill,
     };
-    if (summaryDiscarded) outcome.summaryDiscarded = true;
+    if (discardedSummary) {
+      outcome.summaryDiscarded = true;
+      outcome.discardedSummary = discardedSummary;
+    }
     return outcome;
   }
 
@@ -1057,7 +1073,10 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
       fill: initialFill,
       reason: unchangedReason ?? (sawEligibleResults ? "planner_declined" : "no_eligible_results"),
     };
-    if (summaryDiscarded) outcome.summaryDiscarded = true;
+    if (discardedSummary) {
+      outcome.summaryDiscarded = true;
+      outcome.discardedSummary = discardedSummary;
+    }
     return outcome;
   }
 
@@ -1066,6 +1085,6 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
     summaryFailureReason
       ? `Summary generation failed (${summaryFailureReason}) and the request exceeds usable context capacity.`
       : "The in-flight turn and request frame exceed usable context capacity.",
-    summaryDiscarded,
+    discardedSummary,
   ).error;
 }
