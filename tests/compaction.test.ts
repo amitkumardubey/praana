@@ -1448,11 +1448,12 @@ test("materialises each distinct state at most once with fresh full-frame fill m
     });
   }
 
-  // A growing fold skips post-fold stubbing; only the unfolded Step 3 fallback is measured.
+  // A useful fold remains oversized after both keepRecent steps. Its unfolded fallback also
+  // exhausts both steps, in addition to measuring the initial, stale-stub and fold-only states.
   {
     const { log } = openLog();
     addTurn(log, 1, {
-      inputText: "T1",
+      inputText: "C".repeat(700),
       toolResults: [{ id: "stale-1", text: "S".repeat(800) }],
     });
     addTurn(log, 2, {
@@ -1466,6 +1467,7 @@ test("materialises each distinct state at most once with fresh full-frame fill m
     });
     let bothPathCalls = 0;
     const bothPathKeys = new Set<string>();
+    const pathStates: FrozenState[] = [];
     const stubKeepRecent = 2;
     const outcome = await runWithFreshFillOracle({
       log,
@@ -1477,15 +1479,29 @@ test("materialises each distinct state at most once with fresh full-frame fill m
 
       materialize: (state, source) => {
         bothPathCalls++;
+        pathStates.push(structuredClone(state));
         bothPathKeys.add(JSON.stringify([state.resetEpoch, state.boundaryEventId, state.summary, state.stubSet]));
         return compaction.materializeHistory(state, source);
       },
       runSummary: async () => summaryResp(validSummary("S".repeat(280))),
     });
-    expect(outcome.status).toBe("stubbed");
+    expect(outcome.status).toBe("capacity_error");
     expect(outcome.summaryDiscarded).toBe(true);
     expect(bothPathCalls).toBe(bothPathKeys.size);
-    expect(bothPathCalls).toBe(3 + stubKeepRecent);
+    expect(bothPathCalls).toBe(3 + 2 * stubKeepRecent);
+    const folded = pathStates.filter((s) => s.boundaryEventId !== null);
+    const unfolded = pathStates.filter((s) => s.boundaryEventId === null);
+    expect(folded.map((s) => s.stubSet.length)).toEqual([0, 2, 3]);
+    expect(unfolded.map((s) => s.stubSet.length)).toEqual([0, 1, 3, 4]);
+    const tokens = (state: FrozenState) => {
+      const mat = compaction.materializeHistory(state, log);
+      if (!mat.ok) throw mat.error;
+      return oracleInputTokens({}, mat.messages);
+    };
+    expect(tokens(folded[0])).toBeLessThan(tokens(unfolded[1]));
+    expect(tokens(folded.at(-1)!)).toBeGreaterThan(1000);
+    expect(tokens(unfolded.at(-1)!)).toBeGreaterThan(1000);
+    expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
   }
 });
 
