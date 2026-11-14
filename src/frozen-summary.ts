@@ -360,7 +360,11 @@ export function restoreFrozenStateFromLog(log: Pick<EventLog, "readAll">): Froze
 
 export type CommitAppendResult = { status: "committed" } | { status: "rejected"; error: FrozenSummaryError; candidateEventIndex?: number } | { status: "commit_uncertain"; error: unknown };
 
-/** Never retry an uncertain append: reload raw events and restore before deciding what to do next. */
+/**
+ * Requires a single writer for the session log: validation and append are not
+ * atomic across processes. Never retry an uncertain append; reload raw events
+ * and restore before deciding what to do next.
+ */
 export function appendCommit(log: Pick<EventLog, "append" | "readAll">, commit: Omit<CompactionCommit, "prefix">): CommitAppendResult {
   let event: ReturnType<typeof buildCommitEvent>;
   try {

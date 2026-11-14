@@ -400,6 +400,10 @@ export interface StubEntry {
   stubText: string;
 }
 
+/**
+ * Must be pure: overlapping candidates can be planned up to three times, during
+ * the pre-check, post-fold Step 3, and unfolded fallback (with varying keepRecent).
+ */
 export type StubPlanner = (
   candidates: readonly StubCandidate[],
   options: { phase: "stale" | "in_flight"; minTokens: number; keepRecent: number },
