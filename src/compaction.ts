@@ -676,7 +676,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
   // Materialize each distinct (resetEpoch, boundaryEventId, summary, stubSet) state at most once per run:
   // Worst case: 1 initial + 1 Step 1 stale-stub + 1 fold-only + stubKeepRecent post-fold
   // stub states + stubKeepRecent unfolded fallback stub states = 3 + 2 * stubKeepRecent.
-  // The lazy pre-fold baseline reuses the initial or Step 1 measurement; the fallback starts there too.
+  // The pre-fold baseline reuses the initial or Step 1 measurement; the fallback starts there too.
   // Non-beneficial folds skip post-fold stubbing. The full bound is reached only when a useful fold
   // remains oversized after stubbing, then the unfolded fallback also exhausts its keepRecent steps.
   const measuredByState = new Map<string, RequestFill>([
@@ -816,9 +816,6 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
   let discardedSummary: DiscardedSummary | undefined;
 
   if (completedTurns.length > 0) {
-    // Baseline: the request after Step 1 stubs, measured only after the cheap impossibility checks.
-    // unchanged_fits returns the state without those stubs unless the Step 3 fallback commits them.
-    const preFoldFill = () => measureCandidate({ ...state, stubSet: toStubSet(step1StubMap) });
     const capTokens = summaryCapTokens(initialFill.usableTokens);
     const minValidSummary = minimumValidSummary();
     const minValidSummaryTokens = estimateTokens(minValidSummary);
@@ -855,9 +852,13 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
     // Necessary-condition filter: even the shortest tail and minimum valid summary must beat the request after Step 1.
     // A realistic summary is larger, so a paid summary can still be discarded by the commit rule;
     // this only avoids clearly hopeless folds, not every unhelpful summary call.
-    if (capTokens < minValidSummaryTokens || stubbedFoldBestCase > initialFill.usableTokens) {
+    const foldNotPossible = capTokens < minValidSummaryTokens || stubbedFoldBestCase > initialFill.usableTokens;
+    // Reuse the request measured after Step 1, only after the cheap impossibility checks.
+    // unchanged_fits returns the original state unless the Step 3 fallback commits the stubs.
+    const preFold = foldNotPossible ? null : measureCandidate({ ...state, stubSet: toStubSet(step1StubMap) });
+    if (preFold === null) {
       unchangedReason = "fold_not_possible";
-    } else if (foldAloneBestCase >= preFoldFill().inputTokens) {
+    } else if (foldAloneBestCase >= preFold.inputTokens) {
       unchangedReason = "fold_not_beneficial";
     } else {
       // Shrink completed turns in the tail from Math.min(tailTurns, completedTurns.length) down to 0
@@ -1024,10 +1025,11 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
           summaryRequest: summaryRequestMeta,
         };
         const foldOnlyFill = measureCandidate(postFoldState);
+        const foldBeneficial = foldOnlyFill.inputTokens < preFold.inputTokens;
         let postFoldFill = foldOnlyFill;
 
         // Only spend Step 3 work on a fold that can be committed and has not reached the target.
-        if (foldOnlyFill.inputTokens < preFoldFill().inputTokens && (!postFoldFill.fits || postFoldFill.ratio > targetRatio)) {
+        if (foldBeneficial && (!postFoldFill.fits || postFoldFill.ratio > targetRatio)) {
           const inFlightStubbed = runInFlightStubbing(
             newBoundaryEventId,
             acceptedSummary,
@@ -1040,7 +1042,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
           postFoldState = { ...postFoldState, stubSet: finalStubSet };
         }
 
-        if (postFoldFill.fits && foldOnlyFill.inputTokens < preFoldFill().inputTokens) {
+        if (postFoldFill.fits && foldBeneficial) {
           const committed = tryCommitRewrite(
             input.log,
             state,
@@ -1059,7 +1061,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
           text: acceptedSummary,
           request: summaryRequestMeta,
         };
-        unchangedReason = foldOnlyFill.inputTokens >= preFoldFill().inputTokens ? "fold_not_beneficial" : "fold_insufficient";
+        unchangedReason = foldBeneficial ? "fold_insufficient" : "fold_not_beneficial";
       }
     }
   }
