@@ -362,14 +362,24 @@ test("the private key header check stays linear on adversarial whitespace", asyn
   expect(large.matched).toBe(false);
   expect(large.ms).toBeLessThan(200);
   expect(large.ms).toBeLessThan(small.ms * 30 + 50);
-  // A 80k-space description is refused by the length cap, and fast: the cheap validation
-  // runs before any scan, so an unbounded string never reaches the regex.
+  // An 80k-space description is refused by the length cap, and fast: the cheap validation runs
+  // before any scan, so an unbounded string never reaches the regex.
   const home = await homeDir();
+  const store = make(home);
   const started = performance.now();
-  const result = await make(home).write({ ...entry, description: `-----BEGIN${" ".repeat(80_000)}x` });
+  const result = await store.write({ ...entry, description: `-----BEGIN${" ".repeat(80_000)}x` });
   const elapsed = performance.now() - started;
   expect(result).toEqual({ ok: false, error: "Description must be one line and at most 300 characters" });
   expect(elapsed).toBeLessThan(200);
+  // Ordering, by message: a description that is over the cap and also holds a detectable
+  // secret is refused by the cap, so the scan never sees the unbounded text. With the scan
+  // first, the same input reported the secret instead.
+  const secret = "sk-abcdefghijklmnopqrstuvwxyz123456";
+  expect(await store.write({ ...entry, description: `${secret} ${"x".repeat(300)}` }))
+    .toEqual({ ok: false, error: "Description must be one line and at most 300 characters" });
+  // The same secret in a legal description is still refused by the scan.
+  expect(await store.write({ ...entry, description: `Rotate this ${secret}` }))
+    .toEqual({ ok: false, error: "Secret-shaped content refused in description. Remove the secret-shaped text before retrying" });
 });
 
 /** A header is refused even when it wraps between type words, is truncated before its
