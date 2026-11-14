@@ -829,9 +829,10 @@ export function shapeToolOutput(input: ShapeToolOutputInput): ShapeToolOutputRes
 export function buildToolResultStub(candidate: StubCandidate): string {
   const artifactId = extractArtifactIdFromText(candidate.text);
   const artifactClause = artifactId ? `, artifact ${artifactId}` : "";
+  const transcriptHint = `search_transcript({ id: "${candidate.eventId}" })`;
   const retrieveClause = artifactId
-    ? `use search_transcript("${candidate.eventId}") or retrieve_artifact("${artifactId}") to inspect`
-    : `use search_transcript("${candidate.eventId}") to inspect`;
+    ? `use ${transcriptHint} or retrieve_artifact("${artifactId}") to inspect`
+    : `use ${transcriptHint} to inspect`;
   return `[tool_result ${candidate.eventId} (${candidate.toolName}, ~${candidate.estimatedTokens} tokens${artifactClause}) stubbed — ${retrieveClause}]`;
 }
 

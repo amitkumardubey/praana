@@ -319,6 +319,34 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
     expect(direct).toEqual([{ eventId: "res-1", stubText }]);
   });
 
+  test("stub hints use search_transcript's object form with the canonical event id", () => {
+    const markerText = `head\n... [elided 100 lines / 4000 bytes (partial lines at cut truncated); full output stored in artifact art_abc123def456 — call retrieve_artifact("art_abc123def456") to inspect] ...\n${"A".repeat(1600)}`;
+    const withArtifact = buildToolResultStub({
+      eventId: "res-obj-1",
+      turnId: 1,
+      callId: "call-obj-1",
+      toolName: "shell",
+      text: markerText,
+      isError: false,
+      estimatedTokens: 400,
+    });
+    expect(withArtifact).toContain('search_transcript({ id: "res-obj-1" })');
+    expect(withArtifact).not.toContain('search_transcript("');
+    expect(withArtifact).toContain('retrieve_artifact("art_abc123def456")');
+
+    const withoutArtifact = buildToolResultStub({
+      eventId: "res-obj-2",
+      turnId: 1,
+      callId: "call-obj-2",
+      toolName: "shell",
+      text: "A".repeat(1600),
+      isError: false,
+      estimatedTokens: 400,
+    });
+    expect(withoutArtifact).toContain('search_transcript({ id: "res-obj-2" })');
+    expect(withoutArtifact).not.toContain('search_transcript("');
+  });
+
   test("planToolResultStubs honours minTokens and keepRecent, re-exports compaction constants, and satisfies StubPlanner", async () => {
     const p: StubPlanner = planToolResultStubs;
     expect(typeof p).toBe("function");
