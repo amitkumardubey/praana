@@ -10,7 +10,7 @@ export type OverrideSpec =
   | { kind: "boolean" }
   | { kind: "int"; min: number; max: number }
   | { kind: "enum"; options: readonly string[] }
-  | { kind: "string" }
+  | { kind: "string"; maxLength?: number }
   | { kind: "stringList"; maxItems: number; maxItemLength: number };
 
 export type OverrideValue = boolean | number | string | string[];
@@ -29,7 +29,7 @@ export const APPROVED_CONFIG_OVERRIDES: Readonly<Record<string, OverrideSpec>> =
   "turn.pause_after_steps": { kind: "int", min: 1, max: 1000 },
   "ui.ambient": { kind: "enum", options: ["inline", "quiet"] },
   "ui.tool_icons": { kind: "enum", options: ["unicode", "ascii"] },
-  "ui.syntax_theme": { kind: "string" },
+  "ui.syntax_theme": { kind: "string", maxLength: 64 },
   "ui.show_cost": { kind: "boolean" },
   "ui.markdown_rendering": { kind: "boolean" },
   "ui.syntax_highlighting": { kind: "boolean" },
@@ -81,10 +81,17 @@ function validateOverrideValue(
       return { ok: true, value };
     }
     case "string": {
-      if (typeof value !== "string" || value.trim().length === 0) {
+      if (typeof value !== "string") {
         return { ok: false, reason: "Expected a non-empty string" };
       }
-      return { ok: true, value };
+      const trimmed = value.trim();
+      if (trimmed.length === 0) {
+        return { ok: false, reason: "Expected a non-empty string" };
+      }
+      if (spec.maxLength !== undefined && trimmed.length > spec.maxLength) {
+        return { ok: false, reason: `Expected a string of at most ${spec.maxLength} characters` };
+      }
+      return { ok: true, value: trimmed };
     }
     case "stringList": {
       if (!Array.isArray(value)) {

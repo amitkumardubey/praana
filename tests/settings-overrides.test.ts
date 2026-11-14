@@ -243,4 +243,23 @@ describe("settings config_overrides ingestion", () => {
       },
     });
   });
+
+  test("ui.syntax_theme trims accepted values and enforces a 64-character maximum length", async () => {
+    const { parseConfigOverrides } = await api();
+
+    const padded = parseConfigOverrides({ "ui.syntax_theme": "  dracula  " });
+    expect(padded.rejected).toEqual([]);
+    expect(padded.accepted).toEqual({ "ui.syntax_theme": "dracula" });
+
+    const maxValid = "t".repeat(64);
+    const atLimit = parseConfigOverrides({ "ui.syntax_theme": `  ${maxValid}  ` });
+    expect(atLimit.rejected).toEqual([]);
+    expect(atLimit.accepted).toEqual({ "ui.syntax_theme": maxValid });
+
+    const overLimit = parseConfigOverrides({ "ui.syntax_theme": "t".repeat(65) });
+    expect(overLimit.accepted).toEqual({});
+    expect(overLimit.rejected).toEqual([
+      { path: "ui.syntax_theme", reason: expect.stringMatching(/64/) },
+    ]);
+  });
 });
