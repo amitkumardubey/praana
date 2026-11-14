@@ -270,6 +270,8 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
       "DEFAULT_STUB_MIN_TOKENS",
       "TOOL_OUTPUT_CLASSIFICATION",
       "buildToolResultStub",
+      "extractShapedArtifactId",
+      "isShapedStubFor",
       "planToolResultStubs",
       "shapeToolOutput",
     ]);

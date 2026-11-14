@@ -132,7 +132,7 @@ const MAX_ARTIFACT_ID_LENGTH = 64;
 const RESERVED_ARTIFACT_ID = "a".repeat(MAX_ARTIFACT_ID_LENGTH);
 const ARTIFACT_ID_EXACT_RE = new RegExp(`^${ARTIFACT_ID_GRAMMAR}$`);
 const ELIDED_MARKER_LINE_RE = new RegExp(
-  `^\\.\\.\\. \\[elided (?:[1-9]\\d* lines? / )?\\d+ bytes \\(partial lines at cut truncated\\); full output stored in artifact (${ARTIFACT_ID_GRAMMAR}) — call retrieve_artifact\\("\\1"\\) to inspect\\] \\.\\.\\.$`,
+  `^\\.\\.\\. \\[elided (?:[1-9]\\d* lines? / )?\\d+ bytes(?: \\(partial lines at cut truncated\\))?; full output stored in artifact (${ARTIFACT_ID_GRAMMAR}) — call retrieve_artifact\\("\\1"\\) to inspect\\] \\.\\.\\.$`,
 );
 const CARD_WHOLE_TEXT_RE = new RegExp(
   `^\\[artifact:\\s*(${ARTIFACT_ID_GRAMMAR})\\s*\\|[^\\n]*\\](?:\\nRetrieve: retrieve_artifact\\("\\1"\\))?$`,
@@ -527,15 +527,28 @@ function formatElisionMarker(
 
 function extractArtifactIdFromText(text: string): string | undefined {
   const cardMatch = CARD_WHOLE_TEXT_RE.exec(text);
-  if (cardMatch?.[1]) return cardMatch[1];
+  if (cardMatch?.[1]) return normalizeArtifactId(cardMatch[1]);
   const lines = text.split("\n");
   for (let i = lines.length - 1; i >= 0; i--) {
     const line = lines[i];
     if (!line) continue;
     const elidedMatch = ELIDED_MARKER_LINE_RE.exec(line);
-    if (elidedMatch?.[1]) return elidedMatch[1];
+    if (elidedMatch?.[1]) {
+      const validId = normalizeArtifactId(elidedMatch[1]);
+      if (validId) return validId;
+    }
   }
   return undefined;
+}
+
+export function extractShapedArtifactId(text: string): string | undefined {
+  return extractArtifactIdFromText(text);
+}
+
+export function isShapedStubFor(text: string, artifactId: string): boolean {
+  const validId = normalizeArtifactId(artifactId);
+  if (!validId) return false;
+  return extractArtifactIdFromText(text) === validId;
 }
 
 interface ShapedCandidate {
