@@ -68,6 +68,17 @@ const inside = (parent: string, child: string) => { const p = relative(parent, c
  * descriptions that differ by one word score exactly 0.6, so the bar is 0.75. */
 const DUPLICATE_MIN_TOKENS = 3;
 const DUPLICATE_JACCARD = 0.75;
+const WRITE_FIELDS = ["scope", "type", "name", "description", "body"] as const;
+/** Read each allowed field exactly once, before anything is validated, scanned or
+ * serialized: a getter or Proxy cannot answer the scan with clean text and the write
+ * with a secret when the writer only ever sees this snapshot. */
+function snapshotWrite(input: Record<string, unknown>): MemoryInput & { scope: MemoryScope } {
+  const draft: Record<string, unknown> = {};
+  for (const field of WRITE_FIELDS) draft[field] = input[field];
+  // SAFETY: the snapshot only carries values read from the input; validateMemory and the
+  // scope check below narrow name, type, description and body before anything uses them.
+  return draft as unknown as MemoryInput & { scope: MemoryScope };
+}
 
 /** Atomic replacement is last-writer-wins. Duplicate and created results are advisory under races.
  * Orphan temp files are ignored, not collected. Hand-edited files are not secret-scanned. */
@@ -218,40 +229,42 @@ export function createFileMemoryStore(options: StoreOptions) {
   async function write(input: MemoryInput & { scope: MemoryScope }): Promise<{ ok: true; name: string; scope: MemoryScope; created: boolean } | ResultError> {
     if (options.incognito) return incognitoRefusal("writes");
     try {
-      const allowed = new Set(["scope", "type", "name", "description", "body"]);
+      const allowed = new Set<string>(WRITE_FIELDS);
       if (!input || typeof input !== "object" || Reflect.ownKeys(input).some((key) => !allowed.has(String(key)))) return { ok: false, error: "Unknown write input key; allowed keys: scope, type, name, description, body" };
-      const invalid = validateMemory(input);
+      let draft: MemoryInput & { scope: MemoryScope };
+      try { draft = snapshotWrite(input); } catch { return { ok: false, error: "Memory fields could not be read" }; }
+      const invalid = validateMemory(draft);
       if (invalid) return { ok: false, error: invalid };
-      if (!scopes.includes(input.scope)) return { ok: false, error: "Invalid scope" };
-      // Scan each string field by property, so the input's prototype is irrelevant and a
+      if (!scopes.includes(draft.scope)) return { ok: false, error: "Invalid scope" };
+      // Scan each string field of the snapshot, so the input's prototype is irrelevant and a
       // strict-mode throw becomes a refusal instead of an exception out of write.
       const secretFields: string[] = [];
       for (const field of ["name", "description", "body"] as const) {
         let scanned: string;
-        try { scanned = redactSecretsStrict(input[field]); } catch { return { ok: false, error: "Secret scan failed" }; }
-        if (scanned !== input[field]) secretFields.push(field);
+        try { scanned = redactSecretsStrict(draft[field]); } catch { return { ok: false, error: "Secret scan failed" }; }
+        if (scanned !== draft[field]) secretFields.push(field);
       }
       if (secretFields.length) return { ok: false, error: `Secret-shaped content refused in ${secretFields.join(", ")}. Remove the secret-shaped text before retrying` };
-      const existingDir = await directory(input.scope, false);
+      const existingDir = await directory(draft.scope, false);
       let filenames: string[] = [];
       if (existingDir) {
         try { filenames = await fs.readdir(existingDir); } catch (error) { if (!missing(error)) throw error; }
       }
-      const targetName = `${input.name}.md`;
+      const targetName = `${draft.name}.md`;
       const exists = filenames.includes(targetName);
       if (!exists) {
         // Only the name and description matter here, so the check reads frontmatter alone.
-        const existing = await entries(input.scope, true);
-        const matches = existing.memories.filter((entry) => entry.name !== input.name && similar(input, entry)).map(({ name, description }) => ({ name, description }));
+        const existing = await entries(draft.scope, true);
+        const matches = existing.memories.filter((entry) => entry.name !== draft.name && similar(draft, entry)).map(({ name, description }) => ({ name, description }));
         if (matches.length) return { ok: false, error: "Similar memory exists; update it instead", similar: matches };
       }
       if (filenames.some((file) => file.toLowerCase() === targetName.toLowerCase() && file !== targetName)) return { ok: false, error: "Case-insensitive filename collision" };
-      const dir = await directory(input.scope, true);
+      const dir = await directory(draft.scope, true);
       if (!dir) throw new Error("Memory directory unavailable");
-      await atomicReplace(dir, targetName, serializeMemory({ ...input, updated: now().toISOString().slice(0, 10) }));
+      await atomicReplace(dir, targetName, serializeMemory({ ...draft, updated: now().toISOString().slice(0, 10) }));
       // The authoritative file is committed; refresh reports its own best-effort error.
-      await refreshIndexFile(input.scope);
-      return { ok: true, name: input.name, scope: input.scope, created: !exists };
+      await refreshIndexFile(draft.scope);
+      return { ok: true, name: draft.name, scope: draft.scope, created: !exists };
     } catch (error) { return errorResult(error); }
   }
 

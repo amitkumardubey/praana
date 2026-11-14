@@ -42,18 +42,71 @@ test("write errors at temp write, fsync and rename preserve complete old content
   expect((await store.list({})).entries).toHaveLength(1);
 });
 
-test("refuses a write when strict redaction throws", async () => {
+test("a field that cannot be read is refused, never thrown", async () => {
   const home = await homeDir();
   const input = { ...entry };
   let reads = 0;
   Object.defineProperty(input, "name", { enumerable: true, get() {
-    if (++reads > 1) throw new Error("redaction failed");
-    return entry.name;
+    reads++;
+    throw new Error("redaction failed");
   } });
   const result = await make(home).write(input);
   expect(result.ok).toBe(false);
-  if (!result.ok) expect(result.error).toContain("Secret scan failed");
+  if (!result.ok) expect(result.error).toContain("could not be read");
   expect((await make(home).list({})).entries).toHaveLength(0);
+  expect(reads).toBe(1);
+});
+
+const SECRET_TEXT = "key=AKIAIOSFODNN7EXAMPLE and more";
+const clean = "A clean description";
+/** A getter that answers with clean text for the reads the old code made before the
+ * write, and with a secret from then on. */
+function scheduled(schedule: string[]) {
+  let reads = 0;
+  return { reads: () => reads, next() { reads++; return schedule[Math.min(reads - 1, schedule.length - 1)]!; } };
+}
+
+async function storedText(home: string) {
+  const dir = join(home, ".praana/memory");
+  const files = await fs.readdir(dir).catch(() => [] as string[]);
+  return (await Promise.all(files.map((file) => fs.readFile(join(dir, file), "utf8")))).join("\n");
+}
+
+test("a getter cannot show the scan clean text and the write a secret", async () => {
+  const home = await homeDir();
+  const value = scheduled([clean, clean, clean, clean, clean, clean, SECRET_TEXT]);
+  const input = { scope: "global" as const, type: "user" as const, name: "getter-draft", body: "Clean body" };
+  Object.defineProperty(input, "description", { enumerable: true, get: () => value.next() });
+  const result = await make(home).write(input);
+  expect(await storedText(home)).not.toContain("AKIAIOSFODNN7EXAMPLE");
+  if (result.ok) expect((await make(home).read({ name: "getter-draft", scope: "global" }))).toMatchObject({ ok: true, memory: { description: clean } });
+  else expect(result.error).not.toContain("AKIAIOSFODNN7EXAMPLE");
+  // One snapshot means one read per field, so no read order can split scan from write.
+  expect(value.reads()).toBe(1);
+});
+
+test("a Proxy that answers differently on every read is snapshotted once", async () => {
+  const home = await homeDir();
+  const value = scheduled([clean, `${clean} one`, `${clean} two`, `${clean} three`, `${clean} four`, `${clean} five`, SECRET_TEXT]);
+  const base = { scope: "global" as const, type: "user" as const, name: "proxy-draft", description: clean, body: "Clean body" };
+  const input = new Proxy(base, { get(target, key) { return key === "description" ? value.next() : Reflect.get(target, key); } });
+  const result = await make(home).write(input);
+  expect(await storedText(home)).not.toContain("AKIAIOSFODNN7EXAMPLE");
+  if (result.ok) expect((await make(home).read({ name: "proxy-draft", scope: "global" }))).toMatchObject({ ok: true, memory: { description: clean } });
+  else expect(result.error).not.toContain("AKIAIOSFODNN7EXAMPLE");
+  expect(value.reads()).toBe(1);
+});
+
+test("write reads every allowed field exactly once", async () => {
+  const home = await homeDir();
+  const reads: Record<string, number> = {};
+  const draft: Record<string, string> = { scope: "global", type: "user", name: "counted", description: "Counted description", body: "Counted body" };
+  const input = {} as Record<string, unknown>;
+  for (const [field, value] of Object.entries(draft)) {
+    Object.defineProperty(input, field, { enumerable: true, get() { reads[field] = (reads[field] ?? 0) + 1; return value; } });
+  }
+  expect(await make(home).write(input as never)).toMatchObject({ ok: true, name: "counted", scope: "global", created: true });
+  expect(reads).toEqual({ scope: 1, type: 1, name: 1, description: 1, body: 1 });
 });
 
 test("dangling .praana symlink is reported exactly, creates nothing and skips every scope", async () => {
