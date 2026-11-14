@@ -3,7 +3,7 @@ import * as nodeFs from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { redactSecretsStrict } from "../redact/secrets.js";
-import { parseMemory, serializeMemory, validName, validateMemory, validateQueryPolicy, type Memory, type MemoryInput } from "./format.js";
+import { parseMemory, searchTokens, serializeMemory, validName, validateMemory, validateQueryPolicy, type Memory, type MemoryInput } from "./format.js";
 import { globalMemoryDirectory, memoryDirectories, projectKey, type MemoryScope } from "./paths.js";
 import { buildMemoryIndex as renderMemoryIndex, type MemoryIndex } from "./index.js";
 import { rankMemories, type RecallMatch, type ScopedMemory } from "./recall.js";
@@ -63,6 +63,11 @@ const readCause = (error: unknown): string => {
 };
 const errorResult = (error: unknown): ResultError => ({ ok: false, error: error instanceof Error ? error.message : String(error) });
 const inside = (parent: string, child: string) => { const p = relative(parent, child); return p === "" || (!p.startsWith(`..${sep}`) && p !== ".." && !isAbsolute(p)); };
+/** Description tokens are compared as a Jaccard overlap of searchTokens. Below three
+ * tokens on either side the ratio is too coarse to mean anything, and two four-token
+ * descriptions that differ by one word score exactly 0.6, so the bar is 0.75. */
+const DUPLICATE_MIN_TOKENS = 3;
+const DUPLICATE_JACCARD = 0.75;
 
 /** Atomic replacement is last-writer-wins. Duplicate and created results are advisory under races.
  * Orphan temp files are ignored, not collected. Hand-edited files are not secret-scanned. */
@@ -180,14 +185,18 @@ export function createFileMemoryStore(options: StoreOptions) {
     return { ok: true as const, values, ...scopeWarnings(skippedScopes) };
   }
 
-  // Strip only generic affixes, or require 0.6 Jaccard overlap of word tokens.
+  // Strip only generic affixes; identical descriptions are always duplicates, and a
+  // Jaccard overlap of searchTokens needs three tokens on both sides and 0.75.
   function similar(a: MemoryInput, b: Memory): boolean {
     const normalize = (s: string) => s.replace(/(?:^|-)(?:the|a|an|note|memory)(?=-|$)/g, "").replace(/-+/g, "-").replace(/^-|-$/g, "");
     if (normalize(a.name) && normalize(a.name) === normalize(b.name)) return true;
-    const tokens = (s: string) => new Set((s.toLowerCase().match(/[a-z0-9]{3,}/g) ?? []));
-    const x = tokens(a.description), y = tokens(b.description);
+    // Unicode-aware and stop-word free, so short and CJK descriptions are comparable.
+    const collapse = (s: string) => s.normalize("NFC").toLowerCase().replace(/\s+/g, " ").trim();
+    if (collapse(a.description) === collapse(b.description)) return true;
+    const x = new Set(searchTokens(a.description)), y = new Set(searchTokens(b.description));
+    if (x.size < DUPLICATE_MIN_TOKENS || y.size < DUPLICATE_MIN_TOKENS) return false;
     const union = new Set([...x, ...y]);
-    return union.size > 0 && [...x].filter((t) => y.has(t)).length / union.size >= 0.6;
+    return [...x].filter((token) => y.has(token)).length / union.size >= DUPLICATE_JACCARD;
   }
 
   async function atomicReplace(dir: string, filename: string, text: string): Promise<void> {

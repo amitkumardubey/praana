@@ -4,6 +4,7 @@ import * as fs from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { createFileMemoryStore } from "../src/file-memory/store.js";
+import { searchTokens } from "../src/file-memory/format.js";
 import { memoryDirectories, projectKey } from "../src/file-memory/paths.js";
 
 const scratch = tmpdir();
@@ -165,6 +166,47 @@ describe("file memory store", () => {
     const updater = createFileMemoryStore({ home, cwd: home, fs: seam, findRoot: (cwd) => cwd });
     expect((await updater.write({ ...input, body: "updated" })).ok).toBe(true);
     expect(reads).toBe(0);
+  });
+  test("near-duplicate check measures descriptions with searchTokens, not raw words", async () => {
+    // Scores measured with the real tokenizer: stop words are dropped, so 3 shared
+    // tokens can mean 0.5, 0.6 or 0.75 depending on the union.
+    const score = (a: string, b: string) => {
+      const x = new Set(searchTokens(a)), y = new Set(searchTokens(b));
+      return [...x].filter((token) => y.has(token)).length / new Set([...x, ...y]).size;
+    };
+    expect(score("Prefer bun for tests", "Prefer bun for builds")).toBe(0.5);
+    expect(score("Prefer bun for unit tests", "Prefer bun for unit builds")).toBe(0.6);
+    expect(score("Prefer bun for tests", "Prefer bun for running tests")).toBe(0.75);
+
+    const weak = await setup();
+    expect((await weak.store.write({ ...input, name: "bun-tests", description: "Prefer bun for tests" })).ok).toBe(true);
+    expect((await weak.store.write({ ...input, name: "bun-builds", description: "Prefer bun for builds" })).ok).toBe(true);
+
+    const borderline = await setup();
+    expect((await borderline.store.write({ ...input, name: "unit-tests", description: "Prefer bun for unit tests" })).ok).toBe(true);
+    expect((await borderline.store.write({ ...input, name: "unit-builds", description: "Prefer bun for unit builds" })).ok).toBe(true);
+
+    const near = await setup();
+    expect((await near.store.write({ ...input, name: "bun-tests", description: "Prefer bun for tests" })).ok).toBe(true);
+    const refused = await near.store.write({ ...input, name: "run-tests", description: "Prefer bun for running tests" });
+    expect(refused).toMatchObject({ ok: false, error: expect.stringMatching(/similar memory exists/i), similar: [{ name: "bun-tests", description: "Prefer bun for tests" }] });
+
+    // Identical text is a duplicate even when it has no three-token overlap, as CJK does.
+    const cjk = "日本語のメモは簡潔に保つ";
+    const same = await setup();
+    expect((await same.store.write({ ...input, name: "cjk-one", description: cjk })).ok).toBe(true);
+    expect(await same.store.write({ ...input, name: "cjk-two", description: `  ${cjk}  ` })).toMatchObject({ ok: false, error: expect.stringMatching(/similar memory exists/i) });
+    // NFC, lowercase and whitespace collapse happen before the equality test.
+    expect((await same.store.write({ ...input, name: "tokyo-one", description: "Tokyo 日本語メモ" })).ok).toBe(true);
+    expect(await same.store.write({ ...input, name: "tokyo-two", description: "  tokyo   日本語メモ " })).toMatchObject({ ok: false, error: expect.stringMatching(/similar memory exists/i) });
+    const distinct = await setup();
+    expect((await distinct.store.write({ ...input, name: "cjk-one", description: cjk })).ok).toBe(true);
+    expect((await distinct.store.write({ ...input, name: "cjk-two", description: "会議の議事録は共有する" })).ok).toBe(true);
+
+    // Two tokens can never reach the Jaccard rule, however completely they overlap.
+    const short = await setup();
+    expect((await short.store.write({ ...input, name: "short-one", description: "Bun prefer" })).ok).toBe(true);
+    expect((await short.store.write({ ...input, name: "short-two", description: "prefer bun" })).ok).toBe(true);
   });
   test("version numbers remain distinct but genuine duplicates are refused", async () => {
     const { store } = await setup();
