@@ -272,6 +272,18 @@ test("commits reject stubs at or before the folded boundary on append and restor
   }
 });
 
+test("buildTurns owns turn construction without a forwarding wrapper", async () => {
+  const { log, writer } = fixture();
+  const turn = await writer.startTurn("input");
+  await writer.assistant(turn, { role: "assistant", content: "reply" });
+  const estimated = compaction.buildTurns(log);
+  const unestimated = compaction.buildTurns(log, { estimate: false });
+  expect(estimated[0].messages).toEqual([{ role: "user", content: "input" }, { role: "assistant", content: "reply" }]);
+  expect(estimated[0].estimatedTokens).toBeGreaterThan(0);
+  expect(unestimated[0].estimatedTokens).toBe(0);
+  expect(compaction.buildTurns.toString()).not.toContain("return turnView(");
+});
+
 for (const length of [80, 200]) for (const previous of [false, true]) {
   test(`visible cut quotes ${length} characters with previous=${previous}`, async () => {
     const { log, writer } = fixture();

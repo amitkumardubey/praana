@@ -172,7 +172,8 @@ function groupTurns(source: CanonicalEventSource): CompactionTurn[] {
   return turns;
 }
 
-function turnView(source: CanonicalEventSource, options: { estimate?: boolean } = {}): CompactionTurn[] {
+/** Current-epoch units in log order. Invalid sequences throw CanonicalTranscriptError. */
+export function buildTurns(source: CanonicalEventSource, options: { estimate?: boolean } = {}): CompactionTurn[] {
   const turns = groupTurns(source);
   const validator = new CanonicalValidator();
   for (const turn of turns) {
@@ -181,11 +182,6 @@ function turnView(source: CanonicalEventSource, options: { estimate?: boolean } 
     if (options.estimate !== false) turn.estimatedTokens = turn.messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
   }
   return turns;
-}
-
-/** Current-epoch units in log order. Invalid sequences throw CanonicalTranscriptError. */
-export function buildTurns(source: CanonicalEventSource, options: { estimate?: boolean } = {}): CompactionTurn[] {
-  return turnView(source, options);
 }
 
 export type MaterializationErrorCode = "pending_batch" | "invalid_state";
