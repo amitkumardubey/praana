@@ -32,6 +32,13 @@ export type ToolOutputClassification = "exact-bytes" | "shapeable";
 /**
  * Explicit classification for every registered tool (`createAllTools`).
  * Unclassified tools default to `"exact-bytes"` so new tools are never shaped by accident.
+ *
+ * `shell` and `web_fetch` are classified as `"shapeable"` by design because they
+ * return bulk free-form output; when shaped, the elision marker instructs the model
+ * to call `retrieve_artifact` to inspect omitted sections. Note that shaping can
+ * cut IDs or file paths printed by shell commands that are not recognised as file
+ * reads, whereas the dedicated tools (`git_log`, `git_diff`, `find_files`,
+ * `search_code`) are `"exact-bytes"` and are always preserved verbatim at ingestion.
  */
 export const TOOL_OUTPUT_CLASSIFICATION: Readonly<Record<string, ToolOutputClassification>> =
   Object.freeze({
@@ -702,6 +709,19 @@ function convergeShapedCandidate(
   return null;
 }
 
+/**
+ * Shapes oversized tool outputs at ingestion while preserving exact bytes for
+ * exempt tools and commands.
+ *
+ * `shell` and `web_fetch` are shapeable by design (bulk free-form output); when
+ * truncated, the inserted elision marker instructs the model to call
+ * `retrieve_artifact` for the full original text. For `shell`, shaping can cut
+ * IDs or paths emitted by commands that are not recognised as file reads, while
+ * dedicated structured tools (`git_log`, `git_diff`, `find_files`, `search_code`)
+ * remain exact-bytes. Shell commands with missing/unknown command strings,
+ * detected or known file reads, read-only git content commands, or `isError`
+ * results are left unshaped.
+ */
 export function shapeToolOutput(input: ShapeToolOutputInput): ShapeToolOutputResult {
   const opts = resolveShapeOptions(input.options);
   const rawText = input.text;
