@@ -282,13 +282,13 @@ export function createFileMemoryStore(options: StoreOptions) {
     // Project takes precedence, so only a failed project scan can hide the answer.
     const refusal = refuseUnlessExplicit(!input.scope, scanned.skippedScopes, "answer", (reasons) => `Cannot resolve "${input.name}" safely because a scope scan failed; pass an explicit scope to read: ${reasons}`);
     if (refusal) return refusal;
-    // The first scope holding the name in precedence order answers; an unreadable copy of
-    // that name is reported instead of falling through to a lower-precedence scope.
-    const unreadable = scanned.values.find((value) => value.failure);
-    if (unreadable?.failure) return { ok: false, error: unreadable.failure, ...warnings };
-    const hit = scanned.values.find((value) => value.memory);
-    const memory = hit?.memory ? { ...hit.memory, scope: hit.scope } : undefined;
-    if (memory) return { ok: true, memory, ...warnings };
+    // Walk the scopes in precedence order: the first scope holding the name answers, so an
+    // unreadable lower-precedence copy cannot hide a higher-precedence hit. A per-file
+    // failure still refuses when it comes before the first hit.
+    for (const value of scanned.values) {
+      if (value.memory) return { ok: true, memory: { ...value.memory, scope: value.scope }, ...warnings };
+      if (value.failure) return { ok: false, error: value.failure, ...warnings };
+    }
     // A clean project miss falls through to the global result, including its own failure.
     const globalFailure = scanned.skippedScopes?.find(({ scope }) => scope === "global");
     if (globalFailure) return { ok: false, error: reasonText([globalFailure]), ...warnings };

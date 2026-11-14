@@ -129,6 +129,62 @@ for (const lookup of ["read", "recall"] as const) {
   });
 }
 
+/** One file whose metadata cannot be read: a per-file failure, not a scope failure. */
+function unreadableFile(dir: string, name: string, code: string): typeof fs {
+  const target = join(dir, `${name}.md`);
+  return new Proxy(fs, { get(base, key) {
+    if (key !== "lstat") return Reflect.get(base, key);
+    return async (...args: Parameters<typeof fs.lstat>) => {
+      if (args[0] === target) throw Object.assign(new Error(`${code}: unreadable, lstat '${target}'`), { code });
+      return fs.lstat(...args);
+    };
+  } });
+}
+
+test("a readable project memory answers before an unreadable global copy", async () => {
+  const { options, dirs, put } = await setup();
+  await put("shared", { body: "global copy" }); await put("shared", { body: "project copy" }, "project");
+  const failing = createFileMemoryStore({ ...options, fs: unreadableFile(dirs.global, "shared", "EACCES") });
+  for (const lookup of ["read", "recall"] as const) {
+    // The first scope holding the name in precedence order answers; a lower-precedence
+    // unreadable copy must not outrank it.
+    expect(await failing[lookup]({ name: "shared" })).toMatchObject({ ok: true, memory: { name: "shared", scope: "project", body: "project copy" } });
+    expect(await failing[lookup]({ name: "shared", scope: "global" })).toMatchObject({ ok: false, error: expect.stringContaining("permission denied") });
+  }
+});
+
+test("an unreadable project copy still blocks, and the first failure in precedence order answers", async () => {
+  const { options, dirs, put } = await setup();
+  await put("shared", { body: "global copy" }); await put("shared", { body: "project copy" }, "project");
+  // A failed project scope could still hold the name, so an unscoped lookup refuses.
+  const leading = createFileMemoryStore({ ...options, fs: unreadableFile(dirs.project, "shared", "EACCES") });
+  for (const lookup of ["read", "recall"] as const) {
+    expect(await leading[lookup]({ name: "shared" })).toMatchObject({ ok: false, error: expect.stringContaining("permission denied") });
+    expect(await leading[lookup]({ name: "shared", scope: "global" })).toMatchObject({ ok: true, memory: { scope: "global", body: "global copy" } });
+  }
+  // Both copies unreadable: the project failure is the first one in precedence order.
+  const both = new Proxy(fs, { get(base, key) {
+    if (key !== "lstat") return Reflect.get(base, key);
+    const project = join(dirs.project, "shared.md"), global = join(dirs.global, "shared.md");
+    return async (...args: Parameters<typeof fs.lstat>) => {
+      if (args[0] === project) throw Object.assign(new Error(`EACCES: unreadable, lstat '${project}'`), { code: "EACCES" });
+      if (args[0] === global) throw Object.assign(new Error(`EIO: unreadable, lstat '${global}'`), { code: "EIO" });
+      return fs.lstat(...args);
+    };
+  } });
+  const unreadable = createFileMemoryStore({ ...options, fs: both });
+  const result = await unreadable.read({ name: "shared" });
+  if (result.ok) throw new Error("Expected the project failure to surface");
+  expect(result.error).toContain("permission denied");
+  expect(result.error).not.toContain("input/output error");
+  // A clean project miss still falls through to the global copy's own failure.
+  await fs.unlink(join(dirs.project, "shared.md"));
+  expect(await createFileMemoryStore({ ...options, fs: unreadableFile(dirs.global, "shared", "EIO") }).read({ name: "shared" }))
+    .toMatchObject({ ok: false, error: expect.stringContaining("input/output error") });
+  // Neither scope holds the name.
+  expect(await createFileMemoryStore(options).read({ name: "absent" })).toMatchObject({ ok: false, error: "Memory not found" });
+});
+
 test("by-name operations report every scope failure instead of unusable explicit-scope advice", async () => {
   const { options, dirs, put } = await setup();
   await put("shared", { body: "global copy" }); await put("shared", { body: "project copy" }, "project");
