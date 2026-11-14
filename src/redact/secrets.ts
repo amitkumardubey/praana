@@ -51,6 +51,12 @@ function redactString(text: string): string {
   return redactUrlsInText(out);
 }
 
+function typeName(value: unknown): string {
+  if (typeof value === "function") return "function";
+  const name = (value as { constructor?: { name?: unknown } } | null)?.constructor?.name;
+  return typeof name === "string" && name ? name : "object";
+}
+
 function walk(value: unknown, depth: number, strict = false): unknown {
   if (depth >= MAX_DEPTH) {
     if (strict) throw new Error("Secret redaction depth limit exceeded");
@@ -60,12 +66,25 @@ function walk(value: unknown, depth: number, strict = false): unknown {
   if (Array.isArray(value)) {
     return value.map((item) => walk(item, depth + 1, strict));
   }
-  if (value !== null && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
-    const copy: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      copy[k] = walk(v, depth + 1, strict);
+  if (typeof value === "function") {
+    if (strict) throw new TypeError("Secret redaction cannot walk a function");
+    return value;
+  }
+  if (value !== null && typeof value === "object") {
+    const prototype = Object.getPrototypeOf(value);
+    // A null prototype holds data exactly like a plain object; only strict mode walks it,
+    // so the non-strict redactor keeps returning such values untouched.
+    if (prototype === Object.prototype || (strict && prototype === null)) {
+      const copy: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        copy[k] = walk(v, depth + 1, strict);
+      }
+      return copy;
     }
-    return copy;
+    // Fails closed: anything else (class instances, Map, Set, Date, typed arrays) is
+    // unreadable to this walk, so strict mode refuses it instead of passing it through.
+    if (strict) throw new TypeError(`Secret redaction cannot walk a ${typeName(value)}`);
+    return value;
   }
   return value;
 }

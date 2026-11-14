@@ -208,6 +208,36 @@ describe("file memory store", () => {
     expect((await short.store.write({ ...input, name: "short-one", description: "Bun prefer" })).ok).toBe(true);
     expect((await short.store.write({ ...input, name: "short-two", description: "prefer bun" })).ok).toBe(true);
   });
+  test("secret scan reads each field by property, whatever the input prototype is", async () => {
+    const { store, dir } = await setup();
+    const secret = "ghp_" + "a".repeat(36);
+    const draft = { scope: "global" as const, type: "user" as const, name: "null-proto", description: "Null prototype draft", body: "Clean body" };
+    for (const field of ["description", "body"] as const) {
+      const input = Object.assign(Object.create(null), { ...draft, [field]: `token ${secret}` });
+      const result = await store.write(input as never);
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error).toContain(field);
+        expect(result.error).not.toContain(secret);
+      }
+    }
+    // A token in the name is refused by name validation before the scan; still never written.
+    expect((await store.write(Object.assign(Object.create(null), { ...draft, name: secret }) as never)).ok).toBe(false);
+    // A class instance carries getters on its prototype: fields are scanned one by one.
+    class Draft {
+      scope = "global" as const;
+      type = "user" as const;
+      name = "classy";
+      description = "Class instance draft";
+      get body() { return `token ${secret}`; }
+    }
+    const classy = await store.write(new Draft() as never);
+    expect(classy.ok).toBe(false);
+    if (!classy.ok) expect(classy.error).toContain("body");
+    expect(await fs.readdir(dir).catch(() => [])).toEqual([]);
+    // The plain-object path is unchanged.
+    expect(await store.write({ ...draft, name: "plain-object" })).toMatchObject({ ok: true, created: true });
+  });
   test("version numbers remain distinct but genuine duplicates are refused", async () => {
     const { store } = await setup();
     for (const [name, description] of [["node-18-notes", "Legacy runtime compatibility"], ["node-20-notes", "Modern platform support"], ["release-0-17", "First release information"], ["release-0-18", "Second deployment details"]]) {

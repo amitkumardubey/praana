@@ -223,9 +223,14 @@ export function createFileMemoryStore(options: StoreOptions) {
       const invalid = validateMemory(input);
       if (invalid) return { ok: false, error: invalid };
       if (!scopes.includes(input.scope)) return { ok: false, error: "Invalid scope" };
-      let redacted: typeof input;
-      try { redacted = redactSecretsStrict(input); } catch { return { ok: false, error: "Secret scan failed" }; }
-      const secretFields = (["name", "description", "body"] as const).filter((field) => redacted[field] !== input[field]);
+      // Scan each string field by property, so the input's prototype is irrelevant and a
+      // strict-mode throw becomes a refusal instead of an exception out of write.
+      const secretFields: string[] = [];
+      for (const field of ["name", "description", "body"] as const) {
+        let scanned: string;
+        try { scanned = redactSecretsStrict(input[field]); } catch { return { ok: false, error: "Secret scan failed" }; }
+        if (scanned !== input[field]) secretFields.push(field);
+      }
       if (secretFields.length) return { ok: false, error: `Secret-shaped content refused in ${secretFields.join(", ")}. Remove the secret-shaped text before retrying` };
       const existingDir = await directory(input.scope, false);
       let filenames: string[] = [];
