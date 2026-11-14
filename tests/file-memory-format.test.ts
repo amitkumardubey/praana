@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseMemory, sanitizeDescription, serializeMemory, validateMemory } from "../src/file-memory/format.js";
+import { MEMORY_NAME_PATTERN, parseMemory, sanitizeDescription, serializeMemory, validName, validateMemory } from "../src/file-memory/format.js";
 
 const entry = { name: "example", description: "A useful note", type: "user" as const, updated: "2026-01-02", body: "Hello world" };
 
@@ -17,6 +17,23 @@ describe("file memory format", () => {
     }
     expect(parseMemory(serializeMemory({ ...entry, body: "" }).trimEnd())).toEqual({ ...entry, body: "" });
     expect(parseMemory(serializeMemory({ ...entry, body: "" }))).toEqual({ ...entry, body: "" });
+  });
+  test("the published name pattern is the whole name rule", () => {
+    const pattern = new RegExp(MEMORY_NAME_PATTERN.source);
+    const names = [
+      "coffee", "a", "a-b-c", "note-1", "0-start",
+      // Reserved device and index names fail the pattern, not only the validator.
+      "memory", "con", "prn", "aux", "nul", "com1", "com9", "lpt1", "lpt9",
+      // Neighbours of the reserved set are ordinary names.
+      "com0", "lpt0", "memorys", "console", "nullable",
+      "Upper", "Coffee", "-lead", "trail-", "under_score", "two words", "",
+      "a".repeat(64), "a".repeat(65),
+      // `$` does not match before a trailing newline, so the lookahead cannot smuggle one.
+      "coffee\n", "coffee\r\n", "memory\n", "con\n",
+    ];
+    for (const name of names) expect([name, pattern.test(name)]).toEqual([name, validName(name)]);
+    expect(validName("coffee\n")).toBe(false);
+    expect(pattern.test("memory\n")).toBe(false);
   });
   test("validates names, descriptions, byte limits and policy", () => {
     for (const name of ["../x", "a/b", ".hidden", "/abs", "Upper", "a".repeat(65), "memory", "con", "com9", "lpt1", "nul", "aux", "prn"]) {

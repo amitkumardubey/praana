@@ -41,10 +41,14 @@ test("the generated JSON schema tells the model the memory name rule", async () 
     const schema = normalizeToolParameters(tool.parameters) as { properties: Record<string, { pattern?: string }> };
     return schema.properties.name;
   };
-  expect(MEMORY_NAME_PATTERN.source).toBe("^[a-z0-9][a-z0-9-]{0,63}$");
+  expect(MEMORY_NAME_PATTERN.source).toBe("^(?!(?:memory|con|prn|aux|nul|com[1-9]|lpt[1-9])$)[a-z0-9][a-z0-9-]{0,63}$");
   for (const tool of [tools.remember, tools.recall, tools.forget_memory]) {
     expect(nameProperty(tool)?.pattern).toBe(MEMORY_NAME_PATTERN.source);
   }
+  // The published pattern excludes reserved names, so the model sees the rule it must follow.
+  const published = new RegExp(nameProperty(tools.remember)?.pattern ?? "");
+  for (const reserved of ["memory", "con", "prn", "aux", "nul", "com1", "com9", "lpt1", "lpt9"]) expect(published.test(reserved)).toBe(false);
+  expect(published.test("coffee")).toBe(true);
   // The pattern and the validator cannot drift: the schema now states the rule it enforces.
   refused(await tools.remember.execute({ ...entry, name: "Upper" }));
   refused(await tools.remember.execute({ ...entry, name: "con" }));

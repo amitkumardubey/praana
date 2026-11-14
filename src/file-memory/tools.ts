@@ -5,7 +5,8 @@ import type { createFileMemoryStore } from "./store.js";
 
 type ToolStore = Pick<ReturnType<typeof createFileMemoryStore>, "write" | "recall" | "remove">;
 const NAME_RULE = "Invalid memory name: use a non-reserved lowercase slug of at most 64 characters";
-// The regex reaches the model as a JSON Schema `pattern`; the refine adds reserved names.
+// The regex reaches the model as a JSON Schema `pattern`, so the published schema states the
+// whole rule, reserved names included.
 const name = z.string().regex(MEMORY_NAME_PATTERN, NAME_RULE).refine(validName, NAME_RULE);
 const scope = z.enum(["global", "project"]);
 
