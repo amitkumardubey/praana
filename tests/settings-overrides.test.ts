@@ -64,20 +64,23 @@ describe("settings config_overrides ingestion", () => {
 
     const expanded = expandOverrides(parsed.accepted);
     expect(expanded).toEqual({
-      edit: { confirm: true },
-      tools: {
-        block_repeat_reads: true,
-      },
-      lsp: { enabled: true, diagnostics: false, format_on_edit: true },
-      verify: { enabled: true, syntax: false, typecheck: true, tests: false },
-      turn: { pause_after_steps: 100 },
-      ui: {
-        ambient: "quiet",
-        tool_icons: "ascii",
-        syntax_theme: "dracula",
-        show_cost: false,
-        markdown_rendering: false,
-        syntax_highlighting: true,
+      ok: true,
+      value: {
+        edit: { confirm: true },
+        tools: {
+          block_repeat_reads: true,
+        },
+        lsp: { enabled: true, diagnostics: false, format_on_edit: true },
+        verify: { enabled: true, syntax: false, typecheck: true, tests: false },
+        turn: { pause_after_steps: 100 },
+        ui: {
+          ambient: "quiet",
+          tool_icons: "ascii",
+          syntax_theme: "dracula",
+          show_cost: false,
+          markdown_rendering: false,
+          syntax_highlighting: true,
+        },
       },
     });
   });
@@ -177,7 +180,7 @@ describe("settings config_overrides ingestion", () => {
     const expanded = expandOverrides(directHostile);
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
     expect((Object.prototype as Record<string, unknown>).polluted).toBeUndefined();
-    expect(expanded).toEqual({ edit: { confirm: true } });
+    expect(expanded.ok).toBe(false);
   });
 
   test("rejects tools.web.allow_domains as unapproved", async () => {
@@ -188,5 +191,56 @@ describe("settings config_overrides ingestion", () => {
     expect(res.rejected).toEqual([
       { path: "tools.web.allow_domains", reason: expect.stringMatching(/unapproved/i) },
     ]);
+  });
+
+  test("expandOverrides is order-independent, rejects prefix conflicts naming both keys, and rejects unapproved paths", async () => {
+    const { expandOverrides } = await api();
+
+    // 1. Dotted prefix conflict rejected identically in both key orders, naming both keys.
+    const pairCases: Array<[Record<string, unknown>, Record<string, unknown>, string, string]> = [
+      [{ a: 1, "a.b": 2 }, { "a.b": 2, a: 1 }, "a", "a.b"],
+      [
+        { ui: { ambient: "inline" }, "ui.ambient": "quiet" },
+        { "ui.ambient": "quiet", ui: { ambient: "inline" } },
+        "ui",
+        "ui.ambient",
+      ],
+      [{ a: 1, "a.b.c": 2 }, { "a.b.c": 2, a: 1 }, "a", "a.b.c"],
+    ];
+
+    for (const [order1, order2, k1, k2] of pairCases) {
+      const r1 = expandOverrides(order1);
+      const r2 = expandOverrides(order2);
+      expect(r1.ok).toBe(false);
+      expect(r2.ok).toBe(false);
+      if (!r1.ok && !r2.ok) {
+        expect(r1.error).toContain(k1);
+        expect(r1.error).toContain(k2);
+        expect(r2.error).toContain(k1);
+        expect(r2.error).toContain(k2);
+        expect(r1.error).toBe(r2.error);
+      }
+    }
+
+    // 2. Unapproved paths are rejected by expandOverrides even without prefix conflicts.
+    for (const badPath of ["a.b", "risk.allow", "unknown.key", "edit.confirm.extra"]) {
+      const res = expandOverrides({ [badPath]: true });
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.error).toContain(badPath);
+      }
+    }
+
+    // 3. Valid overrides produce identical output regardless of key order.
+    const forward = expandOverrides({ "ui.ambient": "quiet", "edit.confirm": true, "ui.show_cost": false });
+    const reverse = expandOverrides({ "ui.show_cost": false, "edit.confirm": true, "ui.ambient": "quiet" });
+    expect(forward).toEqual(reverse);
+    expect(forward).toEqual({
+      ok: true,
+      value: {
+        edit: { confirm: true },
+        ui: { ambient: "quiet", show_cost: false },
+      },
+    });
   });
 });

@@ -190,39 +190,85 @@ function toPlainTree(node: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
+export type ExpandOverridesResult =
+  | { ok: true; value: Record<string, unknown> }
+  | { ok: false; error: string };
+
+function findPrefixConflict(
+  parsedKeys: Array<{ key: string; segments: string[] }>,
+  keySet: Set<string>,
+): { prefix: string; key: string } | undefined {
+  for (const { key, segments } of parsedKeys) {
+    for (let i = 1; i < segments.length; i++) {
+      const prefix = segments.slice(0, i).join(".");
+      if (keySet.has(prefix)) {
+        return { prefix, key };
+      }
+    }
+  }
+  return undefined;
+}
+
 /**
  * Expand a map of dotted override paths into a nested plain object using
  * `Object.create(null)` intermediate nodes so prototype pollution is impossible.
+ * Order-independent: rejects dotted prefix conflicts and any unapproved path.
  */
-export function expandOverrides(accepted: Record<string, unknown>): Record<string, unknown> {
-  if (!isPlainObject(accepted)) return {};
-  const root: Record<string, unknown> = Object.create(null);
+export function expandOverrides(accepted: Record<string, unknown>): ExpandOverridesResult {
+  if (!isPlainObject(accepted)) {
+    return { ok: false, error: "Overrides must be a plain object" };
+  }
+  if (Object.getOwnPropertySymbols(accepted).length > 0) {
+    return { ok: false, error: "Symbol keys are not allowed in config_overrides" };
+  }
 
-  for (const key of Object.keys(accepted)) {
+  const keys = Object.keys(accepted).sort((a, b) => {
+    if (a < b) return -1;
+    if (a > b) return 1;
+    return 0;
+  });
+  const keySet = new Set(keys);
+  const parsedKeys: Array<{ key: string; segments: string[] }> = [];
+
+  for (const key of keys) {
     const pathCheck = validatePathSegments(key);
-    if (!pathCheck.ok) continue;
-    const { segments } = pathCheck;
+    if (!pathCheck.ok) {
+      return { ok: false, error: `Invalid config override path "${key}": ${pathCheck.reason}` };
+    }
+    parsedKeys.push({ key, segments: pathCheck.segments });
+  }
+
+  const conflict = findPrefixConflict(parsedKeys, keySet);
+  if (conflict) {
+    return {
+      ok: false,
+      error: `Conflicting config override keys "${conflict.prefix}" and "${conflict.key}": "${conflict.prefix}" is a dotted prefix of "${conflict.key}"`,
+    };
+  }
+
+  const root: Record<string, unknown> = Object.create(null);
+  for (const { key, segments } of parsedKeys) {
+    if (!Object.prototype.hasOwnProperty.call(APPROVED_CONFIG_OVERRIDES, key)) {
+      return { ok: false, error: `Unapproved config override path "${key}"` };
+    }
     let cursor = root;
-    let valid = true;
     for (let i = 0; i < segments.length - 1; i++) {
       const seg = segments[i];
+      if (seg === undefined) continue;
       const existing = cursor[seg];
       if (existing === undefined) {
         const next: Record<string, unknown> = Object.create(null);
         cursor[seg] = next;
         cursor = next;
-      } else if (typeof existing === "object" && existing !== null && !Array.isArray(existing)) {
-        cursor = existing as Record<string, unknown>;
       } else {
-        valid = false;
-        break;
+        cursor = existing as Record<string, unknown>;
       }
     }
-    if (!valid) continue;
-    const leaf = segments[segments.length - 1];
+    const leaf = segments.at(-1);
+    if (leaf === undefined) continue;
     const rawVal = accepted[key];
     cursor[leaf] = Array.isArray(rawVal) ? [...rawVal] : rawVal;
   }
 
-  return toPlainTree(root);
+  return { ok: true, value: toPlainTree(root) };
 }
