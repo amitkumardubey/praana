@@ -21,6 +21,8 @@ import * as toolOutput from "../src/tool-output.js";
 import {
   buildToolResultStub,
   DEFAULT_EXACT_BYTES_TOOLS,
+  DEFAULT_SHAPE_MAX_BYTES,
+  DEFAULT_SHAPE_MAX_LINES,
   planToolResultStubs,
   shapeToolOutput,
 } from "../src/tool-output.js";
@@ -589,5 +591,150 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
         planToolResultStubs([shortEmojiCandidate], { phase: "stale", minTokens: 100, keepRecent: 3 }),
       ).toEqual([]);
     }
+  });
+
+  test("budgets elision marker into maxBytes and maxLines+1 across long-line, multibyte, and 360 seeded randomized inputs", () => {
+    // Explicit reproductions: long-line and multibyte tiny overflows at default 8192-byte cap
+    const reproductions = [
+      "x".repeat(DEFAULT_SHAPE_MAX_BYTES + 1),
+      "x".repeat(DEFAULT_SHAPE_MAX_BYTES + 128),
+      "x".repeat(DEFAULT_SHAPE_MAX_BYTES + 4096),
+      "雪🧪🚀漢".repeat(1000), // > 8192 UTF-8 bytes on a single line
+      Array.from({ length: 85 }, (_, i) => `line-${i}: ${"字".repeat(40)}`).join("\n"),
+    ];
+
+    for (const raw of reproductions) {
+      const res = shapeToolOutput({
+        toolName: "shell",
+        text: raw,
+        storeArtifact: () => "art_repro123456",
+      });
+      expect(res.shaped).toBe(true);
+      expect(Buffer.byteLength(res.text, "utf8")).toBeLessThanOrEqual(DEFAULT_SHAPE_MAX_BYTES);
+      expect(res.text.split("\n").length).toBeLessThanOrEqual(DEFAULT_SHAPE_MAX_LINES + 1);
+      expect(Buffer.from(res.text, "utf8").toString("utf8")).toBe(res.text);
+      expect(Buffer.byteLength(res.text, "utf8")).toBeLessThan(Buffer.byteLength(raw, "utf8"));
+      expect(res.text.length).toBeLessThan(raw.length);
+      const again = shapeToolOutput({ toolName: "shell", text: res.text });
+      expect(again.shaped).toBe(false);
+      expect(again.text).toBe(res.text);
+    }
+
+    // Also test line cap when head+tail lines from rawText could exceed maxLines + 1
+    const mixedLineRaw = [
+      ...Array.from({ length: 30 }, (_, i) => `short-${i}`),
+      "long-middle-" + "m".repeat(3000),
+      ...Array.from({ length: 30 }, (_, i) => `tail-${i}`),
+    ].join("\n");
+    const mixedRes = shapeToolOutput({
+      toolName: "shell",
+      text: mixedLineRaw,
+      storeArtifact: () => "art_mixed123456",
+      options: { inlineThresholdTokens: 50, maxLines: 20, headLines: 10, tailLines: 10, maxBytes: 1024 },
+    });
+    expect(mixedRes.shaped).toBe(true);
+    expect(Buffer.byteLength(mixedRes.text, "utf8")).toBeLessThanOrEqual(1024);
+    expect(mixedRes.text.split("\n").length).toBeLessThanOrEqual(21);
+
+    // Deterministic PRNG (Mulberry32)
+    let state = 0x5eed7654;
+    const rand = () => {
+      state = (state + 0x6d2b79f5) | 0;
+      let t = Math.imul(state ^ (state >>> 15), 1 | state);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const randInt = (min: number, max: number) => min + Math.floor(rand() * (max - min + 1));
+
+    const multibytePool = ["a", "b", " ", "\t", "雪", "漢", "あ", "한", "🧪", "🚀", "👨‍👩‍👧‍👦", "é"];
+    const maxBytesChoices = [512, 1024, 2048, 8192];
+    const maxLinesChoices = [10, 20, 80];
+
+    let shapedCount = 0;
+    for (let i = 0; i < 360; i++) {
+      const maxBytes = maxBytesChoices[i % maxBytesChoices.length]!;
+      const maxLines = maxLinesChoices[i % maxLinesChoices.length]!;
+      const category = i % 4;
+      let raw = "";
+
+      if (category === 0) {
+        // Long single or few lines
+        const lineCount = randInt(1, 5);
+        const targetBytes = maxBytes + randInt(50, maxBytes * 2);
+        const perLine = Math.ceil(targetBytes / lineCount);
+        raw = Array.from({ length: lineCount }, () => "L".repeat(perLine)).join("\n");
+      } else if (category === 1) {
+        // Many short lines
+        const lineCount = maxLines + randInt(5, 160);
+        raw = Array.from({ length: lineCount }, (_, idx) => `ln${idx}:${"x".repeat(randInt(10, 40))}`).join("\n");
+      } else if (category === 2) {
+        // Emoji / CJK / mixed multibyte lines
+        const lineCount = randInt(1, maxLines + 40);
+        const charsPerLine = lineCount === 1 ? randInt(300, 3000) : randInt(20, 140);
+        raw = Array.from({ length: lineCount }, () =>
+          Array.from({ length: charsPerLine }, () => multibytePool[randInt(0, multibytePool.length - 1)]!).join(""),
+        ).join("\n");
+      } else {
+        // Tiny overflows just over maxBytes or maxLines
+        if (i % 8 === 3) {
+          const lineCount = maxLines + randInt(1, 3);
+          raw = Array.from({ length: lineCount }, (_, idx) => `tiny-${idx}-${"k".repeat(40)}`).join("\n");
+        } else {
+          const overflow = randInt(1, 128);
+          const pad = i % 2 === 0 ? "z" : "漢";
+          const byteSize = Buffer.byteLength(pad, "utf8");
+          raw = pad.repeat(Math.ceil((maxBytes + overflow) / byteSize));
+        }
+      }
+
+      const withArtifact = i % 3 !== 0;
+      let storeCalls = 0;
+      const res = shapeToolOutput({
+        toolName: "shell",
+        text: raw,
+        storeArtifact: () => {
+          storeCalls++;
+          return withArtifact ? `art_${String(i).padStart(12, "0")}` : null;
+        },
+        options: {
+          inlineThresholdTokens: 50,
+          maxBytes,
+          headBytes: Math.floor(maxBytes / 2),
+          tailBytes: maxBytes - Math.floor(maxBytes / 2),
+          maxLines,
+          headLines: Math.floor(maxLines / 2),
+          tailLines: maxLines - Math.floor(maxLines / 2),
+        },
+      });
+
+      const rawBytes = Buffer.byteLength(raw, "utf8");
+      const resBytes = Buffer.byteLength(res.text, "utf8");
+      expect(Buffer.from(res.text, "utf8").toString("utf8")).toBe(res.text);
+      expect(resBytes).toBeLessThanOrEqual(rawBytes);
+      expect(res.text.length).toBeLessThanOrEqual(raw.length);
+
+      if (res.shaped) {
+        shapedCount++;
+        expect(resBytes).toBeLessThanOrEqual(maxBytes);
+        expect(res.text.split("\n").length).toBeLessThanOrEqual(maxLines + 1);
+        expect(resBytes).toBeLessThan(rawBytes);
+        expect(res.text.length).toBeLessThan(raw.length);
+
+        const callsBefore = storeCalls;
+        const again = shapeToolOutput({
+          toolName: "shell",
+          text: res.text,
+          storeArtifact: () => {
+            storeCalls++;
+            return "art_never_again";
+          },
+          options: { inlineThresholdTokens: 10, maxBytes, maxLines },
+        });
+        expect(again.shaped).toBe(false);
+        expect(again.text).toBe(res.text);
+        expect(storeCalls).toBe(callsBefore);
+      }
+    }
+    expect(shapedCount).toBeGreaterThan(250);
   });
 });

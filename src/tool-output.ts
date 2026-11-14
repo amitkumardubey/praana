@@ -112,6 +112,7 @@ function isExactBytesTool(
 }
 
 function sliceHeadByUtf8Bytes(text: string, maxBytes: number): string {
+  if (maxBytes <= 0 || text.length === 0) return "";
   if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
   const chars = Array.from(text);
   let low = 0;
@@ -129,6 +130,7 @@ function sliceHeadByUtf8Bytes(text: string, maxBytes: number): string {
 }
 
 function sliceTailByUtf8Bytes(text: string, maxBytes: number): string {
+  if (maxBytes <= 0 || text.length === 0) return "";
   if (Buffer.byteLength(text, "utf8") <= maxBytes) return text;
   const chars = Array.from(text);
   let low = 0;
@@ -143,6 +145,20 @@ function sliceTailByUtf8Bytes(text: string, maxBytes: number): string {
     }
   }
   return chars.slice(low).join("");
+}
+
+function sliceHeadByLines(text: string, maxLines: number): string {
+  if (maxLines <= 0 || text.length === 0) return "";
+  const lines = text.split("\n");
+  if (lines.length <= maxLines) return text;
+  return lines.slice(0, maxLines).join("\n");
+}
+
+function sliceTailByLines(text: string, maxLines: number): string {
+  if (maxLines <= 0 || text.length === 0) return "";
+  const lines = text.split("\n");
+  if (lines.length <= maxLines) return text;
+  return lines.slice(lines.length - maxLines).join("\n");
 }
 
 function formatElisionMarker(
@@ -162,6 +178,105 @@ function extractArtifactIdFromText(text: string): string | undefined {
   const cardMatch = /\[artifact:\s*(art_[A-Za-z0-9_-]+)/.exec(text);
   if (cardMatch?.[1]) return cardMatch[1];
   return undefined;
+}
+
+interface ShapedCandidate {
+  head: string;
+  tail: string;
+  text: string;
+  omittedLines: number;
+  omittedBytes: number;
+}
+
+function buildShapedCandidate(
+  rawText: string,
+  lines: readonly string[],
+  totalBytes: number,
+  exceedsLines: boolean,
+  opts: ShapeToolOutputOptions,
+  overheadBytes: number,
+  artifactIdForMarker?: string,
+): ShapedCandidate | null {
+  const maxLinesCap = Math.max(0, opts.maxLines);
+  const effHeadLines = Math.min(Math.max(0, opts.headLines), maxLinesCap);
+  const effTailLines = Math.min(Math.max(0, opts.tailLines), Math.max(0, maxLinesCap - effHeadLines));
+  const targetMaxBytes = Math.min(opts.maxBytes, totalBytes - 1);
+  const byteBudget = targetMaxBytes - overheadBytes;
+  if (byteBudget < 0) return null;
+
+  const cfgHeadBytes = Math.max(0, opts.headBytes);
+  const cfgTailBytes = Math.max(0, opts.tailBytes);
+  const configuredByteSum = cfgHeadBytes + cfgTailBytes;
+  let headByteBudget =
+    configuredByteSum > 0 ? Math.floor((byteBudget * cfgHeadBytes) / configuredByteSum) : 0;
+  let tailByteBudget = byteBudget - headByteBudget;
+  headByteBudget = Math.min(headByteBudget, cfgHeadBytes);
+  tailByteBudget = Math.min(tailByteBudget, cfgTailBytes);
+
+  let head: string;
+  let tail: string;
+  if (exceedsLines) {
+    head = sliceHeadByUtf8Bytes(sliceHeadByLines(rawText, effHeadLines), headByteBudget);
+    tail = sliceTailByUtf8Bytes(sliceTailByLines(rawText, effTailLines), tailByteBudget);
+  } else {
+    head = sliceHeadByUtf8Bytes(rawText, headByteBudget);
+    tail = sliceTailByUtf8Bytes(rawText, tailByteBudget);
+    const keptHead = head ? head.split("\n").length : 0;
+    const keptTail = tail ? tail.split("\n").length : 0;
+    if (keptHead + keptTail > maxLinesCap) {
+      head = sliceHeadByUtf8Bytes(sliceHeadByLines(rawText, effHeadLines), headByteBudget);
+      tail = sliceTailByUtf8Bytes(sliceTailByLines(rawText, effTailLines), tailByteBudget);
+    }
+  }
+
+  const keptHeadLines = head ? head.split("\n").length : 0;
+  const keptTailLines = tail ? tail.split("\n").length : 0;
+  const omittedLines = exceedsLines
+    ? Math.max(1, lines.length - keptHeadLines - keptTailLines)
+    : Math.max(0, lines.length - keptHeadLines - keptTailLines);
+  const keptBytes = Buffer.byteLength(head, "utf8") + Buffer.byteLength(tail, "utf8");
+  const omittedBytes = Math.max(0, totalBytes - keptBytes);
+  if (omittedBytes === 0) return null;
+
+  const marker = formatElisionMarker(omittedLines, omittedBytes, artifactIdForMarker);
+  const text = [head, marker, tail].filter((part) => part.length > 0).join("\n");
+  return { head, tail, text, omittedLines, omittedBytes };
+}
+
+function convergeShapedCandidate(
+  rawText: string,
+  lines: readonly string[],
+  totalBytes: number,
+  exceedsLines: boolean,
+  opts: ShapeToolOutputOptions,
+  artifactIdForMarker?: string,
+): ShapedCandidate | null {
+  const maxLinesCap = Math.max(0, opts.maxLines);
+  const targetMaxBytes = Math.min(opts.maxBytes, totalBytes - 1);
+  let overheadGuess =
+    Buffer.byteLength(formatElisionMarker(lines.length, totalBytes, artifactIdForMarker), "utf8") + 2;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const cand = buildShapedCandidate(
+      rawText,
+      lines,
+      totalBytes,
+      exceedsLines,
+      opts,
+      overheadGuess,
+      artifactIdForMarker,
+    );
+    if (!cand) return null;
+    const candBytes = Buffer.byteLength(cand.text, "utf8");
+    const candLines = cand.text.split("\n").length;
+    if (candBytes <= targetMaxBytes && candLines <= maxLinesCap + 1) {
+      return cand;
+    }
+    const actualOverhead =
+      candBytes - (Buffer.byteLength(cand.head, "utf8") + Buffer.byteLength(cand.tail, "utf8"));
+    if (actualOverhead <= overheadGuess) return null;
+    overheadGuess = actualOverhead;
+  }
+  return null;
 }
 
 export function shapeToolOutput(input: ShapeToolOutputInput): ShapeToolOutputResult {
@@ -197,36 +312,14 @@ export function shapeToolOutput(input: ShapeToolOutputInput): ShapeToolOutputRes
     return unchanged();
   }
 
-  let head: string;
-  let tail: string;
-  let omittedLines: number;
-
-  if (exceedsLines && lines.length > opts.headLines + opts.tailLines) {
-    const headSlice = lines.slice(0, opts.headLines).join("\n");
-    const tailSlice = opts.tailLines > 0 ? lines.slice(lines.length - opts.tailLines).join("\n") : "";
-    head = sliceHeadByUtf8Bytes(headSlice, opts.headBytes);
-    tail = sliceTailByUtf8Bytes(tailSlice, opts.tailBytes);
-    const keptHeadLines = head ? head.split("\n").length : 0;
-    const keptTailLines = tail ? tail.split("\n").length : 0;
-    omittedLines = Math.max(1, lines.length - keptHeadLines - keptTailLines);
-  } else {
-    head = sliceHeadByUtf8Bytes(rawText, opts.headBytes);
-    tail = sliceTailByUtf8Bytes(rawText, opts.tailBytes);
-    const keptLines = (head ? head.split("\n").length : 0) + (tail ? tail.split("\n").length : 0);
-    omittedLines = Math.max(0, lines.length - keptLines);
-  }
-
-  const keptBytes = Buffer.byteLength(head, "utf8") + Buffer.byteLength(tail, "utf8");
-  const omittedBytes = Math.max(0, totalBytes - keptBytes);
-  if (omittedBytes === 0) {
-    return unchanged();
-  }
+  const maxLinesCap = Math.max(0, opts.maxLines);
+  const targetMaxBytes = Math.min(opts.maxBytes, totalBytes - 1);
 
   // Probe with a worst-case marker before calling storeArtifact so we never
-  // persist an artifact when the shaped result would not be strictly shorter.
-  const probeMarker = formatElisionMarker(omittedLines, omittedBytes, input.artifactId ?? "art_000000000000");
-  const probeText = `${head}\n${probeMarker}\n${tail}`;
-  if (probeText.length >= rawText.length || Buffer.byteLength(probeText, "utf8") >= totalBytes) {
+  // persist an artifact when the shaped result would exceed caps or not shrink.
+  const probeId = input.artifactId ?? (input.storeArtifact ? "art_000000000000" : undefined);
+  const probe = convergeShapedCandidate(rawText, lines, totalBytes, exceedsLines, opts, probeId);
+  if (!probe || probe.text.length >= rawText.length || Buffer.byteLength(probe.text, "utf8") > targetMaxBytes) {
     return unchanged();
   }
 
@@ -240,19 +333,26 @@ export function shapeToolOutput(input: ShapeToolOutputInput): ShapeToolOutputRes
     }
   }
 
-  const marker = formatElisionMarker(omittedLines, omittedBytes, resolvedArtifactId);
-  const shapedText = `${head}\n${marker}\n${tail}`;
-  if (shapedText.length >= rawText.length || Buffer.byteLength(shapedText, "utf8") >= totalBytes) {
+  const finalCand =
+    resolvedArtifactId === probeId
+      ? probe
+      : convergeShapedCandidate(rawText, lines, totalBytes, exceedsLines, opts, resolvedArtifactId);
+  if (
+    !finalCand ||
+    finalCand.text.length >= rawText.length ||
+    Buffer.byteLength(finalCand.text, "utf8") > targetMaxBytes ||
+    finalCand.text.split("\n").length > maxLinesCap + 1
+  ) {
     return unchanged();
   }
 
   const out: ShapeToolOutputResult = {
-    text: shapedText,
+    text: finalCand.text,
     shaped: true,
     rawTokens,
-    shapedTokens: estimateTokens(shapedText),
-    omittedLines,
-    omittedBytes,
+    shapedTokens: estimateTokens(finalCand.text),
+    omittedLines: finalCand.omittedLines,
+    omittedBytes: finalCand.omittedBytes,
   };
   if (resolvedArtifactId) out.artifactId = resolvedArtifactId;
   return out;
