@@ -230,8 +230,8 @@ test("ladder stops at step 2 with full tailTurns=4 when folding older turns reac
   const { runCompaction, materializeHistory } = await api();
   const { log } = openLog();
   // First create 6 turns and a prior stubs-only commit on turn 1 so we verify folded stubs are dropped.
-  addTurn(log, 1, { inputText: "Turn1 ".repeat(3700), toolResults: [{ id: "old-stub-1", text: "O".repeat(1200) }] });
-  addTurn(log, 2, { inputText: "Turn2 ".repeat(3700) });
+  addTurn(log, 1, { inputText: "Turn1 ".repeat(700), toolResults: [{ id: "old-stub-1", text: "O".repeat(1200) }] });
+  addTurn(log, 2, { inputText: "Turn2 ".repeat(700) });
   for (let t = 3; t <= 6; t++) {
     addTurn(log, t, { inputText: `TailTurn${t} `.repeat(40), toolResults: [{ id: `tail-keep-${t}`, text: "K".repeat(400) }] });
   }
@@ -256,9 +256,8 @@ test("ladder stops at step 2 with full tailTurns=4 when folding older turns reac
   const outcome = await runCompaction({
     log,
     liveRequest: baseLiveRequest(),
-    // Worst-case rendered summaries need more headroom than raw markdown.
-    contextWindowTokens: 12000,
-    options: { effectiveMaxTokens: 200, tailTurns: 4, stubMinTokens: 500, contextLimitRatio: 1, postRewriteMargin: 0 },
+    contextWindowTokens: 3200,
+    options: { effectiveMaxTokens: 200, tailTurns: 4, stubMinTokens: 500 },
     runSummary: async (req) => {
       summaryRequests.push(req);
       return summaryResp(validSummary("Folded turns 1 and 2."));
@@ -287,19 +286,16 @@ test("ladder stops at step 2 with full tailTurns=4 when folding older turns reac
 
 test("step 2 shrinks the completed-turn tail one turn at a time until frame + summary allowance + tail fits the target", async () => {
   const { runCompaction } = await api();
-  // The folded prefix is too large for one same-model request, so these folds use batch
-  // summaries; the call count is the number of batches for each cut.
-  for (const [postRewriteMargin, expectedBoundary, expectedCalls] of [
-    [0.01, "t2-final", 1], // keeps 4 completed turns (turns 3..6)
-    [0.10, "t3-final", 1], // shrinks to 3 completed turns (turns 4..6)
-    [0.15, "t4-final", 2], // shrinks to 2 completed turns (turns 5..6)
-    [0.20, "t5-final", 2], // shrinks to 1 completed turn (turn 6)
-    [0.30, "t6-final", 2], // shrinks to 0 completed turns (only in-flight turn 7 kept)
+  for (const [postRewriteMargin, expectedBoundary] of [
+    [0.10, "t2-final"], // keeps 4 completed turns (turns 3..6)
+    [0.15, "t3-final"], // shrinks to 3 completed turns (turns 4..6)
+    [0.30, "t4-final"], // shrinks to 2 completed turns (turns 5..6)
+    [0.45, "t5-final"], // shrinks to 1 completed turn (turn 6)
+    [0.60, "t6-final"], // shrinks to 0 completed turns (only in-flight turn 7 kept)
   ] as const) {
     const { log } = openLog();
     for (let t = 1; t <= 6; t++) {
-      // Large folded prefix triggers rewriting; the tail exercises rendered-summary headroom.
-      addTurn(log, t, { inputText: `Turn-${t} ` + "x".repeat(t <= 2 ? 17500 : 1500) });
+      addTurn(log, t, { inputText: `Turn-${t} ` + "x".repeat(1500) });
     }
     addTurn(log, 7, { inputText: "In-flight turn 7" });
 
@@ -307,8 +303,8 @@ test("step 2 shrinks the completed-turn tail one turn at a time until frame + su
     const outcome = await runCompaction({
       log,
       liveRequest: baseLiveRequest(),
-      contextWindowTokens: 10000,
-      options: { effectiveMaxTokens: 200, tailTurns: 4, contextLimitRatio: 1, postRewriteMargin },
+      contextWindowTokens: 3100,
+      options: { effectiveMaxTokens: 200, tailTurns: 4, postRewriteMargin },
       runSummary: async () => {
         calls++;
         return summaryResp(validSummary(`Cut at ${expectedBoundary}`));
@@ -316,9 +312,9 @@ test("step 2 shrinks the completed-turn tail one turn at a time until frame + su
     });
     expect(outcome.status).toBe("rewritten");
     if (outcome.status !== "rewritten") throw new Error(`Failed for margin ${postRewriteMargin}: ${JSON.stringify(outcome)}`);
-    expect(calls).toBe(expectedCalls);
+    expect(calls).toBe(1);
     expect(outcome.state.boundaryEventId).toBe(expectedBoundary);
-    expect(outcome.fill.ratio).toBeLessThanOrEqual(1 - postRewriteMargin);
+    expect(outcome.fill.ratio).toBeLessThanOrEqual(0.80 - postRewriteMargin);
   }
 });
 
@@ -2027,7 +2023,7 @@ test("seeded 500-scenario randomized test maintains all ladder, boundary, capaci
         unfoldedMaxStubs.size > baseStubs.size && oracleInputTokens({}, unfoldedMaxMsgs) <= usable;
 
       const capTokens = Math.min(4096, Math.floor(usable / 8));
-      const allowanceTokens = oracleInputTokens({}, [oracleSummaryMsg("\u0000".repeat(4 * capTokens))]) - emptyFrameTok;
+      const allowanceTokens = (oracleInputTokens({}, [oracleSummaryMsg("")]) - emptyFrameTok) + capTokens;
       let expectedKeepCompleted = 0;
       for (let keep = Math.min(tailTurns, completedSpecTurns.length); keep >= 0; keep--) {
         const foldedCount = completedSpecTurns.length - keep;

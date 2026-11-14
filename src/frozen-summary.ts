@@ -96,6 +96,17 @@ export interface SummaryCheck {
   estimatedTokens: number;
 }
 
+/**
+ * Tokens of the summary as every request carries it: JSON-escaped inside a string
+ * (`renderSummaryMessage`, or a batch instruction). Measuring the escaped form means a
+ * summary within the cap fits an allowance of `capTokens` plus the carrier's own
+ * overhead, whatever characters it contains: newlines and control characters cost
+ * what they cost on the wire instead of what they cost as raw markdown.
+ */
+export function summaryTokens(markdown: string): number {
+  return estimateTokens(JSON.stringify(markdown));
+}
+
 /** Deliberately lenient: parsed list structure is not an acceptance condition. */
 export function checkSummary(markdown: string, options: { capTokens: number }): SummaryCheck {
   const duplicates = new Set<string>();
@@ -106,7 +117,7 @@ export function checkSummary(markdown: string, options: { capTokens: number }): 
     if (duplicates.has(heading.toLowerCase())) failures.push({ kind: "duplicate_heading", heading, message: `Duplicate heading: ### ${heading}` });
   }
   if (!sections.get("active request")?.trim()) failures.push({ kind: "empty_active_request", message: "Active request must be non-empty." });
-  const estimatedTokens = estimateTokens(markdown);
+  const estimatedTokens = summaryTokens(markdown);
   if (estimatedTokens > options.capTokens) failures.push({ kind: "over_cap", message: `Summary uses ${estimatedTokens} estimated tokens; cap is ${options.capTokens}.` });
   return { ok: failures.length === 0, failures, estimatedTokens };
 }

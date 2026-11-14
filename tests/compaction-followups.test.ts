@@ -8,8 +8,9 @@ import { CanonicalWriter } from "../src/canonical-transcript.js";
 import * as compaction from "../src/compaction.js";
 import { EventLog } from "../src/event-log.js";
 import { cutDescription, planBatchSummaries } from "../src/compaction-requests.js";
-import { appendCommit, buildSummaryInstruction, minimumValidSummary, renderSummaryMessage, restoreFrozenState, restoreFrozenStateFromLog, summaryCapTokens } from "../src/frozen-summary.js";
+import { appendCommit, buildSummaryInstruction, checkSummary, minimumValidSummary, renderSummaryMessage, restoreFrozenState, restoreFrozenStateFromLog, summaryCapTokens } from "../src/frozen-summary.js";
 import type { StreamRequest } from "../src/llm/types.js";
+import { estimateTokens } from "../src/token-estimate.js";
 
 const fixtures: { log: EventLog; root: string }[] = [];
 afterEach(() => {
@@ -160,7 +161,7 @@ test("batch metadata hashes all three primary instructions in order", async () =
   const hashes: string[] = [];
   for (const changed of [-1, 0, 1, 2]) {
     const { log, writer } = fixture();
-    for (const size of [13000, 2000, 2000]) {
+    for (const size of [13000, 9000, 9000]) {
       const turn = await writer.startTurn("x".repeat(size));
       await writer.assistant(turn, { role: "assistant", content: "done" });
     }
@@ -228,7 +229,7 @@ for (const reasoning of [false, true]) test(`native estimates count visible bloc
   }
 });
 
-test("rendered summary allowance handles a newline-heavy summary at the cap", async () => {
+test("rendered summary allowance handles a newline-heavy summary at the escaped cap", async () => {
   const { log, writer } = fixture();
   for (const size of [5000, ...Array(8).fill(1000)]) {
     const turn = await writer.startTurn("x".repeat(size));
@@ -236,8 +237,11 @@ test("rendered summary allowance handles a newline-heavy summary at the cap", as
   }
   await writer.startTurn("current " + "y".repeat(1000));
   const cap = summaryCapTokens(2800);
-  const summary = minimumValidSummary() + "\n".repeat(cap * 4 - minimumValidSummary().length);
-  expect(Math.ceil(summary.length / 4)).toBe(cap);
+  // Each newline escapes to two characters, so the cap admits about half as many as raw text.
+  let summary = minimumValidSummary();
+  while (estimateTokens(JSON.stringify(summary + "\n")) <= cap) summary += "\n";
+  expect(checkSummary(summary, { capTokens: cap }).ok).toBe(true);
+  expect(checkSummary(summary + "\n".repeat(4), { capTokens: cap }).ok).toBe(false);
   let calls = 0;
   const outcome = await compaction.runCompaction({ log, liveRequest: live, contextWindowTokens: 3000,
     options: { ...options, tailTurns: 8, contextLimitRatio: 1 },

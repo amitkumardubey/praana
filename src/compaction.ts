@@ -28,6 +28,7 @@ import {
   restoreFrozenState,
   SESSION_START_EPOCH,
   summaryCapTokens,
+  summaryTokens,
   type CompactionCommit,
   type FrozenState,
   type SummaryInstructionOptions,
@@ -678,11 +679,11 @@ async function runCompactionChecked(input: RunCompactionInput): Promise<Compacti
   if (completedTurns.length > 0) {
     const capTokens = summaryCapTokens(initialFill.usableTokens);
     const minValidSummary = minimumValidSummary();
-    const minValidSummaryTokens = estimateTokens(minValidSummary);
+    const minValidSummaryTokens = summaryTokens(minValidSummary);
     const minSummaryMessageTokens = estimateMessageTokens(renderSummaryMessage(minValidSummary));
-    // A raw token can occupy four characters; JSON can expand each to six bytes.
-    // Budget the rendered message, not raw markdown, before choosing retained turns.
-    const summaryAllowanceTokens = estimateMessageTokens(renderSummaryMessage("\u0000".repeat(4 * capTokens)));
+    // checkSummary caps the JSON-escaped summary, so a passing summary costs at most
+    // the empty rendered message plus capTokens (estimateTokens rounds up once per string).
+    const summaryAllowanceTokens = estimateMessageTokens(renderSummaryMessage("")) + capTokens;
 
     // Pre-check whether the in-flight turn (after maximal Step 3 stubbing down to keepRecent=1) + frame + minimum valid summary can fit usable capacity.
     // Step 1 adds only stale stubs, but this copy preserves pre-existing in-flight stubs.

@@ -109,7 +109,7 @@ export function buildBatchSummaryRequest(
 }
 
 function validateSummaryCap(capTokens: number): void {
-  if (!Number.isSafeInteger(capTokens) || capTokens < 0 || !Number.isSafeInteger(6 * capTokens + 1)) {
+  if (!Number.isSafeInteger(capTokens) || capTokens < 0 || !Number.isSafeInteger(capTokens + 1)) {
     throw new RangeError("capTokens must be a non-negative safe integer with a safe serialized allowance.");
   }
 }
@@ -146,8 +146,8 @@ function summaryBatch(turns: readonly CompactionTurn[]): SummaryBatch {
 
 /**
  * Greedy, whole-turn partition in supplied log order. Later batches budget for
- * any checked summary up to capTokens. JSON can expand one character to six
- * (e.g. a NUL to \\u0000), so reserve six times the raw-markdown cap, plus rounding.
+ * any checked summary up to capTokens. checkSummary caps the JSON-escaped form, so
+ * the cap plus one token of rounding covers it whatever characters it contains.
  * Never use lexical event-id order or trust cached per-turn token estimates.
  * If even one turn cannot fit, return no partial plan: the caller must try
  * stubbing or a capacity outcome. A turn is never split to make it foldable.
@@ -179,7 +179,8 @@ export function planBatchSummaries(
       });
       return requestFill(request, request.messages, options.contextWindowTokens, options);
     };
-    const allowance = () => batches.length ? 6 * options.capTokens + 1 : 0;
+    // The carried summary passed checkSummary, which caps its JSON-escaped form; +1 covers rounding.
+    const allowance = () => batches.length ? options.capTokens + 1 : 0;
     let measured = measureFrame();
     if (!measured.ok) return measured.error;
     let budgetedTokens = pendingTokens + turnTokens + measured.fill.inputTokens + allowance();
