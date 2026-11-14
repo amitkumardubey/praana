@@ -1,3 +1,9 @@
+/**
+ * Runtime replay/materialization failures return typed outcomes; invalid window/reserve
+ * values return capacity_error. Invalid static policy options (contextLimitRatio,
+ * postRewriteMargin, tailTurns, stubKeepRecent, stubMinTokens, summaryTimeoutMs)
+ * throw RangeError. They are validated at config load, so callers need not catch them.
+ */
 import { createHash } from "node:crypto";
 import { CanonicalTranscriptError, CanonicalValidator, emitCanonicalTranscript, readCanonicalEntries, resolveRawEvents, type CanonicalEventSource, type CanonicalRecord } from "./canonical-transcript.js";
 import {
@@ -356,6 +362,10 @@ export type CompactionOutcome =
   | { status: "commit_rejected"; state: FrozenState; reason: string; error: FrozenSummaryError }
   /** Do not assume the previous state: reload raw events and restore before continuing. */
   | { status: "commit_uncertain"; error: unknown }
+  /** Corrupt frozen state or history; nothing committed. */
+  | { status: "invalid_state"; error: FrozenSummaryError | MaterializationError }
+  /** A turn aborted before all terminal tool results were recorded; nothing committed. */
+  | { status: "pending_batch"; error: MaterializationError }
   | CapacityErrorOutcome;
 
 export interface StubCandidate {
@@ -622,6 +632,19 @@ function tryCommitRewrite(
  * 4. Stop with capacity_error when the in-flight turn + frame cannot fit usable capacity.
  */
 export async function runCompaction(input: RunCompactionInput): Promise<CompactionOutcome> {
+  try {
+    return await runCompactionChecked(input);
+  } catch (error) {
+    if (error instanceof FrozenSummaryError) return { status: "invalid_state", error };
+    if (error instanceof MaterializationError) return { status: error.code, error };
+    if (error instanceof CanonicalTranscriptError) {
+      return { status: "invalid_state", error: new MaterializationError("invalid_state", error.message) };
+    }
+    throw error;
+  }
+}
+
+async function runCompactionChecked(input: RunCompactionInput): Promise<CompactionOutcome> {
   const signal = input.signal ?? input.liveRequest.signal;
   const rawOptions = input.options ?? {};
   const frame: RequestFrame = {

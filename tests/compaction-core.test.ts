@@ -545,15 +545,17 @@ test("trigger rejects non-finite and out-of-range module-local thresholds", asyn
 });
 
 test("outcome contracts discriminate every terminal status without implementing orchestration", async () => {
-  const { requestFill } = await api();
+  const { requestFill, MaterializationError } = await api();
   const measured = requestFill({}, [], 10000);
   if (!measured.ok) throw new Error("valid capacity rejected");
   const state = frozen();
   const fill = measured.fill;
   const outcomes: CompactionOutcome[] = [
     { status: "noop", state, fill }, { status: "rewritten", state: { ...state, generation: 1 }, fill },
-    { status: "stubbed", state: { ...state, generation: 1 }, fill }, { status: "unchanged_fits", state, fill },
-    { status: "summary_failed_fits", state, fill, reason: "summary timed out" }, { status: "cancelled", state },
+    { status: "stubbed", state: { ...state, generation: 1 }, fill }, { status: "unchanged_fits", state, fill, reason: "no_eligible_results" },
+    { status: "summary_failed_fits", state, fill, reason: "summary timed out" }, { status: "cancelled", state, reason: "aborted" },
+    { status: "invalid_state", error: new FrozenSummaryError("invalid_commit", 1, "corrupt") },
+    { status: "pending_batch", error: new MaterializationError("pending_batch", "incomplete") },
     { status: "commit_rejected", state, reason: "invalid_generation", error: new FrozenSummaryError("invalid_generation", 1, "generation mismatch") },
     { status: "commit_uncertain", error: new Error("fsync failed") },
     { status: "capacity_error", kind: "request_exceeds_capacity", message: "Use /clear or a larger-context model." },
@@ -564,6 +566,7 @@ test("outcome contracts discriminate every terminal status without implementing 
       case "summary_failed_fits": return outcome.reason;
       case "cancelled": return `cancelled:${outcome.state.generation}`;
       case "commit_rejected": return `commit_rejected:${outcome.error.code}:${outcome.reason}`;
+      case "invalid_state": case "pending_batch": return `${outcome.status}:${outcome.error.code}`;
       case "commit_uncertain": return String(outcome.error);
       case "capacity_error": return `${outcome.kind}:${outcome.message}`;
       default: {
@@ -574,6 +577,7 @@ test("outcome contracts discriminate every terminal status without implementing 
   }
   expect(outcomes.map(label)).toEqual([
     "noop:0:true", "rewritten:1:true", "stubbed:1:true", "unchanged_fits:0:true", "summary timed out", "cancelled:0",
+    "invalid_state:invalid_commit", "pending_batch:pending_batch",
     "commit_rejected:invalid_generation:invalid_generation", "Error: fsync failed", "request_exceeds_capacity:Use /clear or a larger-context model.",
   ]);
 });

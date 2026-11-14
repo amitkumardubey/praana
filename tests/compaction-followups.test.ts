@@ -47,6 +47,44 @@ async function seed(log: EventLog, writer: CanonicalWriter, text = minimumValidS
   }).status).toBe("committed");
 }
 
+test("runtime replay failures return typed outcomes while static options still throw", async () => {
+  const { log, writer } = fixture();
+  const turn = await writer.startTurn("pending");
+  await writer.assistant(turn, { role: "assistant", content: "", toolCalls: [
+    { id: "one", name: "shell", args: {} }, { id: "two", name: "shell", args: {} },
+  ] });
+  await writer.result(turn, "one", "shell", "done", false);
+  const pending = await compaction.runCompaction({ log, liveRequest: live, contextWindowTokens: 12000, options });
+  expect(pending.status).toBe("pending_batch");
+  if (pending.status === "pending_batch") expect(pending.error.code).toBe("pending_batch");
+  await expect(compaction.runCompaction({ log, liveRequest: live, contextWindowTokens: 12000,
+    options: { ...options, contextLimitRatio: 0 },
+  })).rejects.toBeInstanceOf(RangeError);
+
+  const valid = fixture();
+  await seed(valid.log, valid.writer);
+  const corrupt = { readAll: () => valid.log.readAll({ includeInternal: true }).map(event => event.kind === "compaction_commit"
+    ? { ...event, payload: { ...event.payload, generation: 42 } } : event), append: valid.log.append.bind(valid.log) };
+  const invalid = await compaction.runCompaction({ log: corrupt, liveRequest: live, contextWindowTokens: 12000, options });
+  expect(invalid.status).toBe("invalid_state");
+  if (invalid.status === "invalid_state") expect(invalid.error.name).toBe("FrozenSummaryError");
+});
+
+test("failed candidate materialization returns invalid_state", async () => {
+  const { log, writer } = fixture();
+  const old = await writer.startTurn("old " + "x".repeat(1000));
+  await writer.assistant(old, { role: "assistant", content: "done" });
+  await writer.startTurn("current");
+  let calls = 0;
+  const outcome = await compaction.runCompaction({ log, liveRequest: live, contextWindowTokens: 12000, options,
+    runSummary: async () => response(),
+    materialize: (frozen, source) => ++calls === 1 ? compaction.materializeHistory(frozen, source)
+      : { ok: false, error: new compaction.MaterializationError("invalid_state", "bad candidate") },
+  });
+  expect(calls).toBeGreaterThan(1);
+  expect(outcome.status).toBe("invalid_state");
+});
+
 for (const length of [80, 200]) for (const previous of [false, true]) {
   test(`visible cut quotes ${length} characters with previous=${previous}`, async () => {
     const { log, writer } = fixture();
