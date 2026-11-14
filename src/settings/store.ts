@@ -380,10 +380,16 @@ function resolveSettingsTarget(
 function readSettingsDocumentWithBytes(
   path: string,
   fs: SettingsFs,
-): { result: ReadSettingsDocumentResult; rawBytes?: Buffer; targetPath: string; targetMode?: number } {
+): {
+  result: ReadSettingsDocumentResult;
+  rawBytes?: Buffer;
+  targetPath: string;
+  isSymlink: boolean;
+  targetMode?: number;
+} {
   const resolved = resolveSettingsTarget(path, fs);
   if (!resolved.ok) {
-    return { result: resolved.result, targetPath: resolved.targetPath };
+    return { result: resolved.result, targetPath: resolved.targetPath, isSymlink: false };
   }
   const { targetPath, isSymlink, targetMode } = resolved;
 
@@ -401,9 +407,10 @@ function readSettingsDocumentWithBytes(
             error: `Settings file symlink (${path}) points to a missing target; create the target file or remove the symlink`,
           },
           targetPath,
+          isSymlink,
         };
       }
-      return { result: { doc: {}, state: "missing" }, targetPath };
+      return { result: { doc: {}, state: "missing" }, targetPath, isSymlink };
     }
     if (code === "ELOOP") {
       return {
@@ -415,6 +422,7 @@ function readSettingsDocumentWithBytes(
             : `Settings path (${path}) changed to a symlink; retry or replace it`,
         },
         targetPath,
+        isSymlink,
       };
     }
     const msg = err instanceof Error ? err.message : String(err);
@@ -426,6 +434,7 @@ function readSettingsDocumentWithBytes(
           error: `Settings file symlink (${path}) points to a directory; point it to a regular file or remove the symlink`,
         },
         targetPath,
+        isSymlink,
       };
     }
     if (isSymlink && msg.includes("Path is not a regular file")) {
@@ -436,11 +445,13 @@ function readSettingsDocumentWithBytes(
           error: `Settings file symlink (${path}) does not point to a regular file; point it to a regular file or remove the symlink`,
         },
         targetPath,
+        isSymlink,
       };
     }
     return {
       result: { doc: {}, state: "unreadable", error: `Cannot read settings file (${path}): ${msg}` },
       targetPath,
+      isSymlink,
     };
   }
 
@@ -452,6 +463,7 @@ function readSettingsDocumentWithBytes(
         error: `Settings file (${path}) exceeds maximum size of ${MAX_SETTINGS_BYTES} bytes`,
       },
       targetPath,
+      isSymlink,
     };
   }
 
@@ -463,6 +475,7 @@ function readSettingsDocumentWithBytes(
       result: { doc: {}, state: "corrupt", error: `Settings file (${path}) is not valid UTF-8` },
       rawBytes,
       targetPath,
+      isSymlink,
       targetMode,
     };
   }
@@ -477,6 +490,7 @@ function readSettingsDocumentWithBytes(
       result: { doc: {}, state: "corrupt", error: `Corrupt settings file (${path})` },
       rawBytes,
       targetPath,
+      isSymlink,
       targetMode,
     };
   }
@@ -490,11 +504,12 @@ function readSettingsDocumentWithBytes(
       },
       rawBytes,
       targetPath,
+      isSymlink,
       targetMode,
     };
   }
 
-  return { result: { doc: parsed, state: "ok" }, rawBytes, targetPath, targetMode };
+  return { result: { doc: parsed, state: "ok" }, rawBytes, targetPath, isSymlink, targetMode };
 }
 
 export function readSettingsDocument(options?: SettingsStoreOptions): ReadSettingsDocumentResult {
@@ -503,28 +518,37 @@ export function readSettingsDocument(options?: SettingsStoreOptions): ReadSettin
   return readSettingsDocumentWithBytes(path, fs).result;
 }
 
+type WriteExclusiveStage = "open" | "body" | "afterClose";
+
 function writeExclusiveFile(
   filePath: string,
   bytes: Buffer,
   fs: SettingsFs,
   mode: number = 0o600,
   afterClose?: () => void,
-): { ok: true } | { ok: false; error: string } {
+): { ok: true } | { ok: false; error: string; code?: string; stage: WriteExclusiveStage } {
   const safeMode = mode & 0o777;
   let fd: number;
   try {
     fd = fs.openExclusive(filePath, safeMode);
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+      code: (err as NodeJS.ErrnoException)?.code,
+      stage: "open",
+    };
   }
 
   let closed = false;
+  let stage: WriteExclusiveStage = "body";
   try {
     fs.write(fd, bytes);
     fs.fsync(fd);
     closed = true;
     fs.close(fd);
     // Created exclusively with safeMode by openExclusive; no post-close chmod is needed.
+    stage = "afterClose";
     afterClose?.();
     return { ok: true };
   } catch (err) {
@@ -541,8 +565,36 @@ function writeExclusiveFile(
     } catch {
       // best-effort temp cleanup
     }
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : String(err),
+      code: (err as NodeJS.ErrnoException)?.code,
+      stage,
+    };
   }
+}
+
+const ATOMIC_WRITE_ERRNO_CAUSES: Record<string, string> = {
+  EACCES: "permission denied (EACCES)",
+  EPERM: "operation not permitted (EPERM)",
+  EROFS: "read-only filesystem (EROFS)",
+  EBUSY: "target is busy (EBUSY)",
+  EXDEV: "cross-device rename (EXDEV)",
+};
+
+function formatAtomicWriteError(
+  settingsPath: string,
+  targetPath: string,
+  isSymlink: boolean,
+  code: string,
+): string | undefined {
+  const causeClass = ATOMIC_WRITE_ERRNO_CAUSES[code];
+  if (!causeClass) return undefined;
+  const dir = dirname(targetPath);
+  if (isSymlink) {
+    return `${settingsPath} (-> ${targetPath}) cannot be updated: ${causeClass}. Make ${dir} writable or replace the symlink with a regular file.`;
+  }
+  return `${settingsPath} cannot be updated: ${causeClass}. Make ${dir} writable.`;
 }
 
 function logBestEffortFailure(
@@ -578,6 +630,7 @@ function writeDocumentAtomic(
   doc: Record<string, unknown>,
   fs: SettingsFs,
   mode: number = 0o600,
+  targetInfo: { settingsPath: string; isSymlink: boolean } = { settingsPath: path, isSymlink: false },
 ): { ok: true } | { ok: false; error: string } {
   // Caller-supplied input is validated before it reaches the merge (`updateSettingsDocument`
   // patch/base and `replaceSettingsDocument` input). The merged document is not re-scanned:
@@ -603,7 +656,7 @@ function writeDocumentAtomic(
   const base = basename(path);
   const tmpPath = join(dir, `.${base}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`);
 
-  return writeExclusiveFile(tmpPath, bytes, fs, mode, () => {
+  const res = writeExclusiveFile(tmpPath, bytes, fs, mode, () => {
     // The renamed inode already has the target's preserved mode (or 0o600 for new files) from openExclusive.
     fs.rename(tmpPath, path);
     try {
@@ -620,6 +673,12 @@ function writeDocumentAtomic(
       );
     }
   });
+
+  if (!res.ok && (res.stage === "open" || res.stage === "afterClose") && res.code) {
+    const actionable = formatAtomicWriteError(targetInfo.settingsPath, path, targetInfo.isSymlink, res.code);
+    if (actionable) return { ok: false, error: actionable };
+  }
+  return res;
 }
 
 const SETTINGS_LOCK_WAIT_MS = 2_000;
@@ -757,7 +816,8 @@ export function updateSettingsDocument(
   const path = resolveSettingsPath(options);
   const fs = options?.fs ?? defaultFs;
   return withSettingsLock<UpdateSettingsDocumentResult>(path, () => {
-    const { result: current, rawBytes, targetPath, targetMode } = readSettingsDocumentWithBytes(path, fs);
+    const { result: current, rawBytes, targetPath, isSymlink, targetMode } =
+      readSettingsDocumentWithBytes(path, fs);
 
     if (current.state === "unreadable") {
       return {
@@ -821,7 +881,10 @@ export function updateSettingsDocument(
       }
     }
 
-    const written = writeDocumentAtomic(targetPath, nextDoc, fs, targetMode);
+    const written = writeDocumentAtomic(targetPath, nextDoc, fs, targetMode, {
+      settingsPath: path,
+      isSymlink,
+    });
     if (!written.ok) {
       if (backupPath) discardCorruptBackup(backupPath, fs);
       return written;
@@ -896,7 +959,8 @@ export function replaceSettingsDocument(
   const path = resolveSettingsPath(options);
   const fs = options?.fs ?? defaultFs;
   return withSettingsLock(path, () => {
-    const { result: current, rawBytes, targetPath, targetMode } = readSettingsDocumentWithBytes(path, fs);
+    const { result: current, rawBytes, targetPath, isSymlink, targetMode } =
+      readSettingsDocumentWithBytes(path, fs);
 
     if (current.state === "unreadable") {
       return {
@@ -913,7 +977,10 @@ export function replaceSettingsDocument(
     }
 
     const copy = { ...doc };
-    const written = writeDocumentAtomic(targetPath, copy, fs, targetMode);
+    const written = writeDocumentAtomic(targetPath, copy, fs, targetMode, {
+      settingsPath: path,
+      isSymlink,
+    });
     if (!written.ok) {
       if (backupPath) discardCorruptBackup(backupPath, fs);
       return written;

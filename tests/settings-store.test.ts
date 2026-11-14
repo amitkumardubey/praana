@@ -2013,4 +2013,96 @@ console.log(JSON.stringify(res));
       expect(statSync(replaced.backupPath).mode & 0o777).toBe(0o600);
     }
   });
+
+  test("wraps EACCES/EPERM/EROFS/EBUSY/EXDEV from temp open or rename into one actionable message with no stray temp files", async () => {
+    const { createSettingsFs, updateSettingsDocument, replaceSettingsDocument } = await storeApi();
+    const baseFs = createSettingsFs();
+    const countOccurrences = (haystack: string, needle: string): number =>
+      haystack.split(needle).length - 1;
+
+    const errnos = ["EACCES", "EPERM", "EROFS", "EBUSY", "EXDEV"] as const;
+
+    const makeErrno = (code: (typeof errnos)[number], syscall: "open" | "rename", p: string): Error => {
+      const err = new Error(`${code}: ${syscall} failed on '${p}'`) as NodeJS.ErrnoException;
+      err.code = code;
+      return err;
+    };
+
+    // 1. Plain (non-symlink) regular file
+    writeFileSync(settingsPath, '{"thinking":true}\n', "utf-8");
+    for (const code of errnos) {
+      for (const stage of ["open", "rename"] as const) {
+        const seamFs = createSettingsFs({
+          openExclusive(p, mode) {
+            if (stage === "open" && p.includes(".tmp-")) {
+              throw makeErrno(code, "open", p);
+            }
+            return baseFs.openExclusive(p, mode);
+          },
+          rename(oldP, newP) {
+            if (stage === "rename") {
+              throw makeErrno(code, "rename", oldP);
+            }
+            return baseFs.rename(oldP, newP);
+          },
+        });
+
+        const res = updateSettingsDocument({ debug: true }, { fs: seamFs });
+        expect(res.ok).toBe(false);
+        if (!res.ok) {
+          expect(countOccurrences(res.error, settingsPath)).toBe(1);
+          expect(res.error).toContain(`${settingsPath} cannot be updated:`);
+          expect(res.error).toContain(code);
+          expect(res.error).toContain(`Make ${homeDir} writable.`);
+          expect(res.error).not.toContain(".tmp-");
+          expect(res.error).not.toContain("replace the symlink");
+        }
+        expect(readdirSync(homeDir).filter((f) => f.includes(".tmp-"))).toEqual([]);
+      }
+    }
+
+    // 2. Symlinked settings.json -> target in dotfiles directory
+    if (process.platform !== "win32") {
+      rmSync(settingsPath, { force: true });
+      const dotfilesDir = join(root, "dotfiles-errno");
+      mkdirSync(dotfilesDir, { recursive: true });
+      const targetPath = join(dotfilesDir, "settings.json");
+      writeFileSync(targetPath, '{"thinking":true}\n', "utf-8");
+      symlinkSync(targetPath, settingsPath);
+
+      for (const code of errnos) {
+        for (const stage of ["open", "rename"] as const) {
+          const seamFs = createSettingsFs({
+            openExclusive(p, mode) {
+              if (stage === "open" && p.includes(".tmp-")) {
+                throw makeErrno(code, "open", p);
+              }
+              return baseFs.openExclusive(p, mode);
+            },
+            rename(oldP, newP) {
+              if (stage === "rename") {
+                throw makeErrno(code, "rename", oldP);
+              }
+              return baseFs.rename(oldP, newP);
+            },
+          });
+
+          const res = replaceSettingsDocument({ ...DEFAULT_USER_SETTINGS }, { fs: seamFs });
+          expect(res.ok).toBe(false);
+          if (!res.ok) {
+            expect(countOccurrences(res.error, settingsPath)).toBe(1);
+            expect(countOccurrences(res.error, targetPath)).toBe(1);
+            expect(res.error).toContain(`${settingsPath} (-> ${targetPath}) cannot be updated:`);
+            expect(res.error).toContain(code);
+            expect(res.error).toContain(
+              `Make ${dotfilesDir} writable or replace the symlink with a regular file.`,
+            );
+            expect(res.error).not.toContain(".tmp-");
+          }
+          expect(readdirSync(dotfilesDir).filter((f) => f.includes(".tmp-"))).toEqual([]);
+          expect(readdirSync(homeDir).filter((f) => f.includes(".tmp-"))).toEqual([]);
+        }
+      }
+    }
+  });
 });
