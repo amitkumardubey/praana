@@ -939,7 +939,12 @@ async function runCompactionChecked(input: RunCompactionInput): Promise<Compacti
       };
       if (state.summary !== null) instructionOptions.previousSummary = state.summary;
       if (input.stateObjects !== undefined) instructionOptions.stateObjects = input.stateObjects;
-      const instruction = buildSummaryInstruction(instructionOptions);
+      const first = liveMessages[0];
+      const summaryInPrefix = state.summary !== null && first?.role === "user" &&
+        first.content === renderSummaryMessage(state.summary).content;
+      const instruction = buildSummaryInstruction(summaryInPrefix
+        ? { ...instructionOptions, previousSummary: undefined, previousSummaryInMessages: true }
+        : instructionOptions);
       let instructionSha256 = createHash("sha256").update(instruction).digest("hex");
       const sameModelReq = buildSameModelSummaryRequest(liveForSummary, instruction);
       const sameModelFill = requestFill(frame, sameModelReq.messages, input.contextWindowTokens, opts);

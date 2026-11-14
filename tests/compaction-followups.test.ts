@@ -5,7 +5,7 @@ import { CanonicalWriter } from "../src/canonical-transcript.js";
 import * as compaction from "../src/compaction.js";
 import { EventLog } from "../src/event-log.js";
 import { cutDescription, planBatchSummaries } from "../src/compaction-requests.js";
-import { appendCommit, minimumValidSummary, restoreFrozenStateFromLog } from "../src/frozen-summary.js";
+import { appendCommit, buildSummaryInstruction, minimumValidSummary, renderSummaryMessage, restoreFrozenStateFromLog, summaryCapTokens } from "../src/frozen-summary.js";
 import type { StreamRequest } from "../src/llm/types.js";
 
 const fixtures: { log: EventLog; root: string }[] = [];
@@ -83,6 +83,43 @@ test("failed candidate materialization returns invalid_state", async () => {
   });
   expect(calls).toBeGreaterThan(1);
   expect(outcome.status).toBe("invalid_state");
+});
+
+for (const batch of [false, true]) test(`previous summary is sent once with batch=${batch}`, async () => {
+  const { log, writer } = fixture();
+  const previous = minimumValidSummary().replace("\nok", "\nPREVIOUS-" + "p".repeat(1200));
+  await seed(log, writer, previous);
+  const turn = await writer.startTurn("folded " + "x".repeat(4000));
+  await writer.assistant(turn, { role: "assistant", content: "done" });
+  await writer.startTurn("retained");
+  const mat = compaction.materializeHistory(state(log), log);
+  if (!mat.ok) throw mat.error;
+  // A window that admits the native prefix and one instruction, not two summaries.
+  const window = 2000;
+  const instruction = buildSummaryInstruction({ cutDescription: cutDescription(1, compaction.buildTurns(log).at(-1)),
+    capTokens: summaryCapTokens(window - 200) });
+  const single = compaction.estimateRequestTokens({}, [...mat.messages, { role: "user", content: instruction }]);
+  expect(single + 200).toBeLessThan(window);
+  expect(single + compaction.estimateMessageTokens(renderSummaryMessage(previous)) + 200).toBeGreaterThan(window);
+  const requests: StreamRequest[] = [];
+  const outcome = await compaction.runCompaction({ log,
+    liveRequest: batch ? { ...live, messages: [{ role: "user", content: "force batch ".repeat(3000) }] } : live,
+    contextWindowTokens: window, options,
+    runSummary: async request => { requests.push(request); return response(); },
+  });
+  expect(outcome.status).toBe("rewritten");
+  expect(requests).toHaveLength(1);
+  const request = requests[0];
+  expect(JSON.stringify(request.messages).split("PREVIOUS-")).toHaveLength(2);
+  const last = request.messages.at(-1)!;
+  if (last.role === "tool_result" || typeof last.content !== "string") throw new Error("Expected instruction");
+  if (batch) expect(last.content).toContain(previous);
+  else {
+    expect(request.messages[0]).toEqual(renderSummaryMessage(previous));
+    expect(last.content).not.toContain(previous);
+    expect(last.content).toContain("previous summary is the first message above");
+    expect(JSON.stringify(request.messages)).not.toContain("no retained tail");
+  }
 });
 
 for (const length of [80, 200]) for (const previous of [false, true]) {
