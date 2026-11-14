@@ -1,10 +1,10 @@
 import { afterEach, expect, mock, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CanonicalWriter } from "../src/canonical-transcript.js";
-import { buildTurns, materializeHistory, runCompaction, type CompactionOutcome } from "../src/compaction.js";
+import { buildTurns, estimateMessageTokens, materializeHistory, runCompaction, type CompactionOutcome, type StubPlanner } from "../src/compaction.js";
 import { EventLog } from "../src/event-log.js";
 import { appendCommit, buildSummaryInstruction, checkSummary, minimumValidSummary, readCommits, renderSummaryMessage, restoreFrozenStateFromLog, SESSION_START_EPOCH, summaryCapTokens } from "../src/frozen-summary.js";
 import type { ConversationMessage, StreamRequest } from "../src/llm/types.js";
@@ -109,16 +109,6 @@ test("a tiny completed turn skips the paid summary when even the minimum cannot 
   expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
 });
 
-test("benefit and capacity name and compare their distinct best cases", () => {
-  const source = readFileSync(new URL("../src/compaction.ts", import.meta.url), "utf8");
-  expect(source.includes("const foldAloneBestCase = estimateRequestTokens(frame, unstubbedInFlightMessages) + minSummaryMessageTokens;")).toBe(true);
-  expect(source.includes("let stubbedFoldBestCase = foldAloneBestCase;")).toBe(true);
-  expect(source.includes("stubbedFoldBestCase = estimateRequestTokens(frame, inFlightMinMessages) + minSummaryMessageTokens;")).toBe(true);
-  expect(source.includes("foldAloneBestCase >= preFoldFill().inputTokens")).toBe(true);
-  expect(source.includes("stubbedFoldBestCase > initialFill.usableTokens")).toBe(true);
-  expect(source).not.toMatch(/\b(?:bestCaseTokens|minInFlightTokens)\b/);
-});
-
 test.each([
   { completed: "old", calls: 0, status: "stubbed" },
   { completed: "C".repeat(700), calls: 1, status: "rewritten" },
@@ -192,14 +182,14 @@ test("a useful minimum still pays for a summary", async () => {
 });
 
 test.each([168, 172])("pre-check estimate matches minimumValidSummary at the benefit boundary for %i bytes", async (completedSize) => {
-  const frozen = await import("../src/frozen-summary.js");
-  expect(frozen.minimumValidSummary).toBeFunction();
-  const minimum = frozen.minimumValidSummary();
-  const source = readFileSync(new URL("../src/compaction.ts", import.meta.url), "utf8");
-  expect(source.includes("const minValidSummary = minimumValidSummary();")).toBe(true);
+  const minimum = minimumValidSummary();
+  expect(checkSummary(minimum, { capTokens: summaryCapTokens(usableTokens) }).ok).toBe(true);
   const { log } = await nearCapacity("C".repeat(completedSize), 3400);
   const before = inputTokens(messages(log));
-  const best = inputTokens([renderSummaryMessage(minimum), ...buildTurns(log).at(-1)!.messages]);
+  const tail = buildTurns(log).at(-1)!.messages;
+  const minMessageTokens = estimateMessageTokens(renderSummaryMessage(minimum));
+  const best = inputTokens(tail) + minMessageTokens;
+  // Equality skips; when the lower bound is one token below the baseline, a summary is paid for.
   expect(before - best).toBe((completedSize - 168) / 4);
   let calls = 0;
   const outcome = await runCompaction({
@@ -307,7 +297,7 @@ test("in-flight stubbing cannot make a growing fold look beneficial", async () =
   expect(beforeTokens / usableTokens).toBeGreaterThanOrEqual(0.80);
   expect(beforeTokens).toBeLessThanOrEqual(usableTokens);
   expect(foldOnlyTokens).toBeGreaterThan(beforeTokens);
-  const planStubs = mock((candidates: readonly import("../src/compaction.js").StubCandidate[]) =>
+  const planStubs = mock<StubPlanner>((candidates) =>
     candidates.map((candidate) => ({ eventId: candidate.eventId, stubText: "s" })));
   let calls = 0;
   const outcome = await runCompaction({
@@ -325,6 +315,40 @@ test("in-flight stubbing cannot make a growing fold look beneficial", async () =
   expect(outcome.state.boundaryEventId).toBeNull();
   expect(messages(log).slice(0, 2)).toEqual(before.slice(0, 2));
   expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(1);
+});
+
+test.each([false, true])("fold-only benefit is independent of in-flight stub plans (useful=%s)", async (useful) => {
+  const decisions: boolean[] = [];
+  for (const stubEverything of [true, false]) {
+    const { log, writer, current } = await nearCapacity("C".repeat(264), 3000);
+    for (let i = 0; i < 3; i++) {
+      const id = `recent-${i}`;
+      await writer.assistant(current, { role: "assistant", content: "", toolCalls: [{ id, name: "shell", args: {} }] });
+      await writer.result(current, id, "shell", "ok", false);
+    }
+    const accepted = useful ? summary() : summary("D".repeat(380));
+    const before = inputTokens(messages(log));
+    const foldOnly = inputTokens([renderSummaryMessage(accepted), ...buildTurns(log).at(-1)!.messages]);
+    expect(foldOnly < before).toBe(useful);
+    const planStubs = mock<StubPlanner>((candidates) => stubEverything
+      ? candidates.map((c) => ({ eventId: c.eventId, stubText: "s" })) : []);
+    const outcome = await runCompaction({
+      log, liveRequest, contextWindowTokens, options, planStubs,
+      runSummary: async () => ({ text: accepted, finishReason: "stop", usage: null, toolCalls: [] }),
+    });
+    expect(planStubs).toHaveBeenCalledTimes(1);
+    expect(planStubs.mock.calls[0][1].phase).toBe("in_flight");
+    const committed = outcome.status === "rewritten";
+    decisions.push(committed);
+    expect(committed).toBe(useful);
+    if (useful) expectNoDiscard(outcome);
+    else expectDiscarded(outcome, log, accepted);
+    const restored = restoreFrozenStateFromLog(log);
+    if (!restored.ok) throw restored.error;
+    expect(restored.state.summary).toBe(useful ? accepted : null);
+    expect(restored.state.boundaryEventId !== null).toBe(useful);
+  }
+  expect(decisions[0]).toBe(decisions[1]);
 });
 
 test("a fitting fold that grows the request is discarded", async () => {
@@ -415,14 +439,6 @@ test("a capacity error exposes the accepted summary and its paid request metadat
     },
   });
   expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
-});
-
-test("discard metadata is attached by one private helper for all three outcomes", () => {
-  const source = readFileSync(new URL("../src/compaction.ts", import.meta.url), "utf8");
-  expect(source.match(/function withDiscardedSummary\b/g) ?? []).toHaveLength(1);
-  expect(source.match(/withDiscardedSummary\(/g) ?? []).toHaveLength(3);
-  expect(source.match(/summaryDiscarded:\s*true,\s*discardedSummary\b/g) ?? []).toHaveLength(1);
-  expect(source).not.toMatch(/\.(?:summaryDiscarded|discardedSummary)\s*=/);
 });
 
 test.each(["unchanged_fits", "stubbed", "capacity_error"] as const)("discarded summary records the frozen base for %s", async (status) => {

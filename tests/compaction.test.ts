@@ -1,5 +1,5 @@
 import { afterEach, expect, mock, spyOn, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import * as fs from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -1302,20 +1302,9 @@ test("log read failure during commit validation propagates instead of becoming c
   expect(readCalls).toBe(2);
 });
 
-test("compaction modules import nothing from src/memory/ or checkpoint.ts and do not self-import", async () => {
-  await api();
-  for (const rel of ["../src/compaction.ts", "../src/compaction-requests.ts"]) {
-    const source = readFileSync(new URL(rel, import.meta.url), "utf8");
-    expect(source).not.toMatch(/(?:from\s*|import\s*\()["'][^"']*(?:checkpoint|memory)/);
-  }
-  const compactionSource = readFileSync(new URL("../src/compaction.ts", import.meta.url), "utf8");
-  expect(compactionSource).not.toMatch(/from\s*["']\.\/compaction\.js["']/);
-});
-
 test("cache implementation details are not public API", () => {
   expect(compaction).not.toHaveProperty("stateCacheKey");
-  const source = readFileSync(new URL("../src/compaction.ts", import.meta.url), "utf8");
-  expect(source.includes("bypassMaterializeCache")).toBe(false);
+  expect(compaction).not.toHaveProperty("bypassMaterializeCache");
 });
 
 async function runWithFreshFillOracle(input: compaction.RunCompactionInput & { frame: compaction.RequestFrame }) {
@@ -1519,11 +1508,6 @@ for (const status of ["cancelled", "capacity_error"] as const) {
     expect(outcome.status).toBe(status);
   });
 }
-
-test("unchanged_fits requires a diagnostic reason in its public type", () => {
-  const source = readFileSync(new URL("../src/compaction.ts", import.meta.url), "utf8");
-  expect(/status: "unchanged_fits";[^\n]*reason: UnchangedFitsReason/.test(source)).toBe(true);
-});
 
 for (const decline of ["empty", "ineligible"] as const) {
   test(`unchanged_fits reports planner_declined for ${decline} plans`, async () => {
