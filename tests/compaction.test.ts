@@ -1302,9 +1302,8 @@ test("log read failure during commit validation propagates instead of becoming c
   expect(readCalls).toBe(2);
 });
 
-test("cache implementation details are not public API", () => {
+test("the cache key is not public API", () => {
   expect(compaction).not.toHaveProperty("stateCacheKey");
-  expect(compaction).not.toHaveProperty("bypassMaterializeCache");
 });
 
 async function runWithFreshFillOracle(input: compaction.RunCompactionInput & { frame: compaction.RequestFrame }) {

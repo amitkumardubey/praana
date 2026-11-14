@@ -190,6 +190,33 @@ test("a skipped fold returns unchanged_fits without adding stale stubs", async (
   expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
 });
 
+test("an extra bypassMaterializeCache input cannot bypass per-state materialization", async () => {
+  const { log, writer } = fixture();
+  const old = await writer.startTurn("C".repeat(900));
+  await writer.assistant(old, { role: "assistant", content: "done" });
+  await writer.startTurn("Current request");
+  const measurements = new Map<string, number>();
+  const input = {
+    log, liveRequest, contextWindowTokens: 6000,
+    options: { effectiveMaxTokens: 200, tailTurns: 0, contextLimitRatio: 0.01, postRewriteMargin: 0 },
+    bypassMaterializeCache: true,
+    materialize: (state: FrozenState, source: Parameters<typeof compaction.materializeHistory>[1]) => {
+      const identity = JSON.stringify({
+        epoch: state.resetEpoch, boundary: state.boundaryEventId, summary: state.summary,
+        stubs: Object.fromEntries([...state.stubSet].sort((a, b) => a.eventId.localeCompare(b.eventId)).map((s) => [s.eventId, s.stubText])),
+      });
+      measurements.set(identity, (measurements.get(identity) ?? 0) + 1);
+      return compaction.materializeHistory(state, source);
+    },
+    runSummary: async () => response(summary("S".repeat(2400))),
+  } as compaction.RunCompactionInput;
+  const outcome = await compaction.runCompaction(input);
+  expect(outcome).toMatchObject({ status: "unchanged_fits", reason: "fold_not_beneficial", summaryDiscarded: true });
+  expect(measurements.size).toBe(2);
+  expect([...measurements.values()]).toEqual([1, 1]);
+  expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
+});
+
 for (const scenario of [
   { name: "non-beneficial fitting", oldChars: 900, currentChars: 40, summaryChars: 2400, beneficial: false, foldFits: true },
   { name: "non-beneficial oversized", oldChars: 900, currentChars: 21000, summaryChars: 2400, beneficial: false, foldFits: false },
