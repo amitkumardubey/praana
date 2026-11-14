@@ -814,7 +814,9 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
   let discardedSummary: DiscardedSummary | undefined;
 
   if (completedTurns.length > 0) {
-    const preFoldFill = measureCandidate({ ...state, stubSet: toStubSet(step1StubMap) });
+    // Baseline: the request after Step 1 stubs, measured only after the cheap impossibility checks.
+    // unchanged_fits returns the state without those stubs unless the Step 3 fallback commits them.
+    const preFoldFill = () => measureCandidate({ ...state, stubSet: toStubSet(step1StubMap) });
     const capTokens = summaryCapTokens(initialFill.usableTokens);
     const minValidSummary = minimumValidSummary();
     const minValidSummaryTokens = estimateTokens(minValidSummary);
@@ -853,7 +855,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
     // this only avoids clearly hopeless folds, not every unhelpful summary call.
     if (capTokens < minValidSummaryTokens || stubbedFoldBestCase > initialFill.usableTokens) {
       unchangedReason = "fold_not_possible";
-    } else if (foldAloneBestCase >= preFoldFill.inputTokens) {
+    } else if (foldAloneBestCase >= preFoldFill().inputTokens) {
       unchangedReason = "fold_not_beneficial";
     } else {
       // Shrink completed turns in the tail from Math.min(tailTurns, completedTurns.length) down to 0
@@ -1022,8 +1024,8 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
         const foldOnlyFill = measureCandidate(postFoldState);
         let postFoldFill = foldOnlyFill;
 
-        // If folding alone did not reach the target, run Step 3 (stub inside the in-flight turn).
-        if (!postFoldFill.fits || postFoldFill.ratio > targetRatio) {
+        // Only spend Step 3 work on a fold that can be committed and has not reached the target.
+        if (foldOnlyFill.inputTokens < preFoldFill().inputTokens && (!postFoldFill.fits || postFoldFill.ratio > targetRatio)) {
           const inFlightStubbed = runInFlightStubbing(
             newBoundaryEventId,
             acceptedSummary,
@@ -1036,7 +1038,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
           postFoldState = { ...postFoldState, stubSet: finalStubSet };
         }
 
-        if (postFoldFill.fits && foldOnlyFill.inputTokens < preFoldFill.inputTokens) {
+        if (postFoldFill.fits && foldOnlyFill.inputTokens < preFoldFill().inputTokens) {
           const committed = tryCommitRewrite(
             input.log,
             state,

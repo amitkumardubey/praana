@@ -1459,8 +1459,7 @@ test("materialises each distinct state at most once with fresh full-frame fill m
     });
   }
 
-  // Scenario reaching both runInFlightStubbing paths (after an insufficient fold and again in Step 3)
-  // exercises the true worst-case bound of 3 + 2 * stubKeepRecent materialisations.
+  // A growing fold skips post-fold stubbing; only the unfolded Step 3 fallback is measured.
   {
     const { log } = openLog();
     addTurn(log, 1, {
@@ -1497,8 +1496,7 @@ test("materialises each distinct state at most once with fresh full-frame fill m
     expect(outcome.status).toBe("stubbed");
     expect(outcome.summaryDiscarded).toBe(true);
     expect(bothPathCalls).toBe(bothPathKeys.size);
-    expect(bothPathCalls).toBe(3 + 2 * stubKeepRecent);
-    expect(bothPathCalls).toBeGreaterThan(3 + stubKeepRecent);
+    expect(bothPathCalls).toBe(3 + stubKeepRecent);
   }
 });
 

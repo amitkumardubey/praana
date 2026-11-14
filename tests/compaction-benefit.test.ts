@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, mock, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -114,7 +114,7 @@ test("benefit and capacity name and compare their distinct best cases", () => {
   expect(source.includes("const foldAloneBestCase = estimateRequestTokens(frame, unstubbedInFlightMessages) + minSummaryMessageTokens;")).toBe(true);
   expect(source.includes("let stubbedFoldBestCase = foldAloneBestCase;")).toBe(true);
   expect(source.includes("stubbedFoldBestCase = estimateRequestTokens(frame, inFlightMinMessages) + minSummaryMessageTokens;")).toBe(true);
-  expect(source.includes("foldAloneBestCase >= preFoldFill.inputTokens")).toBe(true);
+  expect(source.includes("foldAloneBestCase >= preFoldFill().inputTokens")).toBe(true);
   expect(source.includes("stubbedFoldBestCase > initialFill.usableTokens")).toBe(true);
   expect(source).not.toMatch(/\b(?:bestCaseTokens|minInFlightTokens)\b/);
 });
@@ -307,12 +307,16 @@ test("in-flight stubbing cannot make a growing fold look beneficial", async () =
   expect(beforeTokens / usableTokens).toBeGreaterThanOrEqual(0.80);
   expect(beforeTokens).toBeLessThanOrEqual(usableTokens);
   expect(foldOnlyTokens).toBeGreaterThan(beforeTokens);
+  const planStubs = mock((candidates: readonly import("../src/compaction.js").StubCandidate[]) =>
+    candidates.map((candidate) => ({ eventId: candidate.eventId, stubText: "s" })));
   let calls = 0;
   const outcome = await runCompaction({
-    log, liveRequest, contextWindowTokens, options,
+    log, liveRequest, contextWindowTokens, options, planStubs,
     runSummary: async () => { calls++; return { text: accepted, finishReason: "stop", usage: null, toolCalls: [] }; },
   });
   expect(calls).toBe(1);
+  // Only the unfolded fallback plans stubs; an uncommittable fold must not plan them too.
+  expect(planStubs).toHaveBeenCalledTimes(1);
   expect(outcome).toMatchObject({ status: "stubbed", summaryDiscarded: true });
   expectDiscarded(outcome, log, accepted);
   if (outcome.status !== "stubbed") throw new Error(JSON.stringify(outcome));
