@@ -262,6 +262,13 @@ export interface CapacityErrorOutcome {
 
 export type RequestFillResult = { ok: true; fill: RequestFill } | { ok: false; error: CapacityErrorOutcome };
 
+function withDiscardedSummary<T extends object>(
+  outcome: T,
+  discardedSummary?: DiscardedSummary,
+): T & { summaryDiscarded?: true; discardedSummary?: DiscardedSummary } {
+  return discardedSummary ? { ...outcome, summaryDiscarded: true, discardedSummary } : outcome;
+}
+
 function capacityError(
   kind: CapacityErrorKind,
   detail: string,
@@ -275,11 +282,7 @@ function capacityError(
     kind,
     message: `${detail} ${guidance}`,
   };
-  if (discardedSummary) {
-    error.summaryDiscarded = true;
-    error.discardedSummary = discardedSummary;
-  }
-  return { ok: false, error };
+  return { ok: false, error: withDiscardedSummary(error, discardedSummary) };
 }
 
 /**
@@ -1077,11 +1080,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
       state: committed.state,
       fill: step3Result.fill,
     };
-    if (discardedSummary) {
-      outcome.summaryDiscarded = true;
-      outcome.discardedSummary = discardedSummary;
-    }
-    return outcome;
+    return withDiscardedSummary(outcome, discardedSummary);
   }
 
   // --- STEP 4: Unchanged fits or terminal capacity error ---
@@ -1092,11 +1091,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
       fill: initialFill,
       reason: unchangedReason ?? (sawEligibleResults ? "planner_declined" : "no_eligible_results"),
     };
-    if (discardedSummary) {
-      outcome.summaryDiscarded = true;
-      outcome.discardedSummary = discardedSummary;
-    }
-    return outcome;
+    return withDiscardedSummary(outcome, discardedSummary);
   }
 
   return capacityError(

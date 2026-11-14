@@ -333,6 +333,14 @@ test("a capacity error exposes the accepted summary and its paid request metadat
   expect(readCommits(log.readAll({ includeInternal: true }))).toHaveLength(0);
 });
 
+test("discard metadata is attached by one private helper for all three outcomes", () => {
+  const source = readFileSync(new URL("../src/compaction.ts", import.meta.url), "utf8");
+  expect(source.match(/function withDiscardedSummary\b/g) ?? []).toHaveLength(1);
+  expect(source.match(/withDiscardedSummary\(/g) ?? []).toHaveLength(3);
+  expect(source.match(/summaryDiscarded:\s*true,\s*discardedSummary\b/g) ?? []).toHaveLength(1);
+  expect(source).not.toMatch(/\.(?:summaryDiscarded|discardedSummary)\s*=/);
+});
+
 test.each(["unchanged_fits", "stubbed", "capacity_error"] as const)("discarded summary records the frozen base for %s", async (status) => {
   const { log, writer } = openLog();
   log.append({ kind: "system_note", actor: "kernel", payload: { type: "reset_boundary", command: "/clear" } });
