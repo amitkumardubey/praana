@@ -106,24 +106,36 @@ for (const heading of headings) {
 }
 
 test("checks only headings, nonempty active request and the estimated size cap", async () => {
-  const { checkSummary } = await api();
-  expect(checkSummary(markdown, { capTokens: estimateTokens(markdown) })).toMatchObject({ ok: true, failures: [] });
-  expect(checkSummary(markdown, { capTokens: estimateTokens(markdown) - 1 })).toMatchObject({ ok: false, failures: [expect.objectContaining({ kind: "over_cap" })] });
+  const { checkSummary, summaryTokens } = await api();
+  expect(checkSummary(markdown, { capTokens: summaryTokens(markdown) })).toMatchObject({ ok: true, failures: [] });
+  expect(checkSummary(markdown, { capTokens: summaryTokens(markdown) - 1 })).toMatchObject({ ok: false, failures: [expect.objectContaining({ kind: "over_cap" })] });
   expect(checkSummary(markdown.replace("Ship the parser.", "  "), { capTokens: 4096 })).toMatchObject({ ok: false, failures: [expect.objectContaining({ kind: "empty_active_request" })] });
   const lenient = headings.map((h, i) => `### ${h}\n${i === 0 ? "Do the work." : "arbitrary prose"}`).join("\n\n");
   expect(checkSummary(lenient, { capTokens: 4096 }).ok).toBe(true);
 });
 
 test("minimumValidSummary passes validation with filler under the first heading", async () => {
-  const { minimumValidSummary, checkSummary, parseSummary } = await api();
+  const { minimumValidSummary, checkSummary, parseSummary, summaryTokens } = await api();
   expect(minimumValidSummary).toBeFunction();
   const text = minimumValidSummary();
   expect(text).toBe(headings.map((heading, index) => `### ${heading}${index === 0 ? "\nok" : ""}`).join("\n\n"));
   expect(parseSummary(text)).toEqual({
     active_request: "ok", plans: [], constraints: [], decisions: [], files: [], completed: [], open_threads: [],
   });
-  expect(checkSummary(text, { capTokens: estimateTokens(text) })).toEqual({ ok: true, failures: [], estimatedTokens: estimateTokens(text) });
-  expect(checkSummary(text, { capTokens: estimateTokens(text) - 1 }).ok).toBe(false);
+  expect(checkSummary(text, { capTokens: summaryTokens(text) })).toEqual({ ok: true, failures: [], estimatedTokens: summaryTokens(text) });
+  expect(checkSummary(text, { capTokens: summaryTokens(text) - 1 }).ok).toBe(false);
+});
+
+test("the cap measures the JSON-escaped summary, so escape-heavy text cannot pass at its raw size", async () => {
+  const { checkSummary, minimumValidSummary, summaryTokens } = await api();
+  const base = minimumValidSummary();
+  for (const filler of ["\n".repeat(400), "\u0000".repeat(400), '"\\'.repeat(200)]) {
+    const text = base.replace("\nok", `\nok${filler}`);
+    expect(summaryTokens(text)).toBe(estimateTokens(JSON.stringify(text)));
+    expect(summaryTokens(text)).toBeGreaterThan(estimateTokens(text));
+    expect(checkSummary(text, { capTokens: estimateTokens(text) }).failures).toContainEqual(expect.objectContaining({ kind: "over_cap" }));
+    expect(checkSummary(text, { capTokens: summaryTokens(text) }).ok).toBe(true);
+  }
 });
 
 test("caps at one eighth of a small usable window, rounded down, and never above 4096", async () => {

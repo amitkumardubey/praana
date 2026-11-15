@@ -71,8 +71,8 @@ test("canonical entries preserve event ids while sharing current-epoch record fi
   expect(readCanonicalEntries(events).map(entry => entry.record)).toEqual(readCanonicalRecords(events));
   expect(readCanonicalEntries([...events, reset("empty")])).toEqual([]);
   const logReader = {
-    readAll(options?: { includeInternal?: boolean; includeCanonical?: boolean }) {
-      return options?.includeInternal || options?.includeCanonical
+    readAll(options?: { includeInternal?: boolean }) {
+      return options?.includeInternal
         ? events
         : events.filter(e => e.kind !== "canonical_message" && e.kind !== "compaction_commit");
     },
@@ -124,12 +124,12 @@ test("message estimator includes native tool-call names, structured and raw argu
   expect(estimateMessageTokens({ ...withCall, toolCalls: [{ ...withCall.toolCalls![0], rawArgs: "raw".repeat(200) }] })).toBeGreaterThan(estimateMessageTokens(withCall) + 100);
 });
 
-test("message estimator includes thinking and signatures despite empty string content", async () => {
+test("message estimator includes thinking but excludes opaque signatures despite empty string content", async () => {
   const { estimateMessageTokens } = await api();
   const base: ConversationMessage = { role: "assistant", content: "" };
   const thinking = { ...base, thinking: "reason".repeat(200) };
   expect(estimateMessageTokens(thinking)).toBeGreaterThan(estimateMessageTokens(base) + 250);
-  expect(estimateMessageTokens({ ...thinking, thinkingSignature: "sig".repeat(200) })).toBeGreaterThan(estimateMessageTokens(thinking) + 100);
+  expect(estimateMessageTokens({ ...thinking, thinkingSignature: "sig".repeat(200) })).toBe(estimateMessageTokens(thinking));
 });
 
 test("message estimator counts ordered text, thinking, redacted bytes and tool-use blocks", async () => {
@@ -545,15 +545,17 @@ test("trigger rejects non-finite and out-of-range module-local thresholds", asyn
 });
 
 test("outcome contracts discriminate every terminal status without implementing orchestration", async () => {
-  const { requestFill } = await api();
+  const { requestFill, MaterializationError } = await api();
   const measured = requestFill({}, [], 10000);
   if (!measured.ok) throw new Error("valid capacity rejected");
   const state = frozen();
   const fill = measured.fill;
   const outcomes: CompactionOutcome[] = [
     { status: "noop", state, fill }, { status: "rewritten", state: { ...state, generation: 1 }, fill },
-    { status: "stubbed", state: { ...state, generation: 1 }, fill }, { status: "unchanged_fits", state, fill },
-    { status: "summary_failed_fits", state, fill, reason: "summary timed out" }, { status: "cancelled", state },
+    { status: "stubbed", state: { ...state, generation: 1 }, fill }, { status: "unchanged_fits", state, fill, reason: "no_eligible_results" },
+    { status: "summary_failed_fits", state, fill, reason: "summary timed out" }, { status: "cancelled", state, reason: "aborted" },
+    { status: "invalid_state", error: new FrozenSummaryError("invalid_commit", 1, "corrupt") },
+    { status: "pending_batch", error: new MaterializationError("pending_batch", "incomplete") },
     { status: "commit_rejected", state, reason: "invalid_generation", error: new FrozenSummaryError("invalid_generation", 1, "generation mismatch") },
     { status: "commit_uncertain", error: new Error("fsync failed") },
     { status: "capacity_error", kind: "request_exceeds_capacity", message: "Use /clear or a larger-context model." },
@@ -564,6 +566,7 @@ test("outcome contracts discriminate every terminal status without implementing 
       case "summary_failed_fits": return outcome.reason;
       case "cancelled": return `cancelled:${outcome.state.generation}`;
       case "commit_rejected": return `commit_rejected:${outcome.error.code}:${outcome.reason}`;
+      case "invalid_state": case "pending_batch": return `${outcome.status}:${outcome.error.code}`;
       case "commit_uncertain": return String(outcome.error);
       case "capacity_error": return `${outcome.kind}:${outcome.message}`;
       default: {
@@ -574,6 +577,7 @@ test("outcome contracts discriminate every terminal status without implementing 
   }
   expect(outcomes.map(label)).toEqual([
     "noop:0:true", "rewritten:1:true", "stubbed:1:true", "unchanged_fits:0:true", "summary timed out", "cancelled:0",
+    "invalid_state:invalid_commit", "pending_batch:pending_batch",
     "commit_rejected:invalid_generation:invalid_generation", "Error: fsync failed", "request_exceeds_capacity:Use /clear or a larger-context model.",
   ]);
 });

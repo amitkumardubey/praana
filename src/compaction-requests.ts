@@ -1,4 +1,4 @@
-import { estimateMessageTokens, requestFill, type CapacityErrorOutcome, type CompactionTurn, type RequestFill } from "./compaction.js";
+import { estimateMessageTokens, requestFill, type CapacityErrorOutcome, type CompactionTurn, type RequestFill } from "./compaction-types.js";
 import { buildRepairInstruction, buildSummaryInstruction, checkSummary, type SummaryFailure, type SummaryInstructionOptions } from "./frozen-summary.js";
 import type { ConversationMessage, ProviderUsage, StreamRequest, ToolCall } from "./llm/types.js";
 import { serializeToolResult } from "./llm/serialize.js";
@@ -109,13 +109,31 @@ export function buildBatchSummaryRequest(
 }
 
 function validateSummaryCap(capTokens: number): void {
-  if (!Number.isSafeInteger(capTokens) || capTokens < 0 || !Number.isSafeInteger(6 * capTokens + 1)) {
+  if (!Number.isSafeInteger(capTokens) || capTokens < 0 || !Number.isSafeInteger(capTokens + 1)) {
     throw new RangeError("capTokens must be a non-negative safe integer with a safe serialized allowance.");
   }
 }
 
-export function cutDescription(turn: CompactionTurn): string {
-  return `through canonical event ${turn.eventIds.at(-1)!} (end of turn ${turn.turnId})`;
+/** User messages as the model sees them (user inputs and wrap-ups), across `turns`. */
+export function countUserMessages(turns: readonly CompactionTurn[]): number {
+  return turns.reduce((count, turn) => count + turn.messages.filter(message => message.role === "user").length, 0);
+}
+
+/**
+ * Describes the cut only with what the request shows. Batch requests hold only folded turns
+ * (`count` is their user messages). Same-model requests carry the whole live history, so
+ * `count` is the number of user messages that precede the retained tail in that request
+ * (snapshot, previous summary and folded turns alike); the cut names the ordinal of the
+ * first retained user message and quotes its first line (at most 80 code points, so a
+ * surrogate pair is never split). The ordinal disambiguates repeated prefixes.
+ */
+export function cutDescription(count: number, firstRetained?: CompactionTurn): string {
+  if (!firstRetained) return `${count} folded user messages; summarize every message above`;
+  const input = firstRetained.records.find(record => record.kind === "user_input");
+  const firstLine = input?.kind === "user_input" ? (input.message.text.split(/\r\n|\r|\n/, 1)[0] ?? "") : "";
+  const prefix = Array.from(firstLine).slice(0, 80).join("");
+  const begins = prefix.trim() ? `, which begins ${JSON.stringify(prefix)}` : "";
+  return `the retained tail starts at user message ${count + 1} (counting every user message above)${begins}; summarize only what comes before it`;
 }
 
 function summaryBatch(turns: readonly CompactionTurn[]): SummaryBatch {
@@ -123,15 +141,15 @@ function summaryBatch(turns: readonly CompactionTurn[]): SummaryBatch {
   const boundaryEventId = last.eventIds.at(-1)!;
   return {
     turnIds: turns.map(turn => turn.turnId), eventIds: turns.flatMap(turn => turn.eventIds), boundaryEventId,
-    cutDescription: cutDescription(last),
+    cutDescription: cutDescription(countUserMessages(turns)),
     messages: turns.flatMap(turn => turn.messages), budgetedInputTokens: 0,
   };
 }
 
 /**
  * Greedy, whole-turn partition in supplied log order. Later batches budget for
- * any checked summary up to capTokens. JSON can expand one character to six
- * (e.g. a NUL to \\u0000), so reserve six times the raw-markdown cap, plus rounding.
+ * any checked summary up to capTokens. checkSummary caps the JSON-escaped form, so
+ * the cap plus one token of rounding covers it whatever characters it contains.
  * Never use lexical event-id order or trust cached per-turn token estimates.
  * If even one turn cannot fit, return no partial plan: the caller must try
  * stubbing or a capacity outcome. A turn is never split to make it foldable.
@@ -158,12 +176,13 @@ export function planBatchSummaries(
     const turnTokens = turn.messages.reduce((sum, message) => sum + estimateMessageTokens(renderBatchMessage(message)), 0);
     const measureFrame = () => {
       const request = buildBatchSummaryRequest(template, { messages: [] }, {
-        ...options, cutDescription: cutDescription(turn),
+        ...options, cutDescription: cutDescription(countUserMessages([...pending, turn])),
         previousSummary: batches.length ? "" : options.previousSummary,
       });
       return requestFill(request, request.messages, options.contextWindowTokens, options);
     };
-    const allowance = () => batches.length ? 6 * options.capTokens + 1 : 0;
+    // The carried summary passed checkSummary, which caps its JSON-escaped form; +1 covers rounding.
+    const allowance = () => batches.length ? options.capTokens + 1 : 0;
     let measured = measureFrame();
     if (!measured.ok) return measured.error;
     let budgetedTokens = pendingTokens + turnTokens + measured.fill.inputTokens + allowance();

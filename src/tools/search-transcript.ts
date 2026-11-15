@@ -109,8 +109,8 @@ function extractRecordTexts(record: CanonicalRecord): {
 export function indexSessionTranscript(
   eventLog: Pick<EventLog, "readAll">,
 ): { entries: IndexedTranscriptEntry[]; currentResetEpoch: string; canonicalTranscriptAvailable: boolean } {
-  // requests unfiltered events; the option name differs across event-log versions
-  const rawOptions = { includeCanonical: true, includeInternal: true };
+  // Request unfiltered events, including canonical messages and commits.
+  const rawOptions = { includeInternal: true };
   const events = eventLog.readAll(rawOptions);
   let currentResetEpoch = SESSION_START_EPOCH;
   let canonicalTranscriptAvailable = false;

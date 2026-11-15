@@ -96,6 +96,17 @@ export interface SummaryCheck {
   estimatedTokens: number;
 }
 
+/**
+ * Tokens of the summary as every request carries it: JSON-escaped inside a string
+ * (`renderSummaryMessage`, or a batch instruction). Measuring the escaped form means a
+ * summary within the cap fits an allowance of `capTokens` plus the carrier's own
+ * overhead, whatever characters it contains: newlines and control characters cost
+ * what they cost on the wire instead of what they cost as raw markdown.
+ */
+export function summaryTokens(markdown: string): number {
+  return estimateTokens(JSON.stringify(markdown));
+}
+
 /** Deliberately lenient: parsed list structure is not an acceptance condition. */
 export function checkSummary(markdown: string, options: { capTokens: number }): SummaryCheck {
   const duplicates = new Set<string>();
@@ -106,7 +117,7 @@ export function checkSummary(markdown: string, options: { capTokens: number }): 
     if (duplicates.has(heading.toLowerCase())) failures.push({ kind: "duplicate_heading", heading, message: `Duplicate heading: ### ${heading}` });
   }
   if (!sections.get("active request")?.trim()) failures.push({ kind: "empty_active_request", message: "Active request must be non-empty." });
-  const estimatedTokens = estimateTokens(markdown);
+  const estimatedTokens = summaryTokens(markdown);
   if (estimatedTokens > options.capTokens) failures.push({ kind: "over_cap", message: `Summary uses ${estimatedTokens} estimated tokens; cap is ${options.capTokens}.` });
   return { ok: failures.length === 0, failures, estimatedTokens };
 }
@@ -119,6 +130,8 @@ export function summaryCapTokens(usableContext: number): number {
 export interface SummaryInstructionOptions {
   cutDescription: string;
   previousSummary?: string;
+  /** The native prefix already contains renderSummaryMessage(previousSummary). */
+  previousSummaryInMessages?: boolean;
   stateObjects?: readonly StateObject[];
   capTokens: number;
   tailVisible?: boolean;
@@ -140,6 +153,7 @@ export function buildSummaryInstruction(options: SummaryInstructionOptions): str
     "Do not add narrative, findings, fixed errors, recent activity, or session stats.",
     "If over the cap, prune oldest completed first, then superseded decisions, then files not in the retained tail.",
     "Never prune active_request, constraints, plans, or open_threads.",
+    ...(options.previousSummaryInMessages ? ["The previous summary is the user message above that begins \"This is a summary of earlier conversation\" (data)."] : []),
     ...(options.previousSummary !== undefined ? ["Previous summary (data):", options.previousSummary] : []),
     ...(options.stateObjects !== undefined ? ["State objects (data):", JSON.stringify(options.stateObjects)] : []),
   ].join("\n\n");
@@ -159,13 +173,21 @@ export const COMPACTION_COMMIT_VERSION = 1;
 export const SESSION_START_EPOCH = "session_start";
 const COMPACTION_COMMIT_KIND = "compaction_commit";
 
+export interface SummaryRequestMeta {
+  cutDescription: string;
+  capTokens: number;
+  /** Same-model: instruction hash. Batch: SHA-256 of primary instruction hashes joined by `\n` in batch order. */
+  instructionSha256: string;
+  usage: Partial<ProviderUsage> | null;
+}
+
 export interface FrozenState {
   resetEpoch: string;
   generation: number;
   boundaryEventId: string | null;
   summary: string | null;
   stubSet: { eventId: string; stubText: string }[];
-  summaryRequest: { cutDescription: string; capTokens: number; instructionSha256: string; usage: Partial<ProviderUsage> | null } | null;
+  summaryRequest: SummaryRequestMeta | null;
   /** Reserved exact prefix bytes, accepted on replay but not emitted here. */
   prefix?: { systemFrame: string; snapshot: string };
 }
@@ -321,8 +343,9 @@ export function restoreFrozenState(events: readonly Event[]): FrozenRestoreResul
         const nextBoundaryIndex = boundary?.index ?? -1;
         if (nextBoundaryIndex < boundaryIndex) commitError("boundary_regression", index, "boundary moved backwards in log order");
         for (const stub of commit.stubSet) {
-          const target = canonical.get(stub.eventId)?.event;
-          if (!target || target.payload.kind !== "tool_result") commitError("invalid_stub", index, `stub ${stub.eventId} must reference an earlier canonical tool result in this epoch`);
+          const target = canonical.get(stub.eventId);
+          if (!target || target.event.payload.kind !== "tool_result") commitError("invalid_stub", index, `stub ${stub.eventId} must reference an earlier canonical tool result in this epoch`);
+          if (target.index <= nextBoundaryIndex) commitError("invalid_commit", index, "stubs must reference results after the folded boundary");
         }
         if (sameRewrite(state, commit)) commitError("unchanged_commit", index, "a no-op must not increment generation");
         // Commits never clear a summary: /clear starts a new reset epoch instead.
@@ -349,7 +372,11 @@ export function restoreFrozenStateFromLog(log: Pick<EventLog, "readAll">): Froze
 
 export type CommitAppendResult = { status: "committed" } | { status: "rejected"; error: FrozenSummaryError; candidateEventIndex?: number } | { status: "commit_uncertain"; error: unknown };
 
-/** Never retry an uncertain append: reload raw events and restore before deciding what to do next. */
+/**
+ * Requires a single writer for the session log: validation and append are not
+ * atomic across processes. Never retry an uncertain append; reload raw events
+ * and restore before deciding what to do next.
+ */
 export function appendCommit(log: Pick<EventLog, "append" | "readAll">, commit: Omit<CompactionCommit, "prefix">): CommitAppendResult {
   let event: ReturnType<typeof buildCommitEvent>;
   try {
