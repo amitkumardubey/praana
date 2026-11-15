@@ -10,6 +10,7 @@ import * as loggerModule from "../src/logger.js";
 import { Session } from "../src/session.js";
 import { loadConfig } from "../src/config.js";
 import { runTurn } from "../src/turn.js";
+import { toolResultFromPreBlock } from "../src/hooks/block-result.js";
 import { TurnAbortedError } from "../src/turn-control.js";
 import { EventLog, readSessionMeta } from "../src/event-log.js";
 import { OpenTuiSink } from "../src/ui/tui/sink.js";
@@ -259,16 +260,85 @@ test("cooperative abort records Interrupted results in batch order", async () =>
   expect(canonical.emitCanonicalTranscript(records())).toHaveLength(4);
 });
 
-test("pre-block errors are sanitized only in the canonical result and preserve the history error flag", async () => {
-  const { session, records } = setup();
-  spyOn(toolRegistry, "createAllTools").mockReturnValue({ echo: { execute: mock() } } as any);
-  spyOn(session.hooks, "runPreToolCall").mockResolvedValue({ action: "block", isError: true, error: "AKIAIOSFODNN7EXAMPLE" });
-  let count = 0;
-  spyOn(nativeLlm, "streamLlmResponse").mockImplementation((req) => {
-    if (++count === 1) return stream({ role: "assistant", content: "", toolCalls: [{ id: "a", name: "echo", args: {} }] }, "toolUse");
-    expect(req.messages.at(-1)).toMatchObject({ role: "tool_result", isError: true, result: '{"ok":false,"error":"AKIAIOSFODNN7EXAMPLE"}' });
+const AWS_KEY = "AKIAIOSFODNN7EXAMPLE";
+
+function drivePreBlock(block: { action: "block"; isError: boolean; error: string; suggestions?: string[] }) {
+  const { session, events, records } = setup();
+  const execute = mock(async () => ({ ok: true }));
+  spyOn(toolRegistry, "createAllTools").mockReturnValue({ echo: { execute } } as any);
+  const post = spyOn(session.hooks, "runPostToolCall");
+  spyOn(session.hooks, "runPreToolCall").mockResolvedValue(block);
+  const requests: ConversationMessage[][] = [];
+  spyOn(nativeLlm, "streamLlmResponse").mockImplementation((req: StreamRequest) => {
+    requests.push(structuredClone(req.messages));
+    if (requests.length === 1) {
+      return stream({ role: "assistant", content: "", toolCalls: [{ id: "a", name: "echo", args: {} }] }, "toolUse");
+    }
     return stream({ role: "assistant", content: "done" });
   });
-  await runTurn(session, "inspect", undefined, { sink: {} });
-  expect(records()[2]).toMatchObject({ kind: "tool_result", message: { isError: true, text: '{"ok":false,"error":"[REDACTED:aws-access-key]"}' } });
+  const onToolResult = mock(() => {});
+  return {
+    execute,
+    post,
+    requests,
+    onToolResult,
+    events,
+    records,
+    run: () => runTurn(session, "inspect", undefined, { sink: { onToolResult } }),
+  };
+}
+
+function preBlockSurfaces(driven: ReturnType<typeof drivePreBlock>) {
+  const next = driven.requests[1]?.at(-1);
+  const toolEvent = driven.events().find((event) => event.kind === "tool_result");
+  const canonicalResult = driven.records().find((record) => record.kind === "tool_result");
+  const sinkText = driven.onToolResult.mock.calls[0]?.[2];
+  const eventText = JSON.stringify(toolEvent?.payload.result);
+  const canonicalText = canonicalResult?.kind === "tool_result" ? canonicalResult.message.text : undefined;
+  return { next, eventText, canonicalText, sinkText, canonicalResult };
+}
+
+test("pre-tool-call block results redact secret-shaped error text in the next request, event log, canonical record, and UI sink", async () => {
+  const block = {
+    action: "block" as const,
+    isError: true,
+    error: `Path does not exist: ${AWS_KEY} (/workspace/${AWS_KEY})`,
+    suggestions: [`/workspace/${AWS_KEY}.ts`],
+  };
+  const expected = '{"ok":false,"error":"Path does not exist: [REDACTED:aws-access-key] (/workspace/[REDACTED:aws-access-key])","suggestions":["/workspace/[REDACTED:aws-access-key].ts"]}';
+  const driven = drivePreBlock(block);
+  await driven.run();
+  expect(driven.execute).not.toHaveBeenCalled();
+  expect(driven.post).not.toHaveBeenCalled();
+  expect(driven.requests).toHaveLength(2);
+  const { next, eventText, canonicalText, sinkText, canonicalResult } = preBlockSurfaces(driven);
+  expect(next).toEqual({ role: "tool_result", toolCallId: "a", toolName: "echo", result: expected, isError: true });
+  expect(eventText).toBe(expected);
+  expect(canonicalResult).toMatchObject({ kind: "tool_result", message: { isError: true, text: expected } });
+  expect(canonicalText).toBe(expected);
+  expect(driven.onToolResult.mock.calls[0]).toEqual(["a", "echo", expected, true]);
+  const seen = `${next && "result" in next ? next.result : ""} ${eventText} ${canonicalText} ${sinkText}`;
+  expect(seen).toContain("[REDACTED:aws-access-key]");
+  expect(seen).not.toContain(AWS_KEY);
+});
+
+test("a pre-tool-call block without a secret keeps the same result text", async () => {
+  const block = {
+    action: "block" as const,
+    isError: true,
+    error: "Path does not exist: src/maiin.ts (/workspace/praana/src/maiin.ts)",
+    suggestions: ["/workspace/praana/src/main.ts"],
+  };
+  const expected = JSON.stringify(toolResultFromPreBlock(block));
+  const driven = drivePreBlock(block);
+  await driven.run();
+  expect(driven.post).not.toHaveBeenCalled();
+  expect(driven.requests).toHaveLength(2);
+  const { next, eventText, canonicalText, sinkText } = preBlockSurfaces(driven);
+  expect(next).toMatchObject({ role: "tool_result", isError: true, result: expected });
+  expect(eventText).toBe(expected);
+  expect(canonicalText).toBe(expected);
+  expect(sinkText).toBe(expected);
+  expect(expected).not.toContain("[REDACTED:");
+  expect(expected).toBe('{"ok":false,"error":"Path does not exist: src/maiin.ts (/workspace/praana/src/maiin.ts)","suggestions":["/workspace/praana/src/main.ts"]}');
 });
