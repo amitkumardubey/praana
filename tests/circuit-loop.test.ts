@@ -265,6 +265,102 @@ describe("LoopGate", () => {
     expect(gate.notes()).toHaveLength(0);
   });
 
+  it("falls back to the last call when parallel calls share an empty toolCallId", () => {
+    const pathA = "src/a.ts";
+    const pathB = "src/b.ts";
+    const events: ReplayEvent[] = [
+      {
+        kind: "tool_call",
+        payload: {
+          toolCallId: "",
+          tool: "edit_file",
+          args: { path: pathA, oldText: "a1", newText: "x" },
+        },
+      },
+      {
+        kind: "tool_call",
+        payload: {
+          toolCallId: "",
+          tool: "edit_file",
+          args: { path: pathB, oldText: "b1", newText: "x" },
+        },
+      },
+      { kind: "tool_result", payload: { tool: "edit_file", result: { ok: false } } },
+      {
+        kind: "tool_result",
+        payload: { toolCallId: "", tool: "edit_file", result: { ok: false } },
+      },
+    ];
+    const gate = LoopGate.fromEvents(events, { threshold: 3 });
+    // An empty id is not usable, so both results fall back to the last call
+    // (pathB), exactly as for results that carry no id at all.
+    expect(gate.observePre("edit_file", { path: pathA, oldText: "a2", newText: "x" }))
+      .toBeUndefined();
+    expect(
+      gate.observePre("edit_file", { path: pathB, oldText: "b2", newText: "x" })?.action,
+    ).toBe("block");
+  });
+
+  it("skips a result whose non-empty toolCallId matches no logged call", () => {
+    const path = "src/a.ts";
+    const events: ReplayEvent[] = [
+      {
+        kind: "tool_call",
+        payload: { toolCallId: "a", tool: "edit_file", args: { path, oldText: "a1", newText: "x" } },
+      },
+      {
+        kind: "tool_result",
+        payload: { toolCallId: "a", tool: "edit_file", result: { ok: false } },
+      },
+      // Orphan: the id belongs to no logged call, so it must not be blamed on
+      // the last call (here: the already-failed edit of path).
+      {
+        kind: "tool_result",
+        payload: { toolCallId: "zzz", tool: "edit_file", result: { ok: false } },
+      },
+    ];
+    const gate = LoopGate.fromEvents(events, { threshold: 3 });
+    expect(gate.observePre("edit_file", { path, oldText: "a2", newText: "x" }))
+      .toBeUndefined();
+    expect(gate.notes()).toHaveLength(0);
+  });
+
+  it("does not pair a reused toolCallId with a stale call", () => {
+    const pathA = "src/a.ts";
+    const pathB = "src/b.ts";
+    const events: ReplayEvent[] = [
+      {
+        kind: "tool_call",
+        payload: { toolCallId: "x", tool: "edit_file", args: { path: pathA, oldText: "a1", newText: "x" } },
+      },
+      {
+        kind: "tool_result",
+        payload: { toolCallId: "x", tool: "edit_file", result: { ok: false } },
+      },
+      {
+        kind: "tool_call",
+        payload: { toolCallId: "x", tool: "edit_file", args: { path: pathB, oldText: "b1", newText: "x" } },
+      },
+      {
+        kind: "tool_result",
+        payload: { toolCallId: "x", tool: "edit_file", result: { ok: false } },
+      },
+      // A repeated result for the reused id: the paired entry was consumed, so
+      // this must be skipped instead of re-failing pathB through a stale call.
+      {
+        kind: "tool_result",
+        payload: { toolCallId: "x", tool: "edit_file", result: { ok: false } },
+      },
+    ];
+    const gate = LoopGate.fromEvents(events, { threshold: 3 });
+    // Exactly one error each: a single error must not block either path.
+    expect(gate.observePre("edit_file", { path: pathA, oldText: "a2", newText: "x" }))
+      .toBeUndefined();
+    expect(gate.observePre("edit_file", { path: pathB, oldText: "b2", newText: "x" }))
+      .toBeUndefined();
+    expect(gate.notes()).toHaveLength(0);
+  });
+
   it("never counts or resets on exempt calls", () => {
     const gate = new LoopGate({ threshold: 3 });
     const path = "src/turn.ts";

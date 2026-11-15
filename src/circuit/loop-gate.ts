@@ -99,18 +99,30 @@ export class LoopGate {
           ? ev.payload.args
           : {}) as Record<string, unknown>;
         lastCall = { tool, args };
-        if (typeof ev.payload.toolCallId === "string") {
-          callsById.set(ev.payload.toolCallId, { tool, args });
-        }
+        const rawId = ev.payload.toolCallId;
+        const id = typeof rawId === "string" ? rawId : "";
+        // An empty id is not a usable key: several calls would share one entry.
+        if (id !== "") callsById.set(id, { tool, args });
         gate.observePreSilent(tool, args);
         continue;
       }
       if (ev.kind === "tool_result") {
         // Parallel batches log call, call, …, result, result, so the result is
-        // paired with its own call by toolCallId. Events without an id (or with
-        // an id that no logged call carried) fall back to the previous pairing.
-        const id = ev.payload.toolCallId;
-        const call = (typeof id === "string" ? callsById.get(id) : undefined) ?? lastCall;
+        // paired with its own call by toolCallId. Only results with no usable id
+        // (missing, non-string or empty) fall back to the previous call. A result
+        // whose non-empty id matches no logged call is an orphan: falling back
+        // would blame an unrelated call in a parallel batch, so it is skipped.
+        // Paired entries are deleted so a reused id (per-response ids such as
+        // call_0 across turns) cannot pair a stale call and the map stays small.
+        const rawId = ev.payload.toolCallId;
+        const id = typeof rawId === "string" ? rawId : "";
+        let call: { tool: string; args: Record<string, unknown> } | undefined;
+        if (id === "") {
+          call = lastCall ?? undefined;
+        } else {
+          call = callsById.get(id);
+          callsById.delete(id);
+        }
         if (!call) continue;
         const result = ev.payload.result;
         const ok = result && typeof result === "object" && (result as { ok?: unknown }).ok;
