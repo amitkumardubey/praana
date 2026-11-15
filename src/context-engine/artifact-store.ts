@@ -248,8 +248,35 @@ export class ArtifactStore {
       }
     }
 
+    // The id of a read_file artifact is derived from (session, content hash, request),
+    // so a request whose content returns to an earlier version (A -> B -> A) maps to a
+    // row that already exists. The request-key cache above only remembers the latest
+    // artifact per request, so look the row up by id and reuse it instead of inserting.
+    if (isReadFile) {
+      const reqStart = input.requestStart ?? sourceLineStart ?? 1;
+      const reqEnd = input.requestUnbounded ? 0 : (input.requestEnd ?? sourceLineEnd ?? sourceLineStart!);
+      const candidateId = input.command
+        ? this.readFileArtifactId(hash, input.command, reqStart, reqEnd, input.requestUnbounded ?? false)
+        : artifactIdFromHash(this.sessionId, hash);
+      const existing = getArtifactById(this.db, candidateId);
+      if (existing && existing.sessionId === this.sessionId && existing.sha256 === hash) {
+        touchArtifactAccess(this.db, existing.id, input.createdTurn);
+        if (input.command) this.fileReadIndex.set(this.requestKey(input.command, reqStart, reqEnd), existing.id);
+        return {
+          promptText: buildArtifactCard(
+            existing.id,
+            existing.sourceTool,
+            existing.command,
+            existing.rawTokens,
+          ),
+          artifactId: existing.id,
+          inlined: false,
+        };
+      }
+    }
+
     // For non-read_file tools, deduplicate by content hash (and store under path key).
-    // read_file uses range-keyed storage with no content dedup (provenance matters).
+    // read_file reuses an artifact only for the same request and content (above).
     const dedupKey = isReadFile ? null : this.fileReadKey(input.sourceTool, input.command);
 
     const intensity = this.distillers.selectIntensity(

@@ -106,6 +106,57 @@ describe("context-engine artifact store", () => {
     expect(second.artifactId).not.toBe(first.artifactId);
   });
 
+  const readInput = (rawText: string, createdTurn: number, command: string | undefined = "/tmp/foo.txt") => ({
+    sourceTool: "read_file",
+    command,
+    rawText,
+    createdTurn,
+    sourceLineStart: 1,
+    sourceLineEnd: 100,
+    requestStart: 1,
+    requestEnd: 100,
+  });
+
+  it("reuses the original artifact when read_file content returns to an earlier version", () => {
+    store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
+    const a = "content A\n".repeat(100);
+    const b = "content B\n".repeat(100);
+    const first = store.ingestToolResult(readInput(a, 1));
+    const second = store.ingestToolResult(readInput(b, 2));
+    const third = store.ingestToolResult(readInput(a, 3));
+    expect(second.artifactId).not.toBe(first.artifactId);
+    expect(third.artifactId).toBe(first.artifactId);
+    expect(third.inlined).toBe(false);
+    expect(store.retrieve(first.artifactId!, 4)).toEqual({ ok: true, content: a });
+    // The request-key cache points at A again, so a repeat read still hits it.
+    expect(store.ingestToolResult(readInput(a, 5)).artifactId).toBe(first.artifactId);
+  });
+
+  it("does not fail when read_file without a command repeats identical content", () => {
+    store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
+    const raw = "same\n".repeat(200);
+    const first = store.ingestToolResult(readInput(raw, 1, undefined));
+    const second = store.ingestToolResult(readInput(raw, 2, undefined));
+    expect(second.artifactId).toBe(first.artifactId);
+  });
+
+  it("mints distinct read_file ids for the same content in different sessions", () => {
+    const dir = mkdtempSync(join(tmpdir(), "praana-art-"));
+    const dbPath = join(dir, "ctx.db");
+    const raw = "content A\n".repeat(100);
+    const s1 = ArtifactStore.open(dbPath, "sess-1", TEST_CONFIG);
+    const s2 = ArtifactStore.open(dbPath, "sess-2", TEST_CONFIG);
+    try {
+      const one = s1.ingestToolResult(readInput(raw, 1));
+      const two = s2.ingestToolResult(readInput(raw, 1));
+      expect(two.artifactId).not.toBe(one.artifactId);
+    } finally {
+      s1.close();
+      s2.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("never compresses error content", () => {
     store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
     const raw = "Error: something failed\n".repeat(200);
