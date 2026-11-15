@@ -76,4 +76,102 @@ describe("LoopGate", () => {
       expect(gate.observePre("shell", { command: "bun test" })).toBeUndefined();
     }
   });
+
+  it("does not block on errors separated by a success", () => {
+    const gate = new LoopGate({ threshold: 3 });
+    const path = "src/turn.ts";
+    const first = { path, oldText: "a", newText: "b" };
+    const second = { path, oldText: "b", newText: "c" };
+    const third = { path, oldText: "c", newText: "d" };
+    const fourth = { path, oldText: "d", newText: "e" };
+    expect(gate.observePre("edit_file", first)).toBeUndefined();
+    gate.observePost("edit_file", first, true);
+    expect(gate.observePre("edit_file", second)).toBeUndefined();
+    gate.observePost("edit_file", second, false);
+    expect(gate.observePre("edit_file", third)).toBeUndefined();
+    gate.observePost("edit_file", third, true);
+    expect(gate.observePre("edit_file", fourth)).toBeUndefined();
+    expect(gate.notes()).toHaveLength(0);
+  });
+
+  it("still blocks the third attempt after two consecutive errors", () => {
+    const gate = new LoopGate({ threshold: 3 });
+    const path = "src/turn.ts";
+    const first = { path, oldText: "a", newText: "b" };
+    const second = { path, oldText: "b", newText: "c" };
+    const third = { path, oldText: "c", newText: "d" };
+    gate.observePre("edit_file", first);
+    gate.observePost("edit_file", first, true);
+    gate.observePre("edit_file", second);
+    gate.observePost("edit_file", second, true);
+    expect(gate.observePre("edit_file", third)?.action).toBe("block");
+  });
+
+  it("replays a success between two failures without blocking", () => {
+    const path = "src/turn.ts";
+    const events = [
+      {
+        kind: "tool_call",
+        payload: { tool: "edit_file", args: { path, oldText: "a", newText: "b" } },
+      },
+      { kind: "tool_result", payload: { tool: "edit_file", result: { ok: false } } },
+      {
+        kind: "tool_call",
+        payload: { tool: "edit_file", args: { path, oldText: "b", newText: "c" } },
+      },
+      { kind: "tool_result", payload: { tool: "edit_file", result: { ok: true } } },
+      {
+        kind: "tool_call",
+        payload: { tool: "edit_file", args: { path, oldText: "c", newText: "d" } },
+      },
+      { kind: "tool_result", payload: { tool: "edit_file", result: { ok: false } } },
+    ];
+    const gate = LoopGate.fromEvents(events as any, { threshold: 3 });
+    expect(gate.observePre("edit_file", { path, oldText: "d", newText: "e" })).toBeUndefined();
+    expect(gate.notes()).toHaveLength(0);
+  });
+
+  it("replays two consecutive failures as a block", () => {
+    const path = "src/turn.ts";
+    const events = [
+      {
+        kind: "tool_call",
+        payload: { tool: "edit_file", args: { path, oldText: "a", newText: "b" } },
+      },
+      { kind: "tool_result", payload: { tool: "edit_file", result: { ok: false } } },
+      {
+        kind: "tool_call",
+        payload: { tool: "edit_file", args: { path, oldText: "b", newText: "c" } },
+      },
+      { kind: "tool_result", payload: { tool: "edit_file", result: { ok: false } } },
+    ];
+    const gate = LoopGate.fromEvents(events as any, { threshold: 3 });
+    expect(gate.observePre("edit_file", { path, oldText: "c", newText: "d" })?.action).toBe(
+      "block",
+    );
+  });
+
+  it("never counts or resets on exempt calls", () => {
+    const gate = new LoopGate({ threshold: 3 });
+    const path = "src/turn.ts";
+    for (let i = 0; i < 5; i++) {
+      gate.observePost("read_file", { path }, true);
+      gate.observePost("shell", { command: "bun test" }, true);
+      gate.observePost("shell", { command: "git status" }, true);
+      expect(gate.observePre("read_file", { path })).toBeUndefined();
+      expect(gate.observePre("shell", { command: "bun test" })).toBeUndefined();
+      expect(gate.observePre("shell", { command: "git status" })).toBeUndefined();
+    }
+    expect(gate.notes()).toHaveLength(0);
+    const first = { path, oldText: "a", newText: "b" };
+    const second = { path, oldText: "b", newText: "c" };
+    const third = { path, oldText: "c", newText: "d" };
+    gate.observePre("edit_file", first);
+    gate.observePost("edit_file", first, true);
+    gate.observePost("read_file", { path }, false);
+    gate.observePre("edit_file", second);
+    gate.observePost("edit_file", second, true);
+    gate.observePost("read_file", { path }, false);
+    expect(gate.observePre("edit_file", third)?.action).toBe("block");
+  });
 });

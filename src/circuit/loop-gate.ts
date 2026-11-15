@@ -144,8 +144,12 @@ export class LoopGate {
   }
 
   observePost(toolName: string, args: Record<string, unknown>, isError: boolean): void {
-    if (!isError || isLoopExempt(toolName, args)) return;
+    if (isLoopExempt(toolName, args)) return;
     const key = toolErrorBaseKey(toolName, args);
+    if (!isError) {
+      this.errorHits.delete(key);
+      return;
+    }
     this.errorHits.set(key, (this.errorHits.get(key) ?? 0) + 1);
   }
 
