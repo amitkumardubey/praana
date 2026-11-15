@@ -209,6 +209,7 @@ const ARTIFACT_FIDELITY_COLUMNS: Array<{ name: string; ddl: string }> = [
   { name: "retention_reason", ddl: "TEXT NOT NULL DEFAULT 'ttl'" },
   { name: "request_key", ddl: "TEXT" },
   { name: "request_unbounded", ddl: "INTEGER NOT NULL DEFAULT 0" },
+  { name: "read_order", ddl: "INTEGER NOT NULL DEFAULT 0" },
 ];
 
 function ensureScorecardResumeColumns(db: Database): void {
@@ -278,6 +279,7 @@ interface ArtifactRow {
   retention_reason: string | null;
   request_key: string | null;
   request_unbounded: number | null;
+  read_order: number | null;
 }
 
 function rowToArtifact(row: ArtifactRow): ContextArtifact {
@@ -301,6 +303,7 @@ function rowToArtifact(row: ArtifactRow): ContextArtifact {
     retentionReason: row.retention_reason ?? "ttl",
     requestKey: row.request_key ?? undefined,
     requestUnbounded: (row.request_unbounded ?? 0) === 1,
+    readOrder: row.read_order ?? 0,
   };
 }
 
@@ -341,13 +344,14 @@ export function insertArtifact(
       raw_tokens, raw_text, summary, content_type,
       last_accessed_turn, access_count, created_at,
       fidelity, source_line_start, source_line_end, prompt_tokens, retention_reason,
-      request_key, request_unbounded
+      request_key, request_unbounded, read_order
     ) VALUES (
       $id, $sha256, $sessionId, $sourceTool, $command, $createdTurn,
       $rawTokens, $rawText, $summary, $contentType,
       $lastAccessedTurn, $accessCount, $createdAt,
       $fidelity, $sourceLineStart, $sourceLineEnd, $promptTokens, $retentionReason,
-      $requestKey, $requestUnbounded
+      $requestKey, $requestUnbounded,
+      (SELECT COALESCE(MAX(read_order), 0) + 1 FROM context_artifacts WHERE session_id = $sessionId)
     )`,
   ).run({
     $id: artifact.id,
@@ -371,6 +375,21 @@ export function insertArtifact(
     $requestKey: artifact.requestKey ?? null,
     $requestUnbounded: artifact.requestUnbounded ? 1 : 0,
   });
+}
+
+/**
+ * Mark a read_file artifact as the latest read in its session. Unlike
+ * last_accessed_turn this is bumped only by reads, not by retrieve_artifact,
+ * and it is a sequence, so reads within one turn still order.
+ */
+export function markArtifactRead(db: Database, sessionId: string, id: string): void {
+  db.query(
+    `UPDATE context_artifacts
+     SET read_order = (
+       SELECT COALESCE(MAX(read_order), 0) + 1 FROM context_artifacts WHERE session_id = $sessionId
+     )
+     WHERE id = $id AND session_id = $sessionId`,
+  ).run({ $id: id, $sessionId: sessionId });
 }
 
 export function touchArtifactAccess(
@@ -795,7 +814,7 @@ export function findFileReadArtifactByCommand(
        WHERE session_id = ?
          AND source_tool = 'read_file'
          AND command = ?
-       ORDER BY created_turn DESC, id DESC
+       ORDER BY read_order DESC, created_turn DESC, id DESC
        LIMIT 1`,
     )
     .get(sessionId, absPath) as ArtifactRow | undefined;

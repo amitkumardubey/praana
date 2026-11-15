@@ -157,6 +157,60 @@ describe("context-engine artifact store", () => {
     }
   });
 
+  it("keeps the reused artifact as the latest read after the store is reopened", () => {
+    const dir = mkdtempSync(join(tmpdir(), "praana-art-"));
+    const dbPath = join(dir, "ctx.db");
+    const a = "content A\n".repeat(100);
+    const b = "content B\n".repeat(100);
+    let first: ReturnType<ArtifactStore["ingestToolResult"]>;
+    let reopened: ArtifactStore | undefined;
+    const s1 = ArtifactStore.open(dbPath, "sess-1", TEST_CONFIG);
+    try {
+      first = s1.ingestToolResult(readInput(a, 1));
+      s1.ingestToolResult(readInput(b, 2));
+      s1.ingestToolResult(readInput(a, 3));
+    } finally {
+      s1.close();
+    }
+    try {
+      reopened = ArtifactStore.open(dbPath, "sess-1", TEST_CONFIG);
+      expect(reopened.findFileReadArtifact("/tmp/foo.txt#1#100")?.id).toBe(first.artifactId);
+      expect(reopened.findFileReadArtifactByRange("/tmp/foo.txt", 1, 100)?.id).toBe(first.artifactId);
+      expect(reopened.listFileReads()[0]?.artifactId).toBe(first.artifactId);
+    } finally {
+      reopened?.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("orders an A -> B -> A cycle inside one turn and ignores retrieve_artifact for recency", () => {
+    const dir = mkdtempSync(join(tmpdir(), "praana-art-"));
+    const dbPath = join(dir, "ctx.db");
+    const a = "content A\n".repeat(100);
+    const b = "content B\n".repeat(100);
+    let bId: string | undefined;
+    const s1 = ArtifactStore.open(dbPath, "sess-1", TEST_CONFIG);
+    try {
+      const first = s1.ingestToolResult(readInput(a, 1));
+      bId = s1.ingestToolResult(readInput(b, 1)).artifactId;
+      s1.ingestToolResult(readInput(a, 1));
+      // Retrieving B later must not make it the latest read.
+      s1.retrieve(bId!, 9);
+      expect(s1.listFileReads()[0]?.artifactId).toBe(first.artifactId);
+    } finally {
+      s1.close();
+    }
+    const s2 = ArtifactStore.open(dbPath, "sess-1", TEST_CONFIG);
+    try {
+      const latest = s2.findFileReadArtifactByRange("/tmp/foo.txt", 1, 100);
+      expect(latest?.rawText).toBe(a);
+      expect(latest?.id).not.toBe(bId);
+    } finally {
+      s2.close();
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("never compresses error content", () => {
     store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
     const raw = "Error: something failed\n".repeat(200);
@@ -413,16 +467,16 @@ describe("context-engine artifact store", () => {
     expect(reads[0].createdTurn).toBe(3);
   });
 
-  it("listFileReads excludes non-read_file artifacts and is sorted by createdTurn descending", () => {
+  it("listFileReads excludes non-read_file artifacts and is sorted by latest read first", () => {
     store = ArtifactStore.open(":memory:", "sess-1", TEST_CONFIG);
     store.ingestToolResult({ sourceTool: "read_file", command: "/proj/a.ts", rawText: largeText(3001), createdTurn: 1 });
     store.ingestToolResult({ sourceTool: "shell", command: "echo hi", rawText: "hello", createdTurn: 2 });
-    store.ingestToolResult({ sourceTool: "read_file", command: "/proj/b.ts", rawText: largeText(3002), createdTurn: 5 });
-    store.ingestToolResult({ sourceTool: "read_file", command: "/proj/c.ts", rawText: largeText(3003), createdTurn: 3 });
+    store.ingestToolResult({ sourceTool: "read_file", command: "/proj/b.ts", rawText: largeText(3002), createdTurn: 3 });
+    store.ingestToolResult({ sourceTool: "read_file", command: "/proj/c.ts", rawText: largeText(3003), createdTurn: 5 });
 
     const reads = store.listFileReads();
     expect(reads.length).toBe(3);
-    expect(reads.map((r) => r.absPath)).toEqual(["/proj/b.ts", "/proj/c.ts", "/proj/a.ts"]);
+    expect(reads.map((r) => r.absPath)).toEqual(["/proj/c.ts", "/proj/b.ts", "/proj/a.ts"]);
     expect(reads[0].createdTurn).toBe(5);
     expect(reads[1].createdTurn).toBe(3);
     expect(reads[2].createdTurn).toBe(1);
