@@ -197,9 +197,14 @@ export function indexSessionTranscript(
     const redacted = redactSecrets({
       text: entry.text,
       prefix: entry.kind === "tool_result" ? `${entry.toolName} ${entry.callId}\n` : "",
-    }) as { text: string; prefix: string };
-    entry.text = redacted.text;
-    entry.searchText = redacted.prefix + entry.text;
+    });
+    const fields = redacted !== null && typeof redacted === "object"
+      ? redacted as { text?: unknown; prefix?: unknown }
+      : null;
+    // A failed walk is `{ error }`, which has neither field. Keep a string either way.
+    entry.text = typeof fields?.text === "string" ? fields.text : "[REDACTED:redaction-error]";
+    const prefix = typeof fields?.prefix === "string" ? fields.prefix : "[REDACTED:redaction-error]";
+    entry.searchText = prefix + entry.text;
   }
 
   return { entries, currentResetEpoch, canonicalTranscriptAvailable };
