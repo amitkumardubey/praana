@@ -1,8 +1,15 @@
+/**
+ * Runtime replay/materialization failures return typed outcomes; invalid window/reserve
+ * values return capacity_error. Invalid static policy options (contextLimitRatio,
+ * postRewriteMargin, tailTurns, stubKeepRecent, stubMinTokens, summaryTimeoutMs)
+ * throw RangeError. They are validated at config load, so callers need not catch them.
+ */
 import { createHash } from "node:crypto";
 import { CanonicalTranscriptError, CanonicalValidator, emitCanonicalTranscript, readCanonicalEntries, resolveRawEvents, type CanonicalEventSource, type CanonicalRecord } from "./canonical-transcript.js";
 import {
   buildSameModelSummaryRequest,
   buildSummaryRepairRequest,
+  countUserMessages,
   cutDescription,
   nextBatchSummaryRequest,
   planBatchSummaries,
@@ -21,98 +28,28 @@ import {
   restoreFrozenState,
   SESSION_START_EPOCH,
   summaryCapTokens,
+  summaryTokens,
   type CompactionCommit,
   type FrozenState,
   type SummaryInstructionOptions,
 } from "./frozen-summary.js";
-import type { ConversationMessage, ProviderUsage, StreamRequest, ToolDefinition } from "./llm/types.js";
+import type { ConversationMessage, ProviderUsage, StreamRequest } from "./llm/types.js";
+import {
+  capacityError, withDiscardedSummary, estimateMessageTokens, estimateRequestTokens, requestFill,
+  DEFAULT_CONTEXT_LIMIT_RATIO, DEFAULT_TAIL_TURNS, DEFAULT_TOKENS_RESERVE, DEFAULT_POST_REWRITE_MARGIN,
+  DEFAULT_STUB_KEEP_RECENT, DEFAULT_STUB_MIN_TOKENS, DEFAULT_SUMMARY_TIMEOUT_MS,
+  type CompactionOptions, type CompactionTurn, type RequestFrame, type RequestFill,
+  type CapacityErrorOutcome, type DiscardedSummary, type SummaryRequestMeta,
+} from "./compaction-types.js";
+export {
+  estimateMessageTokens, estimateRequestTokens, requestFill, IMAGE_TOKEN_ALLOWANCE, DEFAULT_COMPACTION_OPTIONS,
+  DEFAULT_CONTEXT_LIMIT_RATIO, DEFAULT_TAIL_TURNS, DEFAULT_TOKENS_RESERVE, DEFAULT_POST_REWRITE_MARGIN,
+  DEFAULT_STUB_KEEP_RECENT, DEFAULT_STUB_MIN_TOKENS, DEFAULT_SUMMARY_TIMEOUT_MS,
+  type CompactionOptions, type CompactionTurn, type RequestFrame, type RequestFill,
+  type CapacityErrorKind, type CapacityErrorOutcome, type RequestFillResult, type DiscardedSummary, type SummaryRequestMeta,
+} from "./compaction-types.js";
 import { estimateTokens } from "./token-estimate.js";
 import type { StateObject } from "./types.js";
-
-export const DEFAULT_CONTEXT_LIMIT_RATIO = 0.80;
-export const DEFAULT_TAIL_TURNS = 4;
-export const DEFAULT_TOKENS_RESERVE = 4096;
-export const DEFAULT_POST_REWRITE_MARGIN = 0.15;
-export const DEFAULT_STUB_KEEP_RECENT = 3;
-/** Avoid replacing small outputs whose likely savings do not justify stub overhead. */
-export const DEFAULT_STUB_MIN_TOKENS = 256;
-export const DEFAULT_SUMMARY_TIMEOUT_MS = 60000;
-
-/** Module-local policy, not public configuration. */
-export interface CompactionOptions {
-  contextLimitRatio: number;
-  tailTurns: number;
-  tokensReserve: number;
-  /** Effective output cap of this request; omitted means tokensReserve. */
-  effectiveMaxTokens?: number;
-  postRewriteMargin: number;
-  stubKeepRecent: number;
-  stubMinTokens: number;
-  summaryTimeoutMs: number;
-}
-
-export const DEFAULT_COMPACTION_OPTIONS: Readonly<CompactionOptions> = Object.freeze({
-  contextLimitRatio: DEFAULT_CONTEXT_LIMIT_RATIO,
-  tailTurns: DEFAULT_TAIL_TURNS,
-  tokensReserve: DEFAULT_TOKENS_RESERVE,
-  postRewriteMargin: DEFAULT_POST_REWRITE_MARGIN,
-  stubKeepRecent: DEFAULT_STUB_KEEP_RECENT,
-  stubMinTokens: DEFAULT_STUB_MIN_TOKENS,
-  summaryTimeoutMs: DEFAULT_SUMMARY_TIMEOUT_MS,
-});
-
-/** Prefix components not already present in messages. Do not count an embedded snapshot twice. */
-export interface RequestFrame {
-  systemPrompt?: string;
-  snapshot?: string;
-  tools?: readonly ToolDefinition[];
-}
-
-/** Stable object keys, ordered arrays, and normal JSON escaping/toJSON semantics. */
-function estimateJson(value: ConversationMessage | RequestFrame): number {
-  const ordered = new WeakMap<object, Record<string, unknown>>();
-  return estimateTokens(JSON.stringify(value, (_key, item: unknown) => {
-    if (item === null || typeof item !== "object" || Array.isArray(item)) return item;
-    let sorted = ordered.get(item);
-    if (!sorted) {
-      sorted = Object.fromEntries(Object.keys(item).sort().map((key) => [key, (item as Record<string, unknown>)[key]]));
-      ordered.set(item, sorted);
-    }
-    return sorted;
-  }));
-}
-
-/** Fixed visual allowance per image; base64 bytes do not represent text tokens. */
-export const IMAGE_TOKEN_ALLOWANCE = 1600;
-
-/** Provider-independent estimate of all native fields, not an exact wire tokenizer. */
-export function estimateMessageTokens(message: ConversationMessage): number {
-  if (message.role !== "user" || typeof message.content === "string") return estimateJson(message);
-  let imageTokens = 0;
-  const content = message.content.map((part) => {
-    if (part.type !== "image") return part;
-    imageTokens += IMAGE_TOKEN_ALLOWANCE;
-    const { data: _data, ...metadata } = part;
-    return metadata;
-  });
-  return imageTokens + estimateJson({ ...message, content } as ConversationMessage);
-}
-
-/** Messages must include the summary, retained history and current input, in send order. */
-export function estimateRequestTokens(frame: RequestFrame, messages: readonly ConversationMessage[]): number {
-  return estimateJson({ systemPrompt: frame.systemPrompt, snapshot: frame.snapshot, tools: frame.tools }) +
-    messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
-}
-
-export interface CompactionTurn {
-  turnId: number;
-  /** Only a following user_input proves that this turn is no longer in flight. */
-  completed: boolean;
-  eventIds: string[];
-  records: CanonicalRecord[];
-  messages: ConversationMessage[];
-  estimatedTokens: number;
-}
 
 /** Emit one turn's messages; a terminal pending batch is not repaired, so only recorded messages are returned. */
 function emitTurnMessages(records: readonly CanonicalRecord[]): ConversationMessage[] {
@@ -149,7 +86,8 @@ function groupTurns(source: CanonicalEventSource): CompactionTurn[] {
   return turns;
 }
 
-function turnView(source: CanonicalEventSource, options: { estimate?: boolean } = {}): CompactionTurn[] {
+/** Current-epoch units in log order. Invalid sequences throw CanonicalTranscriptError. */
+export function buildTurns(source: CanonicalEventSource, options: { estimate?: boolean } = {}): CompactionTurn[] {
   const turns = groupTurns(source);
   const validator = new CanonicalValidator();
   for (const turn of turns) {
@@ -158,11 +96,6 @@ function turnView(source: CanonicalEventSource, options: { estimate?: boolean } 
     if (options.estimate !== false) turn.estimatedTokens = turn.messages.reduce((sum, message) => sum + estimateMessageTokens(message), 0);
   }
   return turns;
-}
-
-/** Current-epoch units in log order. Invalid sequences throw CanonicalTranscriptError. */
-export function buildTurns(source: CanonicalEventSource, options: { estimate?: boolean } = {}): CompactionTurn[] {
-  return turnView(source, options);
 }
 
 export type MaterializationErrorCode = "pending_batch" | "invalid_state";
@@ -222,107 +155,6 @@ export function materializeHistory(state: FrozenState, source: CanonicalEventSou
   }
 }
 
-export interface RequestFill {
-  inputTokens: number;
-  reservedOutputTokens: number;
-  contextWindowTokens: number;
-  usableTokens: number;
-  totalTokens: number;
-  /** Input divided by window minus this request's effective output cap; not clamped. */
-  ratio: number;
-  fits: boolean;
-}
-
-export type CapacityErrorKind = "reserve_exceeds_window" | "invalid_capacity" | "request_exceeds_capacity";
-
-export type SummaryRequestMeta = NonNullable<FrozenState["summaryRequest"]>;
-
-/**
- * An accepted, uncommitted summary. Its base identity is resetEpoch + baseBoundaryEventId +
- * previousSummarySha256 (null when there was no summary). Reuse requires that identity to match
- * the current frozen state and boundaryEventId to remain the intended cut. Generation is irrelevant:
- * stubs-only commits preserve this base.
- *
- * The text was produced from the live request and stateObjects as they stood when generated.
- * A reusing caller must run fresh fit and benefit checks against the CURRENT state and use the
- * normal commit path, never insert the cached text straight into a commit. No code in src/
- * consumes this field for reuse yet.
- */
-export interface DiscardedSummary {
-  boundaryEventId: string;
-  resetEpoch: string;
-  baseBoundaryEventId: string | null;
-  previousSummarySha256: string | null;
-  text: string;
-  request: SummaryRequestMeta;
-}
-
-/** Values only: the integration layer must make terminal capacity stops exit headless runs non-zero. */
-export interface CapacityErrorOutcome {
-  status: "capacity_error";
-  kind: CapacityErrorKind;
-  message: string;
-  summaryDiscarded?: true;
-  discardedSummary?: DiscardedSummary;
-}
-
-export type RequestFillResult = { ok: true; fill: RequestFill } | { ok: false; error: CapacityErrorOutcome };
-
-function withDiscardedSummary<T extends object>(
-  outcome: T,
-  discardedSummary?: DiscardedSummary,
-): T & { summaryDiscarded?: true; discardedSummary?: DiscardedSummary } {
-  return discardedSummary ? { ...outcome, summaryDiscarded: true, discardedSummary } : outcome;
-}
-
-function capacityError(
-  kind: CapacityErrorKind,
-  detail: string,
-  discardedSummary?: DiscardedSummary,
-): { ok: false; error: CapacityErrorOutcome } {
-  const guidance = kind === "invalid_capacity"
-    ? "Correct the configuration or model catalog entry before continuing."
-    : "Use /clear or a larger-context model before continuing.";
-  const error: CapacityErrorOutcome = {
-    status: "capacity_error",
-    kind,
-    message: `${detail} ${guidance}`,
-  };
-  return { ok: false, error: withDiscardedSummary(error, discardedSummary) };
-}
-
-/**
- * Account for a complete prospective request of any kind, including summary/batch
- * requests. Supply each request's own effectiveMaxTokens, never its summary cap.
- * An oversized input is measurable (fits=false), so a rewrite can still be tried;
- * an invalid reserve/window cannot be admitted or assigned a clamped fill ratio.
- */
-export function requestFill(
-  frame: RequestFrame,
-  messages: readonly ConversationMessage[],
-  contextWindowTokens: number,
-  options: Partial<CompactionOptions> = {},
-): RequestFillResult {
-  const reservedOutputTokens = options.effectiveMaxTokens ?? options.tokensReserve ?? DEFAULT_TOKENS_RESERVE;
-  if (!Number.isSafeInteger(contextWindowTokens) || contextWindowTokens <= 0) {
-    return capacityError("invalid_capacity", "The context window must be a positive safe-integer token count.");
-  }
-  if (!Number.isSafeInteger(reservedOutputTokens) || reservedOutputTokens < 0) {
-    return capacityError("invalid_capacity", "The effective output cap must be a non-negative safe-integer token count.");
-  }
-  if (reservedOutputTokens >= contextWindowTokens) {
-    return capacityError("reserve_exceeds_window", `The effective output reserve (${reservedOutputTokens}) is at or above the context window (${contextWindowTokens}).`);
-  }
-  const inputTokens = estimateRequestTokens(frame, messages);
-  const usableTokens = contextWindowTokens - reservedOutputTokens;
-  return { ok: true, fill: {
-    inputTokens, reservedOutputTokens, contextWindowTokens, usableTokens,
-    totalTokens: inputTokens + reservedOutputTokens,
-    ratio: inputTokens / usableTokens,
-    fits: inputTokens <= usableTokens,
-  } };
-}
-
 /** Use a complete requestFill measurement. No latch, hysteresis or remembered trigger state. */
 export function shouldRewrite(fill: RequestFill, options: Partial<CompactionOptions> = {}): boolean {
   const threshold = options.contextLimitRatio ?? DEFAULT_CONTEXT_LIMIT_RATIO;
@@ -356,6 +188,10 @@ export type CompactionOutcome =
   | { status: "commit_rejected"; state: FrozenState; reason: string; error: FrozenSummaryError }
   /** Do not assume the previous state: reload raw events and restore before continuing. */
   | { status: "commit_uncertain"; error: unknown }
+  /** Corrupt frozen state or history; nothing committed. */
+  | { status: "invalid_state"; error: FrozenSummaryError | MaterializationError }
+  /** A turn aborted before all terminal tool results were recorded; nothing committed. */
+  | { status: "pending_batch"; error: MaterializationError }
   | CapacityErrorOutcome;
 
 export interface StubCandidate {
@@ -373,6 +209,10 @@ export interface StubEntry {
   stubText: string;
 }
 
+/**
+ * Must be pure: overlapping candidates can be planned up to three times, during
+ * the pre-check, post-fold Step 3, and unfolded fallback (with varying keepRecent).
+ */
 export type StubPlanner = (
   candidates: readonly StubCandidate[],
   options: { phase: "stale" | "in_flight"; minTokens: number; keepRecent: number },
@@ -620,8 +460,23 @@ function tryCommitRewrite(
  *    recent stubKeepRecent results, shrinking to 1 under hard capacity pressure;
  *    the newest result is never stubbed).
  * 4. Stop with capacity_error when the in-flight turn + frame cannot fit usable capacity.
+ * If summarization fails but the unmodified request fits, commit nothing: discard
+ * even the Step 1 stale stubs already computed and return summary_failed_fits.
  */
 export async function runCompaction(input: RunCompactionInput): Promise<CompactionOutcome> {
+  try {
+    return await runCompactionChecked(input);
+  } catch (error) {
+    if (error instanceof FrozenSummaryError) return { status: "invalid_state", error };
+    if (error instanceof MaterializationError) return { status: error.code, error };
+    if (error instanceof CanonicalTranscriptError) {
+      return { status: "invalid_state", error: new MaterializationError("invalid_state", error.message) };
+    }
+    throw error;
+  }
+}
+
+async function runCompactionChecked(input: RunCompactionInput): Promise<CompactionOutcome> {
   const signal = input.signal ?? input.liveRequest.signal;
   const rawOptions = input.options ?? {};
   const frame: RequestFrame = {
@@ -824,11 +679,14 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
   if (completedTurns.length > 0) {
     const capTokens = summaryCapTokens(initialFill.usableTokens);
     const minValidSummary = minimumValidSummary();
-    const minValidSummaryTokens = estimateTokens(minValidSummary);
+    const minValidSummaryTokens = summaryTokens(minValidSummary);
     const minSummaryMessageTokens = estimateMessageTokens(renderSummaryMessage(minValidSummary));
+    // checkSummary caps the JSON-escaped summary, so a passing summary costs at most
+    // the empty rendered message plus capTokens (estimateTokens rounds up once per string).
     const summaryAllowanceTokens = estimateMessageTokens(renderSummaryMessage("")) + capTokens;
 
     // Pre-check whether the in-flight turn (after maximal Step 3 stubbing down to keepRecent=1) + frame + minimum valid summary can fit usable capacity.
+    // Step 1 adds only stale stubs, but this copy preserves pre-existing in-flight stubs.
     const inFlightMinMap = new Map(step1StubMap);
     const inFlightCandidates = collectToolResults([inFlightTurn]);
     const unstubbedInFlightMessages = emitCanonicalTranscript(applyStubs(inFlightTurn, inFlightMinMap));
@@ -898,7 +756,6 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
       if (!lastFoldedTurn || !newBoundaryEventId) {
         throw new Error("Expected at least one folded turn with a boundary event id.");
       }
-      const cutText = cutDescription(lastFoldedTurn);
 
       // Drop any stubs pointing into foldedTurns; retain only stubs in retainedTurns.
       const retainedResultIds = new Set(collectToolResults(retainedTurns).map((c) => c.eventId));
@@ -910,16 +767,32 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
       // Build and run the summary request (same-model if it fits, else batch fallback).
       const liveMessages = input.liveRequest.messages.length > 0 ? input.liveRequest.messages : initialMat.messages;
       const liveForSummary: StreamRequest = { ...input.liveRequest, messages: liveMessages };
+      // The retained turns end the live history, so every other user message in it (a snapshot,
+      // the previous summary, folded turns) comes before the first retained one.
+      const userMessagesBeforeTail = Math.max(0,
+        liveMessages.filter((message) => message.role === "user").length - countUserMessages(retainedTurns));
+      const cutText = cutDescription(userMessagesBeforeTail, retainedTurns[0]);
       const instructionOptions: SummaryInstructionOptions = {
         cutDescription: cutText,
         capTokens,
       };
       if (state.summary !== null) instructionOptions.previousSummary = state.summary;
       if (input.stateObjects !== undefined) instructionOptions.stateObjects = input.stateObjects;
-      const instruction = buildSummaryInstruction(instructionOptions);
+      // The previous summary can follow a snapshot or other prefix messages; look for it anywhere.
+      const renderedPrevious = state.summary === null ? undefined : renderSummaryMessage(state.summary).content;
+      const summaryInPrefix = renderedPrevious !== undefined &&
+        liveMessages.some((message) => message.role === "user" && message.content === renderedPrevious);
+      const instruction = buildSummaryInstruction(summaryInPrefix
+        ? { ...instructionOptions, previousSummary: undefined, previousSummaryInMessages: true }
+        : instructionOptions);
       let instructionSha256 = createHash("sha256").update(instruction).digest("hex");
       const sameModelReq = buildSameModelSummaryRequest(liveForSummary, instruction);
-      const sameModelFill = requestFill(frame, sameModelReq.messages, input.contextWindowTokens, opts);
+      // A live request may already embed the snapshot as a message; do not count it twice.
+      const summaryFrame = frame.snapshot !== undefined && input.liveRequest.messages.length > 0 &&
+        liveMessages.some((message) => message.role === "user" && message.content === frame.snapshot)
+        ? { ...frame, snapshot: undefined }
+        : frame;
+      const sameModelFill = requestFill(summaryFrame, sameModelReq.messages, input.contextWindowTokens, opts);
       if (!sameModelFill.ok) return sameModelFill.error;
 
       let acceptedSummary: string | undefined;
@@ -948,7 +821,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
             if (repairBuilt.status !== "repair") {
               summaryFailureReason = check.reason;
             } else {
-              const repairFrameFill = requestFill(frame, repairBuilt.request.messages, input.contextWindowTokens, opts);
+              const repairFrameFill = requestFill(summaryFrame, repairBuilt.request.messages, input.contextWindowTokens, opts);
               if (!repairFrameFill.ok) return repairFrameFill.error;
               if (!repairFrameFill.fill.fits) {
                 summaryFailureReason = "summary repair request exceeds capacity";
@@ -982,6 +855,7 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
           unchangedReason = "fold_not_possible";
         } else {
           const attempts: BatchSummaryAttempt[] = [];
+          const instructionHashes: string[] = [];
           const usages: (Partial<ProviderUsage> | null | undefined)[] = [];
           while (true) {
             const step = nextBatchSummaryRequest(planned.plan, attempts);
@@ -992,13 +866,14 @@ export async function runCompaction(input: RunCompactionInput): Promise<Compacti
             }
             if (step.status === "complete") {
               acceptedSummary = step.summary;
+              instructionSha256 = createHash("sha256").update(instructionHashes.join("\n")).digest("hex");
               acceptedUsage = mergeUsage(usages);
               break;
             }
             if (step.attempt === 0) {
               const lastMsg = step.request.messages.at(-1);
               if (lastMsg && lastMsg.role !== "tool_result" && typeof lastMsg.content === "string") {
-                instructionSha256 = createHash("sha256").update(lastMsg.content).digest("hex");
+                instructionHashes.push(createHash("sha256").update(lastMsg.content).digest("hex"));
               }
             }
             const call = await invokeSummarizer(runSummary, step.request, signal, opts.summaryTimeoutMs);

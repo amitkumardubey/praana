@@ -1812,8 +1812,8 @@ test("seeded 500-scenario randomized test maintains all ladder, boundary, capaci
     const activeTurns = specTurns.slice(prevCutIdx + 1);
     const completed = activeTurns.slice(0, -1);
     const foldedSpec = completed.slice(0, foldedCount);
-    const lastFolded = foldedSpec.at(-1)!;
-    const cutText = `through turn ${lastFolded.turnId} (${lastFolded.doneId})`;
+    const prefix = JSON.stringify(Array.from(activeTurns[foldedCount].userText.split(/\r\n|\r|\n/, 1)[0] ?? "").slice(0, 80).join(""));
+    const cutText = `the retained tail starts at user message ${foldedCount + (prevState.summary !== null ? 1 : 0) + 1} (counting every user message above), which begins ${prefix}; summarize only what comes before it`;
     const liveReq: StreamRequest = {
       model: "claude-sonnet-4-20250514",
       provider: "anthropic",
@@ -1824,7 +1824,9 @@ test("seeded 500-scenario randomized test maintains all ladder, boundary, capaci
       capTokens: opts.capTokens,
       ...(prevState.summary !== null ? { previousSummary: prevState.summary } : {}),
     };
-    const instruction = buildSummaryInstruction(instrOpts);
+    const instruction = buildSummaryInstruction(prevState.summary !== null
+      ? { ...instrOpts, previousSummary: undefined, previousSummaryInMessages: true }
+      : instrOpts);
     const sameModelReq = buildSameModelSummaryRequest(liveReq, instruction);
     if (oracleInputTokens({}, sameModelReq.messages) <= opts.usable) {
       if (opts.mode !== 3) return true;

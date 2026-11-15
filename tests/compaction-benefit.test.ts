@@ -67,7 +67,11 @@ function expectNoDiscard(outcome: CompactionOutcome) {
 }
 
 function expectDiscarded(outcome: CompactionOutcome, log: EventLog, text: string, usage: SummaryRequestMeta["usage"] = null) {
-  const boundaryEventId = buildTurns(log)[0].eventIds.at(-1)!;
+  const turns = buildTurns(log);
+  const boundaryEventId = turns[0].eventIds.at(-1)!;
+  const retained = turns[1].messages[0];
+  if (retained.role !== "user" || typeof retained.content !== "string") throw new Error("Expected retained input");
+  const prefix = JSON.stringify(Array.from(retained.content.split(/\r\n|\r|\n/, 1)[0] ?? "").slice(0, 80).join(""));
   expect(outcome).toMatchObject({
     summaryDiscarded: true,
     discardedSummary: {
@@ -77,7 +81,7 @@ function expectDiscarded(outcome: CompactionOutcome, log: EventLog, text: string
       previousSummarySha256: null,
       text,
       request: {
-        cutDescription: `through canonical event ${boundaryEventId} (end of turn 1)`,
+        cutDescription: `the retained tail starts at user message 2 (counting every user message above), which begins ${prefix}; summarize only what comes before it`,
         capTokens: summaryCapTokens(usableTokens),
         instructionSha256: expect.stringMatching(/^[a-f0-9]{64}$/),
         usage,
@@ -432,9 +436,10 @@ test("a capacity error exposes the accepted summary and its paid request metadat
       previousSummarySha256: null,
       text: accepted,
       request: {
-        cutDescription: `through canonical event ${boundaryEventId} (end of turn 1)`,
+        cutDescription: 'the retained tail starts at user message 2 (counting every user message above), which begins "now"; summarize only what comes before it',
         capTokens: summaryCapTokens(usableTokens),
-        instructionSha256: createHash("sha256").update(instruction).digest("hex"),
+        // This window uses a one-batch fallback, so hash its single primary hash.
+        instructionSha256: createHash("sha256").update(createHash("sha256").update(instruction).digest("hex")).digest("hex"),
         usage,
       },
     },
@@ -454,7 +459,7 @@ test("batch fallback preserves the discarded combined summary and batch request 
     await writer.result(current, id, "shell", text, false);
   }
   const boundaryEventId = buildTurns(log).at(-2)!.eventIds.at(-1)!;
-  const cutDescription = `through canonical event ${boundaryEventId} (end of turn 20)`;
+  const cutDescription = 'the retained tail starts at user message 21 (counting every user message above), which begins "now"; summarize only what comes before it';
   const capTokens = summaryCapTokens(5000);
   const requests: StreamRequest[] = [];
   const replies: string[] = [];
@@ -467,7 +472,7 @@ test("batch fallback preserves the discarded combined summary and batch request 
       requests.push(request);
       const last = request.messages.at(-1)!;
       if (last.role === "tool_result" || typeof last.content !== "string") throw new Error("Expected instruction");
-      const text = last.content.includes(cutDescription) ? accepted : summary(`batch ${requests.length}`);
+      const text = JSON.stringify(request.messages).includes("user: turn 19:") ? accepted : summary(`batch ${requests.length}`);
       replies.push(text);
       return { text, finishReason: "stop", usage: { input: 10, output: 5, totalTokens: 15 }, toolCalls: [] };
     },
@@ -479,7 +484,8 @@ test("batch fallback preserves the discarded combined summary and batch request 
     expect(JSON.stringify(request.messages)).toContain("no retained tail is included");
   }
   const combinedInstruction = buildSummaryInstruction({
-    cutDescription, capTokens, previousSummary: replies.at(-2)!, tailVisible: false,
+    cutDescription: `${requests.at(-1)!.messages.length / 2 - 0.5} folded user messages; summarize every message above`,
+    capTokens, previousSummary: replies.at(-2)!, tailVisible: false,
   });
   expect(requests.at(-1)!.messages.at(-1)).toEqual({ role: "user", content: combinedInstruction });
   expect(outcome).toMatchObject({
@@ -488,7 +494,11 @@ test("batch fallback preserves the discarded combined summary and batch request 
       text: accepted, boundaryEventId, resetEpoch: SESSION_START_EPOCH, baseBoundaryEventId: null, previousSummarySha256: null,
       request: {
         cutDescription, capTokens,
-        instructionSha256: createHash("sha256").update(combinedInstruction).digest("hex"),
+        instructionSha256: createHash("sha256").update(requests.map(request => {
+          const last = request.messages.at(-1)!;
+          if (last.role === "tool_result" || typeof last.content !== "string") throw new Error("Expected instruction");
+          return createHash("sha256").update(last.content).digest("hex");
+        }).join("\n")).digest("hex"),
         usage: { input: 10 * requests.length, output: 5 * requests.length, totalTokens: 15 * requests.length },
       },
     },

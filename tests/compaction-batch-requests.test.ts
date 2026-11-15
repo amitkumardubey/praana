@@ -61,7 +61,7 @@ test("batch planner covers complete folded turns once, in order, in bounded capa
   for (const batch of planned.batches) {
     expect(batch.turnIds.length).toBeGreaterThan(0);
     expect(batch.boundaryEventId).toBe(batch.eventIds.at(-1)!);
-    expect(batch.cutDescription).toContain(batch.boundaryEventId);
+    expect(batch.cutDescription).toBe(`${batch.turnIds.length} folded user messages; summarize every message above`);
     expect(batch.budgetedInputTokens + options.effectiveMaxTokens).toBeLessThanOrEqual(options.contextWindowTokens);
   }
   expect(JSON.stringify(turns)).toBe(before);
@@ -274,12 +274,11 @@ test("incremental batch plans match an independently measured greedy partition",
     let pending: CompactionTurn[] = [];
     let admitted = 0;
     const measure = (candidate: CompactionTurn[]) => {
-      const last = candidate.at(-1)!;
-      const cutDescription = `through canonical event ${last.eventIds.at(-1)!} (end of turn ${last.turnId})`;
+      const cutDescription = `${candidate.length} folded user messages; summarize every message above`;
       const request = buildBatchSummaryRequest(live(), { messages: candidate.flatMap(turn => turn.messages) }, {
         ...options, cutDescription, previousSummary: expected.length ? "" : options.previousSummary,
       });
-      return tokens(request) + (expected.length ? 6 * options.capTokens + 1 : 0);
+      return tokens(request) + (expected.length ? options.capTokens + 1 : 0);
     };
     for (const turn of turns) {
       let next = measure([...pending, turn]);
@@ -296,12 +295,12 @@ test("incremental batch plans match an independently measured greedy partition",
   }
 });
 
-test("previous-summary allowance covers worst-case JSON escaping at the raw markdown cap", async () => {
+test("previous-summary allowance covers an escape-heavy summary at the escaped cap", async () => {
   const { nextBatchSummaryRequest } = await api();
   const planned = await plan();
   const base = summary();
   let escaped = base;
-  while (estimateTokens(escaped + "\u0000") <= options.capTokens) escaped += "\u0000";
+  while (estimateTokens(JSON.stringify(escaped + "\u0000")) <= options.capTokens) escaped += "\u0000";
   expect(checkSummary(escaped, options).ok).toBe(true);
   for (let i = 1; i < planned.batches.length; i++) {
     const next = nextBatchSummaryRequest(planned, Array.from({ length: i }, () => ({ result: response(escaped) })));
