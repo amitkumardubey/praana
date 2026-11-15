@@ -223,6 +223,22 @@ describe("search_transcript tool (PR3)", () => {
     }
   });
 
+  test("treats a blank id as absent so a strict-schema search with id \"\" still searches", async () => {
+    const { log } = openLog();
+    addCanonical(log, "user", { formatVersion: 1, kind: "user_input", turnId: 1, message: { text: "needle" } });
+    const tool = searchTranscriptModule.createSearchTranscriptTool({ eventLog: log }).search_transcript;
+    for (const id of ["", " ", "\n"]) {
+      const search = await tool.execute({ query: "needle", id, include_previous_resets: false, limit: 10, context_messages: 0, offset: 1, max_chars: 8000 });
+      if (!search.ok || search.mode !== "search") throw new Error(`Expected search for id ${JSON.stringify(id)}`);
+      expect(search.matches.map((match) => match.id)).toEqual(["user"]);
+    }
+    const neither = await tool.execute({ query: " ", id: " " });
+    expect(neither.ok).toBe(false);
+    if (!neither.ok) expect(neither.error).toContain("non-empty query");
+    const fetched = await tool.execute({ query: "ignored", id: "user" });
+    if (!fetched.ok || fetched.mode !== "fetch") throw new Error("Expected fetch");
+  });
+
   test("ranks artifact cards and elided stubs below original content while retaining artifact ids", async () => {
     const { log } = openLog();
     const artifactId = "art_abcdef123456";

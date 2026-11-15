@@ -400,12 +400,11 @@ export function createSearchTranscriptTool(ctx: {
           ? entries
           : entries.filter((e) => e.resetEpoch === currentResetEpoch);
 
-        // Mode A: Fetch by message ID
-        if (args.id !== undefined) {
-          const targetId = args.id.trim();
-          if (!targetId) {
-            return { ok: false, error: "Message id cannot be empty." };
-          }
+        // Mode A: Fetch by message ID. A blank id counts as absent: providers with
+        // strict tool schemas (OpenAI Responses) send every optional field, using ""
+        // for the ones the model leaves out, so `{ query, id: "" }` is a search.
+        const targetId = args.id?.trim() ?? "";
+        if (targetId) {
           const found = scopedEntries.find((e) => e.id === targetId);
           if (!found) {
             const inEarlierEpoch =
