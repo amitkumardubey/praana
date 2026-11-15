@@ -91,6 +91,7 @@ export class LoopGate {
   ): LoopGate {
     const gate = new LoopGate({ threshold: opts?.threshold });
     let lastCall: { tool: string; args: Record<string, unknown> } | null = null;
+    const callsById = new Map<string, { tool: string; args: Record<string, unknown> }>();
     for (const ev of events) {
       if (ev.kind === "tool_call") {
         const tool = typeof ev.payload.tool === "string" ? ev.payload.tool : "";
@@ -98,14 +99,23 @@ export class LoopGate {
           ? ev.payload.args
           : {}) as Record<string, unknown>;
         lastCall = { tool, args };
+        if (typeof ev.payload.toolCallId === "string") {
+          callsById.set(ev.payload.toolCallId, { tool, args });
+        }
         gate.observePreSilent(tool, args);
         continue;
       }
-      if (ev.kind === "tool_result" && lastCall) {
+      if (ev.kind === "tool_result") {
+        // Parallel batches log call, call, …, result, result, so the result is
+        // paired with its own call by toolCallId. Events without an id (or with
+        // an id that no logged call carried) fall back to the previous pairing.
+        const id = ev.payload.toolCallId;
+        const call = (typeof id === "string" ? callsById.get(id) : undefined) ?? lastCall;
+        if (!call) continue;
         const result = ev.payload.result;
         const ok = result && typeof result === "object" && (result as { ok?: unknown }).ok;
         const isError = ok === false;
-        gate.observePost(lastCall.tool, lastCall.args, isError);
+        gate.observePost(call.tool, call.args, isError);
         continue;
       }
       if (ev.kind === "system_note" && ev.payload.type === "circuit_note") {

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "bun:test";
 import { isLoopExempt, LoopGate, CIRCUIT_LOOP_PREFIX, renderCircuitNotes } from "../src/circuit/loop-gate.js";
 
+type ReplayEvent = { kind: string; payload: Record<string, unknown> };
+
 describe("isLoopExempt", () => {
   it("exempts reads and tests", () => {
     expect(isLoopExempt("read_file", { path: "a.ts" })).toBe(true);
@@ -149,6 +151,118 @@ describe("LoopGate", () => {
     expect(gate.observePre("edit_file", { path, oldText: "c", newText: "d" })?.action).toBe(
       "block",
     );
+  });
+
+  it("pairs parallel batch results with their own call by toolCallId", () => {
+    const pathA = "src/a.ts";
+    const pathB = "src/b.ts";
+    const batch = (oldTextA: string, oldTextB: string, n: number): ReplayEvent[] => [
+      {
+        kind: "tool_call",
+        payload: {
+          toolCallId: `call-a${n}`,
+          tool: "edit_file",
+          args: { path: pathA, oldText: oldTextA, newText: "x" },
+        },
+      },
+      {
+        kind: "tool_call",
+        payload: {
+          toolCallId: `call-b${n}`,
+          tool: "edit_file",
+          args: { path: pathB, oldText: oldTextB, newText: "x" },
+        },
+      },
+      {
+        kind: "tool_result",
+        payload: { toolCallId: `call-a${n}`, tool: "edit_file", result: { ok: false } },
+      },
+      {
+        kind: "tool_result",
+        payload: { toolCallId: `call-b${n}`, tool: "edit_file", result: { ok: true } },
+      },
+    ];
+    const events = [...batch("a1", "b1", 1), ...batch("a2", "b2", 2)];
+    const gate = LoopGate.fromEvents(events, { threshold: 3 });
+    expect(
+      gate.observePre("edit_file", { path: pathA, oldText: "a3", newText: "x" })?.action,
+    ).toBe("block");
+    expect(
+      gate.observePre("edit_file", { path: pathB, oldText: "b3", newText: "x" }),
+    ).toBeUndefined();
+  });
+
+  it("falls back to the preceding call when a result has no toolCallId", () => {
+    const path = "src/circuit/loop-gate.ts";
+    const events: ReplayEvent[] = [
+      {
+        kind: "tool_call",
+        payload: {
+          toolCallId: "call-1",
+          tool: "edit_file",
+          args: { path, oldText: "a", newText: "b" },
+        },
+      },
+      { kind: "tool_result", payload: { tool: "edit_file", result: { ok: false } } },
+      {
+        kind: "tool_call",
+        payload: {
+          toolCallId: "call-2",
+          tool: "edit_file",
+          args: { path, oldText: "b", newText: "c" },
+        },
+      },
+      { kind: "tool_result", payload: { tool: "edit_file", result: { ok: false } } },
+    ];
+    const gate = LoopGate.fromEvents(events, { threshold: 3 });
+    expect(gate.observePre("edit_file", { path, oldText: "c", newText: "d" })?.action).toBe(
+      "block",
+    );
+  });
+
+  it("resets the error streak on a success with different args on the same path", () => {
+    const path = "src/circuit/loop-gate.ts";
+    const events: ReplayEvent[] = [
+      {
+        kind: "tool_call",
+        payload: {
+          toolCallId: "call-1",
+          tool: "edit_file",
+          args: { path, oldText: "a", newText: "b" },
+        },
+      },
+      {
+        kind: "tool_result",
+        payload: { toolCallId: "call-1", tool: "edit_file", result: { ok: false } },
+      },
+      {
+        kind: "tool_call",
+        payload: {
+          toolCallId: "call-2",
+          tool: "edit_file",
+          args: { path, oldText: "zzz", newText: "b" },
+        },
+      },
+      {
+        kind: "tool_result",
+        payload: { toolCallId: "call-2", tool: "edit_file", result: { ok: true } },
+      },
+      {
+        kind: "tool_call",
+        payload: {
+          toolCallId: "call-3",
+          tool: "edit_file",
+          args: { path, oldText: "b", newText: "c" },
+        },
+      },
+      {
+        kind: "tool_result",
+        payload: { toolCallId: "call-3", tool: "edit_file", result: { ok: false } },
+      },
+    ];
+    const gate = LoopGate.fromEvents(events, { threshold: 3 });
+    expect(gate.observePre("edit_file", { path, oldText: "c", newText: "d" })).toBeUndefined();
+    expect(gate.notes()).toHaveLength(0);
   });
 
   it("never counts or resets on exempt calls", () => {
