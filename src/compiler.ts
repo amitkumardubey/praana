@@ -339,6 +339,12 @@ export interface FileReadIndexEntry {
  * Build a compact "Files Read This Session" section for the compiled prompt.
  * The index helps the agent discover already-read files and use retrieve_artifact(id)
  * instead of re-calling read_file. Issue #561.
+ *
+ * `reads` must be ordered latest read first (as `listFileReads` returns it). The
+ * order is kept as given: the turn number is the store turn of the artifact, which
+ * is not the read recency once an older artifact is reused (content A -> B -> A).
+ * One entry is kept per path, the first (latest) one, so a superseded version of a
+ * path never appears or takes a slot under the cap.
  */
 export function buildFilesReadIndexSection(
   reads: FileReadIndexEntry[],
@@ -348,7 +354,12 @@ export function buildFilesReadIndexSection(
   if (reads.length === 0) {
     return "";
   }
-  const sorted = [...reads].sort((a, b) => b.createdTurn - a.createdTurn);
+  const seen = new Set<string>();
+  const sorted = reads.filter((r) => {
+    if (seen.has(r.absPath)) return false;
+    seen.add(r.absPath);
+    return true;
+  });
   const shown = sorted.slice(0, maxEntries);
   const lines = [
     "## Files Read This Session",

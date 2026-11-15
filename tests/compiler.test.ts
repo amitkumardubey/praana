@@ -482,12 +482,12 @@ describe('Compiler', () => {
       expect(section).toContain('- /outside/config.json (turn 5, `art_ghi789`)');
     });
 
-    it('sorts reads by created turn descending', () => {
+    it('keeps the given latest-read-first order', () => {
       const section = buildFilesReadIndexSection(
         [
-          { absPath: '/proj/a.ts', artifactId: 'art_a', createdTurn: 1 },
           { absPath: '/proj/b.ts', artifactId: 'art_b', createdTurn: 5 },
           { absPath: '/proj/c.ts', artifactId: 'art_c', createdTurn: 3 },
+          { absPath: '/proj/a.ts', artifactId: 'art_a', createdTurn: 1 },
         ],
         '/proj',
       );
@@ -499,6 +499,34 @@ describe('Compiler', () => {
       expect(cIndex).toBeLessThan(aIndex);
     });
 
+    it('keeps one entry per path: the latest read, even when its store turn is older', () => {
+      const section = buildFilesReadIndexSection(
+        [
+          { absPath: '/proj/foo.txt', artifactId: 'art_a', createdTurn: 1 },
+          { absPath: '/proj/foo.txt', artifactId: 'art_b', createdTurn: 2 },
+        ],
+        '/proj',
+      );
+      expect(section).toContain('- foo.txt (turn 1, `art_a`)');
+      expect(section).not.toContain('art_b');
+    });
+
+    it('does not let a superseded read take a slot under the cap', () => {
+      const reads = [
+        { absPath: '/proj/foo.txt', artifactId: 'art_a', createdTurn: 1 },
+        ...Array.from({ length: 24 }, (_, i) => ({
+          absPath: `/proj/f${i}.ts`,
+          artifactId: `art_f${i}`,
+          createdTurn: 10 + i,
+        })),
+        { absPath: '/proj/foo.txt', artifactId: 'art_b', createdTurn: 2 },
+      ];
+      const section = buildFilesReadIndexSection(reads, '/proj');
+      expect(section).toContain('art_a');
+      expect(section).not.toContain('art_b');
+      expect(section).not.toContain('more read');
+    });
+
     it('caps entries and reports the overflow', () => {
       const reads = Array.from({ length: 30 }, (_, i) => ({
         absPath: `/proj/file${i.toString().padStart(2, '0')}.ts`,
@@ -506,7 +534,7 @@ describe('Compiler', () => {
         createdTurn: i + 1,
       }));
 
-      const section = buildFilesReadIndexSection(reads, '/proj');
+      const section = buildFilesReadIndexSection(reads.reverse(), '/proj');
       const lines = section.split('\n').filter((l) => l.startsWith('- '));
       expect(lines.length).toBe(25);
       expect(section).toContain('… and 5 more reads this session.');
