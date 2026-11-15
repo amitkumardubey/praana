@@ -5,6 +5,8 @@
 import { redactUrlsInText } from "./url-query.js";
 
 const MAX_DEPTH = 8;
+/** Upper bound on the text the depth-limit fallback will scan in one go. */
+const MAX_SERIALIZED_CHARS = 262_144;
 const PLACEHOLDER = (kind: string) => `[REDACTED:${kind}]`;
 
 const DETECTORS: Array<{ kind: string; re: RegExp }> = [
@@ -57,10 +59,35 @@ function typeName(value: unknown): string {
   return typeof name === "string" && name ? name : "object";
 }
 
+/**
+ * Fail closed at the depth limit in non-strict mode: serialize the subtree once
+ * and redact the resulting text, so nothing below the limit survives verbatim.
+ * Serialization is itself a place to fail (cycles, BigInt, throwing getters), so
+ * every branch that cannot produce redacted text of bounded size yields a
+ * placeholder instead. Nothing below the limit is walked again, which keeps the
+ * cost of a pathological subtree bounded by one `JSON.stringify`.
+ */
+function redactAtDepthLimit(value: unknown): unknown {
+  if (typeof value === "string") return redactString(value);
+  // Primitives (and functions, which non-strict mode never walks at any depth)
+  // cannot be traversed further below the limit.
+  if (value === null || typeof value !== "object") return value;
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(value);
+  } catch {
+    return PLACEHOLDER("depth-limit");
+  }
+  if (typeof serialized !== "string" || serialized.length > MAX_SERIALIZED_CHARS) {
+    return PLACEHOLDER("depth-limit");
+  }
+  return redactString(serialized);
+}
+
 function walk(value: unknown, depth: number, strict = false): unknown {
   if (depth >= MAX_DEPTH) {
     if (strict) throw new Error("Secret redaction depth limit exceeded");
-    return value;
+    return redactAtDepthLimit(value);
   }
   if (typeof value === "string") return redactString(value);
   if (Array.isArray(value)) {
@@ -83,6 +110,8 @@ function walk(value: unknown, depth: number, strict = false): unknown {
     }
     // Fails closed: anything else (class instances, Map, Set, Date, typed arrays) is
     // unreadable to this walk, so strict mode refuses it instead of passing it through.
+    // Known limitation: non-strict mode still returns such values untouched below the
+    // depth limit, so a secret held inside a Map/Set/class instance is not redacted.
     if (strict) throw new TypeError(`Secret redaction cannot walk a ${typeName(value)}`);
     return value;
   }
@@ -97,6 +126,7 @@ export function redactSecrets(value: unknown): unknown {
   try {
     return walk(value, 0);
   } catch {
-    return value;
+    // Fail closed: a value this walk could not finish must never be logged as-is.
+    return PLACEHOLDER("redaction-error");
   }
 }
