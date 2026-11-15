@@ -50,6 +50,7 @@ import { estimateTokens as estimateDisplayTokens } from "./token-estimate.js";
 import { redactSecrets } from "./redact/secrets.js";
 import { CanonicalWriter } from "./canonical-transcript.js";
 import { checkCircuitBudget } from "./circuit/budget.js";
+import { toolResultIsError } from "./tool-result-error.js";
 import {
   createSessionLogger,
   extractLlmErrorMessage,
@@ -1743,6 +1744,7 @@ export async function runTurn(
                 isError = true;
                 result = { ok: false, error: err?.message ?? "Tool execution failed" };
               }
+              if (!isError) isError = toolResultIsError(tc.toolName, result);
               const post = await session.hooks.runPostToolCall({
                 toolName: tc.toolName,
                 args: pre.args,
