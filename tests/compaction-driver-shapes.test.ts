@@ -176,19 +176,21 @@ for (const { name, provider, driver, key } of drivers) {
           expect(summaryWire.body).not.toHaveProperty("temperature");
         } else expect(summaryWire.body.temperature).toBe(0.2);
       } else if (provider === "google") {
-        // Wire observation, not provider acceptance: parallel responses are split
-        // across two Contents, rather than two parts in the next response turn.
-        expect(summaryItems.slice(-3, -1)).toEqual([
-          { role: "user", parts: [{ functionResponse: { name: "read_a", response: { output: resultA, isError: false } } }] },
-          { role: "user", parts: [{ functionResponse: { name: "read_b", response: { output: resultB, isError: true } } }] },
+        // Parallel responses share one Content, in call order.
+        expect(summaryItems.slice(-2, -1)).toEqual([
+          { role: "user", parts: [
+            { functionResponse: { name: "read_a", response: { output: resultA, isError: false } } },
+            { functionResponse: { name: "read_b", response: { output: resultB, isError: true } } },
+          ] },
         ]);
         expect(summaryWire.body.generationConfig).toEqual({ temperature: 0.2, maxOutputTokens: 16384 });
       } else if (provider === "amazon-bedrock") {
-        // Wire observation: Converse emits one toolResult per user message, not
-        // all parallel results in a single next-message content array.
-        expect(summaryItems.slice(-3, -1)).toEqual([
-          { role: "user", content: [{ toolResult: { toolUseId: "call-a", content: [{ text: resultA }], status: "success" } }] },
-          { role: "user", content: [{ toolResult: { toolUseId: "call-b", content: [{ text: resultB }], status: "error" } }] },
+        // All parallel results of one assistant turn share one user message.
+        expect(summaryItems.slice(-2, -1)).toEqual([
+          { role: "user", content: [
+            { toolResult: { toolUseId: "call-a", content: [{ text: resultA }], status: "success" } },
+            { toolResult: { toolUseId: "call-b", content: [{ text: resultB }], status: "error" } },
+          ] },
         ]);
         expect(summaryWire.body.inferenceConfig).toEqual({ temperature: 0.2, maxTokens: 16384 });
       } else if (provider === "responses") {

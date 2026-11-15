@@ -239,8 +239,12 @@ export class GoogleDriver implements LlmDriver {
     }
 
     const contents: Array<Record<string, unknown>> = [];
+    // Gemini expects as many functionResponse parts in the next turn as the model
+    // turn had functionCall parts, so consecutive tool results share one content.
+    let openToolResults: Array<Record<string, unknown>> | null = null;
 
     for (const msg of messages) {
+      if (msg.role !== "tool_result") openToolResults = null;
       if (msg.role === "system") {
         if (!systemInstruction) systemInstruction = { parts: [] };
         systemInstruction.parts.push({ text: msg.content });
@@ -269,17 +273,18 @@ export class GoogleDriver implements LlmDriver {
         }
         contents.push({ role: "model", parts: parts.length > 0 ? parts : [{ text: "" }] });
       } else if (msg.role === "tool_result") {
-        contents.push({
-          role: "user",
-          parts: [
-            {
-              functionResponse: {
-                name: msg.toolName,
-                response: { output: msg.result, isError: msg.isError },
-              },
-            },
-          ],
-        });
+        const part = {
+          functionResponse: {
+            name: msg.toolName,
+            response: { output: msg.result, isError: msg.isError },
+          },
+        };
+        if (openToolResults) {
+          openToolResults.push(part);
+        } else {
+          openToolResults = [part];
+          contents.push({ role: "user", parts: openToolResults });
+        }
       }
     }
 
