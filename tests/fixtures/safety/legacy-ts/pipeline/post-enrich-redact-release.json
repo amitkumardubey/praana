@@ -33,19 +33,13 @@
     "post": {
       "result": {
         "ok": false,
-        "error": "edit failed while writing [REDACTED:aws-access-key] to src/main.ts",
-        "suggestions": [
-          "/workspace/praana/src/main.ts"
-        ]
+        "error": "edit failed while writing [REDACTED:aws-access-key] to src/main.ts"
       },
       "isError": true
     }
   },
   "result": {
     "ok": false,
-    "error": "edit failed while writing [REDACTED:aws-access-key] to src/main.ts",
-    "suggestions": [
-      "/workspace/praana/src/main.ts"
-    ]
+    "error": "edit failed while writing [REDACTED:aws-access-key] to src/main.ts"
   }
 }

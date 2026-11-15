@@ -165,6 +165,9 @@ export function createValidateHandlers(opts: ValidateHookOptions): {
     const rel = pathFromArgs(ctx.args);
     if (!rel) return;
     const abs = resolvePath(opts.cwd, rel);
+    // Suggestions only help when the path is missing. A failure on an existing
+    // file (declined edit, text not found) must not point the model elsewhere.
+    if (pathExists(abs)) return;
 
     let suggestions: string[] | undefined;
     try {
