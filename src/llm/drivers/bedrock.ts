@@ -287,8 +287,12 @@ export class BedrockDriver implements LlmDriver {
     }
 
     const formatted: Array<Record<string, unknown>> = [];
+    // Converse needs every toolUse of an assistant turn answered in the single
+    // next user message, so consecutive tool results share one message.
+    let openToolResults: Array<Record<string, unknown>> | null = null;
 
     for (const msg of messages) {
+      if (msg.role !== "tool_result") openToolResults = null;
       if (msg.role === "system") {
         if (!system) system = [];
         system.push({ text: msg.content });
@@ -318,18 +322,19 @@ export class BedrockDriver implements LlmDriver {
         }
         formatted.push({ role: "assistant", content: content.length > 0 ? content : [{ text: "" }] });
       } else if (msg.role === "tool_result") {
-        formatted.push({
-          role: "user",
-          content: [
-            {
-              toolResult: {
-                toolUseId: msg.toolCallId,
-                content: [{ text: msg.result }],
-                status: msg.isError ? "error" : "success",
-              },
-            },
-          ],
-        });
+        const block = {
+          toolResult: {
+            toolUseId: msg.toolCallId,
+            content: [{ text: msg.result }],
+            status: msg.isError ? "error" : "success",
+          },
+        };
+        if (openToolResults) {
+          openToolResults.push(block);
+        } else {
+          openToolResults = [block];
+          formatted.push({ role: "user", content: openToolResults });
+        }
       }
     }
 
