@@ -10,6 +10,7 @@ import {
   findFileReadArtifactByCommand,
   getArtifactById,
   insertArtifact,
+  markArtifactRead,
   insertDistillerStat,
   listHighValueArtifacts,
   listSessionArtifacts,
@@ -29,6 +30,16 @@ import type {
   IngestToolResultOutput,
   RetrieveArtifactOptions,
 } from "./types.js";
+
+/** Oldest read first: read_order, then created_turn, then id (legacy rows have read_order 0). */
+function sortByReadOrder(arts: ContextArtifact[]): ContextArtifact[] {
+  return [...arts].sort(
+    (a, b) =>
+      (a.readOrder ?? 0) - (b.readOrder ?? 0) ||
+      a.createdTurn - b.createdTurn ||
+      (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
+  );
+}
 
 function artifactIdFromHash(sessionId: string, contentHash: string): string {
   // Bind the id to the session so identical content read in different sessions
@@ -108,7 +119,9 @@ export class ArtifactStore {
   /** Rebuild abs-path+range → artifact id map from persisted session artifacts (resume). */
   private rebuildFileReadIndex(): void {
     this.fileReadIndex.clear();
-    for (const art of listSessionArtifacts(this.db, this.sessionId)) {
+    // Walk in read order so the latest read of each request wins; a reused older
+    // artifact (content A -> B -> A) is the latest read although it was created first.
+    for (const art of sortByReadOrder(listSessionArtifacts(this.db, this.sessionId))) {
       if (art.sourceTool !== "read_file" || !art.command) continue;
       // Use the stored request key if available (includes unbounded sentinel),
       // otherwise fall back to computing from source line range.
@@ -234,6 +247,7 @@ export class ArtifactStore {
         const existing = getArtifactById(this.db, existingId);
         if (existing && existing.sha256 === hash) {
           touchArtifactAccess(this.db, existing.id, input.createdTurn);
+          markArtifactRead(this.db, this.sessionId, existing.id);
           return {
             promptText: buildArtifactCard(
               existing.id,
@@ -248,8 +262,36 @@ export class ArtifactStore {
       }
     }
 
+    // The id of a read_file artifact is derived from (session, content hash, request),
+    // so a request whose content returns to an earlier version (A -> B -> A) maps to a
+    // row that already exists. The request-key cache above only remembers the latest
+    // artifact per request, so look the row up by id and reuse it instead of inserting.
+    if (isReadFile) {
+      const reqStart = input.requestStart ?? sourceLineStart ?? 1;
+      const reqEnd = input.requestUnbounded ? 0 : (input.requestEnd ?? sourceLineEnd ?? sourceLineStart!);
+      const candidateId = input.command
+        ? this.readFileArtifactId(hash, input.command, reqStart, reqEnd, input.requestUnbounded ?? false)
+        : artifactIdFromHash(this.sessionId, hash);
+      const existing = getArtifactById(this.db, candidateId);
+      if (existing && existing.sessionId === this.sessionId && existing.sha256 === hash) {
+        touchArtifactAccess(this.db, existing.id, input.createdTurn);
+        markArtifactRead(this.db, this.sessionId, existing.id);
+        if (input.command) this.fileReadIndex.set(this.requestKey(input.command, reqStart, reqEnd), existing.id);
+        return {
+          promptText: buildArtifactCard(
+            existing.id,
+            existing.sourceTool,
+            existing.command,
+            existing.rawTokens,
+          ),
+          artifactId: existing.id,
+          inlined: false,
+        };
+      }
+    }
+
     // For non-read_file tools, deduplicate by content hash (and store under path key).
-    // read_file uses range-keyed storage with no content dedup (provenance matters).
+    // read_file reuses an artifact only for the same request and content (above).
     const dedupKey = isReadFile ? null : this.fileReadKey(input.sourceTool, input.command);
 
     const intensity = this.distillers.selectIntensity(
@@ -447,15 +489,16 @@ export class ArtifactStore {
 
   /** Enumerate read_file artifacts for this session, most recent first. */
   listFileReads(): { absPath: string; artifactId: string; createdTurn: number }[] {
-    const reads = listSessionArtifacts(this.db, this.sessionId)
+    // Latest read first. Order by read sequence, not created_turn: a reused older
+    // artifact (content A -> B -> A) is the latest read although it was created first.
+    return sortByReadOrder(listSessionArtifacts(this.db, this.sessionId))
       .filter((art) => art.sourceTool === "read_file" && art.command)
+      .reverse()
       .map((art) => ({
         absPath: art.command!,
         artifactId: art.id,
         createdTurn: art.createdTurn,
       }));
-    reads.sort((a, b) => b.createdTurn - a.createdTurn);
-    return reads;
   }
 
   /** Look up a prior read_file artifact by absolute path (session-scoped). */

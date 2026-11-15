@@ -45,6 +45,8 @@ export interface ContextArtifact {
   requestKey?: string;
   /** Whether the original request was unbounded (read to EOF). */
   requestUnbounded?: boolean;
+  /** Per-session sequence of read_file ingests: the highest value is the latest read. 0 for rows from before the column existed. */
+  readOrder?: number;
   /** Token size of the prompt representation (artifact card) for this artifact. */
   promptTokens: number;
   /** Why the artifact is retained: "session-source" (lossless) or "ttl" (summarizable). */
