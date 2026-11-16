@@ -42,6 +42,6 @@ test("real Vertex HTTP 404 retains Google's message plus one location hint, scop
   expect(vertex404).toContain("model or location is not available to this project");
   expect(vertex404.match(/VERTEX_REGION/g)).toHaveLength(1);
   expect(vertex404).toContain("global");
-  expect(vertex404).toContain("Gemini 3.x");
+  expect(vertex404).toContain("Gemini 3 and later models need global, us or eu");
   expect(requests).toBe(3);
 });
