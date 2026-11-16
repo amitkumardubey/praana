@@ -369,6 +369,32 @@ it("keeps the old store and flag when an incognito toggle fails to rebuild", asy
   }
 });
 
+it("updates the incognito flag when memory is disabled from config", async () => {
+  config.memory.enabled = false;
+  const session = await start();
+  expect(session.memoryEnabled).toBe(false);
+  await executeSlashCommand("/incognito on", session, slashHandlers);
+  expect(session.isIncognito()).toBe(true);
+  await executeSlashCommand("/incognito off", session, slashHandlers);
+  expect(session.isIncognito()).toBe(false);
+});
+
+it("updates the incognito flag after a failed memory init", async () => {
+  const scopes = [join(home, ".praana", "memory"), join(home, ".praana", "projects")];
+  for (const dir of scopes) mkdirSync(dir, { recursive: true });
+  for (const dir of scopes) chmodSync(dir, 0);
+  try {
+    const session = await start();
+    expect(session.memoryEnabled).toBe(false);
+    await executeSlashCommand("/incognito on", session, slashHandlers);
+    expect(session.isIncognito()).toBe(true);
+    await executeSlashCommand("/incognito off", session, slashHandlers);
+    expect(session.isIncognito()).toBe(false);
+  } finally {
+    for (const dir of scopes) chmodSync(dir, 0o700);
+  }
+});
+
 const RECALL_GUIDANCE = "recall searches cross-session file memories, not the transcript.";
 const CLASSIC_RECALL = "Use recall with query or name to read dated cross-session file memories.";
 const INDEX_RECALL = 'Use recall({ query: "..." }) to search file memories';

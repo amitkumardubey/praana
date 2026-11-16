@@ -902,10 +902,14 @@ export class Session {
   /** Toggle write access atomically: build the replacement store first and only
    * then swap it with the flag. On a failed rebuild the old store and flag stay
    * in place and an error string is returned (no exception is thrown).
-   * The index is a cache-stable prefix: toggling write access never rebuilds it,
-   * and an init failure (memoryEnabled=false) keeps toggling inert. */
+   * The index is a cache-stable prefix: toggling write access never rebuilds it.
+   * When memory is disabled (or was disabled by an init failure) there is no
+   * store to rebuild, so the flag is updated directly and null returned. */
   async setIncognito(enabled: boolean): Promise<string | null> {
-    if (!this.memoryEnabled) return null;
+    if (!this.memoryEnabled) {
+      this.incognito = enabled;
+      return null;
+    }
     let nextStore: FileMemoryStore;
     try {
       nextStore = this.createFileMemory(enabled);
