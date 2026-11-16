@@ -250,13 +250,21 @@
   "classic:forget_memory": {
     "additionalProperties": false,
     "properties": {
-      "id": {
-        "description": "Memory entry ID to retract",
+      "name": {
+        "description": "A plain lowercase slug of at most 64 characters: [a-z0-9] first, then [a-z0-9-]. The pattern is the whole name rule; reserved names are refused by the store with the single message \"Invalid memory name\" (memory, con, prn, aux, nul, com1-com9, lpt1-lpt9)",
+        "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+        "type": "string"
+      },
+      "scope": {
+        "enum": [
+          "global",
+          "project"
+        ],
         "type": "string"
       }
     },
     "required": [
-      "id"
+      "name"
     ],
     "type": "object"
   },
@@ -590,70 +598,61 @@
   "classic:recall": {
     "additionalProperties": false,
     "properties": {
-      "kinds": {
-        "description": "Filter by kinds (fact, preference, decision, pattern, mistake, constraint)",
-        "items": {
-          "type": "string"
-        },
-        "type": "array"
-      },
-      "mode": {
-        "description": "Search mode",
-        "enum": [
-          "standard",
-          "causal_chain"
-        ],
+      "name": {
+        "description": "A plain lowercase slug of at most 64 characters: [a-z0-9] first, then [a-z0-9-]. The pattern is the whole name rule; reserved names are refused by the store with the single message \"Invalid memory name\" (memory, con, prn, aux, nul, com1-com9, lpt1-lpt9)",
+        "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
         "type": "string"
       },
       "query": {
-        "description": "Search query",
+        "type": "string"
+      },
+      "scope": {
+        "enum": [
+          "global",
+          "project"
+        ],
         "type": "string"
       }
     },
-    "required": [
-      "query"
-    ],
     "type": "object"
   },
   "classic:remember": {
     "additionalProperties": false,
     "properties": {
-      "certainty": {
-        "description": "How certain you are",
-        "enum": [
-          "high",
-          "medium",
-          "low"
-        ],
+      "body": {
         "type": "string"
       },
-      "content": {
-        "description": "What to remember",
+      "description": {
         "type": "string"
       },
-      "kind": {
-        "description": "Type of knowledge",
-        "enum": [
-          "preference",
-          "context_fact",
-          "decision",
-          "mistake",
-          "pattern",
-          "fact",
-          "constraint"
-        ],
+      "name": {
+        "description": "A plain lowercase slug of at most 64 characters: [a-z0-9] first, then [a-z0-9-]. The pattern is the whole name rule; reserved names are refused by the store with the single message \"Invalid memory name\" (memory, con, prn, aux, nul, com1-com9, lpt1-lpt9)",
+        "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
         "type": "string"
       },
       "scope": {
-        "description": "Scope labels to isolate this memory (e.g. ['context:my-project']). Defaults to automatic scopes.",
-        "items": {
-          "type": "string"
-        },
-        "type": "array"
+        "enum": [
+          "global",
+          "project"
+        ],
+        "type": "string"
+      },
+      "type": {
+        "enum": [
+          "user",
+          "feedback",
+          "project",
+          "reference"
+        ],
+        "type": "string"
       }
     },
     "required": [
-      "content"
+      "scope",
+      "type",
+      "name",
+      "description",
+      "body"
     ],
     "type": "object"
   },
@@ -1238,13 +1237,21 @@
   "engine:forget_memory": {
     "additionalProperties": false,
     "properties": {
-      "id": {
-        "description": "Memory entry ID to retract",
+      "name": {
+        "description": "A plain lowercase slug of at most 64 characters: [a-z0-9] first, then [a-z0-9-]. The pattern is the whole name rule; reserved names are refused by the store with the single message \"Invalid memory name\" (memory, con, prn, aux, nul, com1-com9, lpt1-lpt9)",
+        "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
+        "type": "string"
+      },
+      "scope": {
+        "enum": [
+          "global",
+          "project"
+        ],
         "type": "string"
       }
     },
     "required": [
-      "id"
+      "name"
     ],
     "type": "object"
   },
@@ -1609,70 +1616,61 @@
   "engine:recall": {
     "additionalProperties": false,
     "properties": {
-      "kinds": {
-        "description": "Filter by kinds (fact, preference, decision, pattern, mistake, constraint)",
-        "items": {
-          "type": "string"
-        },
-        "type": "array"
-      },
-      "mode": {
-        "description": "Search mode",
-        "enum": [
-          "standard",
-          "causal_chain"
-        ],
+      "name": {
+        "description": "A plain lowercase slug of at most 64 characters: [a-z0-9] first, then [a-z0-9-]. The pattern is the whole name rule; reserved names are refused by the store with the single message \"Invalid memory name\" (memory, con, prn, aux, nul, com1-com9, lpt1-lpt9)",
+        "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
         "type": "string"
       },
       "query": {
-        "description": "Search query",
+        "type": "string"
+      },
+      "scope": {
+        "enum": [
+          "global",
+          "project"
+        ],
         "type": "string"
       }
     },
-    "required": [
-      "query"
-    ],
     "type": "object"
   },
   "engine:remember": {
     "additionalProperties": false,
     "properties": {
-      "certainty": {
-        "description": "How certain you are",
-        "enum": [
-          "high",
-          "medium",
-          "low"
-        ],
+      "body": {
         "type": "string"
       },
-      "content": {
-        "description": "What to remember",
+      "description": {
         "type": "string"
       },
-      "kind": {
-        "description": "Type of knowledge",
-        "enum": [
-          "preference",
-          "context_fact",
-          "decision",
-          "mistake",
-          "pattern",
-          "fact",
-          "constraint"
-        ],
+      "name": {
+        "description": "A plain lowercase slug of at most 64 characters: [a-z0-9] first, then [a-z0-9-]. The pattern is the whole name rule; reserved names are refused by the store with the single message \"Invalid memory name\" (memory, con, prn, aux, nul, com1-com9, lpt1-lpt9)",
+        "pattern": "^[a-z0-9][a-z0-9-]{0,63}$",
         "type": "string"
       },
       "scope": {
-        "description": "Scope labels to isolate this memory (e.g. ['context:my-project']). Defaults to automatic scopes.",
-        "items": {
-          "type": "string"
-        },
-        "type": "array"
+        "enum": [
+          "global",
+          "project"
+        ],
+        "type": "string"
+      },
+      "type": {
+        "enum": [
+          "user",
+          "feedback",
+          "project",
+          "reference"
+        ],
+        "type": "string"
       }
     },
     "required": [
-      "content"
+      "scope",
+      "type",
+      "name",
+      "description",
+      "body"
     ],
     "type": "object"
   },

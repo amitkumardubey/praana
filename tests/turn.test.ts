@@ -545,20 +545,20 @@ describe("computeMemoryStats", () => {
     const sg = new StateGraph();
     const eventLog = {
       readLast: mock(() => [
-        { kind: "system_note", payload: { type: "memory_recall", hits: 3 } },
-        { kind: "system_note", payload: { type: "memory_recall", hits: 2 } },
+        { kind: "tool_result", payload: { tool: "recall", result: { ok: true, matches: [{}, {}, {}] } } },
+        { kind: "tool_result", payload: { tool: "recall", result: { ok: true, matches: [{}, {}] } } },
         { kind: "system_note", payload: { type: "other" } },
         { kind: "tool_call", payload: { tool: "recall" } },
       ] as Event[]),
       readLastUncompressed: mock(() => [
-        { kind: "system_note", payload: { type: "memory_recall", hits: 3 } },
-        { kind: "system_note", payload: { type: "memory_recall", hits: 2 } },
+        { kind: "tool_result", payload: { tool: "recall", result: { ok: true, matches: [{}, {}, {}] } } },
+        { kind: "tool_result", payload: { tool: "recall", result: { ok: true, matches: [{}, {}] } } },
         { kind: "system_note", payload: { type: "other" } },
         { kind: "tool_call", payload: { tool: "recall" } },
       ] as Event[]),
       readLastUncompressedAfterResetBoundary: mock(() => [
-        { kind: "system_note", payload: { type: "memory_recall", hits: 3 } },
-        { kind: "system_note", payload: { type: "memory_recall", hits: 2 } },
+        { kind: "tool_result", payload: { tool: "recall", result: { ok: true, matches: [{}, {}, {}] } } },
+        { kind: "tool_result", payload: { tool: "recall", result: { ok: true, matches: [{}, {}] } } },
         { kind: "system_note", payload: { type: "other" } },
         { kind: "tool_call", payload: { tool: "recall" } },
       ] as Event[]),

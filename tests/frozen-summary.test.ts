@@ -693,12 +693,12 @@ test("recent banner is not starved by trailing internal commits", () => {
 
 test("memory statistics retain legitimate recalls outside a commit-filled fifty-event window", () => {
   const { log } = openLog();
-  visible(log, "recall", "system_note", { type: "memory_recall", hits: 7 });
+  visible(log, "recall", "tool_result", { tool: "recall", result: { ok: true, matches: Array.from({ length: 5 }, () => ({ name: "observation" })) } });
   const session = { eventLog: log, getMemoryStats: () => ({ active: 0, total: 0 }), digest: null } as unknown as Session;
   const baseline = computeMemoryStats(session, 0);
   commitNoise(log, 50);
   expect(computeMemoryStats(session, 0)).toEqual(baseline);
-  expect(baseline).toMatchObject({ recallCalls: 1, recallHits: 7 });
+  expect(baseline).toMatchObject({ recallCalls: 1, recallHits: 5 });
 });
 
 test("checkpoint anchors resolve a hidden commit id and resume replays the following action", async () => {

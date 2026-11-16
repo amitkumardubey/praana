@@ -7,6 +7,7 @@ import { normalizeToolParameters } from "../src/turn.js";
 import { createAllTools } from "../src/tools/index.js";
 import type { EventLog } from "../src/event-log.js";
 import type { StateGraph } from "../src/state-graph.js";
+import { createFileMemoryStore } from "../src/file-memory/store.js";
 
 // The tool JSON Schema is what the model sees. A silent change here makes the
 // model call tools wrongly, so these tests pin the exact shape.
@@ -108,7 +109,7 @@ describe("registered tool parameter schemas", () => {
       const tools = createAllTools({
         eventLog: {} as unknown as EventLog,
         stateGraph: {} as unknown as StateGraph,
-        memoryStore: null,
+        fileMemory: createFileMemoryStore({ home: process.env.PRAANA_HOME!, cwd: process.cwd() }),
         memoryEnabled: true,
         incognito: false,
         contextEngine: null,
@@ -132,7 +133,7 @@ describe("registered tool parameter schemas", () => {
     const tools = createAllTools({
       eventLog: {} as unknown as EventLog,
       stateGraph: {} as unknown as StateGraph,
-      memoryStore: null,
+      fileMemory: null,
       memoryEnabled: false,
       incognito: false,
       contextEngine: null,
@@ -171,7 +172,7 @@ describe("tool parameter schema baseline", () => {
       const tools = createAllTools({
         eventLog: {} as unknown as EventLog,
         stateGraph: {} as unknown as StateGraph,
-        memoryStore: null,
+        fileMemory: createFileMemoryStore({ home: process.env.PRAANA_HOME!, cwd: process.cwd() }),
         memoryEnabled: true,
         incognito: false,
         contextEngine: null,

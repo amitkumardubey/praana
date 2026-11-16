@@ -7,6 +7,7 @@ import type { NativeAddonStatus } from "./native/index.js";
 import { buildSharedAgentPolicy } from "./compiler.js";
 import { eventsAfterResetBoundary } from "./event-log.js";
 import { renderCircuitNotes } from "./circuit/loop-gate.js";
+import { MEMORY_POLICY } from "./file-memory/index.js";
 
 export interface ClassicCompileInput {
   cwd: string;
@@ -15,6 +16,7 @@ export interface ClassicCompileInput {
   agentsContext?: string | null;
   projectContext?: string | null;
   skillsCatalog?: string | null;
+  memoryEnabled: boolean;
   memoryDigest?: string | null;
   events: Event[];
   userInput?: string;
@@ -28,16 +30,17 @@ export interface ClassicCompileInput {
 export function buildClassicSystemFrame(
   cwd: string,
   sessionId: string,
-  toolSchemas: string[],
+  _toolSchemas: string[],
   agentsContext?: string | null,
   projectContext?: string | null,
   resumeNote?: string,
-   nativeStatus?: NativeAddonStatus | null,
+  nativeStatus?: NativeAddonStatus | null,
+  memoryEnabled = false,
 ): string {
   const lines = [
     "# System",
     "",
-    `You are PRAANA ${APP_VERSION}, a coding agent with Cognitive Memory — memory that learns.`,
+    `You are PRAANA ${APP_VERSION}, a coding agent with adaptive context and dated file memories.`,
     `Working directory: ${cwd}`,
     `Session ID: ${sessionId}`,
     `Current time: ${new Date().toISOString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`,
@@ -69,6 +72,7 @@ export function buildClassicSystemFrame(
   }
 
   lines.push("", ...buildSharedAgentPolicy());
+  if (memoryEnabled) lines.push("", "## File Memory", "", MEMORY_POLICY);
 
   lines.push(
     "",
@@ -78,7 +82,7 @@ export function buildClassicSystemFrame(
     "",
     "## Memory",
     "",
-    "Use recall() to search Cognitive Memory. Use search_transcript() for canonical session records and search_session_log() for other session events.",
+    "Use recall with query or name to read dated cross-session file memories. Use search_transcript() for canonical session records and search_session_log() for other session events.",
     "Session event log file: ~/.praana/sessions/<session_id>/events.jsonl",
   );
 
@@ -159,6 +163,7 @@ export function compileClassicWithMetrics(
     input.projectContext,
     input.resumeNote,
     input.nativeStatus,
+    input.memoryEnabled,
   );
   sections.push(frame);
 

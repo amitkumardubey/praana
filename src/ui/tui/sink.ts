@@ -206,7 +206,7 @@ export class OpenTuiSink implements TurnUiSink {
   onToolCall(toolCallId: string, toolName: string, args: Record<string, unknown>): void {
     this.pendingToolArgs.set(toolCallId, args);
     if (toolName === "recall") {
-      this.recallQuery = typeof args.query === "string" ? args.query : null;
+      this.recallQuery = typeof args.query === "string" ? args.query : typeof args.name === "string" ? args.name : null;
     }
     this.applyTranscriptEvent({
       type: "tool_call_started",
@@ -455,9 +455,10 @@ export class OpenTuiSink implements TurnUiSink {
   private extractRecallPreview(resultText: string): string | null {
     try {
       const parsed = JSON.parse(resultText) as {
-        entries?: Array<{ content?: string }>;
+        matches?: Array<{ snippet?: string }>;
+        memory?: { body?: string };
       };
-      const first = parsed.entries?.[0]?.content?.trim();
+      const first = (parsed.matches?.[0]?.snippet ?? parsed.memory?.body)?.trim();
       if (!first) return null;
       return first.length > 72 ? `${first.slice(0, 71)}…` : first;
     } catch {

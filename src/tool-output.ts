@@ -57,9 +57,9 @@ export const TOOL_OUTPUT_CLASSIFICATION: Readonly<Record<string, ToolOutputClass
     search_session_log: "exact-bytes", // Returns event_ids and artifact ids copied into follow-up lookups.
 
     // Knowledge & artifact tools (src/tools/knowledge.ts)
-    recall: "exact-bytes", // Returns Cognitive Memory entries with ids needed for forget_memory.
-    remember: "exact-bytes", // Returns created or reinforced memory id for later reference.
-    forget_memory: "exact-bytes", // Small status ack carrying memory id; never bulk output.
+    recall: "exact-bytes", // Returns file memories/matches with names used for follow-up reads or deletion.
+    remember: "exact-bytes", // Returns the saved memory name and scope.
+    forget_memory: "exact-bytes", // Small hard-delete status ack; never bulk output.
     search_turn_events: "exact-bytes", // Returns turn summaries with artifactIds and file paths.
     context_summary: "exact-bytes", // Bounded checkpoint summary of active intent, decisions, and errors.
     retrieve_artifact: "exact-bytes", // Explicit raw artifact retrieval; caller requested exact bytes.

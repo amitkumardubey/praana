@@ -209,7 +209,7 @@ export function formatToolDisplay(
       };
     }
     case "recall": {
-      const query = String(args.query ?? "").slice(0, 60);
+      const query = String(args.query ?? args.name ?? "").slice(0, 60);
       return {
         icon,
         label: query ? `${short}  "${query}"` : short,
@@ -217,7 +217,7 @@ export function formatToolDisplay(
       };
     }
     case "remember": {
-      const content = String(args.content ?? "").slice(0, 50);
+      const content = String(args.name ?? args.content ?? "").slice(0, 50);
       return {
         icon,
         label: content ? `${short}  ${content}` : short,

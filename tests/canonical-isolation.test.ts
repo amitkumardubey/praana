@@ -118,12 +118,12 @@ test("recent banner finds the legitimate message outside a canonical-filled scan
 
 test("memory statistics find legitimate recalls outside a canonical-filled fifty-event window", () => {
   const { log } = setup();
-  legacy(log, "recall", "system_note", { type: "memory_recall", hits: 7 });
+  legacy(log, "recall", "tool_result", { tool: "recall", result: { ok: true, matches: Array.from({ length: 5 }, () => ({ name: "observation" })) } });
   const session = { eventLog: log, getMemoryStats: () => ({ active: 0, total: 0 }), digest: null } as unknown as Session;
   const baseline = computeMemoryStats(session, 0);
   noise(log, 50);
   expect(computeMemoryStats(session, 0)).toEqual(baseline);
-  expect(baseline).toMatchObject({ recallCalls: 1, recallHits: 7 });
+  expect(baseline).toMatchObject({ recallCalls: 1, recallHits: 5 });
 });
 
 test("checkpoint resume resolves a canonical event id without exposing its payload to generic readers", async () => {

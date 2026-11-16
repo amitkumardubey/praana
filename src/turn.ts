@@ -819,7 +819,8 @@ export async function runTurn(
   const recentEvents = session.eventLog.readLastUncompressedAfterResetBoundary(
     session.config.compiler.recent_turns
   );
-  const toolDescs = describeTools({ contextEngineEnabled, classicMode });
+  const memoryEnabled = session.memoryEnabled && !!session.fileMemory;
+  const toolDescs = describeTools({ contextEngineEnabled, classicMode, memoryEnabled });
 
   const skillsSection = buildSkillMetadataCatalog(session.skills, session.skillUsefulness ?? undefined) || null;
   const tokenBudget = session.config.compiler.token_budget;
@@ -836,6 +837,7 @@ export async function runTurn(
 
   const compileInput = {
     stateGraph: session.stateGraph,
+    memoryEnabled,
     memoryDigest: session.digest,
     recentEvents,
     userInput,
@@ -939,6 +941,7 @@ export async function runTurn(
       agentsContext: session.agentsContext,
       projectContext: session.projectContext,
       skillsCatalog: skillsSection,
+      memoryEnabled,
       memoryDigest: session.digest,
       events: session.eventLog.readAllUncompressed(),
       userInput,
@@ -967,6 +970,7 @@ export async function runTurn(
         agentsContext: session.agentsContext,
         projectContext: session.projectContext,
         skillsCatalog: skillsSection,
+        memoryEnabled,
         memoryDigest: session.digest,
         events: session.eventLog.readAllUncompressed(),
         userInput,
@@ -2284,9 +2288,12 @@ export function computeMemoryStats(
   let recallCalls = 0;
   let recallHits = 0;
   for (const ev of recentEvents) {
-    if (ev.kind === "system_note" && (ev.payload.type as string) === "memory_recall") {
+    if (ev.kind === "tool_result" && ev.payload.tool === "recall") {
       recallCalls++;
-      recallHits += (ev.payload.hits as number) ?? 0;
+      const result = ev.payload.result as { ok?: boolean; matches?: unknown[]; memory?: unknown } | undefined;
+      if (result?.ok === true) {
+        recallHits += Array.isArray(result.matches) ? result.matches.length : result.memory ? 1 : 0;
+      }
     }
   }
   return {

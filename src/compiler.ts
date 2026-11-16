@@ -4,9 +4,11 @@ import type { StateGraph } from "./state-graph.js";
 import { getAppLogger } from "./logger.js";
 import { APP_VERSION } from "./app-banner.js";
 import type { NativeAddonStatus } from "./native/index.js";
+import { MEMORY_POLICY } from "./file-memory/index.js";
 
 export interface CompileInput {
   stateGraph: StateGraph;
+  memoryEnabled: boolean;
   memoryDigest: string | null;
   recentEvents: Event[];
   userInput?: string;
@@ -82,6 +84,7 @@ export function compile(input: CompileInput): string {
     false,
     input.resumeNote,
     input.nativeStatus,
+    input.memoryEnabled,
   );
   sections.push(frame);
 
@@ -155,6 +158,7 @@ export function compileWithMetrics(input: CompileInput): { prompt: string; metri
     false,
     input.resumeNote,
     input.nativeStatus,
+    input.memoryEnabled,
   );
   sections.push(frame);
   metrics.systemFrameTokens = estTokens(frame);
@@ -281,7 +285,7 @@ export function buildSharedAgentPolicy(): string[] {
     "",
     "Use search_transcript to search canonical session records, including compacted/stubbed turns, or fetch full/ranged content and neighbors by ID.",
     "It searches the current reset epoch by default; include_previous_resets=true also accesses earlier /clear epochs. Search excludes search_transcript calls/results; artifact-backed results use paired logged output when available.",
-    "Use search_session_log for other session events; recall searches cross-session Cognitive Memory, not the transcript.",
+    "Use search_session_log for other session events; recall searches cross-session file memories, not the transcript.",
     "",
     "## Correction Capture",
     "",
@@ -384,17 +388,18 @@ export function buildFilesReadIndexSection(
 export function buildSystemFrame(
   cwd: string,
   sessionId: string,
-  toolSchemas: string[],
+  _toolSchemas: string[],
   stateSummary?: string,
   agentsContext?: string | null,
   engineMode = false,
   resumeNote?: string,
   nativeStatus?: NativeAddonStatus | null,
+  memoryEnabled = false,
 ): string {
   const lines = [
     "# System",
     "",
-    `You are PRAANA ${APP_VERSION}, a coding agent with Cognitive Memory — memory that learns.`,
+    `You are PRAANA ${APP_VERSION}, a coding agent with adaptive context and dated file memories.`,
     `Working directory: ${cwd}`,
     `Session ID: ${sessionId}`,
     `Current time: ${new Date().toISOString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`,
@@ -427,6 +432,8 @@ export function buildSystemFrame(
 
   lines.push("", ...buildSharedAgentPolicy());
 
+  if (memoryEnabled) lines.push("", "## File Memory", "", MEMORY_POLICY);
+
   if (engineMode) {
     lines.push("", ...buildArtifactFirstReadsPolicy());
   }
@@ -453,7 +460,7 @@ export function buildSystemFrame(
     "",
     "You have working memory with three tiers: active (full content), soft (one-line stub), and hard (minimal anchor).",
     "Periodically call soft_unload on stale notes/tasks and complete_task when work is done to keep your working memory clean.",
-    "To recover earlier content from this session (reviews, findings, tool output), use search_transcript; search_session_log searches other session events. Neither is recall, which searches Cognitive Memory, the cross-session SQLite layer.",
+    "To recover earlier content from this session (reviews, findings, tool output), use search_transcript; search_session_log searches other session events. Neither is recall, which searches cross-session file memories.",
     "After significant analysis, call add_note immediately so key findings survive when recent turns scroll out of the prompt.",
     "Notes must capture semantic findings (what you learned), not activity logs (which files you read).",
     "Good note: \"turn.ts uses piStream() for streaming — streaming IS implemented\". Bad note: \"read turn.ts, session.ts...\".",
