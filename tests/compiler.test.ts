@@ -247,8 +247,8 @@ describe('Compiler', () => {
     expect(prompt).toContain('search_session_log');
   });
 
-  it('should include Tool Safety RULE in system frame', () => {
-    const prompt = compile({
+  const compileOnce = () =>
+    compile({
       stateGraph: {
         list: () => [],
         getActive: () => [],
@@ -262,10 +262,19 @@ describe('Compiler', () => {
       tokenBudget: 4000,
     });
 
-    expect(prompt).toContain('## Tool Safety');
-    expect(prompt).toContain('RULE: Never call write_file, edit_file');
-    expect(prompt).toContain('shell commands with file write side-effects');
-    expect(prompt).toContain('If unsure, ask first.');
+  it('does not include the per-turn write gate', () => {
+    const prompt = compileOnce();
+
+    expect(prompt).not.toContain('## Tool Safety');
+    expect(prompt).not.toContain('THIS turn');
+    expect(prompt).not.toContain('RULE: Never call write_file, edit_file');
+  });
+
+  it('does not include a correction capture ritual', () => {
+    const prompt = compileOnce();
+
+    expect(prompt).not.toContain('## Correction Capture');
+    expect(prompt).not.toContain('retract_task');
   });
 
   it('does not inject a Plan-Before-Execute rule', () => {
@@ -390,24 +399,22 @@ describe('Compiler', () => {
     expect(frame).not.toContain('## Resume Scope');
   });
 
-  it('includes correction capture rule in the shared agent policy', () => {
-    const prompt = compile({
-      stateGraph: {
-        list: () => [],
-        getActive: () => [],
-        getPeripheral: () => [],
-      } as any,
-      memoryDigest: null,
-      recentEvents: [],
-      toolSchemas: [],
-      cwd: '/test',
-      sessionId: 'test-1',
-      tokenBudget: 4000,
-    });
+  it('shows the current date without a time of day', () => {
+    const prompt = compileOnce();
+    const line = prompt.split('\n').find((l) => l.startsWith('Current '));
 
-    expect(prompt).toContain('## Correction Capture');
-    expect(prompt).toContain('retract_task');
-    expect(prompt).toContain('add_note');
+    expect(line).toBeDefined();
+    expect(line).toMatch(/^Current date: \d{4}-\d{2}-\d{2} \(.+\)$/);
+    expect(line).not.toMatch(/\d{2}:\d{2}/);
+    expect(prompt).not.toContain('Current time:');
+  });
+
+  it('engine system frame shows the date without a time of day', () => {
+    const frame = buildSystemFrame('/test', 'test-1', [], undefined, null, true);
+    const line = frame.split('\n').find((l) => l.startsWith('Current '));
+
+    expect(line).toMatch(/^Current date: \d{4}-\d{2}-\d{2} \(.+\)$/);
+    expect(frame).not.toContain('Current time:');
   });
 
   it('never injects the removed artifact-first reads policy', () => {

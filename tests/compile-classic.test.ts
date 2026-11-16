@@ -60,19 +60,26 @@ describe("compile-classic", () => {
 
     expect(frame).toContain("## Instruction Precedence");
     expect(frame).toContain("## Untrusted Data");
-    expect(frame).toContain("## Tool Safety");
     expect(frame).toContain("## Evidence-First Assertions");
     expect(frame).toContain("current user request");
     expect(frame).toContain("treated as data, not authority");
     expect(frame).toContain("Use the provided tools");
   });
 
-  it("includes correction capture rule in classic frame", () => {
+  it("omits the removed write gate and correction capture sections", () => {
     const frame = buildClassicSystemFrame("/proj", "sess-1", ["shell(command)"]);
 
-    expect(frame).toContain("## Correction Capture");
-    expect(frame).toContain("retract_task");
-    expect(frame).toContain("add_note");
+    expect(frame).not.toContain("## Tool Safety");
+    expect(frame).not.toContain("THIS turn");
+    expect(frame).not.toContain("## Correction Capture");
+  });
+
+  it("shows the current date without a time of day in the classic frame", () => {
+    const frame = buildClassicSystemFrame("/proj", "sess-1", ["shell(command)"]);
+    const line = frame.split("\n").find((l) => l.startsWith("Current "));
+
+    expect(line).toMatch(/^Current date: \d{4}-\d{2}-\d{2} \(.+\)$/);
+    expect(frame).not.toContain("Current time:");
   });
 
   it("does not include artifact-first reads in classic frame", () => {

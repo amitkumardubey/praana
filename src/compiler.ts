@@ -275,10 +275,6 @@ export function buildSharedAgentPolicy(recallEnabled = false): string[] {
     "3. If evidence is missing or stale, call search_transcript, search_session_log or re-read the source.",
     "4. Only assert after you have explicit evidence from this repository context.",
     "",
-    "## Tool Safety",
-    "",
-    "RULE: Never call write_file, edit_file, or use shell commands with file write side-effects (e.g. `echo > file`, `sed -i`, `tee`) unless the user's message in THIS turn explicitly requests changes. Describing what you would change does not count. If unsure, ask first.",
-    "",
     "## Tool Use",
     "",
     "Use the provided tools when they are needed to complete the current request. Inspect relevant source before making code claims or changes, and respond concisely.",
@@ -293,10 +289,6 @@ export function buildSharedAgentPolicy(recallEnabled = false): string[] {
     recallEnabled
       ? "Use search_session_log for other session events; recall searches cross-session file memories, not the transcript."
       : "Use search_session_log for other session events.",
-    "",
-    "## Correction Capture",
-    "",
-    "On any user correction of scope, facts, or issue number: call add_note and retract_task (if applicable) in the same turn before any other tool calls. Capturing the correction immediately prevents the stale assumption from persisting into the next turn.",
   ];
 }
 
@@ -377,7 +369,8 @@ export function buildSystemFrame(
   toolSchemas: string[],
   stateSummary?: string,
   agentsContext?: string | null,
-  engineMode = false,
+  /** Retained for call-site compatibility; engine mode adds no frame section. */
+  _engineMode = false,
   resumeNote?: string,
   nativeStatus?: NativeAddonStatus | null,
   memoryEnabled = false,
@@ -389,7 +382,7 @@ export function buildSystemFrame(
     `You are PRAANA ${APP_VERSION}, a coding agent with adaptive context and dated file memories.`,
     `Working directory: ${cwd}`,
     `Session ID: ${sessionId}`,
-    `Current time: ${new Date().toISOString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`,
+    `Current date: ${new Date().toISOString().slice(0, 10)} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`,
   ];
 
   if (agentsContext && agentsContext.trim()) {

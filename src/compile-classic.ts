@@ -46,7 +46,7 @@ export function buildClassicSystemFrame(
     `You are PRAANA ${APP_VERSION}, a coding agent with adaptive context and dated file memories.`,
     `Working directory: ${cwd}`,
     `Session ID: ${sessionId}`,
-    `Current time: ${new Date().toISOString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`,
+    `Current date: ${new Date().toISOString().slice(0, 10)} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`,
   ];
 
   if (agentsContext?.trim()) {
