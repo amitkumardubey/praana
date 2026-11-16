@@ -2,18 +2,12 @@ import { defineTool } from "./tool-def.js";
 import { z } from "zod";
 import { buildArtifactCard } from "../context-engine/summarize.js";
 import { buildPathChurnHint, buildRetrieveChurnHint } from "./read-churn.js";
-import type { MemoryStore } from "../memory/index.js";
 import type { EventLog } from "../event-log.js";
 import type { ContextEngine } from "../context-engine/index.js";
 import type { ScorecardInc } from "../context-engine/telemetry.js";
 
 export interface KnowledgeToolContext {
   eventLog: EventLog;
-  memoryStore: MemoryStore | null;
-  memoryEnabled: boolean;
-  incognito: boolean;
-  /** Default true so the old tool unit tests keep their subjects. Sessions pass false. */
-  includeLegacyMemoryTools?: boolean;
   contextEngine: ContextEngine | null;
   skillScorecard?: ScorecardInc;
   getCurrentTurn: () => number;
@@ -34,7 +28,7 @@ function trackRetrievePathAccess(
 }
 
 export function createKnowledgeTools(ctx: KnowledgeToolContext) {
-  const { eventLog, memoryStore, memoryEnabled, incognito, contextEngine, getCurrentTurn } = ctx;
+  const { eventLog, contextEngine, getCurrentTurn } = ctx;
 
   const searchTurnEvents = contextEngine
     ? {
@@ -234,170 +228,10 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
       }
     : {};
 
-  if (ctx.includeLegacyMemoryTools === false) {
-    return {
-      ...searchTurnEvents,
-      ...contextSummary,
-      ...retrieveArtifact,
-      ...eventLineage,
-    };
-  }
-
   return {
-    recall: defineTool({
-      description:
-        "Search your Cognitive Memory for past learnings, decisions, preferences, or patterns. Use when you need context from previous sessions.",
-      parameters: z.object({
-        query: z.string().describe("Search query"),
-        mode: z
-          .enum(["standard", "causal_chain"])
-          .optional()
-          .describe("Search mode"),
-        kinds: z
-          .array(z.string())
-          .optional()
-          .describe("Filter by kinds (fact, preference, decision, pattern, mistake, constraint)"),
-      }),
-      execute: async ({ query, kinds }) => {
-        if (!memoryEnabled || !memoryStore) {
-          return {
-            ok: false,
-            error: incognito
-              ? "Incognito mode is active — Cognitive Memory is disabled for this session."
-              : "Cognitive Memory is not available.",
-          };
-        }
-
-        ctx.skillScorecard?.inc("recallCalls");
-
-        try {
-          const result = await memoryStore.recall(query, { limit: 10, kinds: kinds as any });
-
-          eventLog.append({
-            kind: "system_note",
-            actor: "kernel",
-            payload: {
-              type: "memory_recall",
-              query,
-              hits: result.entries.length,
-            },
-          });
-
-          if (result.entries.length === 0) {
-            return {
-              ok: true,
-              entries: [],
-              note:
-                result.notice ??
-                "No Cognitive Memory matches. For earlier conversation or tool output, use search_transcript(query) over canonical session records, including compacted/stubbed turns (current reset epoch by default; include_previous_resets=true crosses /clear). Use search_session_log for other session events.",
-            };
-          }
-
-          return {
-            ok: true,
-            entries: result.entries,
-            ...(result.notice ? { note: result.notice } : {}),
-          };
-        } catch (err: any) {
-          const message = err?.message ?? "Recall failed";
-          return {
-            ok: false,
-            error:
-              `${message}. For same-session history, use search_transcript(query) over canonical session records, including compacted/stubbed turns (current reset epoch by default; include_previous_resets=true crosses /clear), or search_session_log for other session events instead of recall.`,
-          };
-        }
-      },
-    }),
-
-    remember: defineTool({
-      description:
-        "Store a fact, preference, decision, mistake, or pattern in your Cognitive Memory for future sessions.",
-      parameters: z.object({
-        content: z.string().describe("What to remember"),
-        kind: z
-          .enum(["preference", "context_fact", "decision", "mistake", "pattern", "fact", "constraint"])
-          .optional()
-          .describe("Type of knowledge"),
-        certainty: z
-          .enum(["high", "medium", "low"])
-          .optional()
-          .describe("How certain you are"),
-        scope: z
-          .array(z.string())
-          .optional()
-          .describe("Scope labels to isolate this memory (e.g. ['context:my-project']). Defaults to automatic scopes."),
-      }),
-      execute: async ({ content, kind, certainty, scope }) => {
-        if (!memoryEnabled || !memoryStore) {
-          return {
-            ok: false,
-            error: incognito
-              ? "Incognito mode is active — Cognitive Memory writes are disabled."
-              : "Cognitive Memory is not available.",
-          };
-        }
-
-        try {
-          // Map legacy kind aliases to our kinds
-          const mappedKind =
-            kind === "context_fact" ? "fact" :
-            (kind as any) ?? "fact";
-
-          const result = await memoryStore.remember(content, {
-            kind: mappedKind as any,
-            certainty: certainty ?? "medium",
-            scope: scope ?? undefined,
-          });
-
-          return {
-            ok: true,
-            id: result.id,
-            ...(result.reinforced ? { reinforced: true } : {}),
-          };
-        } catch (err: any) {
-          return { ok: false, error: err?.message ?? "Remember failed" };
-        }
-      },
-    }),
-
     ...searchTurnEvents,
     ...contextSummary,
     ...retrieveArtifact,
     ...eventLineage,
-
-    forget_memory: defineTool({
-      description: "Retract (tombstone) a Cognitive Memory entry. The memory is excluded from future recall and digest, but retained for audit.",
-      parameters: z.object({
-        id: z.string().describe("Memory entry ID to retract"),
-      }),
-      execute: async ({ id }) => {
-        if (incognito) {
-          return {
-            ok: false,
-            error: "Memory is disabled in incognito mode.",
-          };
-        }
-        if (!memoryEnabled || !memoryStore) {
-          return {
-            ok: false,
-            error: "Cognitive Memory is not available.",
-          };
-        }
-        try {
-          if (!memoryStore.hasEntry(id)) {
-            return { ok: false, error: `Memory ${id} not found` };
-          }
-          memoryStore.retractMemory(id);
-          eventLog.append({
-            kind: "system_note",
-            actor: "kernel",
-            payload: { type: "memory_forget", id },
-          });
-          return { ok: true, id };
-        } catch (err: any) {
-          return { ok: false, error: err?.message ?? "Forget failed" };
-        }
-      },
-    }),
   };
 }

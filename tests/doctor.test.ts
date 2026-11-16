@@ -82,7 +82,6 @@ describe("handleDoctor", () => {
     expect(embedderLine).toBeDefined();
     expect(result.lines.some((l) => l.includes("native:"))).toBe(true);
     expect(result.lines.some((l) => l.includes("search:"))).toBe(true);
-    expect(result.lines.some((l) => l.includes("vectors:"))).toBe(true);
     if (embedderLine!.startsWith("⚠")) {
       expect(embedderLine).toMatch(/keyword-only|weights not downloaded|addon missing|runtime missing/);
     }

@@ -2,7 +2,6 @@ export interface CliArgs {
   sessionId: string | null;
   resumeMode: boolean;
   setupMode: boolean;
-  memoryDedupeMode: boolean;
   providersMode: boolean;
   modelsMode: boolean;
   modelsProvider: string | null;
@@ -28,7 +27,6 @@ export function parseCliArgs(args: string[]): CliArgs {
   let sessionId: string | null = null;
   let resumeMode = false;
   let setupMode = false;
-  let memoryDedupeMode = false;
   let providersMode = false;
   let modelsMode = false;
   let modelsProvider: string | null = null;
@@ -113,11 +111,6 @@ export function parseCliArgs(args: string[]): CliArgs {
       }
       continue;
     }
-    if (args[i] === "memory" && args[i + 1] === "dedupe") {
-      memoryDedupeMode = true;
-      i++;
-      continue;
-    }
     if (args[i] === "run") {
       runMode = true;
       // Consume remaining args as run options / prompt.
@@ -167,7 +160,6 @@ export function parseCliArgs(args: string[]): CliArgs {
     sessionId,
     resumeMode,
     setupMode,
-    memoryDedupeMode,
     providersMode,
     modelsMode,
     modelsProvider,

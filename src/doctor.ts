@@ -7,7 +7,6 @@ import { appHomePath, APP_NAME } from "./app-identity.js";
 import { isModelCached, isTransformersAvailable } from "./memory/transformers-embedder.js";
 import { resolveTransformersModel } from "./memory/transformers-models.js";
 import { loadNative, formatNativeStatus, tryGetNative } from "./native/index.js";
-import { openMemoryDb, upsertEmbedding, searchByVector } from "./memory/db.js";
 import type { PraanaConfig } from "./types.js";
 
 /** Warning lines as printed. Leading whitespace does not hide an indented `⚠`. */
@@ -112,21 +111,6 @@ export async function handleDoctor(
     );
   } else {
     lines.push(`✓ embedder: native ONNX ready (weights cached: ${preset.id})`);
-  }
-
-  // Vectors: BLOB cosine, no SQLite extension
-  try {
-    const { db } = openMemoryDb(":memory:", 2);
-    upsertEmbedding(db, "doctor-probe", new Float32Array([1, 0]));
-    const hits = searchByVector(db, new Float32Array([1, 0]), 1);
-    db.close();
-    if (hits.length === 1 && hits[0]!.entry_id === "doctor-probe") {
-      lines.push("✓ vectors: BLOB cosine kNN (no sqlite-vec)");
-    } else {
-      lines.push("⚠ vectors: BLOB cosine probe returned no hits");
-    }
-  } catch (err) {
-    lines.push(`⚠ vectors: ${((err as Error).message)}`);
   }
 
   const warnings = getConfigWarnings();

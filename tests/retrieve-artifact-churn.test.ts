@@ -51,9 +51,6 @@ describe("retrieve_artifact identical-retry churn (#571)", () => {
     artifactId = ingested.artifactId!;
     tools = createKnowledgeTools({
       eventLog: mockEventLog(),
-      memoryStore: null,
-      memoryEnabled: false,
-      incognito: false,
       contextEngine: engine,
       skillScorecard: scorecard,
       getCurrentTurn: () => 2,

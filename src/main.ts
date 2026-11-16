@@ -14,7 +14,6 @@ import { runInteractiveSetup } from "./interactive-setup.js";
 import { tryAutoSelectProvider } from "./setup/logic.js";
 import { writeProviderConfig } from "./setup/config-writer.js";
 import { ensureCredentialsFileMode } from "./credentials.js";
-import { runMemoryDedupe } from "./memory-dedupe-cli.js";
 import { isFirstRun, markInitialized, APP_NAME } from "./app-identity.js";
 import { formatProviderListForDisplay } from "./provider-registry.js";
 import { handleDoctor } from "./doctor.js";
@@ -118,20 +117,6 @@ export async function main() {
     console.error("Configuration warnings:");
     for (const w of warnings) console.error(`  ⚠ ${w}`);
     console.error("");
-  }
-
-  if (parsed.memoryDedupeMode) {
-    try {
-      await runMemoryDedupe(cwd, config);
-      process.exit(0);
-    } catch (err) {
-      getAppLogger().error("Memory dedupe failed", {
-        code: "MEMORY_DEDUPE_FAILED",
-        cause: err as Error,
-      });
-      console.error((err as Error).message);
-      process.exit(1);
-    }
   }
 
   const isInteractive = isInteractiveTerminal();

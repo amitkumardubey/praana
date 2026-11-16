@@ -1,49 +1,15 @@
 import { defineTool } from "./tool-def.js";
 import { z } from "zod";
 import type { EventLog } from "../event-log.js";
-import type { MemoryStore } from "../memory/index.js";
-import type { MemoryKind } from "../memory/types.js";
 import type { StateGraph } from "../state-graph.js";
 import type { TurnSearchMatch } from "../context-engine/types.js";
 
 export interface MemoryToolContext {
   eventLog: EventLog;
   stateGraph: StateGraph;
-  memoryStore?: MemoryStore | null;
-  memoryEnabled?: boolean;
-  incognito?: boolean;
   searchTurnEvents?: (query: string, limit?: number, currentTurn?: number) => TurnSearchMatch[];
   /** false in classic mode — StateGraph tools are not registered. */
   includeWorkingMemoryTools?: boolean;
-}
-
-export interface CognitiveMirrorResult {
-  memoryId: string;
-  reinforced?: boolean;
-}
-
-/** Write explicit state-tool captures to Cognitive Memory. */
-export async function mirrorToCognitiveMemory(
-  ctx: Pick<MemoryToolContext, "memoryStore" | "memoryEnabled" | "incognito">,
-  content: string,
-  kind: MemoryKind,
-): Promise<CognitiveMirrorResult | undefined> {
-  if (!ctx.memoryEnabled || ctx.incognito || !ctx.memoryStore) {
-    return undefined;
-  }
-
-  try {
-    const result = await ctx.memoryStore.remember(content, {
-      kind,
-      certainty: "high",
-    });
-    return {
-      memoryId: result.id,
-      ...(result.reinforced ? { reinforced: true } : {}),
-    };
-  } catch {
-    return undefined;
-  }
 }
 
 function buildStateToolResult(

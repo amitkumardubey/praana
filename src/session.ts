@@ -36,10 +36,7 @@ import {
 import { DEFAULT_WEB_CONFIG, decideWebHost, normalizeHost } from "./tools/web/policy.js";
 import { SessionNotFoundError } from "./session-errors.js";
 export { SessionNotFoundError } from "./session-errors.js";
-import {
-  isSessionGood,
-  type SessionEvent,
-} from "./memory/index.js";
+import { isSessionGood, type SessionEvent } from "./session-outcome.js";
 import { createEmbedder, resolveEmbeddingBackend } from "./memory/embedder-factory.js";
 import type { Embedder } from "./memory/types.js";
 import { createFileMemoryStore } from "./file-memory/store.js";
@@ -102,18 +99,6 @@ export function visibleCheckpointAfterBoundary(
     return createEmptyCheckpoint();
   }
   return checkpoint;
-}
-
-/**
- * M4 artifact promotion guard: a distilled summary is only promotable to
- * Cognitive Memory when it is non-empty human-readable prose — not a stub
- * (no matching distiller → empty summary) and not a JSON blob.
- * Exported for tests.
- */
-export function isPromotableArtifactSummary(summary: string): boolean {
-  const trimmed = summary.trimStart();
-  if (!trimmed) return false;
-  return !trimmed.startsWith("{") && !trimmed.startsWith("[");
 }
 
 /** Shutdown outcome; deliberate file memory writes need no session-end flush. */

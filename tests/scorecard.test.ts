@@ -10,13 +10,16 @@ import {
 } from "../src/context-engine/telemetry.js";
 import { openContextEngineDb } from "../src/context-engine/db.js";
 import { rmForce } from "./helpers/platform.js";
-import { getMemorySignalAverages } from "../src/memory/db.js";
 
-function memoryAveragesProvider(contextScope?: string) {
+/** Test-local averages provider over a memory.db-shaped `entries` table. */
+function memoryAveragesProvider() {
   return (memoryDbPath: string) => {
     const memDb = new Database(memoryDbPath, { readonly: true });
     try {
-      return getMemorySignalAverages(memDb, contextScope);
+      const row = memDb
+        .query("SELECT AVG(validity) as v, AVG(usefulness) as u FROM entries WHERE retracted IS NOT 1")
+        .get() as { v: number | null; u: number | null } | undefined;
+      return { validityAvg: row?.v ?? 0, usefulnessAvg: row?.u ?? 0 };
     } finally {
       memDb.close();
     }
@@ -459,45 +462,6 @@ describe("Scorecard schema privacy invariant", () => {
 
     db.close();
     rmForce(dbPath);
-  });
-});
-
-describe("getMemorySignalAverages", () => {
-  it("scopes averages to a context scope when provided", () => {
-    const memDbPath = join(mkdtempSync(join(tmpdir(), "praana-mem-scope-")), "memory.db");
-    const memDb = new Database(memDbPath);
-    memDb.exec(`
-      CREATE TABLE IF NOT EXISTS entries (
-        id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL DEFAULT 'fact',
-        content TEXT NOT NULL,
-        validity REAL NOT NULL DEFAULT 0.5,
-        usefulness REAL NOT NULL DEFAULT 0.5,
-        pinned INTEGER NOT NULL DEFAULT 0,
-        retracted INTEGER NOT NULL DEFAULT 0,
-        created_at INTEGER NOT NULL,
-        last_seen_at INTEGER NOT NULL,
-        session_id TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS entry_scopes (
-        entry_id TEXT NOT NULL,
-        scope TEXT NOT NULL,
-        PRIMARY KEY (entry_id, scope)
-      );
-      INSERT INTO entries VALUES ('e1', 'fact', 'project', 0.9, 0.8, 0, 0, 1, 1, 's1');
-      INSERT INTO entries VALUES ('e2', 'fact', 'global', 0.1, 0.1, 0, 0, 1, 1, 's1');
-      INSERT INTO entry_scopes VALUES ('e1', 'context:proj');
-      INSERT INTO entry_scopes VALUES ('e2', 'context:other');
-    `);
-
-    const scoped = getMemorySignalAverages(memDb, "context:proj");
-    expect(scoped.validityAvg).toBeCloseTo(0.9, 1);
-
-    const global = getMemorySignalAverages(memDb);
-    expect(global.validityAvg).toBeCloseTo(0.5, 1);
-
-    memDb.close();
-    rmForce(memDbPath);
   });
 });
 

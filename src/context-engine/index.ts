@@ -456,17 +456,6 @@ export class ContextEngine {
     return listSessionArtifacts(this.store.getDb(), this.store.getSessionId());
   }
 
-  /**
-   * M4 artifact promotion: list this session's high-value artifacts (those
-   * accessed >= minAccessCount times). The actual promotion into Cognitive Memory
-   * is done by the session via MemoryStore.remember, since the ContextEngine
-   * does not depend on MemoryStore (preserves the per-session / Cognitive Memory
-   * boundary).
-   */
-  listHighValueArtifacts(minAccessCount: number): ContextArtifact[] {
-    return this.store.listHighValueArtifacts(minAccessCount);
-  }
-
   // ---------------------------------------------------------------------------
   // Workflow pattern tracking (issue #482)
   // ---------------------------------------------------------------------------

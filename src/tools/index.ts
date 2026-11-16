@@ -91,10 +91,6 @@ export function createAllTools(ctx: ToolRegistryContext) {
 
   const knowledgeTools = createKnowledgeTools({
     eventLog: ctx.eventLog,
-    memoryStore: null,
-    memoryEnabled: false,
-    incognito: ctx.incognito,
-    includeLegacyMemoryTools: false,
     contextEngine: ctx.contextEngine,
     skillScorecard: ctx.scorecard,
     getCurrentTurn: ctx.getCurrentTurn ?? (() => 0),

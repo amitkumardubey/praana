@@ -102,7 +102,6 @@ const baseParsed: CliArgs = {
   showHelp: false,
   force: false,
   initMode: false,
-  memoryDedupeMode: false,
 };
 
 /** Minimal session stub for the tests that assert on what the controller binds. */
