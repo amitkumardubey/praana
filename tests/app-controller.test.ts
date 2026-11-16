@@ -265,16 +265,15 @@ describe("AppController", () => {
     await controller.start();
     const end = controller.session.end as ReturnType<typeof mock>;
     end.mockResolvedValueOnce({
-      memory: "background",
+      memory: "noop",
       turns: 0,
       stateObjects: 0,
       rememberCalls: 0,
       recallUsed: 0,
-      learningsStored: 0,
     });
 
     const status = await controller.shutdown();
-    expect(status.memory).toBe("background");
+    expect(status.memory).toBe("noop");
     expect(end).toHaveBeenCalledWith("clean", []);
   });
 
@@ -293,7 +292,6 @@ describe("AppController", () => {
       stateObjects: 0,
       rememberCalls: 0,
       recallUsed: 0,
-      learningsStored: 0,
     });
     await aborted.shutdown("aborted");
     expect(abortedEnd).toHaveBeenCalledWith("aborted", []);
@@ -312,7 +310,6 @@ describe("AppController", () => {
       stateObjects: 0,
       rememberCalls: 0,
       recallUsed: 0,
-      learningsStored: 0,
     });
     await normal.shutdown();
     expect(normalEnd).toHaveBeenCalledWith("clean", []);
@@ -326,7 +323,7 @@ describe("AppController", () => {
     });
     await controller.start();
 
-    const end = mock(async () => ({ memory: "background" as const }));
+    const end = mock(async () => ({ memory: "noop" as const }));
     const transcript = [{ kind: "user_message" as const }];
     controller.session = {
       ...controller.session,
@@ -415,7 +412,7 @@ describe("AppController", () => {
     controller.session = {
       ...controller.session,
       id: "sess-old",
-      end: mock(async () => ({ memory: "background" as const })),
+      end: mock(async () => ({ memory: "noop" as const })),
       getTranscriptEvents: () => [],
     } as typeof controller.session;
 
@@ -470,16 +467,15 @@ describe("AppController", () => {
     await controller.start();
     const end = controller.session.end as ReturnType<typeof mock>;
     end.mockResolvedValue({
-      memory: "completed",
+      memory: "skipped",
       turns: 0,
       stateObjects: 0,
       rememberCalls: 0,
       recallUsed: 0,
-      learningsStored: 0,
     });
 
     const first = await controller.shutdown();
-    expect(first.memory).toBe("completed");
+    expect(first.memory).toBe("skipped");
     const second = await controller.shutdown();
     expect(second).toEqual({
       memory: "noop",
@@ -487,7 +483,6 @@ describe("AppController", () => {
       stateObjects: 0,
       rememberCalls: 0,
       recallUsed: 0,
-      learningsStored: 0,
     });
     expect(end).toHaveBeenCalledTimes(1);
   });
@@ -543,7 +538,6 @@ describe("AppController", () => {
       stateObjects: 0,
       rememberCalls: 0,
       recallUsed: 0,
-      learningsStored: 0,
     });
   });
 

@@ -282,7 +282,6 @@ export async function main() {
           stateObjects: status.stateObjects,
           rememberCalls: status.rememberCalls,
           recallUsed: status.recallUsed,
-          learningsStored: status.learningsStored,
         })) {
           console.log(line);
         }

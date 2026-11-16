@@ -31,7 +31,6 @@ it("has no session-end memory work", async () => {
   const session = await start();
   const status = await session.end("clean", []);
   expect(status.memory).toBe("noop");
-  expect(status.learningsStored).toBe(0);
   expect(status.turns).toBe(0);
 });
 it("skips memory when fully disabled and ending twice remains safe", async () => {

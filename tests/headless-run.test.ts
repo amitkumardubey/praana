@@ -193,7 +193,6 @@ describe("runHeadless", () => {
       stateObjects: 0,
       rememberCalls: 0,
       recallUsed: 0,
-      learningsStored: 0,
     }));
     const session = {
       id: "01HEADLESSSESSION",
@@ -245,7 +244,6 @@ describe("runHeadless", () => {
       stateObjects: 0,
       rememberCalls: 0,
       recallUsed: 0,
-      learningsStored: 0,
     }));
     const session = {
       id: "01FAIL",

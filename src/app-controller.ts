@@ -440,7 +440,6 @@ export class AppController {
         stateObjects: 0,
         rememberCalls: 0,
         recallUsed: 0,
-        learningsStored: 0,
       };
     }
     this.sessionEnded = true;
@@ -449,6 +448,4 @@ export class AppController {
   }
 }
 
-export type ShutdownStatus = Omit<SessionEndStatus, "memory"> & {
-  memory: SessionEndStatus["memory"] | "noop";
-};
+export type ShutdownStatus = SessionEndStatus;

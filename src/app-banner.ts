@@ -108,13 +108,11 @@ export const RESUME_ID_PREFIX_LEN = 12;
 
 export type SessionEndEpilogueInput = {
   sessionId: string;
-  memory: "completed" | "background" | "skipped" | "failed" | "noop";
+  memory: "skipped" | "noop";
   turns: number;
   stateObjects: number;
   rememberCalls: number;
   recallUsed: number;
-  /** Always 0: sessions store no learnings automatically. */
-  learningsStored: number;
 };
 
 /**
@@ -134,17 +132,7 @@ export function formatSessionEndEpilogue(input: SessionEndEpilogueInput): string
   ];
 
   const memoryParts: string[] = [];
-  if (input.memory === "completed") {
-    memoryParts.push("memory saved");
-  } else if (input.memory === "background") {
-    memoryParts.push("saving in background…");
-  } else if (input.memory === "failed") {
-    memoryParts.push("memory failed");
-  } else if (input.memory === "noop") {
-    memoryParts.push("file memory");
-  } else {
-    memoryParts.push("memory off");
-  }
+  memoryParts.push(input.memory === "noop" ? "file memory" : "memory off");
 
   if (input.rememberCalls > 0) {
     memoryParts.push(`remembered ${input.rememberCalls}`);
@@ -168,7 +156,6 @@ export function formatSessionEndSummary(session: Session): string {
     stateObjects: summary.stateObjects,
     rememberCalls: summary.memoriesStored,
     recallUsed: 0,
-    learningsStored: 0,
   })
     .filter((l) => l.trim().length > 0)
     .join(" · ");
@@ -192,7 +179,6 @@ export function printSessionEndSummary(session: Session): void {
     stateObjects: session.getSessionSummary().stateObjects,
     rememberCalls: session.getSessionSummary().memoriesStored,
     recallUsed: 0,
-    learningsStored: 0,
   })) {
     console.log(line);
   }

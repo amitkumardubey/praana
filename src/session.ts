@@ -103,15 +103,14 @@ export function visibleCheckpointAfterBoundary(
 
 /** Shutdown outcome; deliberate file memory writes need no session-end flush. */
 export type SessionEndStatus = {
-  memory: "completed" | "background" | "skipped" | "failed" | "noop";
+  /** "noop" when file memory is on (nothing to flush at session end), "skipped" when it is off. */
+  memory: "skipped" | "noop";
   turns: number;
   stateObjects: number;
   /** Mid-session `remember` tool successes. */
   rememberCalls: number;
   /** Successful file recall calls (query or by-name). */
   recallUsed: number;
-  /** Compatibility field; automatic memory extraction is disabled, so always 0. */
-  learningsStored: number;
 };
 
 export class Session {
@@ -1180,7 +1179,6 @@ export class Session {
       stateObjects: summary.stateObjects,
       rememberCalls: summary.memoriesStored,
       recallUsed: 0,
-      learningsStored: 0,
     });
 
     if (this.ended) return emptyStatus("skipped");
@@ -1294,7 +1292,6 @@ export class Session {
       stateObjects: summary.stateObjects,
       rememberCalls: summary.memoriesStored,
       recallUsed: recallUsedCount,
-      learningsStored: 0,
     };
   }
 
