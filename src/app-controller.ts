@@ -151,7 +151,7 @@ export class AppController {
       session: this.session,
       cwd: this.cwd,
       model,
-      bannerLines: formatSessionBannerLines(this.session, this.cwd, model),
+      bannerLines: await formatSessionBannerLines(this.session, this.cwd, model),
       recentConversationLines: didResume
         ? formatRecentConversationLines(this.session)
         : [],
@@ -391,7 +391,7 @@ export class AppController {
         session: this.session,
         cwd: this.cwd,
         model,
-        bannerLines: formatSessionBannerLines(this.session, this.cwd, model),
+        bannerLines: await formatSessionBannerLines(this.session, this.cwd, model),
         recentConversationLines: [],
         transcriptBootstrap: { groups: [] },
         isResume: false,

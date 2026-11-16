@@ -18,7 +18,8 @@ import { MEMORY_POLICY } from "../src/file-memory/index.js";
 import { executeSlashCommand } from "../src/slash-commands.js";
 import { openContextEngineDb } from "../src/context-engine/db.js";
 import { maybeAutoCompactClassic } from "../src/auto-compact.js";
-import { formatSessionBannerLines } from "../src/app-banner.js";
+import { formatSessionBannerLines, printHelp, SLASH_COMMANDS_HELP_BLOCK } from "../src/app-banner.js";
+import { SLASH_COMMAND_METADATA } from "../src/slash-commands.js";
 
 let home: string;
 let config: PraanaConfig;
@@ -272,7 +273,7 @@ it("continues with a visible warning when both file memory scopes fail", async (
   expect(session.fileMemory).toBeNull();
   expect(session.digest).toBeNull();
   expect(session.embedder).toBeInstanceOf(DeterministicTestEmbedder);
-  expect(formatSessionBannerLines(session, home, "scripted").join("\n")).toContain(session.memoryError!);
+  expect((await formatSessionBannerLines(session, home, "scripted")).join("\n")).toContain(session.memoryError!);
 });
 
 it("keeps deliberate writes from concurrent sessions and lists both on the next startup", async () => {
@@ -334,7 +335,7 @@ it("keeps file memory unset when incognito toggles after an unreadable memory ro
     expect(names).not.toContain("recall");
     expect(names).not.toContain("remember");
     expect(names).not.toContain("forget_memory");
-    const banner = formatSessionBannerLines(session, home, "scripted");
+    const banner = await formatSessionBannerLines(session, home, "scripted");
     expect(banner.filter((line) => line.includes("memory unavailable"))).toHaveLength(1);
     expect(banner.some((line) => line.startsWith("memory db:"))).toBe(false);
   } finally {
@@ -412,4 +413,94 @@ it("does not claim memories are readable when incognito has no store", async () 
   const offText = off.lines.join("\n");
   expect(offText).toContain("memory remains unavailable");
   expect(offText).not.toContain("Cognitive Memory");
+});
+
+it("serves digest, recall, memory, stats, and banner counts from the live file store", async () => {
+  seed();
+  writeFileSync(join(home, ".praana", "memory", "old-note.md"), "---\nname: old-note\ndescription: An old observation\ntype: feedback\nupdated: 2020-01-01\n---\nThis note has gone stale.\n");
+  const session = await start();
+  const digest = session.digest;
+  expect(digest).toContain("stable-preference");
+
+  const shown = await executeSlashCommand("/digest", session, slashHandlers);
+  expect(shown.lines.join("\n")).toBe(digest);
+
+  const recalled = await executeSlashCommand("/recall boundaries", session, slashHandlers);
+  const recallText = recalled.lines.join("\n");
+  expect(recallText).toContain("stable-preference  global  Prefer explicit boundaries");
+  expect(recallText).toContain("Keep module boundaries explicit.");
+
+  const listed = await executeSlashCommand("/memory", session, slashHandlers);
+  const listText = listed.lines.join("\n");
+  expect(listText).toMatch(/stable-preference  global  user  \d+d$/m);
+  expect(listText).toMatch(/old-note  global  feedback  \d+d  stale/);
+  expect(listText.indexOf("stable-preference")).toBeLessThan(listText.indexOf("old-note"));
+
+  const detail = await executeSlashCommand("/memory show stable-preference", session, slashHandlers);
+  expect(detail.lines.join("\n")).toContain("Keep module boundaries explicit.");
+  const invalid = await executeSlashCommand("/memory show stable-preference nope", session, slashHandlers);
+  expect(invalid.lines.join("\n")).toBe("Invalid scope");
+
+  const pruned = await executeSlashCommand("/memory prune", session, slashHandlers);
+  const pruneText = pruned.lines.join("\n");
+  expect(pruneText).toContain("Oldest memories (not deleted):");
+  expect(pruneText.indexOf("old-note")).toBeLessThan(pruneText.indexOf("stable-preference"));
+  expect(existsSync(join(home, ".praana", "memory", "old-note.md"))).toBe(true);
+  expect(existsSync(join(home, ".praana", "memory", "stable-preference.md"))).toBe(true);
+
+  const forgotten = await executeSlashCommand("/memory forget old-note global", session, slashHandlers);
+  expect(forgotten.lines.join("\n")).toBe("Forgot old-note.");
+  expect(existsSync(join(home, ".praana", "memory", "old-note.md"))).toBe(false);
+
+  const deduped = await executeSlashCommand("/memory dedupe", session, slashHandlers);
+  const usage = deduped.lines.join("\n");
+  expect(usage).toContain("Usage: /memory");
+  expect(usage).not.toContain("dedupe");
+  const memoryCommand = SLASH_COMMAND_METADATA.find((command) => command.name === "/memory");
+  expect(memoryCommand?.argumentHint ?? "").not.toContain("dedupe");
+  expect(SLASH_COMMANDS_HELP_BLOCK.join("\n")).not.toContain("/memory dedupe");
+  const logs: string[] = [];
+  const orig = console.log;
+  console.log = (...args: unknown[]) => logs.push(args.map(String).join(" "));
+  try { printHelp(); } finally { console.log = orig; }
+  const help = logs.join("\n");
+  expect(help).toContain("praana memory dedupe");
+  expect(help).not.toContain("/memory dedupe");
+
+  const before = await executeSlashCommand("/stats", session, slashHandlers);
+  expect(before.lines.join("\n")).toContain("global: 1");
+  expect(before.lines.join("\n")).not.toContain("Cognitive Memory");
+  expect(before.lines.join("\n")).not.toContain("Memory DB");
+  const written = await session.fileMemory!.write({
+    scope: "global",
+    name: "session-note",
+    type: "user",
+    description: "Noted during the session",
+    body: "Counts follow the live store.",
+  });
+  expect(written.ok).toBe(true);
+  const after = await executeSlashCommand("/stats", session, slashHandlers);
+  expect(after.lines.join("\n")).toContain("global: 2");
+  expect(session.digest).toBe(digest);
+  const banner = await formatSessionBannerLines(session, home, "scripted");
+  expect(banner.some((line) => line.includes("global 2"))).toBe(true);
+  expect(banner.some((line) => line.includes("incognito (disabled)") || line === "memory: off")).toBe(false);
+
+  const quiet = await start(true);
+  const stats = await executeSlashCommand("/stats", quiet, slashHandlers);
+  const statsText = stats.lines.join("\n");
+  expect(statsText).toContain("writes: blocked");
+  expect(statsText).toContain("global:");
+  expect(statsText).not.toContain("memory: off");
+  const quietBanner = await formatSessionBannerLines(quiet, home, "scripted");
+  expect(quietBanner.some((line) => line.startsWith("memory: global"))).toBe(true);
+  expect(quietBanner.some((line) => line.includes("incognito (disabled)") || line === "memory: off")).toBe(false);
+});
+
+it("says there are no memories yet when the index is empty", async () => {
+  const session = await start();
+  const digest = await executeSlashCommand("/digest", session, slashHandlers);
+  expect(digest.lines.join("\n")).toBe("No memories yet.");
+  const listed = await executeSlashCommand("/memory", session, slashHandlers);
+  expect(listed.lines.join("\n")).toBe("No memories yet.");
 });

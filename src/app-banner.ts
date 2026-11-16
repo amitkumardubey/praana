@@ -30,14 +30,44 @@ function readAppVersion(): string {
   }
 }
 
-export function formatSessionBannerLines(
+export interface FileMemoryCounts {
+  kind: "counts" | "unavailable" | "off";
+  global: number;
+  project: number;
+  shown: number;
+  total: number;
+}
+
+/** Live store counts. Does not rebuild the prompt index. */
+export async function describeFileMemory(session: Session): Promise<FileMemoryCounts> {
+  const empty = { global: 0, project: 0, shown: 0, total: 0 };
+  if (!session.fileMemory) {
+    return { kind: session.memoryError ? "unavailable" : "off", ...empty };
+  }
+  const listed = await session.fileMemory.list();
+  if (!listed.ok) return { kind: "unavailable", ...empty };
+  const global = listed.entries.filter((entry) => entry.scope === "global").length;
+  const project = listed.entries.filter((entry) => entry.scope === "project").length;
+  const shown = listed.entries.length;
+  return { kind: "counts", global, project, shown, total: shown + listed.skipped };
+}
+
+export function formatFileMemoryBanner(counts: FileMemoryCounts): string {
+  if (counts.kind === "counts") {
+    return `memory: global ${counts.global} · project ${counts.project} · shown ${counts.shown}/${counts.total}`;
+  }
+  return counts.kind === "unavailable" ? "memory: unavailable" : "memory: off";
+}
+
+export async function formatSessionBannerLines(
   session: Session,
   cwd: string,
   model: string
-): string[] {
+): Promise<string[]> {
   const memoryStats = session.getMemoryStats();
   const digestLen = session.digest?.length ?? 0;
   const configSources = getLoadedConfigSources();
+  const memoryLine = formatFileMemoryBanner(await describeFileMemory(session));
   return [
     `${APP_NAME} ${APP_VERSION}`,
     `session: ${session.id}`,
@@ -49,11 +79,7 @@ export function formatSessionBannerLines(
     `memory entries: ${memoryStats.total}`,
     `digest chars: ${digestLen}`,
     ...(session.memoryError ? [`⚠ memory unavailable: ${session.memoryError}`] : []),
-    session.memoryEnabled
-      ? `memory db: ${session.getMemoryDbPath() ?? "(unknown)"}`
-      : session.isIncognito()
-        ? "memory: incognito (disabled)"
-        : "memory: disabled",
+    memoryLine,
     session.nativeStatus ? `native: ${nativeStatusToString(session.nativeStatus)}` : `native: unknown`,
     session.fffStatus ? `search: ${session.fffStatus}` : `search: unknown`,
   ];
@@ -175,7 +201,7 @@ function usageLines(): string[] {
     `  ${CLI_NAME} run "<instruction>" [--max-steps N]  Headless one-shot (no TTY)`,
     `  ${CLI_NAME} memory dedupe       Merge near-duplicate cognitive memories`,
     `  ${CLI_NAME} --debug             Start with debug mode enabled`,
-    `  ${CLI_NAME} --incognito         Start without Cognitive Memory persistence`,
+    `  ${CLI_NAME} --incognito         Start with memory writes blocked`,
     `  ${CLI_NAME} -I                  Short alias for --incognito`,
     `  ${CLI_NAME} --config <path>     Load config from specific .json/.toml path`,
     `  ${CLI_NAME} --version           Show version`,
@@ -187,12 +213,12 @@ function usageLines(): string[] {
 export const SLASH_COMMANDS_HELP_BLOCK = [
   "  /exit (/quit)           End session and save",
   "  /state                   List all state objects for this session",
-  "  /stats                   Show session, working-memory, and Cognitive Memory stats",
+  "  /stats                   Show session, working-memory, and file memory counts",
   "  /scorecard               Show per-session telemetry scorecard (issue #488)",
-  "  /digest                  Print Cognitive Memory digest",
+  "  /digest                  Print the current file memory index",
   "  /events                  Show last 20 events",
-  "  /recall <query>          Search Cognitive Memory",
-  "  /memory dedupe           Merge near-duplicate Cognitive Memory entries",
+  "  /recall <query>          Search file memories",
+  "  /memory                  List file memories (show, forget, prune)",
   "  /login [provider]        Add or update a provider",
   "  /logout [provider]       Remove a provider's credentials",
   "  /model [provider] <id>   Switch model (bare /model opens selector)",
@@ -204,7 +230,7 @@ export const SLASH_COMMANDS_HELP_BLOCK = [
   "  /why <unit-id>           Explain last compile score for a context unit",
   "  /thinking <on|off>       Toggle thinking stream visibility",
   "  /reasoning <level>       Set reasoning effort (off|minimal|low|medium|high|xhigh)",
-  "  /incognito <on|off>      Toggle Cognitive Memory persistence",
+  "  /incognito <on|off>      Block or allow memory writes",
   "  /settings                View persistent settings (set|reset)",
   "  /clear                   Reset in-session context (same session ID)",
   "  /new                     Start a new session (reload config)",
