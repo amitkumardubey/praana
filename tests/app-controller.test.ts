@@ -302,6 +302,46 @@ describe("AppController", () => {
     expect(end).toHaveBeenCalledWith("clean", [], { memoryTimeoutMs: 500 });
   });
 
+  it("shutdown('aborted') passes 'aborted' to session.end(), shutdown() passes 'clean'", async () => {
+    // Aborted (signal) shutdown.
+    const aborted = new AppController({
+      cwd: "/tmp",
+      config: baseConfig,
+      parsed: baseParsed,
+    });
+    await aborted.start();
+    const abortedEnd = aborted.session.end as ReturnType<typeof mock>;
+    abortedEnd.mockResolvedValueOnce({
+      memory: "skipped",
+      turns: 0,
+      stateObjects: 0,
+      rememberCalls: 0,
+      recallUsed: 0,
+      learningsStored: 0,
+    });
+    await aborted.shutdown("aborted");
+    expect(abortedEnd).toHaveBeenCalledWith("aborted", [], { memoryTimeoutMs: 2_000 });
+
+    // Normal shutdown stays "clean".
+    const normal = new AppController({
+      cwd: "/tmp",
+      config: baseConfig,
+      parsed: baseParsed,
+    });
+    await normal.start();
+    const normalEnd = normal.session.end as ReturnType<typeof mock>;
+    normalEnd.mockResolvedValueOnce({
+      memory: "skipped",
+      turns: 0,
+      stateObjects: 0,
+      rememberCalls: 0,
+      recallUsed: 0,
+      learningsStored: 0,
+    });
+    await normal.shutdown();
+    expect(normalEnd).toHaveBeenCalledWith("clean", [], { memoryTimeoutMs: 2_000 });
+  });
+
   it("startNewSession() ends the current session quickly, reloads config, and creates a fresh one", async () => {
     const controller = new AppController({
       cwd: "/tmp",

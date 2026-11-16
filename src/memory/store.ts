@@ -69,7 +69,7 @@ import { effectiveValidity, digestScore, MS_PER_DAY } from "./confidence.js";
 import { getAppLogger, type PraanaLogger } from "../logger.js";
 import { APP_AGENT_ID } from "../app-identity.js";
 import { cosineSimilarity } from "../cosine-similarity.js";
-import { isSessionGood } from "../skills/session-outcome.js";
+import { isSessionGood, type SessionOutcomeReason } from "../session-outcome.js";
 
 function certaintyToValidity(c: "high" | "medium" | "low"): number {
   return c === "high" ? 0.8 : c === "medium" ? 0.5 : 0.3;
@@ -220,7 +220,7 @@ export class MemoryStore {
   }
 
   async sessionEnd(
-    reason: string,
+    reason: SessionOutcomeReason,
     events?: SessionEvent[],
     agentsContext?: string,
   ): Promise<{ learningsStored: number }> {
@@ -228,6 +228,7 @@ export class MemoryStore {
 
     // Determine session-success bit for utility updates.
     // TODO(scorecard): placeholder — replace with real scorecard signal (ADR-005 C1 / #488).
+    // Legacy MemoryStore keeps a string reason; narrow it for the classifier.
     const sessionGood = isSessionGood(reason, events);
 
     // Fetch surfaced entries with content in one JOIN — no N+1 getEntryById calls.

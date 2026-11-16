@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SkillRuntime, buildSkillMetadataCatalog } from "../src/skills/index.js";
 import { SkillStatsStore } from "../src/skills/skill-stats-store.js";
-import { isSessionGood } from "../src/skills/session-outcome.js";
+import { isSessionGood } from "../src/session-outcome.js";
 import { openDatabase } from "../src/sqlite.js";
 import { ensureSkillStatsTable, getSkillUsefulness } from "../src/memory/db.js";
 import type { SkillsRuntimeConfig, SkillRecord } from "../src/skills/types.js";
@@ -286,6 +286,25 @@ describe("isSessionGood", () => {
 
   it("reason 'clean' with a failing tool_result → false", () => {
     expect(isSessionGood("clean", [failingTool])).toBe(false);
+  });
+
+  it("reason 'clean' with only a load_skill ok result → false", () => {
+    const loadSkillOk: { type: string; result?: unknown; tool_name?: string } = {
+      type: "tool_result",
+      tool_name: "load_skill",
+      result: { ok: true },
+    };
+    expect(isSessionGood("clean", [loadSkillOk])).toBe(false);
+    expect(isSessionGood("clean", [userMsg, loadSkillOk])).toBe(false);
+  });
+
+  it("reason 'clean' with a load_skill ok result plus another tool ok → true", () => {
+    const loadSkillOk: { type: string; result?: unknown; tool_name?: string } = {
+      type: "tool_result",
+      tool_name: "load_skill",
+      result: { ok: true },
+    };
+    expect(isSessionGood("clean", [loadSkillOk, okTool])).toBe(true);
   });
 });
 
