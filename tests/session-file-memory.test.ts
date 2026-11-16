@@ -14,7 +14,7 @@ import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
 import { computeMemoryStats, runTurn } from "../src/turn.js";
 import { scriptedMemoryModel } from "./helpers/scripted-memory-model.js";
 import { projectKey } from "../src/file-memory/paths.js";
-import { MEMORY_POLICY } from "../src/file-memory/index.js";
+import { MEMORY_POLICY, type FileMemoryStore } from "../src/file-memory/index.js";
 import { executeSlashCommand } from "../src/slash-commands.js";
 import { openContextEngineDb } from "../src/context-engine/db.js";
 import { maybeAutoCompactClassic } from "../src/auto-compact.js";
@@ -340,6 +340,30 @@ it("keeps file memory unset when incognito toggles after an unreadable memory ro
     expect(banner.some((line) => line.startsWith("memory db:"))).toBe(false);
   } finally {
     for (const dir of scopes) chmodSync(dir, 0o700);
+  }
+});
+
+it("keeps the old store and flag when an incognito toggle fails to rebuild", async () => {
+  seed();
+  const session = await start();
+  const originalStore = session.fileMemory;
+  const originalCreate = (session as unknown as { createFileMemory: () => FileMemoryStore }).createFileMemory;
+  (session as unknown as { createFileMemory: () => FileMemoryStore }).createFileMemory = () => {
+    throw new Error("forced constructor failure");
+  };
+  try {
+    const failure = await session.setIncognito(true);
+    expect(failure).toContain("forced constructor failure");
+    expect(session.isIncognito()).toBe(false);
+    expect(session.fileMemory).toBe(originalStore);
+    const result = await executeSlashCommand("/incognito on", session, slashHandlers);
+    expect(result.lines.join("\n")).toContain("Incognito switch failed: forced constructor failure");
+    expect(session.isIncognito()).toBe(false);
+    expect(session.fileMemory).toBe(originalStore);
+    const recalled = await session.fileMemory!.recall({ query: "boundaries" });
+    expect(recalled.ok).toBe(true);
+  } finally {
+    (session as unknown as { createFileMemory: () => FileMemoryStore }).createFileMemory = originalCreate;
   }
 });
 

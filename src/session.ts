@@ -896,13 +896,26 @@ export class Session {
     return this.sessionOutputTokens;
   }
 
-  async setIncognito(enabled: boolean): Promise<void> {
+  /** Toggle write access atomically: build the replacement store first and only
+   * then swap it with the flag. On a failed rebuild the old store and flag stay
+   * in place and an error string is returned (no exception is thrown).
+   * The index is a cache-stable prefix: toggling write access never rebuilds it,
+   * and an init failure (memoryEnabled=false) keeps toggling inert. */
+  async setIncognito(enabled: boolean): Promise<string | null> {
+    if (!this.memoryEnabled) return null;
+    let nextStore: FileMemoryStore;
+    try {
+      nextStore = this.createFileMemory(enabled);
+    } catch (err) {
+      this.getLogger().child("memory").warn("Failed to rebuild file memory store for incognito toggle", {
+        code: "MEMORY_INCOGNITO_REBUILD_FAILED",
+        cause: err as Error,
+      });
+      return memoryErrorMessage(err, appHomePath("memory"));
+    }
     this.incognito = enabled;
-    // Init failure clears memoryEnabled. A later toggle must not install a store
-    // that never received an index.
-    if (!this.memoryEnabled) return;
-    // The index is a cache-stable prefix: toggling write access must not rebuild it.
-    this.fileMemory = this.createFileMemory();
+    this.fileMemory = nextStore;
+    return null;
   }
 
   get promptDir(): string {
@@ -1282,11 +1295,11 @@ export class Session {
     };
   }
 
-  private createFileMemory(): FileMemoryStore {
+  private createFileMemory(incognito = this.incognito): FileMemoryStore {
     return createFileMemoryStore({
       home: dirname(appHomePath()),
       cwd: this.cwd,
-      incognito: this.incognito,
+      incognito,
     });
   }
 

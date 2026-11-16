@@ -898,14 +898,22 @@ export async function executeSlashCommand(
         return result("none", "toast");
       }
       if (arg === "on") {
-        await session.setIncognito(true);
+        const failure = await session.setIncognito(true);
+        if (failure) {
+          lines.push(`Incognito switch failed: ${failure}`);
+          return result("none", "toast", "error");
+        }
         lines.push(
           session.memoryEnabled && session.fileMemory
             ? "Incognito enabled — memory writes are blocked; memories stay readable."
             : "Incognito enabled — memory writes are blocked.",
         );
       } else if (arg === "off") {
-        await session.setIncognito(false);
+        const failure = await session.setIncognito(false);
+        if (failure) {
+          lines.push(`Incognito switch failed: ${failure}`);
+          return result("none", "toast", "error");
+        }
         lines.push(
           session.memoryEnabled && session.fileMemory
             ? "Incognito disabled — memory writes are allowed."
