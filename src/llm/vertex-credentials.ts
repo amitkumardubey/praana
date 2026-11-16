@@ -39,7 +39,7 @@ export function wellKnownGoogleAdcPath(opts: GoogleCredentialOptions = {}): stri
 }
 
 export function looksLikeGoogleCredentialPath(value: string): boolean {
-  return value.endsWith(".json") || value.includes("/") || value.includes("\\") || value.startsWith("~");
+  return /\.json$/i.test(value) || /^(?:~(?:[/\\]|$)|\/|\.\.?[/\\]|\\\\|[A-Za-z]:[/\\])/.test(value);
 }
 
 /** Explicit files are selected even when missing so the caller gets a clear error. */

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { generateKeyPairSync } from "node:crypto";
-import { readFileSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
+import * as fs from "node:fs";
+import { mkdirSync, readFileSync, symlinkSync, unlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { join, win32 } from "node:path";
 import * as adc from "../src/llm/google-adc.js";
 import { GoogleDriver } from "../src/llm/drivers/google.js";
@@ -239,9 +240,47 @@ test("stored paths (including ~) and well-known ADC pass the stream authenticati
   expect(resolveProviderAuth("vertex")).toEqual({ googleAdc: true });
   setApiKey("vertex", path);
   expect(resolveProviderAuth("vertex")?.googleAdc).toBe(true);
-  setApiKey("vertex", "~fake-adc");
-  expect(resolveProviderAuth("vertex")?.googleAdc).toBe(true);
-  expect(resolveProviderAuth("vertex")?.bearerToken).toBeUndefined();
+  for (const value of ["/fake-adc", "~/fake-adc", "./fake-adc", "../fake-adc", ".\\fake-adc", "..\\fake-adc", "\\\\server\\share", "C:\\fake-adc", "fake.json", "~"]) {
+    setApiKey("vertex", value);
+    expect(resolveProviderAuth("vertex")).toEqual({ googleAdc: true, apiKey: value });
+  }
+});
+
+test.each(["ya29.abc/def", "ya29.abc\\def"])("stored token containing a separator is sent unchanged: %s", async (token) => {
+  delete process.env.CLOUDSDK_CONFIG;
+  const dir = join(process.env.HOME!, ".config", "gcloud");
+  mkdirSync(dir, { recursive: true });
+  const ambient = join(dir, "application_default_credentials.json");
+  writeFileSync(ambient, JSON.stringify(user()));
+  process.env.VERTEX_PROJECT_ID = "fake-project";
+  setApiKey("vertex", token);
+  const requests: Array<{ url: string; authorization: string | null }> = [];
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    requests.push({ url: String(input), authorization: new Headers(init?.headers).get("authorization") });
+    return googleSse([{ text: "ok" }]);
+  }) as typeof fetch;
+  const open = spyOn(fs, "openSync");
+  try {
+    expect(resolveProviderAuth("vertex")).toEqual({ bearerToken: token });
+    expect(await adc.resolveVertexAccessToken({ apiKey: token })).toBe(token);
+    expect(await adc.resolveVertexAccessToken({ bearerToken: token })).toBe(token);
+    expect((await completeLlmResponse({ provider: "vertex", model: "gemini-test", messages: [] })).finalReason).toBe("stop");
+    expect(requests).toHaveLength(1);
+    expect(requests[0].authorization).toBe(`Bearer ${token}`);
+    expect(open).not.toHaveBeenCalled();
+  } finally {
+    open.mockRestore();
+    unlinkSync(ambient);
+  }
+});
+
+test("credential classifier distinguishes path prefixes and case-insensitive JSON suffixes from tokens", async () => {
+  for (const token of ["~fake-adc", "a/b", "a\\b"]) {
+    expect(await adc.resolveVertexAccessToken({ apiKey: token })).toBe(token);
+  }
+  setApiKey("vertex", "fake.JSON");
+  expect(resolveProviderAuth("vertex")).toEqual({ googleAdc: true, apiKey: "fake.JSON" });
+  await expect(adc.resolveVertexAccessToken({ apiKey: "fake.JSON" })).rejects.toThrow("credential file not found");
 });
 
 test("final streaming auth precedence survives request-level stored token overlays", async () => {
