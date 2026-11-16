@@ -91,6 +91,7 @@ export class LoopGate {
   ): LoopGate {
     const gate = new LoopGate({ threshold: opts?.threshold });
     let lastCall: { tool: string; args: Record<string, unknown> } | null = null;
+    const callsById = new Map<string, { tool: string; args: Record<string, unknown> }>();
     for (const ev of events) {
       if (ev.kind === "tool_call") {
         const tool = typeof ev.payload.tool === "string" ? ev.payload.tool : "";
@@ -98,14 +99,35 @@ export class LoopGate {
           ? ev.payload.args
           : {}) as Record<string, unknown>;
         lastCall = { tool, args };
+        const rawId = ev.payload.toolCallId;
+        const id = typeof rawId === "string" ? rawId : "";
+        // An empty id is not a usable key: several calls would share one entry.
+        if (id !== "") callsById.set(id, { tool, args });
         gate.observePreSilent(tool, args);
         continue;
       }
-      if (ev.kind === "tool_result" && lastCall) {
+      if (ev.kind === "tool_result") {
+        // Parallel batches log call, call, …, result, result, so the result is
+        // paired with its own call by toolCallId. Only results with no usable id
+        // (missing, non-string or empty) fall back to the previous call. A result
+        // whose non-empty id matches no logged call is an orphan: falling back
+        // would blame an unrelated call in a parallel batch, so it is skipped.
+        // Paired entries are deleted so a reused id (per-response ids such as
+        // call_0 across turns) cannot pair a stale call and the map stays small.
+        const rawId = ev.payload.toolCallId;
+        const id = typeof rawId === "string" ? rawId : "";
+        let call: { tool: string; args: Record<string, unknown> } | undefined;
+        if (id === "") {
+          call = lastCall ?? undefined;
+        } else {
+          call = callsById.get(id);
+          callsById.delete(id);
+        }
+        if (!call) continue;
         const result = ev.payload.result;
         const ok = result && typeof result === "object" && (result as { ok?: unknown }).ok;
         const isError = ok === false;
-        gate.observePost(lastCall.tool, lastCall.args, isError);
+        gate.observePost(call.tool, call.args, isError);
         continue;
       }
       if (ev.kind === "system_note" && ev.payload.type === "circuit_note") {
@@ -144,8 +166,12 @@ export class LoopGate {
   }
 
   observePost(toolName: string, args: Record<string, unknown>, isError: boolean): void {
-    if (!isError || isLoopExempt(toolName, args)) return;
+    if (isLoopExempt(toolName, args)) return;
     const key = toolErrorBaseKey(toolName, args);
+    if (!isError) {
+      this.errorHits.delete(key);
+      return;
+    }
     this.errorHits.set(key, (this.errorHits.get(key) ?? 0) + 1);
   }
 

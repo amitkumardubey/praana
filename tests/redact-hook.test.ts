@@ -45,4 +45,43 @@ describe("redact post_tool_call", () => {
     expect(r.error).toContain("[REDACTED:aws-access-key]");
     expect(r.suggestions?.[0]).toBe("[REDACTED:aws-access-key]");
   });
+
+  it("adds no suggestions or recent_writes to a failure on an existing path", async () => {
+    const registry = createBuiltinHookRegistry("/proj", {
+      validate: {
+        pathExists: () => true,
+        listRepoFiles: () => ["src/other/index.ts", "src/more/index.ts"],
+      },
+    });
+    const hookSession: HookSessionLike = {
+      cwd: "/proj",
+      isPlanMode: () => false,
+      recentWritesForPath: () => [{ path: "/proj/src/ui/index.ts", turn: 1 }],
+    };
+    for (const error of ["Edit cancelled by user", "oldText not found in file"]) {
+      const out = await registry.runPostToolCall({
+        toolName: "edit_file",
+        args: { path: "src/ui/index.ts" },
+        result: { ok: false, error },
+        isError: true,
+        session: hookSession,
+      });
+      expect(out.isError).toBe(true);
+      expect(out.result).toEqual({ ok: false, error });
+    }
+  });
+
+  it("still adds suggestions when the path is missing", async () => {
+    const registry = createBuiltinHookRegistry("/proj", {
+      validate: { pathExists: () => false, listRepoFiles: () => ["/proj/src/other/index.ts"] },
+    });
+    const out = await registry.runPostToolCall({
+      toolName: "edit_file",
+      args: { path: "src/ui/index.ts" },
+      result: { ok: false, error: "File not found: src/ui/index.ts" },
+      isError: true,
+      session: { cwd: "/proj", isPlanMode: () => false },
+    });
+    expect((out.result as { suggestions?: string[] }).suggestions).toContain("/proj/src/other/index.ts");
+  });
 });

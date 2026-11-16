@@ -12,6 +12,7 @@ const toolsReal = { ...toolsActual };
 const nativeLlmReal = { ...nativeLlmActual };
 
 const mockStream = mock();
+let toolResults: Record<string, unknown> = {};
 
 mock.module("../src/llm/index.js", () => ({
   ...nativeLlmActual,
@@ -47,7 +48,13 @@ mock.module("../src/compile-classic.js", () => ({
 mock.module("../src/tools/index.js", () => ({
   createAllTools: mock(() => ({
     shell: {
-      execute: mock(async () => ({ ok: true, stdout: "", stderr: "", exitCode: 0 })),
+      execute: mock(async () => toolResults.shell ?? { ok: true, stdout: "", stderr: "", exitCode: 0 }),
+    },
+    edit_file: {
+      execute: mock(async () => toolResults.edit_file ?? { ok: true }),
+    },
+    run_tests: {
+      execute: mock(async () => toolResults.run_tests ?? { ok: true }),
     },
   })),
   describeTools: mock(() => []),
@@ -183,6 +190,7 @@ function mockSession(): Session {
 describe("runTurn with UI sink", () => {
   beforeEach(() => {
     mock.clearAllMocks();
+    toolResults = {};
     spyOn(process.stdout, "write").mockImplementation(() => true);
   });
 
@@ -301,6 +309,81 @@ describe("runTurn with UI sink", () => {
       "shell",
       JSON.stringify({ ok: true, stdout: "", stderr: "", exitCode: 0 }),
     ]);
+  });
+
+  async function runOneTool(
+    name: string,
+    args: Record<string, unknown>,
+    result: unknown,
+  ): Promise<{ sinkIsError: unknown; historyIsError: unknown }> {
+    toolResults[name] = result;
+    let call = 0;
+    (piStream as ReturnType<typeof mock>).mockImplementation((() => {
+      call += 1;
+      if (call === 1) {
+        return (async function* () {
+          yield { type: "toolcall_end", toolCall: { id: "call-1", name, arguments: args } };
+          yield { type: "done", reason: "toolUse", message: { role: "assistant", content: [] } };
+        })();
+      }
+      return (async function* () {
+        yield { type: "text_delta", delta: "ok" };
+        yield {
+          type: "done",
+          reason: "stop",
+          message: { role: "assistant", content: [{ type: "text", text: "ok" }] },
+        };
+      })();
+    }) as any);
+    const onToolResult = mock();
+    await runTurn(mockSession(), "go", undefined, {
+      sink: { onToolResult, shellLiveStream: false },
+    });
+    const messages = ((piStream as ReturnType<typeof mock>).mock.calls[1]?.[0] as any)?.messages ?? [];
+    const tr = messages.find((m: any) => m.role === "tool_result");
+    return { sinkIsError: onToolResult.mock.calls[0]?.[3], historyIsError: tr?.isError };
+  }
+
+  it("flags a refused tool result (ok:false with error) as an error for the sink and history", async () => {
+    const out = await runOneTool(
+      "shell",
+      { command: "true" },
+      { ok: false, error: "Command cancelled by user" },
+    );
+    expect(out).toEqual({ sinkIsError: true, historyIsError: true });
+  });
+
+  it("flags a shell non-zero exit as an error", async () => {
+    const out = await runOneTool(
+      "shell",
+      { command: "false" },
+      { ok: false, stdout: "", stderr: "", exitCode: 1 },
+    );
+    expect(out).toEqual({ sinkIsError: true, historyIsError: true });
+  });
+
+  it("does not flag a successful result", async () => {
+    const out = await runOneTool("shell", { command: "true" }, { ok: true, stdout: "", stderr: "", exitCode: 0 });
+    expect(out.sinkIsError).toBe(false);
+    expect(out.historyIsError).toBeFalsy();
+  });
+
+  it("does not flag run_tests that ran and reported failures", async () => {
+    const out = await runOneTool("run_tests", {}, {
+      ok: false,
+      runner: "bun",
+      passed: 1,
+      failed: 1,
+      failures: [{ name: "x" }],
+      summary: "1 passed, 1 failed",
+    });
+    expect(out.sinkIsError).toBe(false);
+    expect(out.historyIsError).toBeFalsy();
+  });
+
+  it("flags a run_tests spawn failure (error field) as an error", async () => {
+    const out = await runOneTool("run_tests", {}, { ok: false, error: "Failed to spawn", code: "spawn_error" });
+    expect(out).toEqual({ sinkIsError: true, historyIsError: true });
   });
 });
 // Restore real modules after this file to prevent cross-test pollution

@@ -4,6 +4,7 @@
  */
 import type { Event } from "../../../types.js";
 import { formatToolResultRawText } from "../../../tool-summary.js";
+import { toolResultIsError } from "../../../tool-result-error.js";
 import { isPersistedTuiTranscriptPayload } from "./events.js";
 import { TranscriptProjection } from "./projection.js";
 
@@ -186,11 +187,7 @@ export function buildTranscriptFromEvents(
         const payload = ev.payload as Record<string, unknown>;
         const toolName = String(payload.tool ?? "tool");
         const result = payload.result;
-        const isError =
-          result !== null &&
-          typeof result === "object" &&
-          "ok" in result &&
-          (result as { ok?: unknown }).ok === false;
+        const isError = toolResultIsError(toolName, result);
         const id = getToolCallId(payload, "tool-result");
 
         projection.apply({

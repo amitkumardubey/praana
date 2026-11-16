@@ -174,11 +174,11 @@ test.each(["headless", "tui"])("persists sanitized multi-step history before use
   await runTurn(session, "inspect", undefined, { sink });
   expect(received).toEqual([{ visible: "AKIAIOSFODNN7EXAMPLE", hidden: "safe" }]);
   expect(requests[1][1]).toEqual(first);
-  expect(requests[1][2]).toEqual({ role: "tool_result", toolCallId: "a", toolName: "echo", result: '{"ok":false,"content":"  [REDACTED:aws-access-key]\\n\\u0000\\r\\n"}', isError: false });
+  expect(requests[1][2]).toEqual({ role: "tool_result", toolCallId: "a", toolName: "echo", result: '{"ok":false,"content":"  [REDACTED:aws-access-key]\\n\\u0000\\r\\n"}', isError: true });
   const replay = canonical.emitCanonicalTranscript(records());
   const expected = structuredClone([...requests[1], { role: "assistant", content: "done" }]);
   expected[1] = { ...first, toolCalls: [{ id: "a", name: "echo", args: { visible: "[REDACTED:aws-access-key]", hidden: "safe" }, rawArgs: '{"visible":"[REDACTED:aws-access-key]","hidden":"safe"}' }] };
-  expected[2] = { role: "tool_result", toolCallId: "a", toolName: "echo", result: '{"ok":false,"content":"  [REDACTED:aws-access-key]\\n\\u0000\\r\\n"}', isError: false };
+  expected[2] = { role: "tool_result", toolCallId: "a", toolName: "echo", result: '{"ok":false,"content":"  [REDACTED:aws-access-key]\\n\\u0000\\r\\n"}', isError: true };
   expect(replay).toEqual(expected);
   const stored = records().filter((r) => r.kind === "tool_result");
   expect(stored).toHaveLength(1);
@@ -194,7 +194,7 @@ test.each(["headless", "tui"])("persists sanitized multi-step history before use
       projection: new TranscriptProjection({ useUnicode: true }), persistEntry: (entry) => baselineEntries.push(entry),
     });
     baseline.onToolCall("baseline-id", "echo", { visible: "[REDACTED:aws-access-key]", hidden: "safe" });
-    baseline.onToolResult("baseline-id", "echo", '{"ok":false,"content":"  [REDACTED:aws-access-key]\\n\\u0000\\r\\n"}', false);
+    baseline.onToolResult("baseline-id", "echo", '{"ok":false,"content":"  [REDACTED:aws-access-key]\\n\\u0000\\r\\n"}', true);
     const contentOnly = (entries: any[]) => entries.map(({ id: _id, timestamp: _timestamp, ...content }) => content);
     expect(contentOnly(uiTools)).toEqual(contentOnly(baselineEntries));
   } else expect(uiTools).toHaveLength(0);

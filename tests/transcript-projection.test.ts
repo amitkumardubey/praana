@@ -114,6 +114,29 @@ describe("TranscriptProjection", () => {
     });
   });
 
+  it("does not draw a declined edit or write as applied", () => {
+    const projection = new TranscriptProjection({ useUnicode: true });
+    for (const [id, toolName] of [["edit-1", "edit_file"], ["write-1", "write_file"]] as const) {
+      projection.apply(textEvent("tool_call_started", { id, group: 6, toolName, args: {} }));
+      projection.apply(
+        textEvent("tool_call_finished", {
+          id,
+          group: 6,
+          toolName,
+          resultText: JSON.stringify({ ok: false, error: "Edit cancelled by user" }),
+          isError: true,
+          args: { oldText: "one", newText: "two" },
+        }),
+      );
+    }
+
+    const entries = projection.entries();
+    expect(entries[0]).toMatchObject({ id: "edit-1", isError: true });
+    expect(entries[0]?.resultSummary).not.toBe("+1 −1");
+    expect(entries[1]).toMatchObject({ id: "write-1", isError: true });
+    expect(entries[1]?.resultSummary).not.toBe("written");
+  });
+
   it("loads existing entries and appends later projection events in order", () => {
     const projection = new TranscriptProjection({ useUnicode: true });
     projection.load([
