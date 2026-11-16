@@ -14,6 +14,8 @@ export interface ToolCall {
   name: string;
   args: Record<string, unknown>;
   rawArgs?: string;
+  /** Opaque Gemini function-call signature; replay verbatim on the same part. */
+  thoughtSignature?: string;
 }
 
 /** Ordered assistant content; tool arguments live only in `toolCalls`. */

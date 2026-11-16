@@ -67,8 +67,8 @@ export class GoogleDriver implements LlmDriver {
       ...(systemInstruction ? { systemInstruction } : {}),
       ...(tools.length > 0 ? { tools } : {}),
       generationConfig: {
-        ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
-        ...(req.maxTokens !== undefined ? { maxOutputTokens: req.maxTokens } : {}),
+        ...(req.temperature === undefined ? {} : { temperature: req.temperature }),
+        ...(req.maxTokens === undefined ? {} : { maxOutputTokens: req.maxTokens }),
       },
     };
 
@@ -181,6 +181,8 @@ export class GoogleDriver implements LlmDriver {
                 id: `call_${Math.random().toString(36).slice(2, 10)}`,
                 name: part.functionCall.name,
                 args,
+                ...(typeof part.thoughtSignature === "string" && part.thoughtSignature
+                  ? { thoughtSignature: part.thoughtSignature } : {}),
               };
               pendingToolCalls.push(tc);
               emittedDelta = true;
@@ -266,9 +268,17 @@ export class GoogleDriver implements LlmDriver {
       } else if (msg.role === "assistant") {
         const parts: Array<Record<string, unknown>> = [];
         if (msg.content) parts.push({ text: msg.content });
-        if (msg.toolCalls) {
-          for (const tc of msg.toolCalls) {
-            parts.push({ functionCall: { name: tc.name, args: tc.args } });
+        if (msg.toolCalls?.length) {
+          const hasSignature = msg.toolCalls.some(tc => !!tc.thoughtSignature);
+          for (const [index, tc] of msg.toolCalls.entries()) {
+            // Legacy or cross-provider history has no signature to echo. Gemini
+            // accepts this sentinel on the first call, not on every parallel call.
+            const thoughtSignature = tc.thoughtSignature ||
+              (!hasSignature && index === 0 ? "skip_thought_signature_validator" : undefined);
+            parts.push({
+              functionCall: { name: tc.name, args: tc.args },
+              ...(thoughtSignature === undefined ? {} : { thoughtSignature }),
+            });
           }
         }
         contents.push({ role: "model", parts: parts.length > 0 ? parts : [{ text: "" }] });
