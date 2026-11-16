@@ -498,7 +498,7 @@ describe("listAllAvailableModels (parallel, static-first)", () => {
       expect(entry).toBeDefined();
       expect(entry!.provider).toBe("google");
       expect(entry!.contextWindow).toBe(1_048_576);
-      expect(entry!.reasoning).toBe(true);
+      expect(entry!.reasoning).toBeUndefined();
     }
     expect(ids[0]).toBe("gemini-4-hydrogen");
     expect(ids).toContain("gemini-2.0-flash");
