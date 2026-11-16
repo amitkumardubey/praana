@@ -379,7 +379,7 @@ export function buildFilesReadIndexSection(
     "",
   ];
   for (const r of shown) {
-    const rel = r.absPath.startsWith(cwd + "/") ? r.absPath.slice(cwd.length + 1) : r.absPath;
+    const rel = r.absPath.startsWith(`${cwd}/`) ? r.absPath.slice(cwd.length + 1) : r.absPath;
     lines.push(`- ${rel} (turn ${r.createdTurn}, \`${r.artifactId}\`)`);
   }
   const hidden = sorted.length - shown.length;
@@ -404,6 +404,8 @@ export function buildSystemFrame(
   memoryEnabled = false,
   incognito = false,
 ): string {
+  // Reserved for future system-frame tool listings; intentionally unused today.
+  void toolSchemas;
   const lines = [
     "# System",
     "",
@@ -482,11 +484,12 @@ export function buildSystemFrame(
 }
 
 export function buildCrossSessionMemory(digest: string, recallEnabled = false): string {
+  // The trust caveat lives in the store's INDEX_PREFACE, which already opens the
+  // digest text; repeating it here would double the caveat in a compiled prompt.
   const lines = ["# Cross-Session Memory", "", digest, ""];
   if (recallEnabled) {
     lines.push('Use recall({ query: "..." }) to search file memories, or recall({ name: "..." }) to read one in full.');
   }
-  lines.push("A memory is an observation at its date; verify files, functions and flags it names before recommending them.");
   return lines.join("\n");
 }
 
@@ -730,7 +733,7 @@ function summarizeForStub(obj: StateObject): string {
     case "constraint":
     case "note": {
       const text = (obj.payload as { text: string }).text;
-      return text.length > 80 ? text.slice(0, 80) + "..." : text;
+      return text.length > 80 ? `${text.slice(0, 80)}...` : text;
     }
   }
 }
@@ -738,7 +741,7 @@ function summarizeForStub(obj: StateObject): string {
 function truncateText(text: unknown, maxLen: number): string {
   const s = typeof text === "string" ? text : JSON.stringify(text);
   if (s.length <= maxLen) return s;
-  return s.slice(0, maxLen) + "...";
+  return `${s.slice(0, maxLen)}...`;
 }
 
 export function trimSectionToTokenBudget(
@@ -754,7 +757,7 @@ export function trimSectionToTokenBudget(
   const kept: string[] = [];
   let tokens = 0;
   for (const line of lines) {
-    const lineTokens = estTokens(line + "\n");
+    const lineTokens = estTokens(`${line}\n`);
     if (kept.length > 0 && tokens + lineTokens > maxTokens) {
       kept.push(`... (${truncationNote})`);
       return { text: kept.join("\n"), truncated: true };

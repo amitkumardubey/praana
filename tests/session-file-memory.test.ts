@@ -101,7 +101,8 @@ it.each([false, true])("injects the seeded startup index through the real %s eng
   const prompt = String(model.requests[0]?.messages.find((message) => message.role === "system")?.content);
   expect(prompt).toContain("[stable-preference](global/stable-preference.md)"); // main never lists the file store
   expect(prompt).toContain("# Cross-Session Memory");
-  expect(prompt).toContain("a memory is an observation at its date");
+  // The trust caveat comes exactly once, from the index preface, in both modes.
+  expect(prompt.match(/a memory is an observation at its date/gi)).toHaveLength(1);
   expect(prompt).toContain('Use recall({ query: "..." }) to search file memories');
 });
 
