@@ -54,9 +54,9 @@ it("tracks session start metadata and uptime", async () => {
   expect(session.getStartedAt()).toBeGreaterThan(0);
   expect(session.getUptimeMs()).toBeGreaterThanOrEqual(0);
 });
-it("reports the startup file memory count without an old DB query", async () => {
+it("reports the startup prompt-index snapshot without an old DB query", async () => {
   const session = await start();
-  expect(session.getPersistentMemoryEntryCount()).toBe(0);
+  expect(session.getMemoryPromptIndex()).toEqual({ shown: 0, total: 0 });
   await session.setIncognito(true);
-  expect(session.getPersistentMemoryEntryCount()).toBe(0);
+  expect(session.getMemoryPromptIndex()).toEqual({ shown: 0, total: 0 });
 });

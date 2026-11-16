@@ -141,7 +141,10 @@ export class Session {
   /** Semantic scoring belongs to the session, not the persistence backend. */
   embedder: Embedder | null = null;
   embeddingBackend = "keyword-only";
-  private memoryEntryCount = 0;
+  /** Start-of-session prompt-index snapshot: `shown` entries in the compiled
+   * prompt, `total` entries available at start (null when memory is off or
+   * unavailable). Never refreshed after in-session writes. */
+  private memoryPromptIndex: { shown: number; total: number } | null = null;
   /** Native addon status probed at session start (issue #587). */
   nativeStatus: NativeAddonStatus | null = null;
   /** Whether native search (search_code / find_files) is available. */
@@ -1122,9 +1125,8 @@ export class Session {
     return { total: snapshot.length, active, soft, hard, byKind };
   }
 
-  getPersistentMemoryEntryCount(): number | null {
-    if (!this.memoryEnabled || !this.fileMemory) return null;
-    return this.memoryEntryCount;
+  getMemoryPromptIndex(): { shown: number; total: number } | null {
+    return this.memoryPromptIndex;
   }
 
   getSessionSummary(): {
@@ -1310,7 +1312,7 @@ export class Session {
       const index = await this.fileMemory.buildMemoryIndex();
       this.digest = index.ok && index.total > 0 ? index.text : null;
       if (!index.ok) throw new Error(index.error);
-      this.memoryEntryCount = index.total;
+      this.memoryPromptIndex = { shown: index.shown, total: index.total };
       this.memoryError = null;
       if (index.skippedScopes?.length) {
         this.getLogger().child("memory").warn("File memory scope skipped", {
@@ -1326,6 +1328,7 @@ export class Session {
       this.memoryEnabled = false;
       this.fileMemory = null;
       this.digest = null;
+      this.memoryPromptIndex = null;
     }
   }
 

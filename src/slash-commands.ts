@@ -502,7 +502,11 @@ export async function executeSlashCommand(
       if (fileMemory.kind === "counts") {
         lines.push(`  global: ${fileMemory.global}`);
         lines.push(`  project: ${fileMemory.project}`);
-        lines.push(`  shown/total: ${fileMemory.shown}/${fileMemory.total}`);
+        lines.push(`  skipped files: ${fileMemory.skipped}`);
+        const promptIndex = session.getMemoryPromptIndex();
+        if (promptIndex) {
+          lines.push(`  prompt index (fixed at session start): ${promptIndex.shown}/${promptIndex.total}`);
+        }
         if (session.isIncognito()) lines.push("  writes: blocked");
       } else {
         lines.push(`  ${fileMemory.kind}`);

@@ -119,13 +119,9 @@ export function formatTuiBootSummary(input: TuiBootSummaryInput): string[] {
       : cwdLabel;
   lines.push(`cwd      ${branch ? `${cwdLine} · ${branch}` : cwdLine}`);
 
-  const digestEntries = session.digest
-    ? session.digest.split("\n").filter((l) => l.trim().length > 0).length
-    : 0;
+  const promptIndex = session.getMemoryPromptIndex();
   const memParts: string[] = [];
-  if (digestEntries > 0) memParts.push(`${digestEntries} recalled`);
-  const dbCount = session.getPersistentMemoryEntryCount();
-  if (dbCount !== null && dbCount > 0) memParts.push(`${dbCount} in db`);
+  if (promptIndex && promptIndex.total > 0) memParts.push(`${promptIndex.total} memories`);
   if (session.isIncognito()) {
     memParts.push("incognito");
   } else if (!session.memoryEnabled) {

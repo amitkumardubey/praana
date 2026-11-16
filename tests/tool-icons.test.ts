@@ -420,7 +420,7 @@ describe("formatTuiBootSummary", () => {
         memoryEnabled: true,
         isContextEngineEnabled: () => true,
         skills: [{ name: "a" }, { name: "b" }],
-        getPersistentMemoryEntryCount: () => 12,
+        getMemoryPromptIndex: () => null,
       } as never,
       model: "openrouter/claude-opus-4.8",
       cwd: "/proj",

@@ -34,13 +34,13 @@ export interface FileMemoryCounts {
   kind: "counts" | "unavailable" | "off";
   global: number;
   project: number;
-  shown: number;
-  total: number;
+  /** Files that could not be read or named (invalid names, oversize, unreadable). */
+  skipped: number;
 }
 
 /** Live store counts. Does not rebuild the prompt index. */
 export async function describeFileMemory(session: Session): Promise<FileMemoryCounts> {
-  const empty = { global: 0, project: 0, shown: 0, total: 0 };
+  const empty = { global: 0, project: 0, skipped: 0 };
   if (!session.fileMemory) {
     return { kind: session.memoryError ? "unavailable" : "off", ...empty };
   }
@@ -48,16 +48,10 @@ export async function describeFileMemory(session: Session): Promise<FileMemoryCo
   if (!listed.ok) return { kind: "unavailable", ...empty };
   const global = listed.entries.filter((entry) => entry.scope === "global").length;
   const project = listed.entries.filter((entry) => entry.scope === "project").length;
-  const shown = listed.entries.length;
-  return { kind: "counts", global, project, shown, total: shown + listed.skipped };
+  return { kind: "counts", global, project, skipped: listed.skipped };
 }
 
-export function formatFileMemoryBanner(counts: FileMemoryCounts): string {
-  if (counts.kind === "counts") {
-    return `memory: global ${counts.global} · project ${counts.project} · shown ${counts.shown}/${counts.total}`;
-  }
-  return counts.kind === "unavailable" ? "memory: unavailable" : "memory: off";
-}
+
 
 export async function formatSessionBannerLines(
   session: Session,
@@ -67,7 +61,22 @@ export async function formatSessionBannerLines(
   const memoryStats = session.getMemoryStats();
   const digestLen = session.digest?.length ?? 0;
   const configSources = getLoadedConfigSources();
-  const memoryLine = formatFileMemoryBanner(await describeFileMemory(session));
+  // The banner describes the start-of-session prompt index snapshot; it never
+  // rescans the store, so it cannot claim counts the model does not see.
+  let memoryLine: string;
+  if (session.memoryError) {
+    memoryLine = "memory: unavailable";
+  } else if (!session.memoryEnabled) {
+    memoryLine = "memory: off";
+  } else {
+    const promptIndex = session.getMemoryPromptIndex();
+    const parts: string[] = [];
+    if (promptIndex && promptIndex.total > 0) {
+      parts.push(`shown ${promptIndex.shown}/${promptIndex.total}`);
+    }
+    if (session.isIncognito()) parts.push("incognito");
+    memoryLine = `memory: ${parts.length > 0 ? parts.join(" · ") : "on"}`;
+  }
   return [
     `${APP_NAME} ${APP_VERSION}`,
     `session: ${session.id}`,

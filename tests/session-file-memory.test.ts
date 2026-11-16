@@ -19,6 +19,7 @@ import { executeSlashCommand } from "../src/slash-commands.js";
 import { openContextEngineDb } from "../src/context-engine/db.js";
 import { maybeAutoCompactClassic } from "../src/auto-compact.js";
 import { formatSessionBannerLines, printHelp, SLASH_COMMANDS_HELP_BLOCK } from "../src/app-banner.js";
+import { formatTuiBootSummary } from "../src/ui/tui/boot-summary.js";
 import { SLASH_COMMAND_METADATA } from "../src/slash-commands.js";
 
 let home: string;
@@ -493,8 +494,11 @@ it("serves digest, recall, memory, stats, and banner counts from the live file s
 
   const before = await executeSlashCommand("/stats", session, slashHandlers);
   expect(before.lines.join("\n")).toContain("global: 1");
+  expect(before.lines.join("\n")).toContain("skipped files: 0");
+  expect(before.lines.join("\n")).toContain("prompt index (fixed at session start): 2/2");
   expect(before.lines.join("\n")).not.toContain("Cognitive Memory");
   expect(before.lines.join("\n")).not.toContain("Memory DB");
+  expect(before.lines.join("\n")).not.toContain("shown/total");
   const written = await session.fileMemory!.write({
     scope: "global",
     name: "session-note",
@@ -507,7 +511,10 @@ it("serves digest, recall, memory, stats, and banner counts from the live file s
   expect(after.lines.join("\n")).toContain("global: 2");
   expect(session.digest).toBe(digest);
   const banner = await formatSessionBannerLines(session, home, "scripted");
-  expect(banner.some((line) => line.includes("global 2"))).toBe(true);
+  // The banner reflects the start-of-session prompt index, not the live store:
+  // the mid-session write cannot change what the model saw at start.
+  expect(banner.join("\n")).toContain("shown 2/2");
+  expect(banner.some((line) => line.includes("global 2") || line.includes("in db"))).toBe(false);
   expect(banner.some((line) => line.includes("incognito (disabled)") || line === "memory: off")).toBe(false);
 
   const quiet = await start(true);
@@ -517,8 +524,56 @@ it("serves digest, recall, memory, stats, and banner counts from the live file s
   expect(statsText).toContain("global:");
   expect(statsText).not.toContain("memory: off");
   const quietBanner = await formatSessionBannerLines(quiet, home, "scripted");
-  expect(quietBanner.some((line) => line.startsWith("memory: global"))).toBe(true);
+  expect(quietBanner.join("\n")).toContain("shown 2/2");
+  expect(quietBanner.join("\n")).toContain("incognito");
   expect(quietBanner.some((line) => line.includes("incognito (disabled)") || line === "memory: off")).toBe(false);
+});
+
+function seedMany(count: number): void {
+  const dir = join(home, ".praana", "memory");
+  mkdirSync(dir, { recursive: true });
+  for (let i = 0; i < count; i++) {
+    const name = `m${String(i).padStart(3, "0")}`;
+    writeFileSync(join(dir, `${name}.md`), `---\nname: ${name}\ndescription: Observation ${i}\ntype: user\nupdated: 2026-11-01\n---\nBody ${i}.\n`);
+  }
+}
+
+function seedOversize(name: string): void {
+  const dir = join(home, ".praana", "memory");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, `${name}.md`), Buffer.alloc(70000, 0x61));
+}
+
+it("banner and stats show the capped startup index, not a live rescan", async () => {
+  seedMany(300);
+  const session = await start();
+  const snapshot = session.getMemoryPromptIndex();
+  expect(snapshot).not.toBeNull();
+  expect(snapshot!.total).toBe(300);
+  expect(snapshot!.shown).toBeLessThan(snapshot!.total);
+  const banner = await formatSessionBannerLines(session, home, "scripted");
+  expect(banner.join("\n")).toContain(`shown ${snapshot!.shown}/${snapshot!.total}`);
+  expect(banner.join("\n")).not.toContain("in db");
+  const summary = formatTuiBootSummary({ session, model: "scripted", cwd: home, isResume: false });
+  expect(summary.join("\n")).toContain(`${snapshot!.total} memories`);
+  expect(summary.join("\n")).not.toContain("in db");
+  const stats = await executeSlashCommand("/stats", session, slashHandlers);
+  expect(stats.lines.join("\n")).toContain(`prompt index (fixed at session start): ${snapshot!.shown}/${snapshot!.total}`);
+});
+
+it("never folds unreadable files into the shown/total index counts", async () => {
+  seedMany(5);
+  seedOversize("corrupt-one");
+  seedOversize("corrupt-two");
+  const session = await start();
+  const banner = await formatSessionBannerLines(session, home, "scripted");
+  expect(banner.join("\n")).toContain("shown 5/5");
+  expect(banner.join("\n")).not.toContain("5/7");
+  const stats = await executeSlashCommand("/stats", session, slashHandlers);
+  const statsText = stats.lines.join("\n");
+  expect(statsText).toContain("skipped files: 2");
+  expect(statsText).toContain("prompt index (fixed at session start): 5/5");
+  expect(statsText).not.toContain("5/7");
 });
 
 it("says there are no memories yet when the index is empty", async () => {
