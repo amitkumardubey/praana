@@ -14,6 +14,12 @@ import { loadConfig } from "../src/config.js";
 import { CanonicalWriter, readFullSessionCanonicalRecords } from "../src/canonical-transcript.js";
 import { findReplayStartIndex, loadStateGraphCheckpoint } from "../src/state-graph-checkpoint.js";
 import { createMemoryTools } from "../src/tools/memory.js";
+import { createFileMemoryStore } from "../src/file-memory/store.js";
+
+function emptyFileMemory() {
+  const home = mkdtempSync(join(tmpdir(), "praana-compact-memory-"));
+  return { home, store: createFileMemoryStore({ home, cwd: home }) };
+}
 
 test("raw read options expose only the internal opt-in", () => {
   const source = readFileSync(new URL("../src/event-log.ts", import.meta.url), "utf8");
@@ -66,19 +72,20 @@ test("all bounded generic read paths filter before slicing while explicit intern
   expect(readFullSessionCanonicalRecords(raw)).toHaveLength(10);
 });
 
-test("retired memory compaction leaves visible and canonical history untouched", async () => {
+test("compaction writes no file memory and leaves visible and canonical history untouched", async () => {
   const { log } = setup();
   const config = loadConfig();
   config.compiler = { ...config.compiler, auto_compact_at: 0.75, auto_compact_clear_at: 0.55, compact_chunk_fraction: 0.5, reserved_output_tokens: 0 };
   const compressed = spyOn(log, "markEventsAsCompressed");
-  const compressTurns = mock(async () => 2);
-  const session = { config, eventLog: log, memoryEnabled: true, memoryStore: { compressTurns }, isCompactionArmed: () => false, setCompactionArmed() {}, getContextWindowTokens: () => 10000, debug: false } as unknown as Session;
+  const { home, store } = emptyFileMemory();
+  const session = { config, eventLog: log, memoryEnabled: true, fileMemory: store, isCompactionArmed: () => false, setCompactionArmed() {}, getContextWindowTokens: () => 10000, debug: false } as unknown as Session;
   noise(log, 20);
   for (let i = 0; i < 6; i++) legacy(log, `legacy-${i}`, i % 2 ? "agent_message" : "user_message", { text: `message ${i}` });
   const result = await maybeAutoCompactClassic(session, 8000, "test/model");
   expect(result).toMatchObject({ compacted: false, eventsCompacted: 0, factsStored: 0 });
   expect(compressed).not.toHaveBeenCalled();
-  expect(compressTurns).not.toHaveBeenCalled();
+  expect((await store.list()).entries).toEqual([]);
+  rmSync(home, { recursive: true, force: true });
   expect(log.readAll()).toHaveLength(6);
 });
 

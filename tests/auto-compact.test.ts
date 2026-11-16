@@ -1,4 +1,8 @@
 import { describe, it, expect, mock } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createFileMemoryStore } from "../src/file-memory/store.js";
 import {
   eventsToSessionEvents,
   maybeAutoCompactClassic,
@@ -41,8 +45,6 @@ describe("auto-compact", () => {
         compiler: { verbatim_only: true, reserved_output_tokens: 0 },
         llm: { context_window: 10_000 },
       },
-      memoryEnabled: true,
-      memoryStore: { compressTurns: mock() },
       eventLog: {
         readAllUncompressed: mock(() => []),
         markEventsAsCompressed: mock(),
@@ -59,7 +61,7 @@ describe("auto-compact", () => {
     expect(result.eventsCompacted).toBe(0);
   });
 
-  it("does not write old memory or discard history when pressure is high", async () => {
+  it("writes no file memory and discards no history when pressure is high", async () => {
     const events = [
       makeEvent("user_message", { text: "1" }, "e0"),
       makeEvent("agent_message", { text: "a" }, "e1"),
@@ -69,7 +71,8 @@ describe("auto-compact", () => {
       makeEvent("agent_message", { text: "c" }, "e5"),
     ];
 
-    const compressTurns = mock().mockResolvedValue(2);
+    const home = mkdtempSync(join(tmpdir(), "praana-compact-memory-"));
+    const store = createFileMemoryStore({ home, cwd: home });
     const markEventsAsCompressed = mock();
     const append = mock();
     const setCompactionArmed = mock();
@@ -85,7 +88,7 @@ describe("auto-compact", () => {
         llm: { context_window: 10_000 },
       },
       memoryEnabled: true,
-      memoryStore: { compressTurns },
+      fileMemory: store,
       eventLog: {
         readAllUncompressed: mock(() => events),
         readAllUncompressedAfterResetBoundary: mock(() => events),
@@ -101,7 +104,8 @@ describe("auto-compact", () => {
     const result = await maybeAutoCompactClassic(session, 8_000, "test/model");
     expect(result.compacted).toBe(false);
     expect(result.eventsCompacted).toBe(0);
-    expect(compressTurns).not.toHaveBeenCalled();
+    expect((await store.list()).entries).toEqual([]);
+    rmSync(home, { recursive: true, force: true });
     expect(markEventsAsCompressed).not.toHaveBeenCalled();
     expect(append).not.toHaveBeenCalled();
   });
