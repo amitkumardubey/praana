@@ -36,7 +36,7 @@ export function createFileMemoryTools(store: ToolStore) {
     description: z.string(),
     body: z.string(),
   }).strict();
-  const recall = z.object({ query: z.string().optional(), name: optionalName, scope: optionalScope }).strict()
+  const recall = z.object({ query: z.preprocess(absentIfBlank, z.string().optional()), name: optionalName, scope: optionalScope }).strict()
     .refine((args) => (args.query !== undefined) !== (args.name !== undefined), "Provide exactly one of query or name")
     .refine((args) => args.scope === undefined || args.name !== undefined, "scope applies only to a name lookup; queries always search global and project");
   const forget = z.object({ name, scope: optionalScope }).strict();

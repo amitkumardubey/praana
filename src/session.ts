@@ -899,10 +899,12 @@ export class Session {
     return this.sessionOutputTokens;
   }
 
-  /** Toggle write access atomically: build the replacement store first and only
-   * then swap it with the flag. On a failed rebuild the old store and flag stay
-   * in place and an error string is returned (no exception is thrown).
-   * The index is a cache-stable prefix: toggling write access never rebuilds it.
+  /** Toggle write access by building the replacement store before swapping it
+   * with the flag. If rebuilding fails when turning incognito off, the old store
+   * and flag stay in place. If enabling incognito fails, the writable store is
+   * dropped and memory is disabled (fail closed). In either case an error string
+   * is returned, not thrown. The index is a cache-stable prefix: a successful
+   * toggle never rebuilds it.
    * When memory is disabled (or was disabled by an init failure) there is no
    * store to rebuild, so the flag is updated directly and null returned. */
   async setIncognito(enabled: boolean): Promise<string | null> {
