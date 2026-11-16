@@ -32,11 +32,11 @@ export interface ClassicCompileInput {
 export function buildClassicSystemFrame(
   cwd: string,
   sessionId: string,
-  _toolSchemas: string[],
+  toolSchemas: string[],
   agentsContext?: string | null,
   projectContext?: string | null,
   resumeNote?: string,
-  nativeStatus?: NativeAddonStatus | null,
+   nativeStatus?: NativeAddonStatus | null,
   memoryEnabled = false,
   incognito = false,
 ): string {

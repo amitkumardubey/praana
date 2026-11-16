@@ -395,7 +395,7 @@ export function buildFilesReadIndexSection(
 export function buildSystemFrame(
   cwd: string,
   sessionId: string,
-  _toolSchemas: string[],
+  toolSchemas: string[],
   stateSummary?: string,
   agentsContext?: string | null,
   engineMode = false,

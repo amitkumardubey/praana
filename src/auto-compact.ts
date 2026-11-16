@@ -15,16 +15,36 @@ export function eventsToSessionEvents(events: Event[]): SessionEvent[] {
   for (const ev of events) {
     switch (ev.kind) {
       case "user_message":
-        out.push({ type: "user_message", timestamp: ev.timestamp, content: String(ev.payload.text ?? "") });
+        out.push({
+          type: "user_message",
+          timestamp: ev.timestamp,
+          content: String(ev.payload.text ?? ""),
+        });
         break;
       case "agent_message":
-        out.push({ type: "agent_message", timestamp: ev.timestamp, content: String(ev.payload.text ?? "") });
+        out.push({
+          type: "agent_message",
+          timestamp: ev.timestamp,
+          content: String(ev.payload.text ?? ""),
+        });
         break;
       case "tool_call":
-        out.push({ type: "tool_use", timestamp: ev.timestamp, tool_name: String(ev.payload.tool ?? "unknown"), args: (ev.payload.args as Record<string, unknown>) ?? {} });
+        out.push({
+          type: "tool_use",
+          timestamp: ev.timestamp,
+          tool_name: String(ev.payload.tool ?? "unknown"),
+          args: (ev.payload.args as Record<string, unknown>) ?? {},
+        });
         break;
       case "tool_result":
-        out.push({ type: "tool_result", timestamp: ev.timestamp, tool_name: String(ev.payload.tool ?? "unknown"), result: ev.payload.result });
+        out.push({
+          type: "tool_result",
+          timestamp: ev.timestamp,
+          tool_name: String(ev.payload.tool ?? "unknown"),
+          result: ev.payload.result,
+        });
+        break;
+      default:
         break;
     }
   }

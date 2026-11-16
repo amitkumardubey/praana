@@ -59,7 +59,7 @@ export function formatSessionBannerLines(
   ];
 }
 
-export function printSessionBanner(_session: Session, _cwd: string, _model: string): void {
+export function printSessionBanner(session: Session, cwd: string, model: string): void {
   const W = 72;
   const title = `▲ ${APP_NAME} [` + APP_VERSION + "]";
   console.log(title + " " + "─".repeat(W - title.length - 2) + "┐");
