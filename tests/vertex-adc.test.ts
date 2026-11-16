@@ -106,6 +106,38 @@ test("concurrent callers share one in-flight mint, including failure; the next c
   expect(requests).toBe(2);
 });
 
+test("a timed-out token mint fails safely and a subsequent call retries", async () => {
+  const path = file(user());
+  let requests = 0;
+  const fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    requests++;
+    if (requests > 1) return Response.json({ access_token: fake("retried"), expires_in: 3600 });
+    return new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+    });
+  }) as typeof globalThis.fetch;
+  const tokenForFile = adc.createTokenResolver({ fetch, now: () => now, timeoutMs: 10 });
+  const pending = [tokenForFile(path), tokenForFile(path)];
+  const results = await Promise.allSettled(pending);
+  expect(results.map((r) => r.status)).toEqual(["rejected", "rejected"]);
+  for (const result of results) {
+    if (result.status === "rejected") expect(result.reason.message).toBe("Google token endpoint request failed");
+  }
+  expect(requests).toBe(1);
+  expect(await tokenForFile(path)).toBe(fake("retried"));
+  expect(requests).toBe(2);
+}, 500);
+
+test("token mints use a 30-second timeout by default", async () => {
+  const timeout = spyOn(AbortSignal, "timeout");
+  try {
+    await adc.mintGoogleServiceAccountToken(file(user()));
+    expect(timeout).toHaveBeenCalledWith(30_000);
+  } finally {
+    timeout.mockRestore();
+  }
+});
+
 test("successful concurrent callers share one token", async () => {
   const path = file(user());
   const tokens = await Promise.all(Array.from({ length: 8 }, () => adc.mintGoogleServiceAccountToken(path)));

@@ -8,6 +8,7 @@ import {
 export { resolveGoogleCredentialPath, wellKnownGoogleAdcPath } from "./vertex-credentials.js";
 
 const TOKEN_ENDPOINT = "https://oauth2.googleapis.com/token";
+const TOKEN_TIMEOUT_MS = 30_000;
 
 function requiredString(data: Record<string, unknown>, name: string): string {
   const value = data[name];
@@ -58,7 +59,7 @@ function tokenGrant(data: Record<string, unknown>, now: number): URLSearchParams
 }
 
 /** Process-local cache. Dependencies are late-bound so callers can inject fetch/clock. */
-function createTokenResolver(deps: { fetch: typeof fetch; now: () => number }) {
+export function createTokenResolver(deps: { fetch: typeof fetch; now: () => number; timeoutMs?: number }) {
   const tokens = new Map<string, Promise<string>>();
   const expiresAt = new Map<string, number>();
   return function tokenForFile(file: string): Promise<string> {
@@ -79,6 +80,7 @@ function createTokenResolver(deps: { fetch: typeof fetch; now: () => number }) {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
             body: body.toString(),
+            signal: AbortSignal.timeout(deps.timeoutMs ?? TOKEN_TIMEOUT_MS),
           });
         } catch {
           throw new Error("Google token endpoint request failed");
