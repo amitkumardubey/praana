@@ -1736,7 +1736,7 @@ export async function runTurn(
             });
             if (pre.action === "block") {
               isError = pre.isError;
-              result = toolResultFromPreBlock(pre);
+              result = redactSecrets(toolResultFromPreBlock(pre));
             } else {
               try {
                 result = await toolDef.execute(pre.args);
