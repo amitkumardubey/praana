@@ -302,7 +302,9 @@ export async function listModelsForCli(
 
   for (const provider of providers) {
     try {
-      out.push(...(await listModelsForProvider(provider)));
+      const models = await listModelsForProvider(provider);
+      if (models.length > 0) out.push(...models);
+      else out.push({ provider, modelId: "", label: "", contextWindow: null, ...providerAvailability(provider) });
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       errors.push(`${provider}: ${message}`);

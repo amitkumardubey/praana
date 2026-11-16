@@ -54,6 +54,14 @@ const EXTRA_CREDENTIAL_ENV_KEYS = [
   "AWS_WEB_IDENTITY_TOKEN_FILE",
   "AWS_ROLE_ARN",
   "GOOGLE_APPLICATION_CREDENTIALS",
+  "GCP_ACCESS_TOKEN",
+  "GCP_PROJECT",
+  "GOOGLE_CLOUD_PROJECT",
+  "GOOGLE_CLOUD_LOCATION",
+  "VERTEX_PROJECT_ID",
+  "VERTEX_REGION",
+  "CLOUDSDK_CONFIG",
+  "APPDATA",
   "PGS_API_KEY",
 ];
 
@@ -96,6 +104,7 @@ if (isolated) {
     process.env.USERPROFILE = home;
     process.env.PRAANA_HOME = praanaHome;
     for (const key of credentialEnvKeys) delete process.env[key];
+    process.env.CLOUDSDK_CONFIG = join(home, "fake-gcloud");
   };
 
   applyIsolation();

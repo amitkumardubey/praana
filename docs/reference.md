@@ -148,6 +148,7 @@ Set any of the three keys to `0` (or use a non-positive value) to fall back to t
 | DeepSeek | `DEEPSEEK_API_KEY` |
 | Groq | `GROQ_API_KEY` |
 | Google | `GOOGLE_GENERATIVE_AI_API_KEY` |
+| Vertex AI (`vertex`, Gemini) | `GCP_ACCESS_TOKEN`, `GOOGLE_APPLICATION_CREDENTIALS`, stored token/file path, or application-default credentials (ADC). Requires a project; see below. |
 | Mistral | `MISTRAL_API_KEY` |
 | xAI | `XAI_API_KEY` |
 | Fireworks | `FIREWORKS_API_KEY` |
@@ -164,6 +165,35 @@ Set any of the three keys to `0` (or use a non-positive value) to fall back to t
 | OpenAI Codex | ChatGPT subscription sign-in with `/login openai-codex`: browser (default) or device code |
 
 Provider resolution order: explicit config → credential store (`~/.praana/credentials.json`) → environment-detected key → interactive setup.
+
+### Vertex AI (Gemini)
+
+Select `llm.provider = "vertex"` and a Gemini publisher model id in your config
+(or use `/model vertex <gemini-model-id>`). No `[providers.vertex]` table or
+`base_url` is needed. Vertex is not auto-selected by setup and has no interactive
+login flow. `/model` accepts Gemini ids without a catalog lookup;
+`praana models vertex` reports `(no models in catalog)` rather than guessing
+which models your project can access.
+
+Credential precedence: `GCP_ACCESS_TOKEN` → `GOOGLE_APPLICATION_CREDENTIALS`
+JSON file → stored token or JSON path → well-known ADC file. Both
+`service_account` and `authorized_user` (user ADC) files are supported. The
+well-known file is `application_default_credentials.json` under
+`CLOUDSDK_CONFIG`, otherwise `~/.config/gcloud` on Linux/macOS or
+`%APPDATA%\gcloud` on Windows. Tokens minted from files are cached in memory
+until 60 seconds before expiry; tokens and refreshed credentials are never
+written back to disk. Metadata-server credentials, workload identity and
+impersonation are not supported.
+
+Project precedence: `VERTEX_PROJECT_ID` → `GOOGLE_CLOUD_PROJECT` → `GCP_PROJECT`
+→ service-account `project_id` or user ADC `quota_project_id`. Without a project,
+the request is refused locally. Location precedence: `VERTEX_REGION` →
+`GOOGLE_CLOUD_LOCATION` → `us-central1`. Set `VERTEX_REGION=global` to use the
+global endpoint. Model availability depends on the project and location; a
+Vertex HTTP 404 retains Google's message and suggests trying another location.
+The default model and default location are unchanged: choose an accessible
+Gemini model explicitly. Non-Gemini routes and tuned-model/endpoint resource
+names are not supported.
 
 ### First-party OpenAI API routing
 

@@ -31,7 +31,9 @@ import {
 } from "../src/provider-registry.js";
 import { resetProviderCatalogCacheForTests } from "../src/provider-catalog.js";
 import { appHomePath } from "../src/app-identity.js";
-import { DEFAULT_MODELS } from "../src/llm.js";
+import { DEFAULT_MODELS, listEnvDetectedProviders } from "../src/llm.js";
+import { logoutProvider } from "../src/setup/logout.js";
+import { useCleanVertexEnv } from "./helpers/vertex-env.js";
 import type { Session } from "../src/session.js";
 import type { CustomProviderConfig } from "../src/setup/types.js";
 import { providerEnvKeyNames } from "./helpers/provider-env-keys.js";
@@ -66,6 +68,7 @@ function ensureConfigDir(): string {
 }
 
 describe("/login and /logout", () => {
+  useCleanVertexEnv();
   let tmpHome: string;
   const savedEnv: Record<string, string | undefined> = {};
 
@@ -430,6 +433,34 @@ describe("/login and /logout", () => {
         catalogs: Record<string, unknown>;
       };
       expect(cache.catalogs.openrouter).toBeUndefined();
+    });
+
+    it("does not fall back to ambient Vertex ADC after logging out the last provider", () => {
+      const home = process.env.HOME;
+      process.env.HOME = tmpHome;
+      delete process.env.CLOUDSDK_CONFIG;
+      try {
+        const dir = join(tmpHome, ".config", "gcloud");
+        mkdirSync(dir, { recursive: true });
+        writeFileSync(join(dir, "application_default_credentials.json"), JSON.stringify({ type: "authorized_user", client_id: "fake", client_secret: "fake", refresh_token: "fake" }));
+        expect(listEnvDetectedProviders()).toContain("vertex");
+        setApiKey("openai", "sk-test-1");
+        const result = logoutProvider("openai", createMockSession("openai"));
+        expect(result.switchedTo ?? null).toBeNull();
+        expect(result.needsLogin).toBe(true);
+      } finally {
+        if (home === undefined) delete process.env.HOME;
+        else process.env.HOME = home;
+      }
+    });
+
+    it("still falls back to a stored provider when Vertex ADC exists", () => {
+      writeFileSync(join(process.env.CLOUDSDK_CONFIG!, "application_default_credentials.json"), JSON.stringify({ type: "authorized_user", client_id: "fake", client_secret: "fake", refresh_token: "fake" }));
+      expect(listEnvDetectedProviders()).toContain("vertex");
+      setApiKey("openai", "sk-test-1");
+      setApiKey("anthropic", "sk-test-2");
+      const result = logoutProvider("openai", createMockSession("openai"));
+      expect(result.switchedTo?.provider).toBe("anthropic");
     });
 
     it("opens login when logging out the last stored provider", async () => {

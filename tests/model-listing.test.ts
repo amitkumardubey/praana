@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
-import { resetProviderCatalogCacheForTests } from "../src/provider-catalog.js";
+import { providerSupportsLiveCatalog, resetProviderCatalogCacheForTests } from "../src/provider-catalog.js";
 import {
   buildModelAutocompleteItems,
   filterModelAutocompleteItems,
@@ -376,7 +376,7 @@ describe("listAllAvailableModels (parallel, static-first)", () => {
     // sequential code). Find one among the available providers; if the
     // environment has none, the cross-provider assertions below still hold.
     const failProvider = listKnownProviders().find(
-      (p) => isProviderAvailable(p) && getCuratedModels(p).length === 0,
+      (p) => isProviderAvailable(p) && providerSupportsLiveCatalog(p) && getCuratedModels(p).length === 0,
     );
 
     fetchSpy.mockImplementation(async (input) => {

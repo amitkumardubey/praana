@@ -73,9 +73,14 @@ function isPiAiProviderName(name: string): boolean {
   return listKnownProviders().includes(name);
 }
 
-/** PRAANA-only providers (e.g. ollama) valid for native switch. */
+/** Providers whose model ids can be selected without a bundled catalog. */
 function isPraanaOnlyProvider(name: string): boolean {
-  return name === "ollama";
+  return name === "ollama" || name === "vertex";
+}
+
+function acceptsUncataloguedModel(provider: string, modelId: string): boolean {
+  return provider === "ollama" ||
+    (provider === "vertex" && /^gemini-[A-Za-z0-9][A-Za-z0-9._-]*$/.test(modelId));
 }
 
 export function isKnownProviderName(name: string): boolean {
@@ -147,7 +152,7 @@ function resolveWithExplicitProvider(
   const modelId = stripProviderRoutingPrefix(provider, modelSpec.trim());
   const switchedProvider = provider !== currentProvider;
 
-  if (isPraanaOnlyProvider(provider)) {
+  if (acceptsUncataloguedModel(provider, modelId)) {
     return resolveCatalogHit(provider, modelId, switchedProvider);
   }
 
@@ -190,7 +195,7 @@ export function resolveModelSpecifierSync(
 }
 
 function knownModelOnly(provider: string, modelId: string): boolean {
-  if (isPraanaOnlyProvider(provider)) return true;
+  if (acceptsUncataloguedModel(provider, modelId)) return true;
   return isInPiAiCatalog(provider, modelId);
 }
 

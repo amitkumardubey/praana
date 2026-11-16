@@ -13,10 +13,18 @@ import type {
   ToolCall,
 } from "../types.js";
 import { parseSseStream } from "../sse.js";
-import { runGuardedProviderStream } from "../stream-guard.js";
+import { ProviderHttpError, runGuardedProviderStream } from "../stream-guard.js";
 import { logLenientStreamEnd, prematureEndError, toolCutoffError } from "../stream-end.js";
 import { parseToolArguments } from "../tool-accumulator.js";
 import { resolveVertexAccessToken } from "../google-adc.js";
+import { vertexProjectFromCredentials } from "../vertex-credentials.js";
+import {
+  VERTEX_PROJECT_MISSING_MESSAGE,
+  VertexConfigError,
+  resolveVertexLocation,
+  resolveVertexProjectFromEnv,
+  vertexEndpoint,
+} from "../vertex-endpoint.js";
 
 export class GoogleDriver implements LlmDriver {
   readonly protocol = "google-generative-ai";
@@ -31,9 +39,19 @@ export class GoogleDriver implements LlmDriver {
     };
 
     if (isVertex) {
-      const region = process.env.VERTEX_REGION || "us-central1";
-      const project = process.env.VERTEX_PROJECT_ID || process.env.GCP_PROJECT || "default";
-      endpoint = `https://${region}-aiplatform.googleapis.com/v1/projects/${project}/locations/${region}/publishers/google/models/${req.model}:streamGenerateContent?alt=sse`;
+      // Configuration problems are not authentication failures: no HTTP status.
+      try {
+        const project = resolveVertexProjectFromEnv() ?? vertexProjectFromCredentials(auth);
+        if (!project) throw new VertexConfigError(VERTEX_PROJECT_MISSING_MESSAGE);
+        endpoint = vertexEndpoint({
+          location: resolveVertexLocation(),
+          project,
+          model: req.model,
+        });
+      } catch (err) {
+        yield { type: "error", error: err instanceof Error ? err : new Error("Invalid Vertex AI configuration"), retryable: false };
+        return;
+      }
       try {
         const token = await resolveVertexAccessToken({
           bearerToken: auth.bearerToken,
@@ -43,8 +61,7 @@ export class GoogleDriver implements LlmDriver {
       } catch (err) {
         yield {
           type: "error",
-          error: err instanceof Error ? err : new Error(String(err)),
-          status: 401,
+          error: err instanceof Error ? err : new Error("Vertex AI credential resolution failed"),
           retryable: false,
         };
         return;
@@ -88,7 +105,7 @@ export class GoogleDriver implements LlmDriver {
       thinking: accumulatedThinking || undefined,
     });
 
-    yield* runGuardedProviderStream({
+    const guarded = runGuardedProviderStream({
       req,
       haltedMessage,
       httpErrorLabel: "Google Gemini API error",
@@ -195,6 +212,13 @@ export class GoogleDriver implements LlmDriver {
       },
       onComplete: () => finishGoogle(),
     });
+    for await (const event of guarded) {
+      // HTTP errors occur before any SSE frame; keep Google's message/status.
+      if (isVertex && event.type === "error" && event.status === 404 && event.error instanceof ProviderHttpError) {
+        event.error.message += " Vertex AI model or location is not available to this project; try another VERTEX_REGION (for example global for Gemini 3.x).";
+      }
+      yield event;
+    }
 
     function finishGoogle(): StreamEvent[] {
         if (terminalFinish === "MAX_TOKENS") finishReason = "length";
