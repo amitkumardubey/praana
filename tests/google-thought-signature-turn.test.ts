@@ -1,4 +1,4 @@
-import { afterEach, expect, mock, spyOn, test } from "bun:test";
+import { afterEach, beforeEach, expect, mock, spyOn, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,11 +10,20 @@ import { googleSse, parallelCallParts, THOUGHT_SIGNATURE } from "./helpers/googl
 
 const originalFetch = globalThis.fetch;
 const originalKey = process.env.GEMINI_API_KEY;
+const originalRandom = Math.random;
 const sessions: Session[] = [];
 const roots: string[] = [];
 const servers: ReturnType<typeof Bun.serve>[] = [];
+beforeEach(() => {
+  // Counter-based replacement: every call returns a distinct value, so the
+  // driver cannot produce duplicate tool-call ids regardless of test order.
+  let randomCalls = 0;
+  Math.random = () => randomCalls++ / 2 ** 32;
+});
+
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  Math.random = originalRandom;
   if (originalKey === undefined) delete process.env.GEMINI_API_KEY;
   else process.env.GEMINI_API_KEY = originalKey;
   mock.restore();
