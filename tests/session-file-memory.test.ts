@@ -288,7 +288,7 @@ it("ends with no automatic memory lifecycle", async () => {
   config.context_engine.enabled = true;
   const session = await start();
   session.stateGraph.create("note", { text: "A durable but not deliberately saved observation" });
-  const status = await session.end("clean", [], { memoryTimeoutMs: 10 });
+  const status = await session.end("clean", []);
   expect(status.memory).toBe("noop");
   expect(session.eventLog.readAll().some((event) => event.payload.type === "memory_lifecycle")).toBe(false);
 });

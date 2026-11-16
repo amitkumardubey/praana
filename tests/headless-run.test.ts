@@ -270,11 +270,7 @@ describe("runHeadless", () => {
         },
       }),
     ).rejects.toThrow("provider down");
-    expect(end).toHaveBeenCalledWith(
-      "error",
-      [],
-      expect.objectContaining({ memoryTimeoutMs: 50 }),
-    );
+    expect(end).toHaveBeenCalledWith("error", []);
     expect(readFileSync(usagePath, "utf8")).toContain("n_input_tokens");
   });
 });

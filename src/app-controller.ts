@@ -360,7 +360,7 @@ export class AppController {
   async startNewSession(): Promise<StartupInfo> {
     if (!this.sessionEnded) {
       const events = this.session.getTranscriptEvents();
-      await this.session.end("clean", events, { memoryTimeoutMs: 50 });
+      await this.session.end("clean", events);
       this.sessionEnded = true;
     }
 

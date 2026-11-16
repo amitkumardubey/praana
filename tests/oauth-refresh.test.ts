@@ -647,7 +647,7 @@ describe("serialized OAuth refresh", () => {
       const history = buildFullConversationHistory(session.eventLog.readAllUncompressed());
       expect(history).not.toContain("hello");
     } finally {
-      await session.end("clean", [], { memoryTimeoutMs: 1 });
+      await session.end("clean", []);
     }
   });
 
@@ -682,7 +682,7 @@ describe("serialized OAuth refresh", () => {
       expect(postTurns).toBe(0);
     } finally {
       lock.release();
-      await session.end("clean", [], { memoryTimeoutMs: 1 });
+      await session.end("clean", []);
     }
   }, { timeout: 10_000 });
 
@@ -717,7 +717,7 @@ describe("serialized OAuth refresh", () => {
       expect(session.getTurnCount()).toBe(turnsBefore);
       expect(postTurns).toBe(0);
     } finally {
-      await session.end("clean", [], { memoryTimeoutMs: 1 });
+      await session.end("clean", []);
     }
   });
 
@@ -1275,7 +1275,7 @@ describe("serialized OAuth refresh", () => {
       expect(errors.join("\n")).not.toContain("refreshing");
     } finally {
       refreshLock.release();
-      await session.end("clean", [], { memoryTimeoutMs: 1 });
+      await session.end("clean", []);
     }
   });
 
@@ -1320,7 +1320,7 @@ describe("serialized OAuth refresh", () => {
       expect(agentText()).not.toContain("token endpoint down");
       expect(agentText()).not.toContain("Run /login");
     } finally {
-      await session.end("clean", [], { memoryTimeoutMs: 1 });
+      await session.end("clean", []);
     }
   });
 
@@ -1356,7 +1356,7 @@ describe("serialized OAuth refresh", () => {
       expect(agentText).not.toContain(busy);
     } finally {
       refreshLock.release();
-      await session.end("clean", [], { memoryTimeoutMs: 1 });
+      await session.end("clean", []);
     }
   });
 });

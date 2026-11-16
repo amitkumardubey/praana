@@ -1172,7 +1172,6 @@ export class Session {
   async end(
     reason: "clean" | "aborted" | "error",
     events?: SessionEvent[],
-    _opts?: { memoryTimeoutMs?: number }
   ): Promise<SessionEndStatus> {
     const summary = this.getSessionSummary();
     const emptyStatus = (memory: SessionEndStatus["memory"]): SessionEndStatus => ({

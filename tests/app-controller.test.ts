@@ -394,7 +394,7 @@ describe("AppController", () => {
 
     const info = await controller.startNewSession();
 
-    expect(end).toHaveBeenCalledWith("clean", transcript, { memoryTimeoutMs: 50 });
+    expect(end).toHaveBeenCalledWith("clean", transcript);
     // Config was reloaded from the temp file.
     expect(controller.config.llm.model).toBe("reloaded/model");
     expect(controller.session.id).toBe("sess-new");
