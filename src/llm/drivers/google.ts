@@ -67,8 +67,8 @@ export class GoogleDriver implements LlmDriver {
       ...(systemInstruction ? { systemInstruction } : {}),
       ...(tools.length > 0 ? { tools } : {}),
       generationConfig: {
-        ...(req.temperature === undefined ? {} : { temperature: req.temperature }),
-        ...(req.maxTokens === undefined ? {} : { maxOutputTokens: req.maxTokens }),
+        ...(req.temperature !== undefined ? { temperature: req.temperature } : {}),
+        ...(req.maxTokens !== undefined ? { maxOutputTokens: req.maxTokens } : {}),
       },
     };
 
