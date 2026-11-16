@@ -12,6 +12,8 @@ export interface KnowledgeToolContext {
   memoryStore: MemoryStore | null;
   memoryEnabled: boolean;
   incognito: boolean;
+  /** Default true so the old tool unit tests keep their subjects. Sessions pass false. */
+  includeLegacyMemoryTools?: boolean;
   contextEngine: ContextEngine | null;
   skillScorecard?: ScorecardInc;
   getCurrentTurn: () => number;
@@ -231,6 +233,15 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
         }),
       }
     : {};
+
+  if (ctx.includeLegacyMemoryTools === false) {
+    return {
+      ...searchTurnEvents,
+      ...contextSummary,
+      ...retrieveArtifact,
+      ...eventLineage,
+    };
+  }
 
   return {
     recall: defineTool({

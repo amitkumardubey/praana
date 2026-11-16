@@ -89,12 +89,12 @@ export function createAllTools(ctx: ToolRegistryContext) {
       : undefined,
   });
 
-  // Legacy definitions remain available to their unit tests until removal, never to sessions.
-  const { recall: _recall, remember: _remember, forget_memory: _forget, ...knowledgeTools } = createKnowledgeTools({
+  const knowledgeTools = createKnowledgeTools({
     eventLog: ctx.eventLog,
     memoryStore: null,
     memoryEnabled: false,
     incognito: ctx.incognito,
+    includeLegacyMemoryTools: false,
     contextEngine: ctx.contextEngine,
     skillScorecard: ctx.scorecard,
     getCurrentTurn: ctx.getCurrentTurn ?? (() => 0),

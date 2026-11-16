@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from "bun:test";
 import { createAllTools, describeTools } from '../src/tools/index.js';
 import { createMemoryTools } from '../src/tools/memory.js';
 import { createKnowledgeTools } from '../src/tools/knowledge.js';
+import * as knowledgeToolsModule from '../src/tools/knowledge.js';
 import { ContextEngine } from '../src/context-engine/index.js';
 import { createSystemTools } from '../src/tools/system.js';
 import { createBuiltinHookRegistry } from '../src/hooks/index.js';
@@ -1837,6 +1838,17 @@ describe('Tool registry (mode-aware)', () => {
     const tools = describeTools({ contextEngineEnabled: false });
     expect(tools.some((t) => t.startsWith('create_task'))).toBe(false);
     expect(tools.some((t) => t.startsWith('shell'))).toBe(true);
+  });
+
+  it("does not construct legacy cognitive memory tools for a session", () => {
+    const spy = spyOn(knowledgeToolsModule, "createKnowledgeTools");
+    createAllTools({ ...baseCtx, classicMode: false });
+    const produced = spy.mock.results[0]?.value as Record<string, unknown>;
+    expect(produced).not.toHaveProperty("recall");
+    expect(produced).not.toHaveProperty("remember");
+    expect(produced).not.toHaveProperty("forget_memory");
+    expect(createKnowledgeTools({ ...baseCtx, memoryStore: null, getCurrentTurn: () => 0 }).recall).toBeDefined();
+    spy.mockRestore();
   });
 
   it('createAllTools classic mode excludes working memory tools', () => {
