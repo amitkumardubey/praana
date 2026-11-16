@@ -90,7 +90,7 @@ test("static import scan recognizes imports, reexports, dynamic imports and requ
   expect(sourceImports('import { x } from "./one.js"; export * from "./two.js"; import("./three.js"); require("./four.js"); // import("ignored")', "fixture.ts")).toEqual(["./one.js", "./two.js", "./three.js", "./four.js"]);
 });
 
-test("file memory is production-inert and imports no legacy memory or compiler modules", async () => {
+test("file memory imports no legacy memory or compiler modules", async () => {
   const src = resolve(import.meta.dir, "../src"), moduleRoot = join(src, "file-memory");
   let files = 0, localFiles = 0;
   for await (const path of new Bun.Glob("**/*.{ts,tsx,js,jsx,mts,mjs,cts,cjs}").scan({ cwd: src, absolute: true })) {
@@ -99,8 +99,7 @@ test("file memory is production-inert and imports no legacy memory or compiler m
     if (local) localFiles++;
     for (const specifier of sourceImports(await fs.readFile(path, "utf8"), path)) {
       const resolved = resolve(dirname(path), specifier);
-      if (!local) expect(contained(moduleRoot, resolved) || /(?:^|\/)file-memory(?:\/|$)/.test(specifier)).toBe(false);
-      else {
+      if (local) {
         expect(contained(join(src, "memory"), resolved)).toBe(false);
         expect(contained(join(src, "context-engine"), resolved)).toBe(false);
         expect(resolved.replace(/\.(?:[cm]?[jt]sx?)$/, "")).not.toBe(join(src, "compiler"));

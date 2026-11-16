@@ -691,13 +691,6 @@ export async function runTurn(
 ): Promise<string> {
   /* Always have a sink — default routes to legacy stdout/stderr helpers. */
   const s = options?.sink ?? createDefaultTurnSink();
-  const successfulToolResult = (result: unknown, isError: boolean): boolean => {
-    if (isError) return false;
-    if (result && typeof result === "object" && "ok" in result) {
-      return (result as { ok?: unknown }).ok !== false;
-    }
-    return true;
-  };
 
   const turnRecorder = new TurnRecorder(userInput);
   const stateBeforeTurn = session.contextEngine?.captureStateSnapshot(
@@ -758,7 +751,7 @@ export async function runTurn(
   const tools = createAllTools({
     eventLog: session.eventLog,
     stateGraph: session.stateGraph,
-    memoryStore: session.memoryStore,
+    fileMemory: session.fileMemory,
     memoryEnabled: session.memoryEnabled,
     incognito: session.isIncognito(),
     contextEngine: session.contextEngine,
@@ -897,7 +890,7 @@ export async function runTurn(
       engineConfig,
       contextWindowTokens,
       hydratedTexts: autoHydrated.map((r) => r.text),
-      embedder: session.memoryStore?.embedder ?? null,
+      embedder: session.embedder,
       embeddingCache: session.embeddingCache,
       workflowPatterns,
       agentHints: buildAgentHints({
@@ -1126,7 +1119,6 @@ export async function runTurn(
   let noOpToolsThisTurn = 0;
   // Tracks memory entries already reinforced this turn so a recalled entry is
   // boosted at most once even if it appears in multiple parallel batches.
-  const reinforcedEntryIdsThisTurn = new Set<string>();
 
   // Active model/provider may switch to fallback config if the primary fails.
   // Fallback is applied only to the initial stream attempt (step 0). Subsequent
@@ -1675,7 +1667,6 @@ export async function runTurn(
     }
 
     const toolResults: Array<{ toolCallId?: string; toolName: string; result: unknown }> = [];
-    const recalledEntryIdsThisTurn = new Set<string>();
 
 
     // Notify caller that tool calls are about to execute (e.g. close thinking block)
@@ -1762,20 +1753,6 @@ export async function runTurn(
       );
 
       s.onSpinnerStart?.("thinking…");
-
-      // Collect recalled entries from all recall calls in the batch.
-      for (const { tc, result, isError } of executedResults) {
-        if (tc.toolName === "recall" && successfulToolResult(result, isError)) {
-          const entries = (result as { entries?: Array<{ id?: string }> }).entries;
-          if (Array.isArray(entries)) {
-            for (const entry of entries) {
-              if (typeof entry?.id === "string" && entry.id) {
-                recalledEntryIdsThisTurn.add(entry.id);
-              }
-            }
-          }
-        }
-      }
 
       // Process results in original order to keep history/event log deterministic.
       for (const { tc, result, isError } of executedResults) {
@@ -1923,25 +1900,6 @@ export async function runTurn(
         const uiResultText =
           tc.toolName === "shell" ? toolResultRawText(result) : promptResultText;
         s.onToolResult?.(tc.toolCallId, tc.toolName, uiResultText, isError);
-      }
-
-      // Reinforce any recalled entries once per turn when at least one non-recall
-      // tool succeeds. Skip entries already reinforced earlier in this turn so a
-      // recalled entry is boosted at most once even if it appears in multiple batches.
-      const newEntryIds = Array.from(recalledEntryIdsThisTurn).filter(
-        (id) => !reinforcedEntryIdsThisTurn.has(id),
-      );
-      if (
-        newEntryIds.length > 0 &&
-        executedResults.some(
-          ({ tc, result, isError }) =>
-            tc.toolName !== "recall" && successfulToolResult(result, isError),
-        )
-      ) {
-        session.memoryStore?.reinforceFromSuccessfulToolOutcome(newEntryIds);
-        for (const id of newEntryIds) {
-          reinforcedEntryIdsThisTurn.add(id);
-        }
       }
 
       if (options?.signal?.aborted) {

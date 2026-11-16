@@ -19,11 +19,12 @@ afterAll(() => {
 });
 
 describe("incognito mode", () => {
-  it("starts without memory when incognito flag is set", async () => {
+  it("starts with read-only file memory when incognito flag is set", async () => {
     const session = await Session.create(process.cwd(), testConfig, { incognito: true });
     expect(session.isIncognito()).toBe(true);
-    expect(session.memoryEnabled).toBe(false);
-    expect(session.memoryStore).toBeNull();
+    expect(session.memoryEnabled).toBe(true);
+    expect(session.fileMemory).not.toBeNull();
     expect(session.digest).toBeNull();
+    await session.end("clean");
   });
 });

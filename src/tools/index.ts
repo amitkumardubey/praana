@@ -1,6 +1,6 @@
 import type { EventLog } from "../event-log.js";
 import type { StateGraph } from "../state-graph.js";
-import type { MemoryStore } from "../memory/index.js";
+import type { FileMemoryStore } from "../file-memory/index.js";
 import type { ContextEngine } from "../context-engine/index.js";
 import type { ScorecardInc } from "../context-engine/telemetry.js";
 import type { SandboxConfig } from "../types.js";
@@ -25,7 +25,7 @@ import { createWebFetchTool } from "./web/tool.js";
 export interface ToolRegistryContext {
   eventLog: EventLog;
   stateGraph: StateGraph;
-  memoryStore: MemoryStore | null;
+  fileMemory: FileMemoryStore | null;
   memoryEnabled: boolean;
   incognito: boolean;
   contextEngine: ContextEngine | null;
@@ -76,9 +76,6 @@ export function createAllTools(ctx: ToolRegistryContext) {
   const memoryTools = createMemoryTools({
     eventLog: ctx.eventLog,
     stateGraph: ctx.stateGraph,
-    memoryStore: ctx.memoryStore,
-    memoryEnabled: ctx.memoryEnabled,
-    incognito: ctx.incognito,
     includeWorkingMemoryTools: !classicMode,
     searchTurnEvents: ctx.contextEngine
       ? (query, limit, currentTurn) =>
@@ -93,8 +90,8 @@ export function createAllTools(ctx: ToolRegistryContext) {
 
   const knowledgeTools = createKnowledgeTools({
     eventLog: ctx.eventLog,
-    memoryStore: ctx.memoryStore,
-    memoryEnabled: ctx.memoryEnabled,
+    memoryStore: null,
+    memoryEnabled: false,
     incognito: ctx.incognito,
     contextEngine: ctx.contextEngine,
     skillScorecard: ctx.scorecard,

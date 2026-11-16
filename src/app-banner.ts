@@ -104,6 +104,8 @@ export function formatSessionEndEpilogue(input: SessionEndEpilogueInput): string
     memoryParts.push("saving in background…");
   } else if (input.memory === "failed") {
     memoryParts.push("memory failed");
+  } else if (input.memory === "noop") {
+    memoryParts.push("file memory");
   } else {
     memoryParts.push("memory off");
   }
@@ -112,11 +114,7 @@ export function formatSessionEndEpilogue(input: SessionEndEpilogueInput): string
     memoryParts.push(`remembered ${input.rememberCalls}`);
   }
   if (input.recallUsed > 0) {
-    memoryParts.push(`reinforced ${input.recallUsed}`);
-  }
-  // Only claim learnings when the summarizer finished in-process.
-  if (input.memory === "completed" && input.learningsStored > 0) {
-    memoryParts.push(`learned ${input.learningsStored}`);
+    memoryParts.push(`recalled ${input.recallUsed}`);
   }
 
   lines.push(` ${memoryParts.join(" · ")}`);

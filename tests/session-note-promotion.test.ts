@@ -74,23 +74,23 @@ async function createSessionWithMemory(): Promise<{ session: Session; memoryStor
   return { session, memoryStore };
 }
 
-describe("session-end note promotion (#504)", () => {
-  it("promotes active notes to cognitive memory", async () => {
+describe("session-end notes stay session-local", () => {
+  it("does not promote active notes to cognitive memory", async () => {
     const { session, memoryStore } = await createSessionWithMemory();
 
     session.stateGraph.create("note", { text: "TypeScript strict mode is better" });
 
     const status = await session.end("clean", []);
-    expect(status.memory).toBe("completed");
+    expect(status.memory).toBe("skipped");
 
     const recalled = await memoryStore.recall("TypeScript strict mode", {
       kinds: ["fact"],
       minMatch: 0.1,
     });
-    expect(recalled.entries.some((e) => e.content.includes("TypeScript strict mode"))).toBe(true);
+    expect(recalled.entries.some((e) => e.content.includes("TypeScript strict mode"))).toBe(false);
   });
 
-  it("promotes soft-tier notes to cognitive memory", async () => {
+  it("does not promote soft-tier notes to cognitive memory", async () => {
     const { session, memoryStore } = await createSessionWithMemory();
 
     const obj = session.stateGraph.create("note", { text: "Project uses Vitest for testing" });
@@ -102,7 +102,7 @@ describe("session-end note promotion (#504)", () => {
       kinds: ["fact"],
       minMatch: 0.1,
     });
-    expect(recalled.entries.some((e) => e.content.includes("Vitest"))).toBe(true);
+    expect(recalled.entries.some((e) => e.content.includes("Vitest"))).toBe(false);
   });
 
   it("does NOT promote hard-tier notes", async () => {
@@ -213,7 +213,7 @@ describe("session-end note promotion (#504)", () => {
     expect(status.memory).toBe("skipped");
   });
 
-  it("promotes multiple notes in a single session end", async () => {
+  it("does not promote multiple notes in a single session end", async () => {
     const { session, memoryStore } = await createSessionWithMemory();
 
     session.stateGraph.create("note", { text: "First finding about architecture" });
@@ -223,16 +223,16 @@ describe("session-end note promotion (#504)", () => {
     await session.end("clean", []);
 
     const recalled1 = await memoryStore.recall("architecture", { minMatch: 0.1 });
-    expect(recalled1.entries.some((e) => e.content.includes("First finding"))).toBe(true);
+    expect(recalled1.entries.some((e) => e.content.includes("First finding"))).toBe(false);
 
     const recalled2 = await memoryStore.recall("performance", { minMatch: 0.1 });
-    expect(recalled2.entries.some((e) => e.content.includes("Second finding"))).toBe(true);
+    expect(recalled2.entries.some((e) => e.content.includes("Second finding"))).toBe(false);
 
     const recalled3 = await memoryStore.recall("security", { minMatch: 0.1 });
-    expect(recalled3.entries.some((e) => e.content.includes("Third finding"))).toBe(true);
+    expect(recalled3.entries.some((e) => e.content.includes("Third finding"))).toBe(false);
   });
 
-  it("still promotes notes even if consolidation is disabled", async () => {
+  it("does not promote notes even if consolidation is disabled", async () => {
     const { session, memoryStore } = await createSessionWithMemory();
 
     // consolidation is not enabled in testConfig
@@ -241,6 +241,6 @@ describe("session-end note promotion (#504)", () => {
     await session.end("clean", []);
 
     const recalled = await memoryStore.recall("Redis caching", { kinds: ["fact"], minMatch: 0.1 });
-    expect(recalled.entries.some((e) => e.content.includes("Redis caching"))).toBe(true);
+    expect(recalled.entries.some((e) => e.content.includes("Redis caching"))).toBe(false);
   });
 });

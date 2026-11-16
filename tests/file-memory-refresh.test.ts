@@ -171,12 +171,11 @@ test("successful store operations touch only the injected home", async () => {
   }
 });
 
-test("file-memory remains production-inert and independent of the old memory/compiler modules", async () => {
+test("file-memory remains independent of the old memory/compiler modules", async () => {
   const files = await fs.readdir("src", { recursive: true });
   for (const file of files.filter((path) => path.endsWith(".ts"))) {
     const text = await fs.readFile(join("src", file), "utf8");
     if (file.startsWith("file-memory/")) expect(text).not.toMatch(/from\s*["'](?:\.\.\/)+(?:memory(?:\/|\.js)|context-engine|compiler\.js)/);
-    else expect(text).not.toMatch(/(?:from\s*|import\s*\()\s*["'][^"']*file-memory/);
   }
 });
 

@@ -152,8 +152,8 @@ export class AppController {
       model,
       bannerLines: [
         ...formatSessionBannerLines(this.session, this.cwd, model),
-        ...(this.session.memoryInitError
-          ? [`⚠ memory disabled: ${this.session.memoryInitError}`]
+        ...(this.session.memoryError
+          ? [`⚠ memory unavailable: ${this.session.memoryError}`]
           : []),
       ],
       recentConversationLines: didResume

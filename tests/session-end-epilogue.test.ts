@@ -44,11 +44,12 @@ describe("formatSessionEndEpilogue", () => {
     expect(text).not.toContain("learned");
   });
 
-  it("includes remembered / reinforced / learned only when > 0", () => {
+  it("includes deliberate writes and recalls but no learned count", () => {
     const text = formatSessionEndEpilogue(
       base({ rememberCalls: 1, recallUsed: 2, learningsStored: 4 }),
     ).join("\n");
-    expect(text).toContain("memory saved · remembered 1 · reinforced 2 · learned 4");
+    expect(text).toContain("memory saved · remembered 1 · recalled 2");
+    expect(text).not.toContain("learned");
   });
 
   it("says saving in background and omits learnings when memory is background", () => {
@@ -57,15 +58,15 @@ describe("formatSessionEndEpilogue", () => {
     ).join("\n");
     expect(text).toContain("saving in background");
     expect(text).not.toContain("learned");
-    expect(text).toContain("reinforced 1");
+    expect(text).toContain("recalled 1");
   });
 
-  it("says memory off for skipped/noop and memory failed for failed", () => {
+  it("distinguishes file memory noop from memory off and failure", () => {
     expect(formatSessionEndEpilogue(base({ memory: "skipped" })).join("\n")).toContain(
       "memory off",
     );
     expect(formatSessionEndEpilogue(base({ memory: "noop" })).join("\n")).toContain(
-      "memory off",
+      "file memory",
     );
     expect(formatSessionEndEpilogue(base({ memory: "failed" })).join("\n")).toContain(
       "memory failed",

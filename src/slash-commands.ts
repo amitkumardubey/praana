@@ -590,11 +590,7 @@ export async function executeSlashCommand(
     }
 
     case "/digest": {
-      if (session.digest) {
-        lines.push("", session.digest);
-      } else {
-        lines.push("No digest available.");
-      }
+      lines.push("Memory commands are being rewritten");
       break;
     }
 
@@ -628,34 +624,7 @@ export async function executeSlashCommand(
     }
 
     case "/recall": {
-      const query = parts.slice(1).join(" ");
-      if (!query || !session.memoryEnabled || !session.memoryStore) {
-        lines.push("Usage: /recall <query> (requires memory enabled)");
-        break;
-      }
-      try {
-        const recallResult = await session.memoryStore.recall(query, {
-          limit: 20,
-          minMatch: session.config.compiler.recall_min_score ?? 0.35,
-        });
-        if (recallResult.notice) {
-          lines.push(recallResult.notice);
-        }
-        if (recallResult.entries.length === 0) {
-          if (!recallResult.notice) {
-            lines.push("No results found.");
-          }
-        } else {
-          lines.push(``, `Recall results for "${query}":`);
-          for (const e of recallResult.entries) {
-            lines.push(
-              `  - [${e.kind}] ${e.content.slice(0, 100)} (match: ${e.match.toFixed(2)} | valid: ${e.validity.toFixed(2)} | useful: ${e.usefulness.toFixed(2)})`
-            );
-          }
-        }
-      } catch (err) {
-        lines.push(`Recall error: ${(err as Error).message}`);
-      }
+      lines.push("Memory commands are being rewritten");
       break;
     }
 
@@ -977,26 +946,7 @@ export async function executeSlashCommand(
     }
 
     case "/memory": {
-      const sub = (parts[1] ?? "").toLowerCase();
-      if (sub !== "dedupe") {
-        lines.push("Usage: /memory dedupe");
-        break;
-      }
-      if (!session.memoryEnabled || !session.memoryStore) {
-        lines.push("Memory dedupe requires memory to be enabled.");
-        break;
-      }
-      try {
-        const result = await session.runMemoryDedupe();
-        lines.push(
-          `Merged ${result.clustersMerged} duplicate ${result.clustersMerged === 1 ? "cluster" : "clusters"}, removed ${result.entriesRemoved} ${result.entriesRemoved === 1 ? "entry" : "entries"}.`,
-        );
-        if (session.digest) {
-          lines.push("", "Digest refreshed.");
-        }
-      } catch (err) {
-        lines.push(`Memory dedupe error: ${(err as Error).message}`);
-      }
+      lines.push("Memory commands are being rewritten");
       break;
     }
 

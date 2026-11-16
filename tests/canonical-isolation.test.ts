@@ -66,7 +66,7 @@ test("all bounded generic read paths filter before slicing while explicit intern
   expect(readFullSessionCanonicalRecords(raw)).toHaveLength(10);
 });
 
-test("compaction selects identical event ids and counts before chunk selection", async () => {
+test("retired memory compaction leaves visible and canonical history untouched", async () => {
   const { log } = setup();
   const config = loadConfig();
   config.compiler = { ...config.compiler, auto_compact_at: 0.75, auto_compact_clear_at: 0.55, compact_chunk_fraction: 0.5, reserved_output_tokens: 0 };
@@ -76,13 +76,10 @@ test("compaction selects identical event ids and counts before chunk selection",
   noise(log, 20);
   for (let i = 0; i < 6; i++) legacy(log, `legacy-${i}`, i % 2 ? "agent_message" : "user_message", { text: `message ${i}` });
   const result = await maybeAutoCompactClassic(session, 8000, "test/model");
-  expect(result).toMatchObject({ compacted: true, eventsCompacted: 3, factsStored: 2 });
-  expect(compressed).toHaveBeenCalledWith(["legacy-0", "legacy-1", "legacy-2"]);
-  expect(compressTurns.mock.calls[0][0]).toEqual([
-    { type: "user_message", timestamp: 123, content: "message 0" },
-    { type: "agent_message", timestamp: 123, content: "message 1" },
-    { type: "user_message", timestamp: 123, content: "message 2" },
-  ]);
+  expect(result).toMatchObject({ compacted: false, eventsCompacted: 0, factsStored: 0 });
+  expect(compressed).not.toHaveBeenCalled();
+  expect(compressTurns).not.toHaveBeenCalled();
+  expect(log.readAll()).toHaveLength(6);
 });
 
 test("classic assembly excludes its trailing current input despite canonical copies", () => {
