@@ -48,9 +48,9 @@ praana --config /path/to/praana.config.toml
 
 Config deep-merge, later overrides earlier: `~/.praana/praana.config.json` → `~/.praana/config.toml` → `./praana.config.json` → `./praana.config.toml`. Only `[shell] allowed_paths` / `[risk] allow` arrays append-merge; other arrays replace.
 
-Config tables: `llm`, `memory`, `compiler`, `tiers`, `session`, `consolidation`, `shell`, `edit`, `risk`, `circuit`, `tools`, `native`, `lsp`, `verify`, `skills`, `ui`, `context_engine`, `project_detection`, `turn`; optional `[providers]` / `[search_code]` tables are validated but have no defaults. Keys and defaults: docs/reference.md and `praana.config.example.toml`.
+Config tables: `llm`, `memory`, `compiler`, `tiers`, `session`, `shell`, `edit`, `risk`, `circuit`, `tools`, `native`, `lsp`, `verify`, `skills`, `ui`, `context_engine`, `project_detection`, `turn`; optional `[providers]` / `[search_code]` tables are validated but have no defaults. Keys and defaults: docs/reference.md and `praana.config.example.toml`.
 
-Key env vars: provider API keys (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …); Bedrock via AWS creds or `AWS_BEARER_TOKEN_BEDROCK` / stored key, region `llm.region` → `AWS_REGION` → `AWS_DEFAULT_REGION` → `us-east-1`; `PRAANA_MODEL`, `PRAANA_SUMMARIZER_MODEL`, `PRAANA_NO_UPDATE_CHECK=1`. Debug mode (`--debug` / `/debug`) saves compiled prompts under `~/.praana/sessions/<session_id>/prompts/` (plus `scores.jsonl` in engine mode).
+Key env vars: provider API keys (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …); Bedrock via AWS creds or `AWS_BEARER_TOKEN_BEDROCK` / stored key, region `llm.region` → `AWS_REGION` → `AWS_DEFAULT_REGION` → `us-east-1`; `PRAANA_MODEL`, `PRAANA_NO_UPDATE_CHECK=1`. Debug mode (`--debug` / `/debug`) saves compiled prompts under `~/.praana/sessions/<session_id>/prompts/` (plus `scores.jsonl` in engine mode).
 
 ## Slash Commands
 
@@ -116,7 +116,7 @@ src/
   native/ — lazy loader for `@praana/natives` (npm package or sidecar)
   lsp/ — JSON-RPC LSP client + manager (opt-in `[lsp]`)
   setup/ interactive-setup.ts — wizard; update/ — version check, install-kind, upgrade
-  memory/ — legacy Cognitive Memory (SQLite, embedders, summariser)
+  memory/ — embedder backends (transformers, Ollama), download consent; no memory store
   file-memory/ — File Memory store, format, index, recall, tools
   context-engine/ — compiler, scoring, checkpoint, distillers, telemetry
   skills/ — skill discovery, load tracking, usefulness stats
@@ -146,6 +146,6 @@ src/
 - Event log writes `fsyncSync` every event (durability over throughput); legacy `events.log` is renamed/merged into `events.jsonl` on open.
 - After code reviews or multi-issue analysis, call `add_note` immediately — otherwise findings disappear when recent turns truncate.
 - **bun:sqlite `:memory:` gotcha:** `new Database(":memory:")` creates a real on-disk file named `:memory:`; always go through `openDatabase()` (`src/sqlite.ts`).
-- **Concurrent DB access:** `openMemoryDb()` / `openContextEngineDb()` set WAL + `busy_timeout` via `applyConcurrencyPragmas()` (`src/sqlite.ts`); without them parallel sessions fail with `SQLITE_BUSY`.
+- **Concurrent DB access:** `openContextEngineDb()` sets WAL + `busy_timeout` via `applyConcurrencyPragmas()` (`src/sqlite.ts`); without them parallel sessions fail with `SQLITE_BUSY`.
 - Shell timeouts kill the process group (SIGTERM→SIGKILL) so orphaned children cannot hang the session; do not replace with `Bun.spawn`/`Bun.Terminal` unless process-tree cancellation is equivalent.
 
