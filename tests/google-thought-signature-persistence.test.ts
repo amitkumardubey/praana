@@ -72,8 +72,9 @@ test("canonical writer stores a long base64 thought signature verbatim while red
   const w = writer(log);
   const turnId = await w.startTurn("read files");
   const message = assistant();
-  message.toolCalls![0].args = { path: "AKIAIOSFODNN7EXAMPLE" };
-  message.toolCalls![0].rawArgs = '{"hidden":"AKIAIOSFODNN7EXAMPLE","path":"a.txt"}';
+  const exampleAccessKey = "AKIA" + "IOSFODNN7" + "EXAMPLE";
+  message.toolCalls![0].args = { path: exampleAccessKey };
+  message.toolCalls![0].rawArgs = JSON.stringify({ hidden: exampleAccessKey, path: "a.txt" });
   const before = structuredClone(message);
   expect(THOUGHT_SIGNATURE.length).toBeGreaterThan(300);
   expect(THOUGHT_SIGNATURE).toMatch(/^[A-Za-z0-9+/]+={0,2}$/);

@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { GoogleDriver } from "../src/llm/drivers/google.js";
-import type { AssistantMessage, ConversationMessage, StreamEvent } from "../src/llm/types.js";
+import type { AssistantMessage, ConversationMessage, StreamEvent, ToolCall } from "../src/llm/types.js";
 import { googleSse, parallelCallParts, SKIP_THOUGHT_SIGNATURE, THOUGHT_SIGNATURE } from "./helpers/google-thought-signature.js";
 
 const originalFetch = globalThis.fetch;
@@ -71,11 +71,10 @@ for (const provider of ["google", "vertex"]) {
   });
 
   test(`${provider} preserves a signed subset even when the first call is unsigned`, async () => {
-    // Spread metadata also permits this behavior test to execute on older ToolCall types.
-    const calls = [
+    const calls: ToolCall[] = [
       { id: "a", name: "read_file", args: { path: "a.txt" } },
-      { id: "b", name: "read_file", args: { path: "b.txt" }, ...{ thoughtSignature: THOUGHT_SIGNATURE } },
-      { id: "c", name: "read_file", args: { path: "c.txt" }, ...{ thoughtSignature: "second-opaque-signature==" } },
+      { id: "b", name: "read_file", args: { path: "b.txt" }, thoughtSignature: THOUGHT_SIGNATURE },
+      { id: "c", name: "read_file", args: { path: "c.txt" }, thoughtSignature: "second-opaque-signature==" },
     ];
     const { body } = await request(provider, [{ role: "assistant", content: "", toolCalls: calls }]);
     expect(body.contents[0].parts).toEqual(calls.map(call => ({

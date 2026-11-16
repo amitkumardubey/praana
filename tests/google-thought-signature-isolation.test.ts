@@ -19,12 +19,17 @@ function terminal(provider: string) {
     payload.copy(frame, 12);
     return new Response(new Uint8Array(frame));
   }
-  if (provider === "google") return googleSse([{ text: "done" }]);
-  const frames = provider === "anthropic"
-    ? [{ type: "message_delta", delta: { stop_reason: "end_turn" } }, { type: "message_stop" }]
-    : provider === "responses"
-      ? [{ type: "response.completed", response: { status: "completed", output: [] } }]
-      : [{ choices: [{ delta: {}, finish_reason: "stop" }] }];
+  if (provider === "google") {
+    return googleSse([{ text: "done" }]);
+  }
+  let frames: unknown[];
+  if (provider === "anthropic") {
+    frames = [{ type: "message_delta", delta: { stop_reason: "end_turn" } }, { type: "message_stop" }];
+  } else if (provider === "responses") {
+    frames = [{ type: "response.completed", response: { status: "completed", output: [] } }];
+  } else {
+    frames = [{ choices: [{ delta: {}, finish_reason: "stop" }] }];
+  }
   return new Response(frames.map(frame => `data: ${JSON.stringify(frame)}\n\n`).join(""));
 }
 async function capture(driver: LlmDriver, request: StreamRequest) {
@@ -48,7 +53,7 @@ for (const [provider, driver] of [
 ] as const) {
   test(`signed Google history round-trips without leaking metadata to ${provider}`, async () => {
     const assistant: AssistantMessage = { role: "assistant", content: "reading", toolCalls: [
-      { id: "a", name: "read_file", args: { path: "a.txt" }, ...{ thoughtSignature: THOUGHT_SIGNATURE } },
+      { id: "a", name: "read_file", args: { path: "a.txt" }, thoughtSignature: THOUGHT_SIGNATURE },
     ] };
     const before = structuredClone(assistant);
     const request: StreamRequest = { provider, model: "test-model", messages: [
