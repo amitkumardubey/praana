@@ -305,62 +305,99 @@ export class GoogleDriver implements LlmDriver {
   }
 }
 
+/** A JSON Schema node in the converted tree: an object, an array of nodes, or a scalar (including boolean schemas). */
+type SchemaNode = string | number | boolean | null | SchemaNode[] | Record<string, unknown>;
+
 /**
- * Deep-copy a JSON Schema node and return the copy, converting keywords the
- * Gemini function declaration subset rejects. `exclusiveMinimum` /
- * `exclusiveMaximum` (emitted by Zod `.positive()` / `.negative()` via
- * normalizeToolParameters) are only accepted on `integer` schemas, where they
- * become inclusive `minimum` / `maximum` bounds; elsewhere they are dropped.
- * The input is never mutated — other drivers share the same schema objects.
- * Only schema positions (objects and arrays of schemas) are traversed; scalar
- * values never enter recursion, so this type is the full domain.
+ * Deep-copy a JSON Schema node and return a copy converted to the subset
+ * Google function declarations accept. `exclusiveMinimum` / `exclusiveMaximum`
+ * (emitted by Zod `.positive()` / `.negative()` via normalizeToolParameters)
+ * are accepted only on integer schemas, where they become inclusive `minimum` /
+ * `maximum` bounds; elsewhere the keywords are dropped. The input is never
+ * mutated or shared — other drivers share the same schema objects.
  */
-type GoogleSchemaNode = Record<string, unknown> | GoogleSchemaNode[];
-
-function convertSchemaNode(node: GoogleSchemaNode): GoogleSchemaNode {
+function convertSchemaNode(node: unknown): SchemaNode {
   if (Array.isArray(node)) return node.map((item) => convertSchemaNode(item));
-  return convertSchemaObject(node);
-}
+  if (!node || typeof node !== "object") return node as SchemaNode;
 
-function convertSchemaObject(schema: Record<string, unknown>): Record<string, unknown> {
+  const schema = node as Record<string, unknown>;
   const out: Record<string, unknown> = {};
+  let convertedMinimum: number | undefined;
+  let convertedMaximum: number | undefined;
+  const isInteger = isIntegerType(schema.type);
+
   for (const [key, value] of Object.entries(schema)) {
-    if (key === "exclusiveMinimum" || key === "exclusiveMaximum") continue;
-    if (key === "properties") {
-      // Property names are user-defined; only their values are schemas.
-      const props: Record<string, unknown> = {};
-      for (const [name, sub] of Object.entries(
-        (value ?? {}) as Record<string, unknown>,
-      )) {
-        props[name] = convertSchemaNode(sub as GoogleSchemaNode);
+    if (key === "exclusiveMinimum") {
+      if (isInteger && typeof value === "number") convertedMinimum = Math.floor(value) + 1;
+      continue;
+    }
+    if (key === "exclusiveMaximum") {
+      if (isInteger && typeof value === "number") convertedMaximum = Math.ceil(value) - 1;
+      continue;
+    }
+    if (SCHEMA_SLOT_KEYWORDS.has(key)) {
+      out[key] = convertSchemaNode(value);
+    } else if (SCHEMA_MAP_KEYWORDS.has(key)) {
+      // Keys are user-defined names; only their values are schemas.
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        const mapped: Record<string, unknown> = {};
+        for (const [name, sub] of Object.entries(value as Record<string, unknown>)) {
+          mapped[name] = convertSchemaNode(sub);
+        }
+        out[key] = mapped;
+      } else {
+        out[key] = structuredClone(value);
       }
-      out.properties = props;
-    } else if (key === "items" || key === "anyOf" || key === "oneOf" || key === "allOf") {
-      out[key] = convertSchemaNode(value as GoogleSchemaNode);
     } else {
-      out[key] = value;
+      // Payload (enum/const/default/examples) and unknown keyword values are
+      // data, not schemas: deep-copy and never interpret them.
+      out[key] = structuredClone(value);
     }
   }
 
-  if (schema.type === "integer") {
-    const exclusiveMinimum = schema.exclusiveMinimum;
-    if (typeof exclusiveMinimum === "number") {
-      const converted = exclusiveMinimum + 1;
-      const existing = out.minimum;
-      out.minimum = typeof existing === "number" ? Math.max(existing, converted) : converted;
-    }
-    const exclusiveMaximum = schema.exclusiveMaximum;
-    if (typeof exclusiveMaximum === "number") {
-      const converted = exclusiveMaximum - 1;
-      const existing = out.maximum;
-      out.maximum = typeof existing === "number" ? Math.min(existing, converted) : converted;
-    }
+  if (convertedMinimum !== undefined) {
+    const existing = out.minimum;
+    out.minimum = typeof existing === "number" ? Math.max(existing, convertedMinimum) : convertedMinimum;
+  }
+  if (convertedMaximum !== undefined) {
+    const existing = out.maximum;
+    out.maximum = typeof existing === "number" ? Math.min(existing, convertedMaximum) : convertedMaximum;
   }
   return out;
 }
 
+/** Keywords whose value is a schema (or an array of schemas). */
+const SCHEMA_SLOT_KEYWORDS = new Set([
+  "items",
+  "additionalItems",
+  "additionalProperties",
+  "contains",
+  "not",
+  "if",
+  "then",
+  "else",
+  "propertyNames",
+  "anyOf",
+  "oneOf",
+  "allOf",
+  "prefixItems",
+]);
+
+/** Keywords whose keys are free names and whose values are schemas. */
+const SCHEMA_MAP_KEYWORDS = new Set([
+  "properties",
+  "patternProperties",
+  "definitions",
+  "$defs",
+]);
+
+function isIntegerType(type: unknown): boolean {
+  if (type === "integer") return true;
+  return Array.isArray(type) && type.includes("integer") && !type.includes("number");
+}
+
 /**
- * Return a deep copy of a tool's JSON schema restricted to the subset Google
+ * Return a deep copy of a tool's JSON schema converted to the subset Google
  * function declarations accept (used by both the Gemini and Vertex drivers).
  */
 export function toGoogleFunctionSchema(schema: Record<string, unknown>): Record<string, unknown> {
