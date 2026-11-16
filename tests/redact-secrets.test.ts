@@ -88,8 +88,7 @@ describe("redactSecretsStrict", () => {
       enumerable: true,
       get() { throw new Error("walk failed"); },
     });
-    // Callers cast the result to a record, so an object input keeps a record shape.
-    expect(redactSecrets(value)).toEqual({ error: "[REDACTED:redaction-error]" });
+    expect(redactSecrets(value)).toEqual({ broken: "[REDACTED:redaction-error]" });
     expect(() => redactSecretsStrict(value)).toThrow("walk failed");
   });
 
@@ -116,13 +115,92 @@ describe("redactSecretsStrict", () => {
     for (const [type, value] of kinds) {
       expect(() => redactSecretsStrict(value)).toThrow(TypeError);
       expect(() => redactSecretsStrict(value)).toThrow(type);
-      // Non-strict behaviour is unchanged: the value is returned as it is.
-      expect(redactSecrets(value)).toBe(value);
     }
   });
 });
 
 describe("redactSecrets", () => {
+  it("copies and redacts null-prototype objects, including __proto__", () => {
+    const input = Object.assign(Object.create(null), { token: SECRETS[0] });
+    Object.defineProperty(input, "__proto__", { value: SECRETS[1], enumerable: true });
+    const out = redactSecrets(input) as Record<string, unknown>;
+    expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+    expect(Object.keys(out)).toEqual(["token", "__proto__"]);
+    expectNoSecret(JSON.stringify(out));
+  });
+
+  it("walks Map keys and values into a new Map", () => {
+    const input = new Map([[SECRETS[0], SECRETS[1]]]);
+    const out = redactSecrets(input) as Map<unknown, unknown>;
+    expect(out).toBeInstanceOf(Map);
+    expect(out).not.toBe(input);
+    expectNoSecret(JSON.stringify([...out]));
+    expect([...out][0]).toEqual(["ANTHROPIC_API_KEY=[REDACTED:key-assignment]", "[REDACTED:aws-access-key]"]);
+  });
+
+  it("walks a Map inside an object inside a Set", () => {
+    const input = new Set([{ map: new Map([[SECRETS[0], SECRETS[1]]]) }]);
+    const out = redactSecrets(input) as Set<{ map: Map<string, string> }>;
+    expect(out).toBeInstanceOf(Set);
+    expect(out).not.toBe(input);
+    const item = [...out][0]!;
+    expect(item.map).toBeInstanceOf(Map);
+    expectNoSecret(JSON.stringify([...item.map]));
+    expect([...item.map][0]![1]).toBe("[REDACTED:aws-access-key]");
+  });
+
+  it("copies Error name, message and enumerable properties without stack", () => {
+    const input = Object.assign(new Error(SECRETS[0]), { token: SECRETS[1] });
+    Object.defineProperty(input, "stack", { value: SECRETS[1], enumerable: true });
+    const out = redactSecrets(input) as Record<string, unknown>;
+    expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+    expect(out.name).toBe("Error");
+    expect(out.message).toBe("ANTHROPIC_API_KEY=[REDACTED:key-assignment]");
+    expect(out.token).toBe("[REDACTED:aws-access-key]");
+    expect(out).not.toHaveProperty("stack");
+    expectNoSecret(JSON.stringify(out));
+  });
+
+  it("keeps supported opaque objects by identity", () => {
+    const buffer = new ArrayBuffer(8);
+    for (const value of [new Date(), /x/g, buffer, new DataView(buffer), new Uint8Array(buffer)]) {
+      expect(redactSecrets(value)).toBe(value);
+    }
+  });
+
+  it("replaces unsupported objects instead of leaking their fields", () => {
+    class Custom { token = SECRETS[0]; }
+    for (const value of [new Custom(), Promise.resolve(SECRETS[0]), new WeakMap(), new Proxy(new Map(), {}), new Proxy(new Error(SECRETS[0]), {}), new Proxy(new Date(), {})]) {
+      expect(redactSecrets(value)).toBe("[REDACTED:unwalkable]");
+    }
+  });
+
+  it("isolates throwing getters and enumeration failures", () => {
+    const broken = Object.defineProperty({ safe: SECRETS[0] }, "bad", {
+      enumerable: true, get() { throw new Error("bad"); },
+    });
+    const proxy = new Proxy({ secret: SECRETS[1] }, { ownKeys() { throw new Error("bad"); } });
+    const out = redactSecrets({ broken, proxy, sibling: SECRETS[1] });
+    expect(out).toEqual({ broken: { safe: "ANTHROPIC_API_KEY=[REDACTED:key-assignment]", bad: "[REDACTED:redaction-error]" }, proxy: "[REDACTED:redaction-error]", sibling: "[REDACTED:aws-access-key]" });
+    expectNoSecret(JSON.stringify(out));
+  });
+
+  it("copies null-prototype objects at the depth limit and refuses nested Maps", () => {
+    const value = Object.assign(Object.create(null), { secret: SECRETS[0], map: new Map([["key", SECRETS[1]]]) });
+    const out = descend(redactSecrets(nestObjects(value, 8)), 8) as Record<string, unknown>;
+    expect(Object.getPrototypeOf(out)).toBe(Object.prototype);
+    expect(out.secret).toBe("ANTHROPIC_API_KEY=[REDACTED:key-assignment]");
+    expect(out.map).toBe("[REDACTED:unwalkable]");
+    expectNoSecret(JSON.stringify(out));
+    expect(descend(redactSecrets(nestObjects(new Map([["key", SECRETS[0]]]), 8)), 8)).toBe("[REDACTED:unwalkable]");
+  });
+
+  it("counts Map and Set nesting toward the depth limit", () => {
+    const nested = new Set([new Map([["key", nestObjects(new Map([["key", SECRETS[0]]]), 6)]])]);
+    const out = redactSecrets(nested) as Set<Map<string, unknown>>;
+    const obj = [...out][0]!.get("key");
+    expect(descend(obj, 6)).toBe("[REDACTED:unwalkable]");
+  });
   it("redacts AWS, GitHub, GitLab, OpenAI, Anthropic", () => {
     expect(redactSecrets("id=AKIAIOSFODNN7EXAMPLE")).toBe(
       "id=[REDACTED:aws-access-key]",
@@ -233,9 +311,6 @@ describe("redactSecrets", () => {
     ["a Set", () => new Set(["AKIAIOSFODNN7EXAMPLE"])],
     ["a class instance", () => new (class Custom { readonly token = "AKIAIOSFODNN7EXAMPLE"; })()],
     ["a Date", () => new Date(0)],
-    ["a null-prototype object", () => Object.assign(Object.create(null), {
-      token: "AKIAIOSFODNN7EXAMPLE",
-    })],
     ["a function", () => () => "AKIAIOSFODNN7EXAMPLE"],
     ["a typed array", () => new Uint8Array(4)],
   ])("replaces %s at depth 10 with the unwalkable placeholder", (_name, build) => {
@@ -309,20 +384,11 @@ describe("redactSecrets", () => {
     expect(JSON.stringify(out)).not.toContain(secret);
   });
 
-  it.each<[string, () => object]>([
-    ["a throwing getter", () => Object.defineProperty({}, "secret", {
-      enumerable: true,
-      get() { throw new Error("read failed"); },
-    })],
-    ["a Proxy that refuses enumeration", () => new Proxy(
-      { secret: SECRETS[0]! },
-      { ownKeys() { throw new Error("ownKeys refused"); } },
-    )],
-  ])("fails closed when traversal throws (%s)", (_name, build) => {
-    const out = redactSecrets(build());
-    // Callers cast the result to a record, so the placeholder keeps that shape.
-    expect(out).toEqual({ error: "[REDACTED:redaction-error]" });
-    expectNoSecret(JSON.stringify(out) ?? "");
+  it("fails closed when root enumeration throws", () => {
+    const out = redactSecrets(new Proxy({ secret: SECRETS[0]! }, {
+      ownKeys() { throw new Error("ownKeys refused"); },
+    }));
+    expect(out).toBe("[REDACTED:redaction-error]");
   });
 
   it("returns the bare placeholder when a string input fails", () => {

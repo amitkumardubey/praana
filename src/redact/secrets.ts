@@ -2,6 +2,7 @@
  * Deterministic secret redaction for tool results and logged tool-call args (#579).
  */
 
+import { types } from "node:util";
 import { redactUrlsInText } from "./url-query.js";
 
 const MAX_DEPTH = 8;
@@ -100,7 +101,7 @@ interface DeepFrame {
 function setOwn(container: DeepContainer, key: string, value: unknown): void {
   // SAFETY: both branches of the union take string-keyed writes; an array keeps its
   // array-ness because its length is set before any key from `Object.keys` is written.
-  (container as Record<string, unknown>)[key] = value;
+  Object.defineProperty(container, key, { value, enumerable: true, writable: true, configurable: true });
 }
 
 /**
@@ -141,7 +142,8 @@ function redactAtDepthLimit(value: unknown): DeepCopy {
     let target: DeepContainer;
     try {
       const isArray = Array.isArray(node);
-      if (!isArray && Object.getPrototypeOf(node) !== Object.prototype) {
+      const prototype = isArray ? null : Object.getPrototypeOf(node);
+      if (!isArray && prototype !== Object.prototype && prototype !== null) {
         return PLACEHOLDER("unwalkable");
       }
       keys = Object.keys(node);
@@ -175,8 +177,7 @@ function redactAtDepthLimit(value: unknown): DeepCopy {
       assign(child);
       return;
     }
-    // SAFETY: `open` re-checks the shape (Array.isArray, then an Object.prototype
-    // prototype) before it reads a single key, so the widened view is safe.
+    // SAFETY: `open` re-checks the array or plain/null-prototype shape before reading keys.
     const opened = open(child as Record<string, unknown>);
     if (typeof opened === "string") {
       assign(opened);
@@ -225,6 +226,86 @@ function walk(value: unknown, depth: number, strict = false): unknown {
     return redactAtDepthLimit(value);
   }
   if (typeof value === "string") return redactString(value);
+  if (!strict && value !== null && typeof value === "object") {
+    let isArray: boolean;
+    let prototype: object | null;
+    let error: boolean;
+    let isMap: boolean;
+    let isSet: boolean;
+    try {
+      isArray = Array.isArray(value);
+      prototype = Object.getPrototypeOf(value);
+      error = value instanceof Error;
+      isMap = value instanceof Map;
+      isSet = value instanceof Set;
+    } catch {
+      return PLACEHOLDER("redaction-error");
+    }
+
+    // Plain-object and array proxies can be walked, with failing traps isolated.
+    // A proxy around an exotic object cannot be trusted as that built-in type.
+    if (types.isProxy(value) && !isArray && prototype !== Object.prototype && prototype !== null) {
+      return PLACEHOLDER("unwalkable");
+    }
+
+    if (isArray || prototype === Object.prototype || prototype === null || error) {
+      let keys: string[];
+      let copy: DeepContainer;
+      try {
+        keys = Object.keys(value);
+        copy = isArray ? new Array((value as unknown[]).length) : {};
+      } catch {
+        return PLACEHOLDER("redaction-error");
+      }
+      const source = value as Record<string, unknown>;
+      const copyKey = (key: string): void => {
+        let child: unknown;
+        try {
+          child = source[key];
+        } catch {
+          setOwn(copy, key, PLACEHOLDER("redaction-error"));
+          return;
+        }
+        setOwn(copy, key, walk(child, depth + 1));
+      };
+      if (error) {
+        copyKey("name");
+        copyKey("message");
+      }
+      for (const key of keys) {
+        if (error && (key === "stack" || key === "name" || key === "message")) continue;
+        copyKey(key);
+      }
+      return copy;
+    }
+
+    // Known limitation: Maps and Sets are copied recursively; Errors and plain or
+    // null-prototype objects are copied above. Opaque built-ins are retained by
+    // identity, so their custom properties are not scanned. Other objects fail closed.
+    if (isMap) {
+      let entries: MapIterator<[unknown, unknown]>;
+      try { entries = Map.prototype.entries.call(value); } catch { return PLACEHOLDER("unwalkable"); }
+      const copy = new Map<unknown, unknown>();
+      for (const [key, child] of entries) copy.set(walk(key, depth + 1), walk(child, depth + 1));
+      return copy;
+    }
+    if (isSet) {
+      let values: SetIterator<unknown>;
+      try { values = Set.prototype.values.call(value); } catch { return PLACEHOLDER("unwalkable"); }
+      const copy = new Set<unknown>();
+      for (const child of values) copy.add(walk(child, depth + 1));
+      return copy;
+    }
+    if (ArrayBuffer.isView(value)) return value;
+    try {
+      if (value instanceof Date) { Date.prototype.getTime.call(value); return value; }
+      if (value instanceof RegExp) { Object.getOwnPropertyDescriptor(RegExp.prototype, "source")!.get!.call(value); return value; }
+      if (value instanceof ArrayBuffer) { Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength")!.get!.call(value); return value; }
+    } catch {
+      return PLACEHOLDER("unwalkable");
+    }
+    return PLACEHOLDER("unwalkable");
+  }
   if (Array.isArray(value)) {
     return value.map((item) => walk(item, depth + 1, strict));
   }
@@ -234,8 +315,7 @@ function walk(value: unknown, depth: number, strict = false): unknown {
   }
   if (value !== null && typeof value === "object") {
     const prototype = Object.getPrototypeOf(value);
-    // A null prototype holds data exactly like a plain object; only strict mode walks it,
-    // so the non-strict redactor keeps returning such values untouched.
+    // Strict mode also walks null-prototype objects like plain objects.
     if (prototype === Object.prototype || (strict && prototype === null)) {
       const copy: Record<string, unknown> = {};
       for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
@@ -245,8 +325,6 @@ function walk(value: unknown, depth: number, strict = false): unknown {
     }
     // Fails closed: anything else (class instances, Map, Set, Date, typed arrays) is
     // unreadable to this walk, so strict mode refuses it instead of passing it through.
-    // Known limitation: non-strict mode still returns such values untouched below the
-    // depth limit, so a secret held inside a Map/Set/class instance is not redacted.
     if (strict) throw new TypeError(`Secret redaction cannot walk a ${typeName(value)}`);
     return value;
   }

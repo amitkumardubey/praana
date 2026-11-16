@@ -24,6 +24,15 @@ describe("redact post_tool_call", () => {
     expect(patch?.isError).toBeUndefined();
   });
 
+  it("redacts secrets in a Map result", async () => {
+    const post = createRedactPostToolCallHandler();
+    const result = new Map([["key", "AKIAIOSFODNN7EXAMPLE"]]);
+    const patch = await post({ toolName: "shell", args: {}, result, isError: false, session: session() });
+    expect(patch?.result).toBeInstanceOf(Map);
+    expect(patch?.result).not.toBe(result);
+    expect([...(patch!.result as Map<string, string>)]).toEqual([["key", "[REDACTED:aws-access-key]"]]);
+  });
+
   it("runs after enrich so suggestions are scanned", async () => {
     const registry = createBuiltinHookRegistry("/proj", {
       validate: { pathExists: () => false, listRepoFiles: () => [] },
