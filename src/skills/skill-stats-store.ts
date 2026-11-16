@@ -14,7 +14,7 @@ import {
   updateSkillUsefulness,
   bumpSkillStats,
   bumpSkillCooccurrence,
-} from "../memory/db.js";
+} from "./skill-stats-db.js";
 import { getAppLogger } from "../logger.js";
 import type { SkillEffect } from "./types.js";
 

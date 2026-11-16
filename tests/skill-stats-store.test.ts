@@ -6,7 +6,7 @@ import {
   updateSkillUsefulness,
   bumpSkillStats,
   bumpSkillCooccurrence,
-} from "../src/memory/db.js";
+} from "../src/skills/skill-stats-db.js";
 
 // ---------------------------------------------------------------------------
 // Schema migration
