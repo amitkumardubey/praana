@@ -377,7 +377,6 @@ export class OpenTuiSink implements TurnUiSink {
       engineMode: this.ctxBeforeEngineMode || this.opts.engineMode,
       distillerSavingsTurn: this.turnDistillerSavings,
       model,
-      repeatFileReads: stats?.repeatFileReads,
       churnInterventions: stats?.churnInterventions,
     });
     this.finalizeStreams();

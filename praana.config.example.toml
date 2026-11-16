@@ -292,11 +292,6 @@ compact_at = 0.70
 # Emergency: drop all turn digests, keep checkpoint + verbatim last 2 turns
 emergency_at = 0.85
 
-[tools]
-# Second and later read of an unchanged file returns the artifact card (false)
-# or hard-fails (true).
-block_repeat_reads = false
-
 [tools.web]
 # Fetch a public http(s) URL. On by default. Private and local addresses are
 # always refused. The first fetch of a host in a session asks for confirmation;

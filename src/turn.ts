@@ -775,7 +775,6 @@ export async function runTurn(
     shellLiveStream: s.shellLiveStream ?? true,
     skills: session.skills ?? [],
     skillRuntime: session.skillRuntime,
-    blockRepeatReads: session.config.tools?.block_repeat_reads ?? false,
     webConfig: session.config.tools?.web,
     headless: session.headless,
     riskAllow: session.config.risk?.allow,

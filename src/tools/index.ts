@@ -46,7 +46,6 @@ export interface ToolRegistryContext {
   shellLiveStream?: boolean;
   skills: SkillRecord[];
   skillRuntime: SkillRuntime | null;
-  blockRepeatReads?: boolean;
   hasReadPath?: (absPath: string) => boolean;
   getReadPathMtime?: (absPath: string) => number | undefined;
   clearReadPath?: (absPath: string) => void;
@@ -113,7 +112,6 @@ export function createAllTools(ctx: ToolRegistryContext) {
     onScorecardFileRead: ctx.onScorecardFileRead,
     onScorecardSkillLoad: ctx.onScorecardSkillLoad,
     getCurrentTurn: ctx.getCurrentTurn ?? (() => 0),
-    blockRepeatReads: ctx.blockRepeatReads,
     hasReadPath: ctx.hasReadPath,
     getReadPathMtime: ctx.getReadPathMtime,
     clearReadPath: ctx.clearReadPath,

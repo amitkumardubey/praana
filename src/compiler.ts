@@ -300,35 +300,14 @@ export function buildSharedAgentPolicy(recallEnabled = false): string[] {
   ];
 }
 
-export function buildArtifactFirstReadsPolicy(): string[] {
-  return [
-    "## Artifact-First Reads",
-    "",
-    "Before calling read_file on a path already read this session, check the Active State notes and Recent Turns for an existing artifact card. Prefer retrieve_artifact or search_transcript to recover the prior content; search_turn_events finds turn summaries. Only call read_file again if the file may have changed on disk or the prior read is incomplete.",
-  ];
-}
-
 export interface AgentHintCounters {
+  /** Retained for the scorecard signal; repeat reads no longer produce a prompt hint. */
   repeatFileReads: number;
   churnInterventions?: number;
 }
 
-/**
- * Shared threshold for the repeat_file_reads scorecard signal.
- * Drives both the engine-mode agent hint (buildAgentHints) and the TUI footer nudge,
- * so the prompt and the footer fire in lockstep. Issue #550.
- */
-export const REPEAT_FILE_READS_THRESHOLD = 5;
-
-const AGENT_HINT_REPEAT_READS_THRESHOLD = REPEAT_FILE_READS_THRESHOLD;
-
 export function buildAgentHints(counters: AgentHintCounters): string {
   const parts: string[] = [];
-  if (counters.repeatFileReads > AGENT_HINT_REPEAT_READS_THRESHOLD) {
-    parts.push(
-      `- repeat_file_reads: ${counters.repeatFileReads} — before re-reading a path, use retrieve_artifact or search_turn_events.`,
-    );
-  }
   if ((counters.churnInterventions ?? 0) > 0) {
     parts.push(
       `- churn_interventions: ${counters.churnInterventions} — stop re-reading the same files; use one narrow retrieve_artifact(id, lineStart, lineEnd) or state a preliminary conclusion.`,
@@ -441,10 +420,6 @@ export function buildSystemFrame(
   lines.push("", ...buildSharedAgentPolicy(memoryEnabled));
 
   if (memoryEnabled && !incognito) lines.push("", "## File Memory", "", MEMORY_POLICY);
-
-  if (engineMode) {
-    lines.push("", ...buildArtifactFirstReadsPolicy());
-  }
 
   lines.push(
     "",

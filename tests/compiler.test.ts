@@ -1,4 +1,4 @@
-import { compile, compileWithMetrics, buildSystemFrame, buildAgentHints, buildFilesReadIndexSection, REPEAT_FILE_READS_THRESHOLD } from '../src/compiler.js';
+import { compile, compileWithMetrics, buildSystemFrame, buildAgentHints, buildFilesReadIndexSection } from '../src/compiler.js';
 import type { StateObject, Event } from '../src/types.js';
 
 describe('Compiler', () => {
@@ -410,7 +410,7 @@ describe('Compiler', () => {
     expect(prompt).toContain('add_note');
   });
 
-  it('does not include artifact-first reads in legacy compiler mode', () => {
+  it('never injects the removed artifact-first reads policy', () => {
     const prompt = compile({
       stateGraph: {
         list: () => [],
@@ -426,30 +426,17 @@ describe('Compiler', () => {
     });
 
     expect(prompt).not.toContain('## Artifact-First Reads');
-    expect(prompt).not.toContain('retrieve_artifact');
+    expect(buildSystemFrame('/test', 'test-1', [], undefined, null, true)).not.toContain(
+      '## Artifact-First Reads',
+    );
+    expect(buildSystemFrame('/test', 'test-1', [], undefined, null, false)).not.toContain(
+      '## Artifact-First Reads',
+    );
   });
 
-  it('includes artifact-first reads in engine-mode system frame', () => {
-    const frame = buildSystemFrame('/test', 'test-1', [], undefined, null, true);
-
-    expect(frame).toContain('## Artifact-First Reads');
-    expect(frame).toContain('retrieve_artifact');
-    expect(frame).toContain('search_turn_events');
-  });
-
-  it('excludes artifact-first reads in non-engine system frame', () => {
-    const frame = buildSystemFrame('/test', 'test-1', [], undefined, null, false);
-
-    expect(frame).not.toContain('## Artifact-First Reads');
-  });
-
-  it('builds agent hints only when repeat_file_reads crosses threshold', () => {
+  it('does not build a repeat-read hint', () => {
     expect(buildAgentHints({ repeatFileReads: 0 })).toBe('');
-    expect(buildAgentHints({ repeatFileReads: REPEAT_FILE_READS_THRESHOLD })).toBe('');
-    const hint = buildAgentHints({ repeatFileReads: REPEAT_FILE_READS_THRESHOLD + 1 });
-    expect(hint).toContain('## Agent Hints');
-    expect(hint).toContain(`repeat_file_reads: ${REPEAT_FILE_READS_THRESHOLD + 1}`);
-    expect(hint).toContain('retrieve_artifact');
+    expect(buildAgentHints({ repeatFileReads: 50 })).toBe('');
   });
 
   it('builds agent hints for churn interventions', () => {

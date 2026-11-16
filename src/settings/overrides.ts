@@ -17,7 +17,6 @@ export type OverrideValue = boolean | number | string | string[];
 
 export const APPROVED_CONFIG_OVERRIDES: Readonly<Record<string, OverrideSpec>> = Object.freeze({
   "edit.confirm": { kind: "boolean" },
-  "tools.block_repeat_reads": { kind: "boolean" },
   "lsp.enabled": { kind: "boolean" },
   "lsp.diagnostics": { kind: "boolean" },
   "lsp.format_on_edit": { kind: "boolean" },

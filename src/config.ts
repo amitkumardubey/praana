@@ -119,7 +119,6 @@ const DEFAULT_CONFIG: PraanaConfig = {
     max_wall_ms: 0,
   },
   tools: {
-    block_repeat_reads: false,
     web: { ...DEFAULT_WEB_CONFIG },
   },
   native: {
@@ -756,10 +755,7 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
 
   // Tools config validation
   if (!out.tools) {
-    out.tools = { block_repeat_reads: false, web: { ...DEFAULT_WEB_CONFIG } };
-  } else if (typeof out.tools.block_repeat_reads !== "boolean") {
-    configWarn("tools.block_repeat_reads must be boolean, defaulting to false");
-    out.tools = { ...out.tools, block_repeat_reads: false, web: validateWebTools(out.tools.web) };
+    out.tools = { web: { ...DEFAULT_WEB_CONFIG } };
   } else {
     out.tools = { ...out.tools, web: validateWebTools(out.tools.web) };
   }

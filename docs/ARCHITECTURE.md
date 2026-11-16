@@ -416,7 +416,7 @@ One row per session in the context-engine SQLite DB. No text content is stored â
 
 ### Repeat-read interceptor (issue #545)
 
-`read_file` (and `read_and_summarize`) calls are intercepted within a session. A second read of an unchanged file returns the existing artifact card and skips the disk read. Behaviour is configurable via `[tools] block_repeat_reads` (default `false` = warn; `true` = hard-block). The read index is rebuilt on resume and invalidated on any write/edit, so post-edit reads stay allowed; re-reads are also permitted when the file's disk mtime changes. In engine mode the compiled prompt includes a **"Files Read This Session"** index (`path â†’ artifact_id`) so the agent can use `retrieve_artifact(id)` instead of re-reading. When the scorecard counts more than `REPEAT_FILE_READS_THRESHOLD` repeat reads, the count surfaces in the turn footer as a nudge.
+`read_file` always returns the requested contents from disk, including a repeat read of an unchanged file (issue #799 removed the artifact-card interceptor). The scorecard still counts the repeat: the read index records the path and its mtime, is rebuilt on resume, and is invalidated on any write/edit. In engine mode the compiled prompt includes a **"Files Read This Session"** index (`path â†’ artifact_id`) so the agent can optionally use `retrieve_artifact(id)` instead of re-reading.
 
 ### Resume hardening (issues #523, #546)
 
@@ -426,8 +426,8 @@ One row per session in the context-engine SQLite DB. No text content is stored â
 ### Scorecard nudges and agent hints (issues #549, #550)
 
 Beyond the `/scorecard` table, the telemetry loop feeds back into the live session:
-- **Turn-footer nudges** surface when repeat reads pile up, no-op tool calls recur, recall hit-rate is low, or read/retrieve churn fires.
-- **Engine-mode agent hints** are injected into the system frame when the repeat-read count crosses `REPEAT_FILE_READS_THRESHOLD` or recall-used % is low, steering the agent toward artifact-first reads and explicit correction capture. The threshold is a single exported constant shared by the engine hint and the TUI footer nudge.
+- **Turn-footer nudges** surface when no-op tool calls recur, recall hit-rate is low, or read/retrieve churn fires.
+- **Engine-mode agent hints** are injected into the system frame when churn fires or recall-used % is low, steering the agent toward narrow retrieval and explicit correction capture.
 
 ### End-of-session epilogue (issue #519)
 
@@ -515,8 +515,6 @@ compact_at = 0.70
 emergency_at = 0.85
 
 [tools]
-block_repeat_reads = false   # warn and return artifact card (default); true = hard-block repeat read_file of unchanged files
-
 [tools.web]
 enabled = true                # web_fetch; allow_domains / deny_domains (deny wins); private nets always blocked
 
