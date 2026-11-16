@@ -4,6 +4,7 @@ import {
   getProviderEnvKey,
   isUserDeclaredProvider,
   PROVIDER_REGISTRY,
+  SETUP_UNSUPPORTED_PROVIDERS,
   getUserProviderRegistryEntry,
 } from "../provider-registry.js";
 import {
@@ -330,7 +331,7 @@ export function tryAutoSelectProvider(): AutoSelectResult | null {
   // Keyless providers (ollama) and user-declared providers are excluded —
   // the wizard handles those.
   const available = listEnvDetectedProviders().filter(
-    (p) => !isUserDeclaredProvider(p) && getProviderEnvKey(p) !== null,
+    (p) => !isUserDeclaredProvider(p) && !SETUP_UNSUPPORTED_PROVIDERS.has(p) && getProviderEnvKey(p) !== null,
   );
   if (available.length !== 1) return null;
   const provider = available[0];

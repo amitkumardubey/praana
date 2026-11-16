@@ -20,6 +20,7 @@ import {
   resolveBedrockBearerToken,
 } from "./bedrock/credentials.js";
 import { resolveBedrockRegion } from "./bedrock/region.js";
+import { vertexCredentialFile } from "./llm/vertex-credentials.js";
 import { isOAuthOnlyProvider, supportsOAuthLogin } from "./oauth.js";
 import { getCuratedModels, getModelCatalogEntry } from "./llm/catalog.js";
 import { DEFAULT_MODELS as NATIVE_DEFAULT_MODELS } from "./llm/resolver.js";
@@ -156,6 +157,12 @@ export function isProviderAvailable(provider: string): boolean {
     return isBedrockAvailable();
   }
 
+  if (provider === "vertex") {
+    return !!process.env.GCP_ACCESS_TOKEN?.trim() ||
+      !!process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim() ||
+      !!vertexCredentialFile();
+  }
+
   if (provider === "ollama") {
     return true;
   }
@@ -178,6 +185,10 @@ export function getMissingKeyMessage(provider: string): string | null {
 
   if (provider === "amazon-bedrock") {
     return getBedrockMissingCredentialsMessage();
+  }
+
+  if (provider === "vertex") {
+    return "Vertex AI credentials are missing: set GCP_ACCESS_TOKEN or GOOGLE_APPLICATION_CREDENTIALS, or configure application-default credentials (ADC). Set VERTEX_PROJECT_ID or GOOGLE_CLOUD_PROJECT for the project.";
   }
 
   if (supportsOAuthLogin(provider)) {

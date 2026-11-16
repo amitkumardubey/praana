@@ -17,9 +17,7 @@ export type StreamEndCheck = "auto" | "strict" | "lenient";
  * - anthropic — Messages API ends with `message_stop` and/or `message_delta.stop_reason`
  * - openai — Chat Completions ends with `finish_reason` and/or `[DONE]`
  * - google — Gemini `streamGenerateContent` ends with `finishReason`
- * - vertex — same Gemini stream as google. Not a PROVIDER_REGISTRY key;
- *   the resolver routes it to GoogleDriver, and the protocol still guarantees
- *   `finishReason`
+ * - vertex — same Gemini stream as google; GoogleDriver requires `finishReason`
  * - amazon-bedrock — ConverseStream ends with `messageStop`
  *
  * azure is omitted: it is not a PROVIDER_REGISTRY id (provider-registry.ts

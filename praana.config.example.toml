@@ -18,6 +18,7 @@
 #   openai       — OpenAI API (gpt-4o, o3, etc.)
 #   anthropic    — Anthropic API (claude-sonnet-4, claude-3.5, etc.)
 #   google       — Google Gemini API (gemini-2.5-flash, gemini-2.5-pro)
+#   vertex       — Gemini on Vertex AI (explicit model/project/location; ADC or token)
 #   deepseek     — DeepSeek API (deepseek-v4-pro, deepseek-chat)
 #   groq         — Groq API (fast inference on open models)
 #   mistral      — Mistral AI API
@@ -71,6 +72,15 @@ model = "deepseek/deepseek-v4-flash:free"
 #   openai        → OPENAI_API_KEY
 #   anthropic     → ANTHROPIC_API_KEY
 #   google        → GOOGLE_GENERATIVE_AI_API_KEY
+#   vertex        → GCP_ACCESS_TOKEN or GOOGLE_APPLICATION_CREDENTIALS (JSON),
+#                   stored token/file path, or well-known application-default credentials (ADC)
+#                   Project: VERTEX_PROJECT_ID → GOOGLE_CLOUD_PROJECT → GCP_PROJECT
+#                            → service-account project_id / user ADC quota_project_id
+#                   Location: VERTEX_REGION → GOOGLE_CLOUD_LOCATION → us-central1
+#                   Use VERTEX_REGION=global for the global endpoint. No base_url needed.
+#                   ADC: CLOUDSDK_CONFIG/application_default_credentials.json,
+#                        else ~/.config/gcloud (Windows: %APPDATA%\\gcloud).
+#                   /model vertex <gemini-model-id> works without a model catalog.
 #   deepseek      → DEEPSEEK_API_KEY
 #   groq          → GROQ_API_KEY
 #   mistral       → MISTRAL_API_KEY

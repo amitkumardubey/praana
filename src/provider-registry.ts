@@ -247,6 +247,12 @@ export const PROVIDER_REGISTRY: Record<string, ProviderConfig> = {
     envKeyAliases: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
     baseUrl: "https://generativelanguage.googleapis.com/v1beta",
   },
+  vertex: {
+    api: "google-generative-ai",
+    provider: "vertex",
+    envKey: "GCP_ACCESS_TOKEN",
+    baseUrl: "", // GoogleDriver builds the project/location endpoint; ADC is also supported.
+  },
   mistral: {
     api: "mistral-conversations",
     provider: "mistral",
@@ -365,7 +371,7 @@ export const OPENAI_COMPATIBLE_API_IDS = new Set([
 ]);
 
 /** Providers that should not appear in the interactive setup picker. */
-export const SETUP_UNSUPPORTED_PROVIDERS = new Set(["ollama"]);
+export const SETUP_UNSUPPORTED_PROVIDERS = new Set(["ollama", "vertex"]);
 
 /** All env var names accepted for a provider (primary + aliases). */
 export function getProviderEnvKeys(provider: string): string[] {
