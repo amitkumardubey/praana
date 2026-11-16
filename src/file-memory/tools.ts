@@ -11,6 +11,9 @@ const NAME_RULE = "Invalid memory name";
 const NAME_DESCRIPTION = "A plain lowercase slug of at most 64 characters: [a-z0-9] first, then [a-z0-9-]. The pattern is the whole name rule; reserved names are refused by the store with the single message \"Invalid memory name\" (memory, con, prn, aux, nul, com1-com9, lpt1-lpt9)";
 const name = z.string().regex(MEMORY_NAME_PATTERN, NAME_RULE).describe(NAME_DESCRIPTION);
 const scope = z.enum(["global", "project"]);
+const absentIfBlank = (value: unknown) => typeof value === "string" && !value.trim() ? undefined : value;
+const optionalName = z.preprocess(absentIfBlank, name.optional());
+const optionalScope = z.preprocess(absentIfBlank, scope.optional());
 
 function execute<T>(schema: z.ZodType<T>, operation: (args: T) => Promise<unknown>) {
   return async (input: unknown) => {
@@ -33,10 +36,10 @@ export function createFileMemoryTools(store: ToolStore) {
     description: z.string(),
     body: z.string(),
   }).strict();
-  const recall = z.object({ query: z.string().optional(), name: name.optional(), scope: scope.optional() }).strict()
+  const recall = z.object({ query: z.string().optional(), name: optionalName, scope: optionalScope }).strict()
     .refine((args) => (args.query !== undefined) !== (args.name !== undefined), "Provide exactly one of query or name")
     .refine((args) => args.scope === undefined || args.name !== undefined, "scope applies only to a name lookup; queries always search global and project");
-  const forget = z.object({ name, scope: scope.optional() }).strict();
+  const forget = z.object({ name, scope: optionalScope }).strict();
 
   return {
     remember: defineTool({
