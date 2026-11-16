@@ -1,11 +1,11 @@
 # PRAANA Architecture
 
-> **Sync date:** 2026-07-23 (v0.11.1), with corrections on 2026-10-30 to the memory decay model and the source tree. Other sections may lag later releases.
+> Some sections may lag later releases.
 
 PRAANA is a single-process TypeScript CLI coding agent built around two memory systems:
 
 1. **Adaptive Context** — within-session working memory
-2. **Cognitive Memory** — cross-session memory: extracts learnings when a session ends, ranks them for the next session, and lets old ones decay
+2. **File Memory** — deliberately saved cross-session knowledge in scoped markdown files
 
 No daemon, no RPC server, no multi-process coordination.
 
@@ -52,7 +52,7 @@ src/
   context-engine/
     index.ts          — ContextEngine facade (store, ledger, extraction, checkpoint, telemetry, workflow patterns)
     types.ts          — Engine-level interfaces; WorkflowPattern
-    artifact-store.ts — Content-addressed blob store; stub cards by default, distilled summaries stored for stats/memory promotion (never rendered in prompts)
+    artifact-store.ts — Content-addressed blob store; stub cards by default, distilled summaries stored for stats (never rendered in prompts)
     turn-ledger.ts    — Append-only typed turn records with BM25 search
     distiller.ts      — DistillerRegistry, sync/deferred dispatch, intensity selection
     classify.ts       — Fast regex-based content-type classification
@@ -78,7 +78,7 @@ src/
     npm-test.ts     — Test output: failure detail + summary lines, per-line 4K char cap, output ≤ input invariant
     tsc-errors.ts   — Build error deduplication
     rg-results.ts   — Search result dedup and top-k
-    generic.ts      — GenericDistiller (prose/code/json head-tail + JSON compaction) and LogDistiller (log template mining); summaries feed stats + memory promotion, not cards
+    generic.ts      — GenericDistiller (prose/code/json head-tail + JSON compaction) and LogDistiller (log template mining); summaries feed stats, not cards
   tools/
     index.ts     — Tool registry (all tool definitions combined)
     tool-def.ts  — Type helper for defining tools
@@ -89,18 +89,11 @@ src/
     lsp.ts       — lsp_diagnostics / lsp_format / hover / completions / definition / references / code actions (issue #418 Phases 2–4; client in `src/lsp/`)
     run-tests.ts — run_tests: structured test runner with per-language adapters in `test-runner/` (issue #589)
     git.ts       — git_status / git_diff / git_commit: structured git tools (issue #432; first #533 harness ship)
-    knowledge.ts — recall, remember, retrieve_artifact, context_summary, search_turn_events, event_lineage
+    knowledge.ts — retrieve_artifact, context_summary, search_turn_events, event_lineage
     memory.ts    — Adaptive Context state-graph tools (tasks, decisions, constraints, notes)
   git-context.ts — shared getGitContext / findGitRoot / findGitBranch helpers
-  memory/
-    index.ts     — Memory store exports
-    store.ts     — High-level MemoryStore API (remember, recall, session start/end); isSessionGood export; project/global learning scope
-    db.ts        — SQLite schema: entries, entry_scopes, sessions, entries_vec, skill_stats, skill_cooccurrence
-    embeddings.ts — Ollama embedder adapter (optional, opt-in)
-    types.ts     — Memory-specific types
-    summarizer.ts — LLM-based extraction (transcript → concise key-point learnings JSON; skips AGENTS.md/README)
-    normalize-learning.ts — Normalize raw LLM learning content into scannable key points
-    openai-summarizer.ts — Chat completion fetch adapter for summarization
+  file-memory/   — Markdown file store, scoped paths, index, recall and tools
+  memory/        — Legacy SQLite memory modules; SQLite remains in use by context-engine and skill stats
   skills/
     index.ts          — SkillRuntime: discovery, load tracking, telemetry (engine mode); buildSkillMetadataCatalog with usefulness-ranked ordering
     skill-stats-store.ts — Cross-session skill effectiveness: loadUsefulness (dual-scope), flush (boost/decay), co-occurrence recording
@@ -152,23 +145,20 @@ User input
 SESSION START:
   Session.create()
   → init EventLog + StateGraph
-  → init MemoryStore (if enabled)
-  → memory.sessionStart(context)
-  → cache digest markdown
+  → initialize file memory store (if enabled)
+  → build and cache the capped global/project memory index once for prompt injection
 
 SESSION RESUME:
   Session.resume(sessionId)
   → load state_graph_checkpoint.json if present → O(1) StateGraph restore (tiers + touchedTurn preserved)
   → replay only context_action events that occurred after the checkpoint's last_event_id
   → restore model override from the last model_override system_note
-  → re-init MemoryStore + regenerate digest
+  → re-init file memory and build the index once
 
 SESSION END:
   Session.end(reason, transcriptEvents)
-  → memory.sessionEnd(reason, events)
-  → if summarizer enabled: extractLearnings from transcript events
-  → write learnings into Cognitive Memory
-  → close event log
+  → close session resources and event log
+  → no summarizer or automatic promotion into file memory
 ```
 
 ## State Model (Adaptive Context)
@@ -229,7 +219,7 @@ Each line is a single JSON line representing an `Event`:
 
 Writing uses `writeSync` followed by `fsyncSync` to guarantee durable persistence on every event. Rebuilding state on session resume replays `context_action` events.
 
-Agents use `search_transcript` for BM25 + case-insensitive substring search over canonical session records, including compacted/stubbed turns, or full/ranged content and neighbors by ID. It searches the current reset epoch by default; `include_previous_resets=true` permits access across earlier `/clear` epochs. Search excludes assistant messages calling `search_transcript` and `search_transcript` results (ID fetch still works). Artifact-backed results use logged tool output paired by tool and call ID in the same reset epoch and retain `artifactId`; artifact-only records may still require `retrieve_artifact` for the original bytes. `search_session_log` provides keyword AND/OR search over other session events and is the fallback for legacy sessions without a canonical transcript. Neither tool is `recall`, which queries cross-session Cognitive Memory in SQLite.
+Agents use `search_transcript` for BM25 + case-insensitive substring search over canonical session records, including compacted/stubbed turns, or full/ranged content and neighbors by ID. It searches the current reset epoch by default; `include_previous_resets=true` permits access across earlier `/clear` epochs. Search excludes assistant messages calling `search_transcript` and `search_transcript` results (ID fetch still works). Artifact-backed results use logged tool output paired by tool and call ID in the same reset epoch and retain `artifactId`; artifact-only records may still require `retrieve_artifact` for the original bytes. `search_session_log` provides keyword AND/OR search over other session events and is the fallback for legacy sessions without a canonical transcript. Neither tool is `recall`, which queries cross-session file memories.
 
 ## Compiler
 
@@ -254,7 +244,7 @@ const classicMode = !useEngineCompiler;
 3. **Band 3 (always):** SessionCheckpoint (pinned) — ~2000 tokens. Reconciled deterministically from `TurnDigest` after each turn. Sections: active request, session narrative, plan history, constraints, decisions (with retained rationale), files, findings, errors, activity. See [Session Checkpoint](#session-checkpoint) below.
 4. **Band 4 (scored):** Fact cards, artifact cards, activity entries — ~3000 tokens.
 5. **Band 5 (scored):** Older turn digests — ~2000 tokens.
-6. **Band 6 (remaining):** Memory digest, low-priority state — remainder.
+6. **Band 6 (remaining):** File memory index, low-priority state — remainder.
 
 Context units are scored with a 5-term model: `pin_boost × W_pin + recency(age) × W_recency + max(BM25 × W_relevance, semantic_similarity × W_semantic) + hydrate_boost × W_hydrate`. BM25 handles exact keyword overlap; embedding cosine similarity handles semantic paraphrases (e.g. "auth middleware" vs "authentication handler"). The effective relevance term is `max(bm25, semantic)` so either signal can win. The hydrate boost is the maximum `bm25Relevance(ht, unitContent)` across all auto-hydrated object texts — it gives a lift to context units (e.g. older turn digests) that discuss the same objects the user just implicitly referenced. Default weights: `w_pin=1.0`, `w_recency=0.5`, `w_relevance=0.3`, `w_semantic=0.3`, `w_hydrate_boost=0.2`. Embeddings are precomputed per compile pass and cached in a session-scoped LRU cache; when the embedder is unavailable or fails, scoring falls back to BM25-only.
 
@@ -286,7 +276,7 @@ When classic mode is active, `src/compile-classic.ts` builds a flat prompt with 
 
 1. **System frame** — cwd, session ID, tool descriptions, AGENTS.md project context, skills guidance (use `load_skill` when relevant).
 2. **Skills catalog** — name + description only; `load_skill(skill_id)` loads full body on demand. No pre-injected bodies, no residency tiers.
-3. **Cognitive Memory** — digest (if enabled).
+3. **File Memory** — startup index (if enabled).
 4. **Conversation history** — **full verbatim** event log (`readAll()`), excluding `context_action` and `system_note`. Tool results are not truncated.
 5. **Current input** — latest user message.
 
@@ -303,7 +293,7 @@ When classic mode is active, `src/compile-classic.ts` builds a flat prompt with 
 | TurnDigest / checkpoint | Yes | Skipped |
 | `/why` scores | Available (debug) | N/A |
 
-Classic mode matches how agents like Claude Code and pi operate — a growing transcript with no working-memory tiering. Set `measurement_mode = true` to write engine telemetry while running classic mode (development/debug only).
+Classic mode uses a growing transcript with no working-memory tiering and no automatic compaction. Set `measurement_mode = true` to write engine telemetry while running classic mode (development/debug only).
 
 ### Legacy compiler (`compiler.ts`)
 
@@ -344,18 +334,18 @@ Shell spawn uses `node:child_process` with `detached` (new process group on POSI
 
 Shared helpers live in `src/git-context.ts`. Structured git tools (`#432` + `#586`) are the harness's git surface under epic #533; design notes are kept internally. Prompt size control for large diffs is lossless artifact + stub card + `retrieve_artifact` — not a prompt-embedded git-diff distiller.
 
-### Cognitive Memory Tools (`src/tools/knowledge.ts`)
-- `recall(query, mode?, kinds?)` — searches Cognitive Memory and logs a `memory_recall` system note
-- `remember(content, kind?, certainty?, scope?)` — writes facts, decisions, preferences, patterns, mistakes, or constraints directly to Cognitive Memory
-- `forget_memory(id)` — tombstones a Cognitive Memory entry (`retracted = 1`). The entry is excluded from future recall and digest, but the row is retained for audit.
+### File Memory Tools (`src/file-memory/tools.ts`)
+- `remember(scope, type, name, description, body)` — deliberately save or update a memory
+- `recall(query?, name?, scope?)` — search both scopes or look up a name
+- `forget_memory(name, scope?)` — hard-delete a named memory
 
 ### Adaptive Context Tools (`src/tools/memory.ts` — engine mode only)
 - `create_task(title, description?)` — creates a task in working memory
 - `complete_task(id)` — marks a task as done, auto-demoting it to the `soft` tier
 - `retract_task(id)` — tombstones a state object (any kind)
-- `add_constraint(text)` — records a constraint rule/limitation in working memory and mirrors it to Cognitive Memory when enabled (not incognito)
-- `decide(summary, rationale)` — records an architectural/design decision in working memory and mirrors it to Cognitive Memory as a `decision` entry
-- `add_note(text)` — records a general note in working memory and mirrors it to Cognitive Memory as a `fact` entry
+- `add_constraint(text)` — records a constraint in working memory
+- `decide(summary, rationale)` — records a decision in working memory
+- `add_note(text)` — records a note in working memory
 - `soft_unload(id)` / `hard_unload(id)` / `hydrate(id)` — tier management
 - `list_state()` — lists all state objects with their IDs, kinds, tiers, and summaries
 
@@ -365,47 +355,9 @@ Shared helpers live in `src/git-context.ts`. Structured git tools (`#432` + `#58
 - `search_turn_events(query)` — BM25 search over turn ledger
 - `event_lineage(artifactId)` — trace artifact → producing turn → decisions → related artifacts
 
-## Cognitive Memory
+## File Memory
 
-### Key Components
-- `MemoryStore` (`src/memory/store.ts`): Coordinates high-level Cognitive Memory operations, session starts, and session ends.
-- SQLite Database (`src/memory/db.ts`): Maintains durable tables under `~/.praana/memory.db` (`entries`, FTS, `entries_vec` BLOBs).
-- Embedder (`src/memory/embeddings.ts` + `src/memory/embedder-factory.ts` + `src/memory/transformers-embedder.ts`): supports `auto`, `transformers`, `transformers-nomic`, and `ollama`. `auto` uses native ONNX in `@praana/natives`; model weights download to `~/.praana/models/` after a one-time consent prompt. Vectors are BLOBs + cosine kNN (no sqlite-vec).
-- Summarizer Adapter (`src/memory/openai-summarizer.ts`): Adapts chat completions to OpenAI-compatible endpoints (OpenAI or OpenRouter).
-- Extraction Logic (`src/memory/summarizer.ts` + `normalize-learning.ts`): At session end, sends the transcript plus the loaded project context (AGENTS.md / CLAUDE.md) to an LLM and extracts up to 5 **concise key-point** learnings (one short sentence each) across six kinds: `fact`, `preference`, `decision`, `pattern`, `mistake`, `constraint`. Each learning includes a certainty level (`high` / `medium` / `low`) and a scope classification (`project` / `global`). The model is instructed to skip anything already documented in the project context, focusing on session-specific discoveries, decisions, gotchas, and preferences. `project`-scoped learnings are stored with the full default scopes (`user` + `agent` + `context`); `global`-scoped learnings are stored without the `context:` scope so they surface in every project session.
-
-### Memory Kinds
-
-| Kind | What it stores |
-|---|---|
-| `fact` | Verifiable project knowledge |
-| `preference` | Working style preferences |
-| `decision` | Architectural choices with rationale |
-| `pattern` | Recurring approaches that work |
-| `mistake` | A failure and the lesson extracted from it |
-| `constraint` | A rule that must always hold |
-
-### Scope Isolation (Multi-Context Safety)
-To prevent cross-project context leaks, all memory queries and writes are isolated using scopes:
-- Default scopes are constructed at session start: `["user:<hashed_username>", "agent:praana", "context:<hashed_cwd_path>"]`.
-- The SQLite query layer enforces **AND-scoping**: recalled entries must match *all* scopes in a single query.
-
-In **project sessions**, `MemoryStore` runs two queries and merges by entry id:
-1. Full project scopes (`user` + `agent` + `context`) — project-local facts and decisions.
-2. Global-only scopes (`user` + `agent`) — entries without a `context:` scope (preferences, cross-project patterns).
-
-Global-only queries exclude entries that carry `context:`, so project facts stay local. Ranking is unified across the merged set; semantic conflicts between global and project entries are not auto-resolved.
-
-### Ranking and Decay
-The memory retrieval system fuses multiple signals into a unified search score:
-- **Vector distance** (from `entries_vec` BLOB rows, cosine kNN) maps candidate entries.
-- **Confidence**: Base confidence is derived from extraction certainty (`high` = 0.8, `medium` = 0.5, `low` = 0.3) and decays exponentially with a per-kind half-life: $\text{validity} \times 0.5^{\text{days} / \text{halfLife}}$. Half-lives are 60 days for `mistake`, 90 for `fact`, 180 for `preference`, and 365 for `decision` and `pattern`; `constraint` entries and pinned entries do not decay. Layer 2 (deep memory) entries use a half-life four times longer (`src/memory/confidence.ts`).
-- **Recency**: Candidates receive a boost up to $+0.2$ based on how recently they were last accessed.
-- **Pinned Flag**: Pinned memories receive a $+0.3$ score boost, ensuring they are always highly prioritized or visible in digests.
-- **Tool-outcome reinforcement** (#442): any entry **surfaced** in a session (via the session-start digest or `recall()`) is reinforced at session end — validity up; usefulness boosted only when acted on and the placeholder session-success signal is positive, neutral when acted on without that signal, and decayed when ignored. An entry surfaced across ≥2 distinct sessions with validity ≥0.7 is **promoted from Layer 1 to Layer 2** (deep memory).
-
-### Schema Migrations
-The SQLite schema evolves through additive `ALTER TABLE` migrations applied at every `openMemoryDb()` call. `ensureLayerColumns()` inspects `PRAGMA table_info(entries)` and runs each `ALTER TABLE ... ADD COLUMN` only if the column is missing — making the migrations idempotent and safe for existing installs. New columns always carry a `DEFAULT` so existing rows are populated automatically. The `retracted` column (added with the RETRACT opcode) defaults to `0`, so all pre-existing entries remain visible until explicitly tombstoned.
+`src/file-memory/` stores markdown files with frontmatter in global `~/.praana/memory` and project `~/.praana/projects/<key>/memory` directories. Project keys isolate project memories; global memories are shared across projects. At start or resume the store builds a capped index of the newest memories once and injects it into the prompt; `recall` searches both scopes or reads a named memory. The model saves explicitly using `remember` and removes with `forget_memory`. Notes, constraints, decisions and artifacts are not automatically promoted, and session end does not summarize the transcript into memory. Incognito permits reads but blocks writes and deletions. The context engine and skill statistics still use SQLite independently of file memory.
 
 ## Skill Effectiveness Feedback Loop
 
@@ -442,7 +394,7 @@ One row per session in the context-engine SQLite DB. No text content is stored �
 | Signal group | What's tracked |
 |---|---|
 | Context | `retrieve_artifact` calls, repeat file-reads, `search_turn_events` calls, pressure events, compaction triggers |
-| Memory | recall call count, recall-used %, project-scoped validity/usefulness deltas at session start and end |
+| Memory | recall call count and recall-used % |
 | Skills | unique skill loads, total load events, reloads, underloads (loaded but never used), token cost |
 | Resume | read-path digests and skill catalog ids for dedup across resumed sessions |
 
@@ -469,7 +421,7 @@ One row per session in the context-engine SQLite DB. No text content is stored �
 ### Resume hardening (issues #523, #546)
 
 - `praana resume` with no session id resolves the most recent session for the **current cwd**; if none exists it prints a short notice and starts a fresh session instead of exiting.
-- On resume, a **stale-task banner** lists tasks/decisions left open in the previous session, and a **scope confirmation** step re-confirms the Cognitive Memory scopes (project vs global) before the session continues.
+- On resume, a **stale-task banner** lists tasks/decisions left open in the previous session.
 
 ### Scorecard nudges and agent hints (issues #549, #550)
 
@@ -530,8 +482,7 @@ model = "deepseek/deepseek-v4-pro"    # any model supported by the chosen provid
 
 [memory]
 enabled = true
-summarizer = "openrouter"             # openrouter | disabled
-db_path = "~/.praana/memory.db"
+# File memories use global and project directories under ~/.praana.
 
 [compiler]
 token_budget = 100000
@@ -575,7 +526,6 @@ log_dir = "~/.praana/sessions"
 
 ### Env Vars
 - `PRAANA_MODEL` — overrides default model
-- `PRAANA_SUMMARIZER_MODEL` — overrides summarizer model (defaults to `google/gemini-2.5-flash` on OpenRouter)
 - `PRAANA_CONTEXT_ENGINE` — overrides `context_engine.enabled`
 - `PRAANA_MEASUREMENT_MODE` — overrides `context_engine.measurement_mode`
 - Provider-specific keys: `OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `OPENCODE_API_KEY`, `DEEPSEEK_API_KEY`, etc.
@@ -606,19 +556,19 @@ PRAANA launches the OpenTUI + Solid terminal shell (`src/ui/tui/`) on an interac
 
 Slash commands are handled by `src/slash-commands.ts`:
 
-- `/exit` — ends session, triggers summarizer, saves and quits (honest epilogue + 12-char resume id)
+- `/exit` — ends the session and quits (epilogue + 12-char resume id)
 - `/clear` — resets in-session context while keeping the same session ID. Clears working memory (StateGraph + engine extraction/checkpoint cache), hides prior turns from the compiled prompt via a `reset_boundary` event in the log, recalculates context pressure for the glance bar, and clears the TUI transcript. The full event log is retained for audit/resume.
-- `/new` — ends the current session (summariser runs with a short timeout, then continues in the background), reloads config from disk, and starts a fresh session with a new ID and banner. Clears the TUI transcript.
+- `/new` — ends the current session, reloads config, and starts a fresh session with a new ID and banner. Clears the TUI transcript.
 - `/state` — lists all state objects and tiers, or prints an empty-state guidance message
-- `/stats` — prints session metadata plus working-memory and Cognitive Memory stats
+- `/stats` — prints session metadata plus working-memory and file-memory counts
 - `/scorecard` — per-session telemetry scorecard
-- `/digest` — prints the current Cognitive Memory markdown digest
+- `/digest` — prints the current file-memory index
 - `/events` — lists the last 20 events in the event log
-- `/recall <query>` — performs manual vector recall query
+- `/recall <query>` — searches file memories
 - `/model [provider] <id>` — switch model (bare `/model` opens searchable selector; validated via pi-ai + live catalog)
 - `/reasoning <level>` — set reasoning effort (`off`/`minimal`/`low`/`medium`/`high`/`xhigh`)
 - `/sessions` — lists last 15 historical sessions for easy resuming
-- `/incognito <on|off>` — toggles Cognitive Memory persistence
+- `/incognito <on|off>` — blocks or allows file-memory writes; reads remain available
 - `/debug` — toggles detailed tool block tracing and compiles turns to files under `prompts/` (and `scores.jsonl` in engine mode)
 - `/thinking <on|off>` — toggles visibility of LLM reasoning stream
 - `/why <id>` — explains why a context unit was included or excluded from the last compiled prompt (engine mode only)
