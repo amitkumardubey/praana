@@ -298,9 +298,109 @@ export class GoogleDriver implements LlmDriver {
         functionDeclarations: tools.map((t) => ({
           name: t.name,
           description: t.description,
-          parameters: t.parameters,
+          parameters: toGoogleFunctionSchema(t.parameters),
         })),
       },
     ];
   }
+}
+
+/** A JSON Schema node in the converted tree: an object, an array of nodes, or a scalar (including boolean schemas). */
+type SchemaNode = string | number | boolean | null | SchemaNode[] | Record<string, unknown>;
+
+/**
+ * Deep-copy a JSON Schema node and return a copy converted to the subset
+ * Google function declarations accept. `exclusiveMinimum` / `exclusiveMaximum`
+ * (emitted by Zod `.positive()` / `.negative()` via normalizeToolParameters)
+ * are accepted only on integer schemas, where they become inclusive `minimum` /
+ * `maximum` bounds; elsewhere the keywords are dropped. The input is never
+ * mutated or shared — other drivers share the same schema objects.
+ */
+function convertSchemaNode(node: unknown): SchemaNode {
+  if (Array.isArray(node)) return node.map((item) => convertSchemaNode(item));
+  if (!node || typeof node !== "object") return node as SchemaNode;
+
+  const schema = node as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  let convertedMinimum: number | undefined;
+  let convertedMaximum: number | undefined;
+  const isInteger = isIntegerType(schema.type);
+
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === "exclusiveMinimum") {
+      if (isInteger && typeof value === "number") convertedMinimum = Math.floor(value) + 1;
+      continue;
+    }
+    if (key === "exclusiveMaximum") {
+      if (isInteger && typeof value === "number") convertedMaximum = Math.ceil(value) - 1;
+      continue;
+    }
+    if (SCHEMA_SLOT_KEYWORDS.has(key)) {
+      out[key] = convertSchemaNode(value);
+    } else if (SCHEMA_MAP_KEYWORDS.has(key)) {
+      // Keys are user-defined names; only their values are schemas.
+      if (value && typeof value === "object" && !Array.isArray(value)) {
+        const mapped: Record<string, unknown> = {};
+        for (const [name, sub] of Object.entries(value as Record<string, unknown>)) {
+          mapped[name] = convertSchemaNode(sub);
+        }
+        out[key] = mapped;
+      } else {
+        out[key] = structuredClone(value);
+      }
+    } else {
+      // Payload (enum/const/default/examples) and unknown keyword values are
+      // data, not schemas: deep-copy and never interpret them.
+      out[key] = structuredClone(value);
+    }
+  }
+
+  if (convertedMinimum !== undefined) {
+    const existing = out.minimum;
+    out.minimum = typeof existing === "number" ? Math.max(existing, convertedMinimum) : convertedMinimum;
+  }
+  if (convertedMaximum !== undefined) {
+    const existing = out.maximum;
+    out.maximum = typeof existing === "number" ? Math.min(existing, convertedMaximum) : convertedMaximum;
+  }
+  return out;
+}
+
+/** Keywords whose value is a schema (or an array of schemas). */
+const SCHEMA_SLOT_KEYWORDS = new Set([
+  "items",
+  "additionalItems",
+  "additionalProperties",
+  "contains",
+  "not",
+  "if",
+  "then",
+  "else",
+  "propertyNames",
+  "anyOf",
+  "oneOf",
+  "allOf",
+  "prefixItems",
+]);
+
+/** Keywords whose keys are free names and whose values are schemas. */
+const SCHEMA_MAP_KEYWORDS = new Set([
+  "properties",
+  "patternProperties",
+  "definitions",
+  "$defs",
+]);
+
+function isIntegerType(type: unknown): boolean {
+  if (type === "integer") return true;
+  return Array.isArray(type) && type.includes("integer") && !type.includes("number");
+}
+
+/**
+ * Return a deep copy of a tool's JSON schema converted to the subset Google
+ * function declarations accept (used by both the Gemini and Vertex drivers).
+ */
+export function toGoogleFunctionSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  // Top-level schemas are always objects (normalizeToolParameters guarantees this).
+  return convertSchemaNode(schema) as Record<string, unknown>;
 }
