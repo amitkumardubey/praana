@@ -19,6 +19,7 @@ import { formatProviderListForDisplay } from "./provider-registry.js";
 import { handleDoctor } from "./doctor.js";
 import { isInteractiveTerminal } from "./terminal.js";
 import { needsInteractiveEmbedderConsent } from "./memory/embedder-consent.js";
+import { isContextEngineEnabled } from "./context-engine/index.js";
 import {
   formatModelsCliOutput,
   listModelsForCli,
@@ -320,7 +321,7 @@ export async function main() {
       await runTui(controller, undefined, { needsOnboarding: true });
       return;
     }
-    if (needsInteractiveEmbedderConsent(config.memory)) {
+    if (isContextEngineEnabled(config) && needsInteractiveEmbedderConsent(config.memory)) {
       await runTui(controller, undefined, { needsEmbedderConsent: true });
       return;
     }

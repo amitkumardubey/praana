@@ -23,6 +23,7 @@ let home: string;
 let config: PraanaConfig;
 const sessions: Session[] = [];
 let restore: (() => void)[] = [];
+let createEmbedderSpy: ReturnType<typeof spyOn>;
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "praana-file-session-"));
@@ -34,8 +35,8 @@ beforeEach(() => {
   config.native.enabled = false;
   config.context_engine.enabled = false;
   config.context_engine.measurement_mode = true;
-  const embedder = spyOn(embedderFactory, "createEmbedder").mockResolvedValue(new DeterministicTestEmbedder());
-  restore.push(() => embedder.mockRestore());
+  createEmbedderSpy = spyOn(embedderFactory, "createEmbedder").mockResolvedValue(new DeterministicTestEmbedder());
+  restore.push(() => createEmbedderSpy.mockRestore());
 });
 afterEach(async () => {
   for (const session of sessions.splice(0)) await session.end("aborted");
@@ -247,7 +248,24 @@ it("keeps the configured embedder active in real incognito engine scoring", asyn
   expect(embed).toHaveBeenCalled();
 });
 
+it("loads the embedder for engine scoring even when file memory is disabled", async () => {
+  config.context_engine.enabled = true;
+  config.memory.enabled = false;
+  const session = await start();
+  expect(session.memoryEnabled).toBe(false);
+  expect(createEmbedderSpy).toHaveBeenCalledTimes(1);
+  expect(session.embedder).toBeInstanceOf(DeterministicTestEmbedder);
+});
+
+it("does not load or download the embedder in classic mode", async () => {
+  config.context_engine.enabled = false;
+  const session = await start();
+  expect(createEmbedderSpy).not.toHaveBeenCalled();
+  expect(session.embedder).toBeNull();
+});
+
 it("continues with a visible warning when both file memory scopes fail", async () => {
+  config.context_engine.enabled = true;
   mkdirSync(join(home, ".praana"), { recursive: true });
   writeFileSync(join(home, ".praana", "memory"), "not a directory");
   writeFileSync(join(home, ".praana", "projects"), "not a directory");

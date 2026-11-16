@@ -1330,8 +1330,9 @@ export class Session {
     }
   }
 
+  /** Only engine-mode semantic scoring uses the embedder; file memory recall is keyword-based. */
   private async initEmbedder(): Promise<void> {
-    if (!this.config.memory.enabled) return;
+    if (this.contextEngine === null || !this.isContextEngineEnabled()) return;
     try {
       this.embedder = await createEmbedder(this.config.memory, { logger: this.getLogger() });
       this.embeddingBackend = resolveEmbeddingBackend(this.config.memory, this.embedder);
