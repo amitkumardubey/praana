@@ -748,12 +748,16 @@ export async function runTurn(
   // 2. Build tools — boundaryTurn is captured once; /clear cannot run mid-turn
   // (TUI disables input + executeSlashCommand guards), so the value is stable.
   const boundaryTurn = session.getLastResetBoundaryTurn();
+  // One flag for the registry and every compile input: tools exist only when
+  // memory is on and the store was indexed. Incognito still registers reads.
+  const memoryEnabled = session.memoryEnabled && !!session.fileMemory;
+  const incognito = session.isIncognito();
   const tools = createAllTools({
     eventLog: session.eventLog,
     stateGraph: session.stateGraph,
     fileMemory: session.fileMemory,
-    memoryEnabled: session.memoryEnabled,
-    incognito: session.isIncognito(),
+    memoryEnabled,
+    incognito,
     contextEngine: session.contextEngine,
     scorecard: session.scorecard,
     onScorecardFileRead: (absPath, mtimeMs, countAsRepeat) =>
@@ -819,7 +823,6 @@ export async function runTurn(
   const recentEvents = session.eventLog.readLastUncompressedAfterResetBoundary(
     session.config.compiler.recent_turns
   );
-  const memoryEnabled = session.memoryEnabled && !!session.fileMemory;
   const toolDescs = describeTools({ contextEngineEnabled, classicMode, memoryEnabled });
 
   const skillsSection = buildSkillMetadataCatalog(session.skills, session.skillUsefulness ?? undefined) || null;
@@ -838,6 +841,7 @@ export async function runTurn(
   const compileInput = {
     stateGraph: session.stateGraph,
     memoryEnabled,
+    incognito,
     memoryDigest: session.digest,
     recentEvents,
     userInput,
@@ -942,6 +946,7 @@ export async function runTurn(
       projectContext: session.projectContext,
       skillsCatalog: skillsSection,
       memoryEnabled,
+      incognito,
       memoryDigest: session.digest,
       events: session.eventLog.readAllUncompressed(),
       userInput,
@@ -971,6 +976,7 @@ export async function runTurn(
         projectContext: session.projectContext,
         skillsCatalog: skillsSection,
         memoryEnabled,
+        incognito,
         memoryDigest: session.digest,
         events: session.eventLog.readAllUncompressed(),
         userInput,

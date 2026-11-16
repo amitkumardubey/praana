@@ -656,7 +656,7 @@ async function compileEnginePass(
   let crossSection = "";
   if (input.memoryDigest && input.memoryDigest.trim()) {
     const { text, truncated } = trimSectionToTokenBudget(
-      buildCrossSessionMemory(input.memoryDigest),
+      buildCrossSessionMemory(input.memoryDigest, input.memoryEnabled),
       maxMemoryTokens,
     );
     crossSection = text;
@@ -717,6 +717,7 @@ function buildCompilePassPrecomputed(
     input.resumeNote,
     input.nativeStatus,
     input.memoryEnabled,
+    input.incognito,
   );
   const agentHints = input.agentHints?.trim() ?? "";
   const agentHintsTokens = agentHints ? estTokens(agentHints) : 0;

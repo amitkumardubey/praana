@@ -8,7 +8,10 @@ import { MEMORY_POLICY } from "./file-memory/index.js";
 
 export interface CompileInput {
   stateGraph: StateGraph;
+  /** True only when recall, remember and forget_memory are registered. */
   memoryEnabled: boolean;
+  /** Omit the save policy while writes are refused. Reads and the index stay. */
+  incognito?: boolean;
   memoryDigest: string | null;
   recentEvents: Event[];
   userInput?: string;
@@ -85,6 +88,7 @@ export function compile(input: CompileInput): string {
     input.resumeNote,
     input.nativeStatus,
     input.memoryEnabled,
+    input.incognito,
   );
   sections.push(frame);
 
@@ -95,7 +99,7 @@ export function compile(input: CompileInput): string {
 
   // ---- 2. CROSS-SESSION MEMORY ----
   if (input.memoryDigest && input.memoryDigest.trim()) {
-    const cs = buildCrossSessionMemory(input.memoryDigest);
+    const cs = buildCrossSessionMemory(input.memoryDigest, input.memoryEnabled);
     sections.push(cs);
   }
 
@@ -159,6 +163,7 @@ export function compileWithMetrics(input: CompileInput): { prompt: string; metri
     input.resumeNote,
     input.nativeStatus,
     input.memoryEnabled,
+    input.incognito,
   );
   sections.push(frame);
   metrics.systemFrameTokens = estTokens(frame);
@@ -192,7 +197,7 @@ export function compileWithMetrics(input: CompileInput): { prompt: string; metri
   let crossSection = "";
   if (input.memoryDigest && input.memoryDigest.trim()) {
     const { text, truncated } = trimSectionToTokenBudget(
-      buildCrossSessionMemory(input.memoryDigest),
+      buildCrossSessionMemory(input.memoryDigest, input.memoryEnabled),
       maxMemoryTokens,
     );
     crossSection = text;
@@ -245,7 +250,7 @@ export function compileWithMetrics(input: CompileInput): { prompt: string; metri
 
 // ---- Section builders ----
 
-export function buildSharedAgentPolicy(): string[] {
+export function buildSharedAgentPolicy(recallEnabled = false): string[] {
   return [
     "## Instruction Precedence",
     "",
@@ -285,7 +290,9 @@ export function buildSharedAgentPolicy(): string[] {
     "",
     "Use search_transcript to search canonical session records, including compacted/stubbed turns, or fetch full/ranged content and neighbors by ID.",
     "It searches the current reset epoch by default; include_previous_resets=true also accesses earlier /clear epochs. Search excludes search_transcript calls/results; artifact-backed results use paired logged output when available.",
-    "Use search_session_log for other session events; recall searches cross-session file memories, not the transcript.",
+    recallEnabled
+      ? "Use search_session_log for other session events; recall searches cross-session file memories, not the transcript."
+      : "Use search_session_log for other session events.",
     "",
     "## Correction Capture",
     "",
@@ -395,6 +402,7 @@ export function buildSystemFrame(
   resumeNote?: string,
   nativeStatus?: NativeAddonStatus | null,
   memoryEnabled = false,
+  incognito = false,
 ): string {
   const lines = [
     "# System",
@@ -430,9 +438,9 @@ export function buildSystemFrame(
     );
   }
 
-  lines.push("", ...buildSharedAgentPolicy());
+  lines.push("", ...buildSharedAgentPolicy(memoryEnabled));
 
-  if (memoryEnabled) lines.push("", "## File Memory", "", MEMORY_POLICY);
+  if (memoryEnabled && !incognito) lines.push("", "## File Memory", "", MEMORY_POLICY);
 
   if (engineMode) {
     lines.push("", ...buildArtifactFirstReadsPolicy());
@@ -460,7 +468,9 @@ export function buildSystemFrame(
     "",
     "You have working memory with three tiers: active (full content), soft (one-line stub), and hard (minimal anchor).",
     "Periodically call soft_unload on stale notes/tasks and complete_task when work is done to keep your working memory clean.",
-    "To recover earlier content from this session (reviews, findings, tool output), use search_transcript; search_session_log searches other session events. Neither is recall, which searches cross-session file memories.",
+    memoryEnabled
+      ? "To recover earlier content from this session (reviews, findings, tool output), use search_transcript; search_session_log searches other session events. Neither is recall, which searches cross-session file memories."
+      : "To recover earlier content from this session (reviews, findings, tool output), use search_transcript; search_session_log searches other session events.",
     "After significant analysis, call add_note immediately so key findings survive when recent turns scroll out of the prompt.",
     "Notes must capture semantic findings (what you learned), not activity logs (which files you read).",
     "Good note: \"turn.ts uses piStream() for streaming — streaming IS implemented\". Bad note: \"read turn.ts, session.ts...\".",
@@ -471,15 +481,13 @@ export function buildSystemFrame(
   return lines.join("\n");
 }
 
-export function buildCrossSessionMemory(digest: string): string {
-  return [
-    "# Cross-Session Memory",
-    "",
-    digest,
-    "",
-    'Use recall({ query: "..." }) to search file memories, or recall({ name: "..." }) to read one in full.',
-    "A memory is an observation at its date; verify files, functions and flags it names before recommending them.",
-  ].join("\n");
+export function buildCrossSessionMemory(digest: string, recallEnabled = false): string {
+  const lines = ["# Cross-Session Memory", "", digest, ""];
+  if (recallEnabled) {
+    lines.push('Use recall({ query: "..." }) to search file memories, or recall({ name: "..." }) to read one in full.');
+  }
+  lines.push("A memory is an observation at its date; verify files, functions and flags it names before recommending them.");
+  return lines.join("\n");
 }
 
 export function buildActiveState(stateGraph: StateGraph): string {

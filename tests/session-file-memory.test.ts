@@ -100,6 +100,7 @@ it.each([false, true])("injects the seeded startup index through the real %s eng
   expect(prompt).toContain("[stable-preference](global/stable-preference.md)"); // main never lists the file store
   expect(prompt).toContain("# Cross-Session Memory");
   expect(prompt).toContain("a memory is an observation at its date");
+  expect(prompt).toContain('Use recall({ query: "..." }) to search file memories');
 });
 
 it.each([false, true])("injects no cross-session section for an empty store (%s engine)", async (engine) => {
@@ -112,6 +113,10 @@ it.each([false, true])("injects no cross-session section for an empty store (%s 
   expect(session.digest).toBeNull();
   expect(prompt).not.toContain("# Cross-Session Memory");
   expect(prompt).toContain(MEMORY_POLICY);
+  expect(prompt).toContain("recall searches cross-session file memories, not the transcript.");
+  expect(prompt).toContain(engine
+    ? "Neither is recall, which searches cross-session file memories."
+    : "Use recall with query or name to read dated cross-session file memories.");
 });
 
 it("rebuilds the index at resume, not after in-session writes or incognito toggles", async () => {
@@ -335,4 +340,51 @@ it("keeps file memory unset when incognito toggles after an unreadable memory ro
   } finally {
     for (const dir of scopes) chmodSync(dir, 0o700);
   }
+});
+
+const RECALL_GUIDANCE = "recall searches cross-session file memories, not the transcript.";
+const CLASSIC_RECALL = "Use recall with query or name to read dated cross-session file memories.";
+const INDEX_RECALL = 'Use recall({ query: "..." }) to search file memories';
+const ENGINE_RECALL = "Neither is recall, which searches cross-session file memories.";
+
+async function compiledPrompt(engine: boolean, incognito = false): Promise<string> {
+  config.context_engine.enabled = engine;
+  const model = scriptedMemoryModel(config);
+  restore.push(() => model.close());
+  const session = await start(incognito);
+  await runTurn(session, "Hello", undefined, { sink: {} });
+  return String(model.requests[0]?.messages.find((message) => message.role === "system")?.content);
+}
+
+function expectNoRecallGuidance(prompt: string): void {
+  expect(prompt).not.toContain(RECALL_GUIDANCE);
+  expect(prompt).not.toContain(CLASSIC_RECALL);
+  expect(prompt).not.toContain(INDEX_RECALL);
+  expect(prompt).not.toContain(ENGINE_RECALL);
+  expect(prompt).not.toContain("## File Memory");
+  expect(prompt).not.toContain(MEMORY_POLICY);
+}
+
+it.each([false, true])("omits recall guidance and the save policy when memory is disabled (%s engine)", async (engine) => {
+  config.memory.enabled = false;
+  expectNoRecallGuidance(await compiledPrompt(engine));
+});
+
+it.each([false, true])("omits recall guidance and the save policy when memory init fails (%s engine)", async (engine) => {
+  mkdirSync(join(home, ".praana"), { recursive: true });
+  writeFileSync(join(home, ".praana", "memory"), "not a directory");
+  writeFileSync(join(home, ".praana", "projects"), "not a directory");
+  expectNoRecallGuidance(await compiledPrompt(engine));
+});
+
+it.each([false, true])("keeps recall guidance and drops the save policy while incognito (%s engine)", async (engine) => {
+  seed();
+  const prompt = await compiledPrompt(engine, true);
+  expect(prompt).toContain(RECALL_GUIDANCE);
+  expect(prompt).toContain("# Cross-Session Memory");
+  expect(prompt).toContain(INDEX_RECALL);
+  expect(prompt).not.toContain("## File Memory");
+  expect(prompt).not.toContain(MEMORY_POLICY);
+  if (engine) expect(prompt).toContain(ENGINE_RECALL);
+  else expect(prompt).toContain(CLASSIC_RECALL);
 });
