@@ -85,7 +85,7 @@ export async function formatSessionBannerLines(
     ...(configSources.length > 0
       ? [`config: ${configSources.join(" → ")}`]
       : [`config: defaults`]),
-    `memory entries: ${memoryStats.total}`,
+    `state objects: ${memoryStats.total}`,
     `digest chars: ${digestLen}`,
     ...(session.memoryError ? [`⚠ memory unavailable: ${session.memoryError}`] : []),
     memoryLine,

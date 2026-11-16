@@ -659,6 +659,16 @@ it("serves digest, recall, memory, stats, and banner counts from the live file s
   expect(quietBanner.some((line) => line.includes("incognito (disabled)") || line === "memory: off")).toBe(false);
 });
 
+it("banner labels the state-graph count as state objects, not memory entries", async () => {
+  const session = await start();
+  session.stateGraph.create("note", { text: "one" });
+  session.stateGraph.create("note", { text: "two" });
+  const banner = await formatSessionBannerLines(session, home, "scripted");
+  const text = banner.join("\n");
+  expect(text).toContain("state objects: 2");
+  expect(text).not.toContain("memory entries:");
+});
+
 function seedMany(count: number): void {
   const dir = join(home, ".praana", "memory");
   mkdirSync(dir, { recursive: true });
