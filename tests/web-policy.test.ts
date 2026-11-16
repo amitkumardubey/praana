@@ -259,7 +259,7 @@ describe("web_fetch risk, config, and redaction", () => {
       const tools = createAllTools({
         eventLog: {} as never,
         stateGraph: {} as never,
-        memoryStore: null,
+        fileMemory: null,
         memoryEnabled: false,
         incognito: false,
         contextEngine: null,

@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { createAllTools, describeTools } from '../src/tools/index.js';
-import { createMemoryTools, mirrorToCognitiveMemory } from '../src/tools/memory.js';
+import { createMemoryTools } from '../src/tools/memory.js';
 import { createKnowledgeTools } from '../src/tools/knowledge.js';
 import { ContextEngine } from '../src/context-engine/index.js';
 import { createSystemTools } from '../src/tools/system.js';
@@ -207,36 +207,17 @@ describe('Memory Tools (createMemoryTools)', () => {
       });
     });
 
-    it('mirrors add_constraint to cognitive memory', async () => {
+    it('does not mirror add_constraint to cognitive memory', async () => {
       const result = await tools.add_constraint.execute({ text: 'Must be safe' });
-      expect(result).toEqual({ ok: true, id: expect.any(String), memoryId: 'mem-1' });
-      expect(memoryStore.remember).toHaveBeenCalledWith('Must be safe', {
-        kind: 'constraint',
-        certainty: 'high',
-      });
-      expect(eventLog.append).toHaveBeenCalledWith(
-        expect.objectContaining({
-          kind: 'system_note',
-          payload: expect.objectContaining({
-            type: 'memory_mirror',
-            tool: 'add_constraint',
-            kind: 'constraint',
-            memoryId: 'mem-1',
-          }),
-        }),
-      );
+      expect(result).toEqual({ ok: true, id: expect.any(String) });
+      expect(memoryStore.remember).not.toHaveBeenCalled();
+      expect(eventLog.append).not.toHaveBeenCalledWith(expect.objectContaining({ kind: 'system_note' }));
     });
 
-    it('mirrors decide to cognitive memory with combined content', async () => {
-      const result = await tools.decide.execute({
-        summary: 'Use TypeScript',
-        rationale: 'Type safety',
-      });
-      expect(result).toEqual({ ok: true, id: expect.any(String), memoryId: 'mem-1' });
-      expect(memoryStore.remember).toHaveBeenCalledWith('Use TypeScript — Type safety', {
-        kind: 'decision',
-        certainty: 'high',
-      });
+    it('does not mirror decide to cognitive memory', async () => {
+      const result = await tools.decide.execute({ summary: 'Use TypeScript', rationale: 'Type safety' });
+      expect(result).toEqual({ ok: true, id: expect.any(String) });
+      expect(memoryStore.remember).not.toHaveBeenCalled();
     });
 
     it('does not mirror add_note to cognitive memory in real time', async () => {
@@ -1827,7 +1808,7 @@ describe('Tool registry (mode-aware)', () => {
   const baseCtx = {
     eventLog: mockEventLog(),
     stateGraph: mockStateGraph(),
-    memoryStore: null,
+    fileMemory: null,
     memoryEnabled: false,
     incognito: false,
     contextEngine: null,

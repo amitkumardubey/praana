@@ -101,6 +101,7 @@ export class AppController {
         : findLatestSessionForCwd(this.config.session.log_dir, this.cwd);
       if (resolvedId) {
         this.session = await Session.resume(resolvedId, this.cwd, this.config, {
+          incognito: this.parsed.incognito,
           captureNotice,
           suppressLoggerStderr: true,
         });
@@ -150,12 +151,7 @@ export class AppController {
       session: this.session,
       cwd: this.cwd,
       model,
-      bannerLines: [
-        ...formatSessionBannerLines(this.session, this.cwd, model),
-        ...(this.session.memoryError
-          ? [`⚠ memory unavailable: ${this.session.memoryError}`]
-          : []),
-      ],
+      bannerLines: formatSessionBannerLines(this.session, this.cwd, model),
       recentConversationLines: didResume
         ? formatRecentConversationLines(this.session)
         : [],
@@ -347,8 +343,7 @@ export class AppController {
 
   /**
    * End the current session and start a fresh one with reloaded config.
-   * The old session's memory summarizer is given a very short timeout so it
-   * continues in the background; the rest of session shutdown is awaited.
+   * Session shutdown is awaited; file memories require no end-of-session work.
    *
    * Atomicity: the old session is ended first. If config reload or the new
    * session creation then throws, the controller is rolled back to a usable
@@ -356,12 +351,8 @@ export class AppController {
    * config so the user can continue typing instead of being stuck. The thrown
    * error is re-raised after rollback so the TUI can surface it.
    *
-   * Memory DB safety: the old session's MemoryStore handle is not explicitly
-   * closed (the background summarizer may still be writing). The new session
-   * opens a second connection to the same `~/.praana/memory.db`. SQLite WAL
-   * mode plus the configured `busy_timeout` makes this concurrent access safe
-   * for the brief overlap window; the old handle is released by GC once the
-   * summarizer drains.
+   * File memory is stateless. The old context-engine DB is closed at shutdown;
+   * the new session opens its own connection for artifacts, ledger and scorecard.
    */
   async startNewSession(): Promise<StartupInfo> {
     if (!this.sessionEnded) {

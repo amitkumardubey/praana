@@ -16,6 +16,9 @@ import { scriptedMemoryModel } from "./helpers/scripted-memory-model.js";
 import { projectKey } from "../src/file-memory/paths.js";
 import { MEMORY_POLICY } from "../src/file-memory/index.js";
 import { executeSlashCommand } from "../src/slash-commands.js";
+import { openContextEngineDb } from "../src/context-engine/db.js";
+import { maybeAutoCompactClassic } from "../src/auto-compact.js";
+import { formatSessionBannerLines } from "../src/app-banner.js";
 
 let home: string;
 let config: PraanaConfig;
@@ -64,10 +67,20 @@ it("constructs no Cognitive Memory store and samples no Cognitive Memory tables 
   const oldStore = spyOn(legacy, "MemoryStore").mockImplementation(() => { throw new Error("Cognitive Memory constructor reached"); });
   const averages = spyOn(memoryDb, "getMemorySignalAverages").mockImplementation(() => { throw new Error("Cognitive Memory query reached"); });
   restore.push(() => oldStore.mockRestore(), () => averages.mockRestore());
+  const model = scriptedMemoryModel(config, [
+    [{ name: "remember", args: { scope: "global", name: "runtime-observation", type: "user", description: "Keep boundaries clear", body: "Prefer explicit interfaces." } }],
+    [{ name: "recall", args: { query: "boundaries" } }],
+  ]);
+  restore.push(() => model.close());
   const session = await start();
   expect(oldStore).not.toHaveBeenCalled(); // main calls the constructor (caught init failure is not a pass)
   expect(averages).not.toHaveBeenCalled();
+  await runTurn(session, "Save and recall this preference", undefined, { sink: {} });
+  expect((await maybeAutoCompactClassic(session, 128000, "scripted")).compacted).toBe(false);
   await session.end("clean");
+  const db = openContextEngineDb(session.getMemoryDbPath()!);
+  db.query("UPDATE scorecard SET validity_avg_start = 0.9, validity_avg_end = 0.8, usefulness_avg_start = 0.7, usefulness_avg_end = 0.6 WHERE session_id = ?").run(session.id);
+  db.close();
   const resumed = await Session.resume(session.id, home, config);
   sessions.push(resumed);
   await resumed.end("clean");
@@ -114,6 +127,17 @@ it("rebuilds the index at resume, not after in-session writes or incognito toggl
   const resumed = await Session.resume(session.id, home, config);
   sessions.push(resumed);
   expect(resumed.digest).toContain("second-observation");
+});
+
+it("honors incognito on resume without hiding the rebuilt index", async () => {
+  seed();
+  const session = await start();
+  await session.end("clean");
+  const resumed = await Session.resume(session.id, home, config, { incognito: true });
+  sessions.push(resumed);
+  expect(resumed.isIncognito()).toBe(true);
+  expect(resumed.digest).toContain("stable-preference");
+  expect(await resumed.fileMemory!.remove({ name: "stable-preference", scope: "global" })).toMatchObject({ ok: false, error: "Incognito mode prevents removal" });
 });
 
 it("keeps global entries and warns once when the project memory scope cannot be read", async () => {
@@ -220,6 +244,49 @@ it("keeps the configured embedder active in real incognito engine scoring", asyn
   restore.push(() => embed.mockRestore());
   for (let turn = 0; turn < 5; turn++) await runTurn(session, `Inspect module boundaries ${turn}`, undefined, { sink: {} });
   expect(embed).toHaveBeenCalled();
+});
+
+it("never installs a Cognitive Memory averages provider in an enabled session", async () => {
+  const averages = spyOn(memoryDb, "getMemorySignalAverages");
+  restore.push(() => averages.mockRestore());
+  const session = await start();
+  await session.scorecard.recordMemoryStart(session.getMemoryDbPath()!);
+  session.scorecard.persistProgress();
+  expect(averages).not.toHaveBeenCalled(); // main installs a provider and samples at start
+  await session.end("clean");
+  expect(averages).not.toHaveBeenCalled();
+});
+
+it("continues with a visible warning when both file memory scopes fail", async () => {
+  mkdirSync(join(home, ".praana"), { recursive: true });
+  writeFileSync(join(home, ".praana", "memory"), "not a directory");
+  writeFileSync(join(home, ".praana", "projects"), "not a directory");
+  const session = await start();
+  expect(typeof session.memoryError).toBe("string");
+  expect(session.memoryError).toContain("Unsafe memory directory");
+  expect(session.fileMemory).toBeNull();
+  expect(session.digest).toBeNull();
+  expect(session.embedder).toBeInstanceOf(DeterministicTestEmbedder);
+  expect(formatSessionBannerLines(session, home, "scripted").join("\n")).toContain(session.memoryError!);
+});
+
+it("keeps deliberate writes from concurrent sessions and lists both on the next startup", async () => {
+  const model = scriptedMemoryModel(config, [
+    [{ name: "remember", args: { scope: "global", name: "editor-preference", type: "user", description: "Prefer readable editor text", body: "Use readable editor text." } }],
+    [{ name: "remember", args: { scope: "global", name: "reference-guide", type: "reference", description: "Consult the official protocol specification", body: "Check the protocol reference before changing wire formats." } }],
+  ]);
+  restore.push(() => model.close());
+  const first = await start();
+  const second = await start();
+  await Promise.all([
+    runTurn(first, "Save this durable editor preference", undefined, { sink: {} }),
+    runTurn(second, "Save this reference pointer", undefined, { sink: {} }),
+  ]);
+  expect(existsSync(join(home, ".praana", "memory", "editor-preference.md"))).toBe(true); // main's registry accepts only the old content/kind shape
+  expect(existsSync(join(home, ".praana", "memory", "reference-guide.md"))).toBe(true);
+  const next = await start();
+  expect(next.digest).toContain("editor-preference");
+  expect(next.digest).toContain("reference-guide");
 });
 
 it("ends with no automatic memory lifecycle, summarizer, consolidation or artifact promotion", async () => {

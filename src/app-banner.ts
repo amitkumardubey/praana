@@ -48,6 +48,7 @@ export function formatSessionBannerLines(
       : [`config: defaults`]),
     `memory entries: ${memoryStats.total}`,
     `digest chars: ${digestLen}`,
+    ...(session.memoryError ? [`⚠ memory unavailable: ${session.memoryError}`] : []),
     session.memoryEnabled
       ? `memory db: ${session.getMemoryDbPath() ?? "(unknown)"}`
       : session.isIncognito()
@@ -58,7 +59,7 @@ export function formatSessionBannerLines(
   ];
 }
 
-export function printSessionBanner(session: Session, cwd: string, model: string): void {
+export function printSessionBanner(_session: Session, _cwd: string, _model: string): void {
   const W = 72;
   const title = `▲ ${APP_NAME} [` + APP_VERSION + "]";
   console.log(title + " " + "─".repeat(W - title.length - 2) + "┐");
@@ -127,7 +128,7 @@ export function formatSessionEndSummary(session: Session): string {
   const summary = session.getSessionSummary();
   return formatSessionEndEpilogue({
     sessionId: session.id,
-    memory: session.memoryEnabled ? "completed" : "skipped",
+    memory: session.memoryEnabled ? "noop" : "skipped",
     turns: summary.turns,
     stateObjects: summary.stateObjects,
     rememberCalls: summary.memoriesStored,
@@ -151,7 +152,7 @@ export function formatSessionEpilogue(sessionId: string): string[] {
 export function printSessionEndSummary(session: Session): void {
   for (const line of formatSessionEndEpilogue({
     sessionId: session.id,
-    memory: session.memoryEnabled ? "completed" : "skipped",
+    memory: session.memoryEnabled ? "noop" : "skipped",
     turns: session.getSessionSummary().turns,
     stateObjects: session.getSessionSummary().stateObjects,
     rememberCalls: session.getSessionSummary().memoriesStored,

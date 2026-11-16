@@ -116,16 +116,16 @@ export function isPromotableArtifactSummary(summary: string): boolean {
   return !trimmed.startsWith("{") && !trimmed.startsWith("[");
 }
 
-/** Outcome of the session-end memory summarization step (issue #519 epilogue). */
+/** Shutdown outcome; deliberate file memory writes need no session-end flush. */
 export type SessionEndStatus = {
   memory: "completed" | "background" | "skipped" | "failed" | "noop";
   turns: number;
   stateObjects: number;
   /** Mid-session `remember` tool successes. */
   rememberCalls: number;
-  /** Surfaced memories marked used — snapshotted before pending_reinforcements flush. */
+  /** Successful file recall calls (query or by-name). */
   recallUsed: number;
-  /** Summarizer learnings stored in-process; 0 when background/skipped/unknown. */
+  /** Compatibility field; automatic memory extraction is disabled, so always 0. */
   learningsStored: number;
 };
 
@@ -322,6 +322,7 @@ export class Session {
     cwd: string,
     config?: PraanaConfig,
     opts?: {
+      incognito?: boolean;
       captureNotice?: (line: string) => void;
       suppressLoggerStderr?: boolean;
     }
@@ -333,6 +334,7 @@ export class Session {
     }
 
     const session = new Session(sessionId, cwd, cfg, meta.started_at);
+    session.incognito = opts?.incognito ?? false;
     session.canonicalTranscriptEnabled = meta.canonical_transcript?.version === CANONICAL_TRANSCRIPT_VERSION;
     session.noticeCapture = opts?.captureNotice;
     session.suppressLoggerStderr = opts?.suppressLoggerStderr ?? false;
@@ -1132,7 +1134,7 @@ export class Session {
     };
   }
 
-  /** Build a transcript of user/agent/tool events for the summarizer. */
+  /** Build a transcript for lifecycle callers and skill effectiveness tracking. */
   getTranscriptEvents(): SessionEvent[] {
     const all = this.eventLog.readAll();
     const out: SessionEvent[] = [];

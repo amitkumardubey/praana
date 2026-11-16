@@ -485,10 +485,11 @@ export class ScorecardTracker {
       circuitBudgetWrapups: row.circuit_budget_wrapups ?? 0,
     };
     this.recallUsedCount = row.recall_used_count ?? 0;
-    this.validityAvgStart = row.validity_avg_start ?? 0;
-    this.usefulnessAvgStart = row.usefulness_avg_start ?? 0;
-    this.validityAvgEnd = row.validity_avg_end ?? 0;
-    this.usefulnessAvgEnd = row.usefulness_avg_end ?? 0;
+    // A retired memory backend must not revive historical confidence signals on resume.
+    this.validityAvgStart = this.options.memoryAverages ? row.validity_avg_start ?? 0 : 0;
+    this.usefulnessAvgStart = this.options.memoryAverages ? row.usefulness_avg_start ?? 0 : 0;
+    this.validityAvgEnd = this.options.memoryAverages ? row.validity_avg_end ?? 0 : 0;
+    this.usefulnessAvgEnd = this.options.memoryAverages ? row.usefulness_avg_end ?? 0 : 0;
     this.readPathDigests = new Set(decodeCsv(row.read_path_digests));
     this.skillsEverLoaded = new Set(decodeCsv(row.skills_ever_loaded));
     this.startSnapshotCaptured =

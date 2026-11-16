@@ -48,14 +48,11 @@ export async function mirrorToCognitiveMemory(
 
 function buildStateToolResult(
   stateId: string,
-  mirror?: CognitiveMirrorResult,
   extra?: Record<string, unknown>,
 ): Record<string, unknown> {
   return {
     ok: true,
     id: stateId,
-    ...(mirror?.memoryId ? { memoryId: mirror.memoryId } : {}),
-    ...(mirror?.reinforced ? { reinforced: true } : {}),
     ...extra,
   };
 }
@@ -63,30 +60,6 @@ function buildStateToolResult(
 export function createMemoryTools(ctx: MemoryToolContext) {
   const { eventLog, stateGraph, searchTurnEvents } = ctx;
   const includeWorkingMemory = ctx.includeWorkingMemoryTools !== false;
-  const mirrorCtx = {
-    memoryStore: ctx.memoryStore ?? null,
-    memoryEnabled: ctx.memoryEnabled ?? false,
-    incognito: ctx.incognito ?? false,
-  };
-
-  const logMemoryMirror = (
-    tool: string,
-    kind: MemoryKind,
-    mirror: CognitiveMirrorResult,
-  ) => {
-    eventLog.append({
-      kind: "system_note",
-      actor: "kernel",
-      payload: {
-        type: "memory_mirror",
-        tool,
-        kind,
-        memoryId: mirror.memoryId,
-        reinforced: mirror.reinforced ?? false,
-      },
-    });
-  };
-
   const logAction = (
     action: string,
     payload: Record<string, unknown>
@@ -190,9 +163,7 @@ export function createMemoryTools(ctx: MemoryToolContext) {
           updated: obj.updated,
           lastTouched: obj.lastTouched,
         });
-        const mirror = await mirrorToCognitiveMemory(mirrorCtx, text, "constraint");
-        if (mirror) logMemoryMirror("add_constraint", "constraint", mirror);
-        return buildStateToolResult(obj.id, mirror);
+        return buildStateToolResult(obj.id);
       },
     }),
 
@@ -217,10 +188,7 @@ export function createMemoryTools(ctx: MemoryToolContext) {
           updated: obj.updated,
           lastTouched: obj.lastTouched,
         });
-        const content = `${summary} — ${rationale}`;
-        const mirror = await mirrorToCognitiveMemory(mirrorCtx, content, "decision");
-        if (mirror) logMemoryMirror("decide", "decision", mirror);
-        return buildStateToolResult(obj.id, mirror);
+        return buildStateToolResult(obj.id);
       },
     }),
 
@@ -244,7 +212,6 @@ export function createMemoryTools(ctx: MemoryToolContext) {
         });
         return buildStateToolResult(
           obj.id,
-          undefined,
           qualityWarning ? { warning: qualityWarning } : undefined,
         );
       },
@@ -303,7 +270,7 @@ export function createMemoryTools(ctx: MemoryToolContext) {
           tier: "active",
           lastTouched: stateGraph.get(id)!.lastTouched,
         });
-        return { ok: true, payload: obj.payload as unknown as Record<string, unknown> };
+        return { ok: true, payload: obj.payload };
       },
     }),
 
@@ -341,7 +308,7 @@ export function createMemoryTools(ctx: MemoryToolContext) {
     search_session_log: defineTool({
       description:
         "Search the current session's event log for earlier messages, tool calls, and results. " +
-        "Use this to recover in-session context (e.g. a code review from earlier turns) — not recall, which only searches Cognitive Memory. " +
+        "Use this to recover in-session context (e.g. a code review from earlier turns) — not recall, which searches cross-session file memories. " +
         "Session log path: events.jsonl",
       parameters: z.object({
         query: z

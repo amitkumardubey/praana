@@ -87,7 +87,7 @@ describe("OpenTuiSink", () => {
     sink.onToolResult(
       "call-1",
       "recall",
-      JSON.stringify({ entries: [{ content: "remembered fact" }] }),
+      JSON.stringify({ ok: true, matches: [{ name: "stable-preference", snippet: "remembered fact" }] }),
       false,
     );
     sink.onMemoryBanner({ recallCalls: 1, recallHits: 1, recallUsed: 0, memoryTokens: 0 });
