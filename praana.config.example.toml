@@ -79,7 +79,7 @@ model = "deepseek/deepseek-v4-flash:free"
 #                   Location: VERTEX_REGION → GOOGLE_CLOUD_LOCATION → us-central1
 #                   Use VERTEX_REGION=global for the global endpoint. No base_url needed.
 #                   ADC: CLOUDSDK_CONFIG/application_default_credentials.json,
-#                        else ~/.config/gcloud (Windows: %APPDATA%\\gcloud).
+#                        else ~/.config/gcloud (Windows: %APPDATA%\gcloud).
 #                   /model vertex <gemini-model-id> works without a model catalog.
 #   deepseek      → DEEPSEEK_API_KEY
 #   groq          → GROQ_API_KEY

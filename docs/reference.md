@@ -180,7 +180,7 @@ JSON file → stored token or JSON path → well-known ADC file. Both
 `service_account` and `authorized_user` (user ADC) files are supported. The
 well-known file is `application_default_credentials.json` under
 `CLOUDSDK_CONFIG`, otherwise `~/.config/gcloud` on Linux/macOS or
-`%APPDATA%\\gcloud` on Windows. Tokens minted from files are cached in memory
+`%APPDATA%\gcloud` on Windows. Tokens minted from files are cached in memory
 until 60 seconds before expiry; tokens and refreshed credentials are never
 written back to disk. Metadata-server credentials, workload identity and
 impersonation are not supported.
