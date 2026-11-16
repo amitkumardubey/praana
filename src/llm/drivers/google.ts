@@ -298,9 +298,72 @@ export class GoogleDriver implements LlmDriver {
         functionDeclarations: tools.map((t) => ({
           name: t.name,
           description: t.description,
-          parameters: t.parameters,
+          parameters: toGoogleFunctionSchema(t.parameters),
         })),
       },
     ];
   }
+}
+
+/**
+ * Deep-copy a JSON Schema node and return the copy, converting keywords the
+ * Gemini function declaration subset rejects. `exclusiveMinimum` /
+ * `exclusiveMaximum` (emitted by Zod `.positive()` / `.negative()` via
+ * normalizeToolParameters) are only accepted on `integer` schemas, where they
+ * become inclusive `minimum` / `maximum` bounds; elsewhere they are dropped.
+ * The input is never mutated — other drivers share the same schema objects.
+ * Only schema positions (objects and arrays of schemas) are traversed; scalar
+ * values never enter recursion, so this type is the full domain.
+ */
+type GoogleSchemaNode = Record<string, unknown> | GoogleSchemaNode[];
+
+function convertSchemaNode(node: GoogleSchemaNode): GoogleSchemaNode {
+  if (Array.isArray(node)) return node.map((item) => convertSchemaNode(item));
+  return convertSchemaObject(node);
+}
+
+function convertSchemaObject(schema: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(schema)) {
+    if (key === "exclusiveMinimum" || key === "exclusiveMaximum") continue;
+    if (key === "properties") {
+      // Property names are user-defined; only their values are schemas.
+      const props: Record<string, unknown> = {};
+      for (const [name, sub] of Object.entries(
+        (value ?? {}) as Record<string, unknown>,
+      )) {
+        props[name] = convertSchemaNode(sub as GoogleSchemaNode);
+      }
+      out.properties = props;
+    } else if (key === "items" || key === "anyOf" || key === "oneOf" || key === "allOf") {
+      out[key] = convertSchemaNode(value as GoogleSchemaNode);
+    } else {
+      out[key] = value;
+    }
+  }
+
+  if (schema.type === "integer") {
+    const exclusiveMinimum = schema.exclusiveMinimum;
+    if (typeof exclusiveMinimum === "number") {
+      const converted = exclusiveMinimum + 1;
+      const existing = out.minimum;
+      out.minimum = typeof existing === "number" ? Math.max(existing, converted) : converted;
+    }
+    const exclusiveMaximum = schema.exclusiveMaximum;
+    if (typeof exclusiveMaximum === "number") {
+      const converted = exclusiveMaximum - 1;
+      const existing = out.maximum;
+      out.maximum = typeof existing === "number" ? Math.min(existing, converted) : converted;
+    }
+  }
+  return out;
+}
+
+/**
+ * Return a deep copy of a tool's JSON schema restricted to the subset Google
+ * function declarations accept (used by both the Gemini and Vertex drivers).
+ */
+export function toGoogleFunctionSchema(schema: Record<string, unknown>): Record<string, unknown> {
+  // Top-level schemas are always objects (normalizeToolParameters guarantees this).
+  return convertSchemaNode(schema) as Record<string, unknown>;
 }
