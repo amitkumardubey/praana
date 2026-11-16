@@ -1,10 +1,14 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { GoogleDriver } from "../src/llm/drivers/google.js";
 import type { AssistantMessage, ConversationMessage, StreamEvent, ToolCall } from "../src/llm/types.js";
+import { useCleanVertexEnv } from "./helpers/vertex-env.js";
 import { googleSse, parallelCallParts, SKIP_THOUGHT_SIGNATURE, THOUGHT_SIGNATURE } from "./helpers/google-thought-signature.js";
 
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; });
+useCleanVertexEnv();
+// Vertex refuses to build a request without a project; the value is a placeholder.
+beforeEach(() => { process.env.VERTEX_PROJECT_ID = "proj-test"; });
 
 async function request(provider: string, messages: ConversationMessage[], responseParts: unknown[] = [{ text: "done" }]) {
   let body: any;

@@ -18,6 +18,9 @@ import { summarizerModelForProvider } from "../src/memory/summarizer-factory.js"
 import { resetBedrockConfigRegionForTests, setBedrockConfigRegion } from "../src/bedrock/region.js";
 import { PraanaLogger, setAppLogger } from "../src/logger.js";
 import { resetUserProvidersForTests } from "../src/provider-registry.js";
+import { useCleanVertexEnv } from "./helpers/vertex-env.js";
+
+useCleanVertexEnv();
 
 const SSE_TEXT = 'data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n data: [DONE]\n\n';
 
@@ -37,6 +40,7 @@ describe("native LLM wiring", () => {
     "GOOGLE_GENERATIVE_AI_API_KEY",
     "GOOGLE_APPLICATION_CREDENTIALS",
     "GCP_ACCESS_TOKEN",
+    "VERTEX_PROJECT_ID",
     "AWS_ACCESS_KEY_ID",
     "AWS_SECRET_ACCESS_KEY",
     "AWS_SESSION_TOKEN",
@@ -364,6 +368,7 @@ describe("native LLM wiring", () => {
 
   it("Vertex does not send a credentials file path as a Bearer token", async () => {
     process.env.GOOGLE_APPLICATION_CREDENTIALS = join(home, "missing-sa.json");
+    process.env.VERTEX_PROJECT_ID = "proj-test";
     const originalFetch = globalThis.fetch;
     let capturedAuth = "";
     globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {

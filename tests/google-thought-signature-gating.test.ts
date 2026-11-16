@@ -1,10 +1,14 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, beforeEach, expect, test } from "bun:test";
 import { GoogleDriver } from "../src/llm/drivers/google.js";
 import type { ConversationMessage, StreamEvent, ToolCall } from "../src/llm/types.js";
+import { useCleanVertexEnv } from "./helpers/vertex-env.js";
 import { googleSse, SKIP_THOUGHT_SIGNATURE, THOUGHT_SIGNATURE } from "./helpers/google-thought-signature.js";
 
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; });
+useCleanVertexEnv();
+// Vertex refuses to build a request without a project; the value is a placeholder.
+beforeEach(() => { process.env.VERTEX_PROJECT_ID = "proj-test"; });
 
 async function request(provider: string, model: string, messages: ConversationMessage[]) {
   let body: any;
@@ -48,7 +52,8 @@ for (const provider of ["google", "vertex"]) {
     });
   }
 
-  for (const model of ["gemini-3.8-flash", "gemini-4-xyz", "models/gemini-3.7-flash", "my-custom-model"]) {
+  // Vertex takes publisher model ids, not slash-containing resource names.
+  for (const model of ["gemini-3.8-flash", "gemini-4-xyz", provider === "google" ? "models/gemini-3.7-flash" : "gemini-3.7-flash", "my-custom-model"]) {
     test(`${provider} injects the sentinel on the first call only for ${model}`, async () => {
       const { body } = await request(provider, model, [
         { role: "user", content: "go" },

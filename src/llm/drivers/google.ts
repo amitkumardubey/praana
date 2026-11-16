@@ -17,6 +17,14 @@ import { runGuardedProviderStream } from "../stream-guard.js";
 import { logLenientStreamEnd, prematureEndError, toolCutoffError } from "../stream-end.js";
 import { parseToolArguments } from "../tool-accumulator.js";
 import { resolveVertexAccessToken } from "../google-adc.js";
+import { vertexProjectFromCredentials } from "../vertex-credentials.js";
+import {
+  VERTEX_PROJECT_MISSING_MESSAGE,
+  VertexConfigError,
+  resolveVertexLocation,
+  resolveVertexProjectFromEnv,
+  vertexEndpoint,
+} from "../vertex-endpoint.js";
 
 export class GoogleDriver implements LlmDriver {
   readonly protocol = "google-generative-ai";
@@ -31,9 +39,19 @@ export class GoogleDriver implements LlmDriver {
     };
 
     if (isVertex) {
-      const region = process.env.VERTEX_REGION || "us-central1";
-      const project = process.env.VERTEX_PROJECT_ID || process.env.GCP_PROJECT || "default";
-      endpoint = `https://${region}-aiplatform.googleapis.com/v1/projects/${project}/locations/${region}/publishers/google/models/${req.model}:streamGenerateContent?alt=sse`;
+      // Configuration problems are not authentication failures: no HTTP status.
+      try {
+        const project = resolveVertexProjectFromEnv() ?? vertexProjectFromCredentials(auth);
+        if (!project) throw new VertexConfigError(VERTEX_PROJECT_MISSING_MESSAGE);
+        endpoint = vertexEndpoint({
+          location: resolveVertexLocation(),
+          project,
+          model: req.model,
+        });
+      } catch (err) {
+        yield { type: "error", error: err instanceof Error ? err : new Error("Invalid Vertex AI configuration"), retryable: false };
+        return;
+      }
       try {
         const token = await resolveVertexAccessToken({
           bearerToken: auth.bearerToken,

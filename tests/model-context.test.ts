@@ -33,6 +33,7 @@ describe("model-context", () => {
   });
 
   it("caches the default fallback for unknown models", async () => {
+    spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ data: [] })));
     expect(resolveContextWindowSync("openrouter", "totally/unknown-model-xyz")).toBe(
       128_000,
     );
