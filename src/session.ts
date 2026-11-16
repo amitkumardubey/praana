@@ -1290,11 +1290,16 @@ export class Session {
     if (!this.memoryEnabled) return;
     try {
       this.fileMemory = this.createFileMemory();
-      // Probe both scopes so initialization failures remain non-fatal and visible.
-      const listed = await this.fileMemory.list();
-      if (!listed.ok) throw new Error(listed.error);
-      this.memoryEntryCount = listed.entries.length;
+      const index = await this.fileMemory.buildMemoryIndex();
+      this.digest = index.ok && index.total > 0 ? index.text : null;
+      if (!index.ok) throw new Error(index.error);
+      this.memoryEntryCount = index.total;
       this.memoryError = null;
+      if (index.skippedScopes?.length) {
+        this.getLogger().child("memory").warn("File memory scope skipped", {
+          details: { skippedScopes: index.skippedScopes },
+        });
+      }
     } catch (err) {
       this.memoryError = memoryErrorMessage(err, appHomePath("memory"));
       this.getLogger().child("memory").warn("Failed to initialize file memory, continuing without memory", {

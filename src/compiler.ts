@@ -470,7 +470,8 @@ export function buildCrossSessionMemory(digest: string): string {
     "",
     digest,
     "",
-    "Use recall('query') to search your knowledge base for more.",
+    'Use recall({ query: "..." }) to search file memories, or recall({ name: "..." }) to read one in full.',
+    "A memory is an observation at its date; verify files, functions and flags it names before recommending them.",
   ].join("\n");
 }
 
