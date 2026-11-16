@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, expect, it, spyOn } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Session } from "../src/session.js";
@@ -308,4 +308,31 @@ it("ends with no automatic memory lifecycle, summarizer, consolidation or artifa
   expect(sessionEnd).not.toHaveBeenCalled();
   expect(artifactPromotion).not.toHaveBeenCalled();
   expect(session.eventLog.readAll().some((event) => event.payload.type === "memory_lifecycle")).toBe(false);
+});
+
+const slashHandlers = { setModel() {}, setThinking() {}, getThinking: () => false };
+
+it("keeps file memory unset when incognito toggles after an unreadable memory root", async () => {
+  const scopes = [join(home, ".praana", "memory"), join(home, ".praana", "projects")];
+  for (const dir of scopes) mkdirSync(dir, { recursive: true });
+  for (const dir of scopes) chmodSync(dir, 0);
+  try {
+    const model = scriptedMemoryModel(config);
+    restore.push(() => model.close());
+    const session = await start();
+    await executeSlashCommand("/incognito on", session, slashHandlers);
+    await executeSlashCommand("/incognito off", session, slashHandlers);
+    expect(session.memoryEnabled).toBe(false);
+    expect(session.fileMemory).toBeNull();
+    await runTurn(session, "Hello", undefined, { sink: {} });
+    const names = (model.requests[0].tools as Array<{ function: { name: string } }>).map((tool) => tool.function.name);
+    expect(names).not.toContain("recall");
+    expect(names).not.toContain("remember");
+    expect(names).not.toContain("forget_memory");
+    const banner = formatSessionBannerLines(session, home, "scripted");
+    expect(banner.filter((line) => line.includes("memory unavailable"))).toHaveLength(1);
+    expect(banner.some((line) => line.startsWith("memory db:"))).toBe(false);
+  } finally {
+    for (const dir of scopes) chmodSync(dir, 0o700);
+  }
 });

@@ -898,7 +898,9 @@ export class Session {
 
   async setIncognito(enabled: boolean): Promise<void> {
     this.incognito = enabled;
-    if (!this.config.memory.enabled) return;
+    // Init failure clears memoryEnabled. A later toggle must not install a store
+    // that never received an index.
+    if (!this.memoryEnabled) return;
     // The index is a cache-stable prefix: toggling write access must not rebuild it.
     this.fileMemory = this.createFileMemory();
   }
@@ -1308,6 +1310,7 @@ export class Session {
         code: "MEMORY_INIT_FAILED",
         cause: err as Error,
       });
+      this.memoryEnabled = false;
       this.fileMemory = null;
       this.digest = null;
     }
