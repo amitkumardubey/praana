@@ -7,9 +7,11 @@ import { runGuardedProviderStream, streamGuardPendingTimers } from "../src/llm/s
 import type { ResolvedAuth, StreamEvent, StreamRequest } from "../src/llm/types.js";
 
 const originalFetch = globalThis.fetch;
+const originalRandom = Math.random;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  Math.random = originalRandom;
 });
 
 const jwt = (id = "jwt-account") =>
