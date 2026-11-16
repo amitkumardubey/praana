@@ -9,6 +9,7 @@ import {
   isUserDeclaredProvider,
   removeUserProvider,
   getProviderEnvKey,
+  SETUP_UNSUPPORTED_PROVIDERS,
 } from "../provider-registry.js";
 import { removeProviderSection, updateLlmProvider } from "./config-writer.js";
 import { getEnvApiKeyForProvider, pickDefaultModel } from "./logic.js";
@@ -97,7 +98,7 @@ function pickFallback(
 ): { provider: string; model: string } | null {
   const stored = listStoredProviders().filter((id) => id !== loggedOut);
   const envDetected = listEnvDetectedProviders().filter(
-    (id) => id !== loggedOut && getProviderEnvKey(id) !== null,
+    (id) => id !== loggedOut && !SETUP_UNSUPPORTED_PROVIDERS.has(id) && getProviderEnvKey(id) !== null,
   );
   const remaining = [...new Set([...stored, ...envDetected])];
   if (remaining.length === 0) return null;
