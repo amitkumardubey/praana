@@ -171,7 +171,6 @@ import { createAllTools } from "../src/tools/index.js";
 import { TurnAbortedError } from "../src/turn-control.js";
 import { loadConfig, getConfigWarnings } from "../src/config.js";
 import { StateGraph } from "../src/state-graph.js";
-import { EventLog } from "../src/event-log.js";
 import { createBuiltinHookRegistry } from "../src/hooks/index.js";
 import { LoopGate } from "../src/circuit/loop-gate.js";
 import type { TurnUiSink } from "../src/ui-events.js";
@@ -286,7 +285,8 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
     config,
     eventLog,
     stateGraph,
-    memoryStore: null,
+    fileMemory: null,
+    embedder: null,
     memoryEnabled: false,
     incognito: false,
     contextEngine: null,
@@ -411,6 +411,7 @@ function makeLoopStream(req: FakeStreamRequest, loop: number, opts?: LoopStreamO
   if (isWrapUpRequest) {
     if (opts?.failWrapUp) {
       return (async function* () {
+        yield* [];
         throw new Error("wrap-up provider failure");
       })();
     }
@@ -466,9 +467,9 @@ function makeLoopStream(req: FakeStreamRequest, loop: number, opts?: LoopStreamO
 
   if (toolResultsSoFar < loop) {
     const id = `call-${toolResultsSoFar}`;
-    const toolCalls = opts?.withToolCalls !== false
-      ? [{ id, name: "shell", args: { command: `echo ${id}` } }]
-      : undefined;
+    const toolCalls = opts?.withToolCalls === false
+      ? undefined
+      : [{ id, name: "shell", args: { command: `echo ${id}` } }];
     return (async function* () {
       yield {
         type: "toolcall_end",
@@ -572,12 +573,6 @@ function streamRequestCalls(): Array<{ messages: FakeStreamRequest["messages"] }
   );
 }
 
-function toolResultsBeforeCall(callIndex: number): number {
-  const req = streamRequestCalls()[callIndex];
-  if (!req) return -1;
-  return req.messages.filter((m) => m.role === "tool_result").length;
-}
-
 /**
  * Feed canonical history through a real provider driver (fetch mocked) and
  * return the JSON body the driver would POST. No network.
@@ -612,71 +607,6 @@ async function captureDriverBody(
   }
   if (!body) throw new Error("driver did not serialize a request body");
   return body;
-}
-
-function toolUseIds(body: Record<string, unknown>, protocol: "anthropic" | "openai"): string[] {
-  const messages = Array.isArray(body.messages) ? body.messages : [];
-  const ids: string[] = [];
-  for (const msg of messages) {
-    if (!msg || typeof msg !== "object") continue;
-    const record = msg as Record<string, unknown>;
-    if (protocol === "openai" && Array.isArray(record.tool_calls)) {
-      for (const tc of record.tool_calls) {
-        if (tc && typeof tc === "object" && typeof (tc as { id?: unknown }).id === "string") {
-          ids.push((tc as { id: string }).id);
-        }
-      }
-    }
-    if (!Array.isArray(record.content)) continue;
-    for (const part of record.content) {
-      if (!part || typeof part !== "object") continue;
-      const block = part as { type?: unknown; id?: unknown };
-      if (protocol === "anthropic" && block.type === "tool_use" && typeof block.id === "string") {
-        ids.push(block.id);
-      }
-    }
-  }
-  return ids;
-}
-
-function toolResultIds(body: Record<string, unknown>, protocol: "anthropic" | "openai"): Set<string> {
-  const messages = Array.isArray(body.messages) ? body.messages : [];
-  const ids = new Set<string>();
-  for (const msg of messages) {
-    if (!msg || typeof msg !== "object") continue;
-    const record = msg as Record<string, unknown>;
-    if (protocol === "openai" && record.role === "tool" && typeof record.tool_call_id === "string") {
-      ids.add(record.tool_call_id);
-    }
-    if (!Array.isArray(record.content)) continue;
-    for (const part of record.content) {
-      if (!part || typeof part !== "object") continue;
-      const block = part as { type?: unknown; tool_use_id?: unknown };
-      if (
-        protocol === "anthropic" &&
-        block.type === "tool_result" &&
-        typeof block.tool_use_id === "string"
-      ) {
-        ids.add(block.tool_use_id);
-      }
-    }
-  }
-  return ids;
-}
-
-/** Every tool_use / tool_calls id in a serialized provider payload has a result. */
-async function expectEveryToolCallHasResult(messages: ConversationMessage[]): Promise<void> {
-  const anthropic = await captureDriverBody(new AnthropicDriver(), messages);
-  const openai = await captureDriverBody(new OpenAICompatibleDriver(), messages);
-  for (const [protocol, body] of [
-    ["anthropic", anthropic],
-    ["openai", openai],
-  ] as const) {
-    const used = toolUseIds(body, protocol);
-    const resolved = toolResultIds(body, protocol);
-    expect(used.length).toBeGreaterThan(0);
-    expect(used.filter((id) => !resolved.has(id))).toEqual([]);
-  }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────

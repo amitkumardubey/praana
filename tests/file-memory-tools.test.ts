@@ -35,6 +35,19 @@ test("three inert file memory tools delegate valid operations and expose their l
   refused(await tools.forget_memory.execute({ name: entry.name }));
 });
 
+test("blank optional recall and forget fields are absent", async () => {
+  const { tools } = await setup();
+  const item = { ...entry, name: "editor-preference", body: "Use x editor." };
+  expect((await tools.remember.execute(item)).ok).toBe(true);
+  for (const blank of ["", "  \t"]) {
+    expect(await tools.recall.execute({ query: "x", name: blank, scope: blank })).toMatchObject({ ok: true });
+    expect(await tools.recall.execute({ name: item.name, scope: blank })).toMatchObject({ ok: true, memory: { name: item.name } });
+    expect(await tools.recall.execute({ name: blank, scope: blank })).toMatchObject({ ok: false, error: expect.stringContaining("Provide exactly one of query or name") });
+  }
+  expect(await tools.forget_memory.execute({ name: item.name, scope: "" })).toEqual({ ok: true });
+  expect(await tools.forget_memory.execute({ name: "", scope: "" })).toMatchObject({ ok: false });
+});
+
 test("the generated JSON schema publishes the one name pattern and names the store refusal", async () => {
   const { tools, store } = await setup();
   const nameProperty = (tool: { parameters?: unknown }) => {

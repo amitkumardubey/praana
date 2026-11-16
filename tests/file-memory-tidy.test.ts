@@ -87,6 +87,17 @@ test("the store adds no second name pattern to the module surface", () => {
   expect(exported).toContain("PRIVATE_KEY_HEADER");
 });
 
+test("recall treats blank optional fields as absent without accepting an empty query alone", async () => {
+  const { tools, store } = await setup();
+  expect((await store.write(entry)).ok).toBe(true);
+  for (const query of ["", "  \t"]) {
+    expect(await tools.recall.execute({ name: entry.name, query, scope: "" })).toMatchObject({ ok: true, memory: { name: entry.name } });
+  }
+  expect(await tools.recall.execute({ query: "" })).toMatchObject({ ok: false });
+  expect(await tools.recall.execute({ query: "coffee", name: "", scope: "" })).toMatchObject({ ok: true, matches: [{ name: entry.name }] });
+  expect(await tools.recall.execute({ name: entry.name, scope: "" })).toMatchObject({ ok: true, memory: { name: entry.name } });
+});
+
 test("the published schema pattern is the store's name rule and reserved names get one message", async () => {
   const { tools, store } = await setup();
   const nameProperty = (tool: { parameters?: unknown }) => (normalizeToolParameters(tool.parameters) as { properties: Record<string, { pattern?: string; description?: string }> }).properties.name;

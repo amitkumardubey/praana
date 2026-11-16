@@ -649,7 +649,7 @@ describe("AppController", () => {
       },
       end: mock(async () => ({ memory: "skipped" as const })),
       getTranscriptEvents: () => [],
-      memoryInitError: undefined,
+      memoryError: undefined,
     } as any);
 
     const controller = new AppController({
@@ -772,7 +772,7 @@ describe("AppController", () => {
       },
       end: mock(async () => ({ memory: "skipped" as const })),
       getTranscriptEvents: () => [],
-      memoryInitError: undefined,
+      memoryError: undefined,
     } as any);
 
     const controller = new AppController({

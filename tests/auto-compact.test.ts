@@ -56,10 +56,10 @@ describe("auto-compact", () => {
 
     const result = await maybeAutoCompactClassic(session, 900, "test/model");
     expect(result.compacted).toBe(false);
-    expect(session.memoryStore!.compressTurns).not.toHaveBeenCalled();
+    expect(result.eventsCompacted).toBe(0);
   });
 
-  it("compacts oldest events when pressure is high", async () => {
+  it("does not write old memory or discard history when pressure is high", async () => {
     const events = [
       makeEvent("user_message", { text: "1" }, "e0"),
       makeEvent("agent_message", { text: "a" }, "e1"),
@@ -99,15 +99,10 @@ describe("auto-compact", () => {
     } as unknown as Session;
 
     const result = await maybeAutoCompactClassic(session, 8_000, "test/model");
-    expect(result.compacted).toBe(true);
-    expect(result.eventsCompacted).toBe(3);
-    expect(compressTurns).toHaveBeenCalledOnce();
-    expect(markEventsAsCompressed).toHaveBeenCalledWith(["e0", "e1", "e2"]);
-    expect(append).toHaveBeenCalledWith(
-      expect.objectContaining({
-        kind: "system_note",
-        payload: expect.objectContaining({ type: "history_compacted" }),
-      }),
-    );
+    expect(result.compacted).toBe(false);
+    expect(result.eventsCompacted).toBe(0);
+    expect(compressTurns).not.toHaveBeenCalled();
+    expect(markEventsAsCompressed).not.toHaveBeenCalled();
+    expect(append).not.toHaveBeenCalled();
   });
 });

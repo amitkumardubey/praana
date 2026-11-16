@@ -1,6 +1,6 @@
 import type { EventLog } from "../event-log.js";
 import type { StateGraph } from "../state-graph.js";
-import type { MemoryStore } from "../memory/index.js";
+import type { FileMemoryStore } from "../file-memory/index.js";
 import type { ContextEngine } from "../context-engine/index.js";
 import type { ScorecardInc } from "../context-engine/telemetry.js";
 import type { SandboxConfig } from "../types.js";
@@ -9,6 +9,7 @@ import type { SkillRuntime } from "../skills/index.js";
 import type { ActionConfirmHandler } from "../confirm/action.js";
 import { createMemoryTools } from "./memory.js";
 import { createKnowledgeTools } from "./knowledge.js";
+import { createFileMemoryTools } from "../file-memory/tools.js";
 import { createSystemTools } from "./system.js";
 import { createSearchCodeTool } from "./search-code.js";
 import { createFindFilesTool } from "./find-files.js";
@@ -25,7 +26,7 @@ import { createWebFetchTool } from "./web/tool.js";
 export interface ToolRegistryContext {
   eventLog: EventLog;
   stateGraph: StateGraph;
-  memoryStore: MemoryStore | null;
+  fileMemory: FileMemoryStore | null;
   memoryEnabled: boolean;
   incognito: boolean;
   contextEngine: ContextEngine | null;
@@ -76,9 +77,6 @@ export function createAllTools(ctx: ToolRegistryContext) {
   const memoryTools = createMemoryTools({
     eventLog: ctx.eventLog,
     stateGraph: ctx.stateGraph,
-    memoryStore: ctx.memoryStore,
-    memoryEnabled: ctx.memoryEnabled,
-    incognito: ctx.incognito,
     includeWorkingMemoryTools: !classicMode,
     searchTurnEvents: ctx.contextEngine
       ? (query, limit, currentTurn) =>
@@ -93,9 +91,10 @@ export function createAllTools(ctx: ToolRegistryContext) {
 
   const knowledgeTools = createKnowledgeTools({
     eventLog: ctx.eventLog,
-    memoryStore: ctx.memoryStore,
-    memoryEnabled: ctx.memoryEnabled,
+    memoryStore: null,
+    memoryEnabled: false,
     incognito: ctx.incognito,
+    includeLegacyMemoryTools: false,
     contextEngine: ctx.contextEngine,
     skillScorecard: ctx.scorecard,
     getCurrentTurn: ctx.getCurrentTurn ?? (() => 0),
@@ -162,6 +161,7 @@ export function createAllTools(ctx: ToolRegistryContext) {
   return {
     ...memoryTools,
     ...knowledgeTools,
+    ...(ctx.memoryEnabled && ctx.fileMemory ? createFileMemoryTools(ctx.fileMemory) : {}),
     ...searchTranscriptTools,
     ...systemTools,
     ...searchCodeTools,
@@ -183,6 +183,7 @@ export function createAllTools(ctx: ToolRegistryContext) {
 export interface DescribeToolsOptions {
   contextEngineEnabled?: boolean;
   classicMode?: boolean;
+  memoryEnabled?: boolean;
 }
 
 const WORKING_MEMORY_TOOL_DESCRIPTIONS = [
@@ -200,12 +201,12 @@ const WORKING_MEMORY_TOOL_DESCRIPTIONS = [
 ];
 
 const SHARED_TOOL_DESCRIPTIONS = [
-  "search_session_log(query, kinds?, limit?) — Search current session event log (not Cognitive Memory recall)",
+  "search_session_log(query, kinds?, limit?) — Search current session event log (not cross-session file memory)",
   "search_transcript(query?, id?, include_previous_resets?, limit?, context_messages?, offset?, max_chars?) — Search canonical session records (BM25 + substring), including compacted/stubbed turns; current reset epoch by default, include_previous_resets=true crosses /clear. Fetch full/ranged content and neighbors by ID. Search excludes search_transcript calls/results; artifact-backed results use paired logged output when available",
   "read_and_summarize(path) — Read file and return structured summary (exports, imports, metrics)",
-  "recall(query, mode?, kinds?) — Search Cognitive Memory",
-  "remember(content, kind?, certainty?, scope?) — Store in Cognitive Memory (kinds: fact, preference, decision, pattern, mistake, constraint)",
-  "forget_memory(id) — Retract a Cognitive Memory entry (tombstone)",
+  "recall(query? | name?, scope?) — Search dated file memories or read one by name",
+  "remember(scope, type, name, description, body) — Save a file memory (types: user, feedback, project, reference)",
+  "forget_memory(name, scope?) — Hard-delete a file memory",
   "shell(command, timeout?) — Execute a shell command (not for fetching URLs: use web_fetch, which enforces the address guard)",
   "read_file(path, offset?, limit?) — Read a file",
   "write_file(path, content) — Write or overwrite a file",
@@ -249,11 +250,14 @@ export function describeTools(options?: DescribeToolsOptions): string[] {
   const classicMode =
     options?.classicMode ?? options?.contextEngineEnabled === false;
 
+  const shared = options?.memoryEnabled === false
+    ? SHARED_TOOL_DESCRIPTIONS.filter((description) => !/^(recall|remember|forget_memory)\(/.test(description))
+    : SHARED_TOOL_DESCRIPTIONS;
   if (classicMode) {
-    return [...SHARED_TOOL_DESCRIPTIONS];
+    return [...shared];
   }
 
-  const tools = [...WORKING_MEMORY_TOOL_DESCRIPTIONS, ...SHARED_TOOL_DESCRIPTIONS];
+  const tools = [...WORKING_MEMORY_TOOL_DESCRIPTIONS, ...shared];
 
   if (options?.contextEngineEnabled) {
     tools.push(...ENGINE_TOOL_DESCRIPTIONS);

@@ -1,7 +1,6 @@
 import { homedir } from "node:os";
-import { join, dirname, isAbsolute, resolve } from "node:path";
+import { join, dirname, basename, isAbsolute, resolve } from "node:path";
 import { readFileSync, existsSync, mkdirSync } from "node:fs";
-import { openDatabase } from "./sqlite.js";
 import { ulid } from "ulid";
 import type { CompileMetrics } from "./compiler.js";
 import type { ContextDisplaySnapshot } from "./context-display.js";
@@ -16,7 +15,6 @@ import {
   readSessionMeta,
   findLastResetBoundaryTurn,
 } from "./event-log.js";
-import { detectActivityLogNote } from "./tools/memory.js";
 import { StateGraph } from "./state-graph.js";
 import { CANONICAL_TRANSCRIPT_VERSION } from "./canonical-transcript.js";
 import {
@@ -39,16 +37,14 @@ import { DEFAULT_WEB_CONFIG, decideWebHost, normalizeHost } from "./tools/web/po
 import { SessionNotFoundError } from "./session-errors.js";
 export { SessionNotFoundError } from "./session-errors.js";
 import {
-  MemoryStore,
   isSessionGood,
-  createEmbedder,
-  resolveEmbeddingBackend,
-  createSummarizer,
   type SessionEvent,
 } from "./memory/index.js";
+import { createEmbedder, resolveEmbeddingBackend } from "./memory/embedder-factory.js";
+import type { Embedder } from "./memory/types.js";
+import { createFileMemoryStore } from "./file-memory/store.js";
+import type { FileMemoryStore } from "./file-memory/index.js";
 import { buildProjectContext } from "./project-detector.js";
-import { runConsolidation, type ConsolidationConfig } from "./memory/consolidation.js";
-import { getMemorySignalAverages } from "./memory/db.js";
 import { openContextEngineDb } from "./context-engine/db.js";
 import {
   ContextEngine,
@@ -58,7 +54,6 @@ import {
   renderSessionTelemetrySummary,
   resolveContextDbPath,
   resolveContextEngineConfig,
-  type ScorecardTrackerOptions,
 } from "./context-engine/index.js";
 import type { CompileScoreRecord, PressureMode } from "./context-engine/types.js";
 import { EmbeddingCache } from "./context-engine/embedding-cache.js";
@@ -121,16 +116,16 @@ export function isPromotableArtifactSummary(summary: string): boolean {
   return !trimmed.startsWith("{") && !trimmed.startsWith("[");
 }
 
-/** Outcome of the session-end memory summarization step (issue #519 epilogue). */
+/** Shutdown outcome; deliberate file memory writes need no session-end flush. */
 export type SessionEndStatus = {
-  memory: "completed" | "background" | "skipped" | "failed";
+  memory: "completed" | "background" | "skipped" | "failed" | "noop";
   turns: number;
   stateObjects: number;
   /** Mid-session `remember` tool successes. */
   rememberCalls: number;
-  /** Surfaced memories marked used — snapshotted before pending_reinforcements flush. */
+  /** Successful file recall calls (query or by-name). */
   recallUsed: number;
-  /** Summarizer learnings stored in-process; 0 when background/skipped/unknown. */
+  /** Compatibility field; automatic memory extraction is disabled, so always 0. */
   learningsStored: number;
 };
 
@@ -140,9 +135,16 @@ export class Session {
   config: PraanaConfig;
   eventLog: EventLog;
   stateGraph: StateGraph;
-  memoryStore: MemoryStore | null = null;
+  fileMemory: FileMemoryStore | null = null;
   memoryEnabled: boolean;
-  memoryInitError: string | null = null;
+  memoryError: string | null = null;
+  /** Semantic scoring belongs to the session, not the persistence backend. */
+  embedder: Embedder | null = null;
+  embeddingBackend = "keyword-only";
+  /** Start-of-session prompt-index snapshot: `shown` entries in the compiled
+   * prompt, `total` entries available at start (null when memory is off or
+   * unavailable). Never refreshed after in-session writes. */
+  private memoryPromptIndex: { shown: number; total: number } | null = null;
   /** Native addon status probed at session start (issue #587). */
   nativeStatus: NativeAddonStatus | null = null;
   /** Whether native search (search_code / find_files) is available. */
@@ -305,77 +307,8 @@ export class Session {
 
     applyProjectContext(session, cwd);
 
-    if (session.incognito) {
-      session.memoryEnabled = false;
-      session.memoryStore = null;
-      session.digest = null;
-      session.getLogger().notice("Cognitive Memory persistence disabled (incognito)");
-      session.nativeStatus = await probeNativeStatus();
-      try {
-        session.fffStatus = await probeSearchStatus();
-      } catch {
-        session.fffStatus = "unavailable: probe failed";
-      }
-      return session;
-    }
-
-    if (session.memoryEnabled) {
-      try {
-        session.memoryStore = await session.initMemoryStore();
-        session.eventLog.append({
-          kind: "system_note",
-          actor: "kernel",
-          payload: {
-            type: "memory_lifecycle",
-            phase: "session_start_begin",
-          },
-        });
-
-        const d = await session.memoryStore.sessionStart({
-          agent: APP_AGENT_ID,
-          user_id: hashString(process.env.USER ?? "unknown"),
-          time: Date.now(),
-          context_id: hashString(cwd),
-          context_label: basename(cwd),
-          working_context: { repo: { root: cwd, name: basename(cwd) } },
-          recall_min_score: cfg.compiler.recall_min_score ?? 0.35,
-        });
-
-        session.digest = d.markdown;
-        // Record memory start averages for scorecard
-        const memDbPath = session.getMemoryDbPath();
-        if (memDbPath) {
-          await session.scorecard.recordMemoryStart(memDbPath);
-        }
-        session.eventLog.append({
-          kind: "system_note",
-          actor: "kernel",
-          payload: {
-            type: "memory_lifecycle",
-            phase: "session_start_success",
-            digestLength: session.digest.length,
-          },
-        });
-      } catch (err) {
-        session.memoryInitError = memoryInitErrorMessage(err, session.getMemoryDbPath());
-        session.getLogger().child("memory").warn("Failed to initialize, continuing without memory", {
-          code: "MEMORY_INIT_FAILED",
-          cause: err as Error,
-        });
-        session.eventLog.append({
-          kind: "system_note",
-          actor: "kernel",
-          payload: {
-            type: "memory_lifecycle",
-            phase: "session_start_failure",
-            error: (err as Error).message,
-          },
-        });
-        session.memoryEnabled = false;
-        session.memoryStore = null;
-        session.digest = null;
-      }
-    }
+    await session.initFileMemory();
+    await session.initEmbedder();
 
     session.nativeStatus = await probeNativeStatus();
     try {
@@ -392,6 +325,7 @@ export class Session {
     cwd: string,
     config?: PraanaConfig,
     opts?: {
+      incognito?: boolean;
       captureNotice?: (line: string) => void;
       suppressLoggerStderr?: boolean;
     }
@@ -403,6 +337,7 @@ export class Session {
     }
 
     const session = new Session(sessionId, cwd, cfg, meta.started_at);
+    session.incognito = opts?.incognito ?? false;
     session.canonicalTranscriptEnabled = meta.canonical_transcript?.version === CANONICAL_TRANSCRIPT_VERSION;
     session.noticeCapture = opts?.captureNotice;
     session.suppressLoggerStderr = opts?.suppressLoggerStderr ?? false;
@@ -487,58 +422,8 @@ export class Session {
       }
     }
 
-    if (session.memoryEnabled) {
-      try {
-        session.memoryStore = await session.initMemoryStore();
-        session.eventLog.append({
-          kind: "system_note",
-          actor: "kernel",
-          payload: {
-            type: "memory_lifecycle",
-            phase: "resume_session_start_begin",
-          },
-        });
-
-        // For resumed sessions, regenerate digest
-        const d = await session.memoryStore.sessionStart({
-          agent: APP_AGENT_ID,
-          user_id: hashString(process.env.USER ?? "unknown"),
-          time: Date.now(),
-          context_id: hashString(cwd),
-          context_label: basename(cwd),
-          working_context: { repo: { root: cwd, name: basename(cwd) } },
-          recall_min_score: cfg.compiler.recall_min_score ?? 0.35,
-        });
-
-        session.digest = d.markdown;
-        session.eventLog.append({
-          kind: "system_note",
-          actor: "kernel",
-          payload: {
-            type: "memory_lifecycle",
-            phase: "resume_session_start_success",
-            digestLength: session.digest.length,
-          },
-        });
-      } catch (err) {
-        session.memoryInitError = memoryInitErrorMessage(err, session.getMemoryDbPath());
-        session.getLogger().child("memory").warn("Failed to initialize for resumed session", {
-          code: "MEMORY_INIT_FAILED",
-          cause: err as Error,
-        });
-        session.eventLog.append({
-          kind: "system_note",
-          actor: "kernel",
-          payload: {
-            type: "memory_lifecycle",
-            phase: "resume_session_start_failure",
-            error: (err as Error).message,
-          },
-        });
-        session.memoryEnabled = false;
-        session.memoryStore = null;
-      }
-    }
+    await session.initFileMemory();
+    await session.initEmbedder();
 
     session.resumed = true;
     session.nativeStatus = await probeNativeStatus();
@@ -1014,39 +899,43 @@ export class Session {
     return this.sessionOutputTokens;
   }
 
-  async setIncognito(enabled: boolean): Promise<void> {
-    this.incognito = enabled;
-    if (enabled) {
-      this.memoryEnabled = false;
-      this.memoryStore = null;
-      this.digest = null;
-      return;
+  /** Toggle write access by building the replacement store before swapping it
+   * with the flag. If rebuilding fails when turning incognito off, the old store
+   * and flag stay in place. If enabling incognito fails, the writable store is
+   * dropped and memory is disabled (fail closed). In either case an error string
+   * is returned, not thrown. The index is a cache-stable prefix: a successful
+   * toggle never rebuilds it.
+   * When memory is disabled (or was disabled by an init failure) there is no
+   * store to rebuild, so the flag is updated directly and null returned. */
+  async setIncognito(enabled: boolean): Promise<string | null> {
+    if (!this.memoryEnabled) {
+      this.incognito = enabled;
+      return null;
     }
-
-    if (!this.config.memory.enabled) return;
-
+    let nextStore: FileMemoryStore;
     try {
-      this.memoryStore = await this.initMemoryStore();
-      const d = await this.memoryStore.sessionStart({
-        agent: APP_AGENT_ID,
-        user_id: hashString(process.env.USER ?? "unknown"),
-        time: Date.now(),
-        context_id: hashString(this.cwd),
-        context_label: basename(this.cwd),
-        working_context: { repo: { root: this.cwd, name: basename(this.cwd) } },
-        recall_min_score: this.config.compiler.recall_min_score ?? 0.35,
-      });
-      this.digest = d.markdown;
-      this.memoryEnabled = true;
+      nextStore = this.createFileMemory(enabled);
     } catch (err) {
-      this.getLogger().child("memory").warn("Failed to re-enable memory", {
-        code: "MEMORY_INIT_FAILED",
+      const error = memoryErrorMessage(err, appHomePath("memory"));
+      this.getLogger().child("memory").warn("Failed to rebuild file memory store for incognito toggle", {
+        code: "MEMORY_INCOGNITO_REBUILD_FAILED",
         cause: err as Error,
       });
-      this.memoryEnabled = false;
-      this.memoryStore = null;
-      this.digest = null;
+      if (enabled) {
+        // Fail closed: the user asked for incognito, so never leave the old
+        // writable store in place when the replacement cannot be built.
+        this.incognito = true;
+        this.fileMemory = null;
+        this.digest = null;
+        this.memoryPromptIndex = null;
+        this.memoryEnabled = false;
+        this.memoryError = error;
+      }
+      return error;
     }
+    this.incognito = enabled;
+    this.fileMemory = nextStore;
+    return null;
   }
 
   get promptDir(): string {
@@ -1061,15 +950,13 @@ export class Session {
     return resolveDefaultMemoryDbPath();
   }
 
-  /**
-   * Snapshot recall-used count before memory sessionEnd deletes pending_reinforcements.
-   */
+  /** Successful file recall calls, including query and by-name reads. */
   getRecallUsedCount(): number {
-    const store = this.memoryStore;
-    if (!store || typeof store.countPendingReinforcementsUsed !== "function") {
-      return 0;
-    }
-    return store.countPendingReinforcementsUsed();
+    return this.eventLog.readAll().filter((event) => {
+      if (event.kind !== "tool_result" || event.payload.tool !== "recall") return false;
+      const result = event.payload.result as { ok?: boolean } | undefined;
+      return result?.ok === true;
+    }).length;
   }
 
   /** Track read_file paths for repeat-read scorecard signal (session-scoped digests). */
@@ -1155,59 +1042,6 @@ export class Session {
 
   getRepoRoot(): string {
     return findGitRoot(this.cwd);
-  }
-
-  /**
-   * Promote surviving add_note entries from working memory to Cognitive
-   * Memory at session end. Only notes that are not retracted,
-   * not hard-tiered, and not activity-log quality pass through.
-   * (#504)
-   */
-  private async promoteSurvivingNotesToMemory(): Promise<void> {
-    if (!this.memoryStore) return;
-
-    const extractText = (payload: unknown): string | undefined =>
-      payload && typeof payload === "object" && "text" in payload
-        ? (payload as { text: unknown }).text as string | undefined
-        : undefined;
-
-    const notes = this.stateGraph
-      .snapshot()
-      .filter((obj) => {
-        if (obj.kind !== "note" || obj.retracted || obj.tier === "hard") return false;
-        const text = extractText(obj.payload);
-        return text && !detectActivityLogNote(text);
-      });
-
-    if (notes.length === 0) return;
-
-    let promoted = 0;
-    let reinforced = 0;
-    for (const note of notes) {
-      const text = extractText(note.payload);
-      if (!text) continue;
-      try {
-        const result = await this.memoryStore.remember(text, {
-          kind: "fact",
-          certainty: "high",
-        });
-        if (result.reinforced) {
-          reinforced++;
-        } else {
-          promoted++;
-        }
-      } catch (err) {
-        this.getLogger().child("memory").warn(`Failed to promote note ${note.id}`, {
-          cause: err as Error,
-        });
-      }
-    }
-
-    if (promoted > 0 || reinforced > 0) {
-      this.getLogger().child("memory").info(
-        `Note promotion: ${promoted} new, ${reinforced} reinforced-dedup`,
-      );
-    }
   }
 
   /** Current git branch name, or null when detached/not a git repo. */
@@ -1308,21 +1142,8 @@ export class Session {
     return { total: snapshot.length, active, soft, hard, byKind };
   }
 
-  getPersistentMemoryEntryCount(): number | null {
-    if (!this.memoryEnabled || !this.memoryStore) return null;
-    return this.memoryStore.getEntryCount();
-  }
-
-  async runMemoryDedupe(): Promise<{ clustersMerged: number; entriesRemoved: number }> {
-    if (!this.memoryStore) {
-      throw new Error("Memory store is not available.");
-    }
-    const result = await this.memoryStore.reconcileDuplicates();
-    const digest = await this.memoryStore.getDigest(
-      this.config.compiler.recall_min_score ?? 0.35,
-    );
-    this.digest = digest.markdown;
-    return result;
+  getMemoryPromptIndex(): { shown: number; total: number } | null {
+    return this.memoryPromptIndex;
   }
 
   getSessionSummary(): {
@@ -1347,7 +1168,7 @@ export class Session {
     };
   }
 
-  /** Build a transcript of user/agent/tool events for the summarizer. */
+  /** Build a transcript for lifecycle callers and skill effectiveness tracking. */
   getTranscriptEvents(): SessionEvent[] {
     const all = this.eventLog.readAll();
     const out: SessionEvent[] = [];
@@ -1366,7 +1187,7 @@ export class Session {
   async end(
     reason: "clean" | "aborted" | "error",
     events?: SessionEvent[],
-    opts?: { memoryTimeoutMs?: number }
+    _opts?: { memoryTimeoutMs?: number }
   ): Promise<SessionEndStatus> {
     const summary = this.getSessionSummary();
     const emptyStatus = (memory: SessionEndStatus["memory"]): SessionEndStatus => ({
@@ -1389,147 +1210,8 @@ export class Session {
       });
     }
 
-    let memoryStatus: SessionEndStatus["memory"] = "skipped";
+    const memoryStatus: SessionEndStatus["memory"] = this.memoryEnabled && this.fileMemory ? "noop" : "skipped";
     const recallUsedCount = this.getRecallUsedCount();
-    let learningsStored = 0;
-
-    if (this.memoryEnabled && this.memoryStore) {
-      const store = this.memoryStore;
-      const memoryTimeoutMs = opts?.memoryTimeoutMs ?? 0;
-      try {
-        this.eventLog.append({
-          kind: "system_note",
-          actor: "kernel",
-          payload: {
-            type: "memory_lifecycle",
-            phase: "session_end_begin",
-            reason,
-          },
-        });
-        this.getLogger().child("memory").info(`Session end begun (reason: ${reason})`);
-        const finish = store.sessionEnd(reason, events, this.agentsContext ?? undefined).then((result) => {
-          learningsStored = result.learningsStored;
-          return result;
-        });
-
-        if (memoryTimeoutMs > 0) {
-          const completed = await waitForCompletion(finish, memoryTimeoutMs);
-          if (completed) {
-            this.eventLog.append({
-              kind: "system_note",
-              actor: "kernel",
-              payload: {
-                type: "memory_lifecycle",
-                phase: "session_end_success",
-                reason,
-              },
-            });
-            this.getLogger().child("memory").info(`Session end succeeded (reason: ${reason})`);
-            memoryStatus = "completed";
-          } else {
-            // Ensure late failures are not unhandled after we stop waiting.
-            // Learnings are unknown when we background — leave learningsStored at 0 for epilogue.
-            learningsStored = 0;
-            void finish.catch((err: unknown) => {
-              this.getLogger().child("memory").warn("Background session-end task failed", {
-                cause: err as Error,
-              });
-            });
-            this.getLogger().child("memory").warn("Session-end summarization is continuing in background");
-            this.eventLog.append({
-              kind: "system_note",
-              actor: "kernel",
-              payload: {
-                type: "memory_lifecycle",
-                phase: "session_end_background",
-                reason,
-                timeoutMs: memoryTimeoutMs,
-              },
-            });
-            this.getLogger().child("memory").info(`Session end continuing in background (reason: ${reason})`);
-            memoryStatus = "background";
-          }
-        } else {
-          await finish;
-          this.eventLog.append({
-            kind: "system_note",
-            actor: "kernel",
-            payload: {
-              type: "memory_lifecycle",
-              phase: "session_end_success",
-              reason,
-            },
-          });
-          this.getLogger().child("memory").info(`Session end succeeded (reason: ${reason})`);
-          memoryStatus = "completed";
-        }
-      } catch (err) {
-        this.getLogger().child("memory").warn("Error during session end", {
-          cause: err as Error,
-        });
-        this.eventLog.append({
-          kind: "system_note",
-          actor: "kernel",
-          payload: {
-            type: "memory_lifecycle",
-            phase: "session_end_failure",
-            reason,
-            error: (err as Error).message,
-          },
-        });
-        this.getLogger().child("memory").warn(`Session end failed (reason: ${reason})`, { cause: err as Error });
-        memoryStatus = "failed";
-        learningsStored = 0;
-      }
-
-      // Spawn background consolidation processor if enabled
-      if (this.config.consolidation?.enabled) {
-        const consolidationConfig: ConsolidationConfig = {
-          enabled: true,
-          promotion_threshold: this.config.consolidation.promotion_threshold ?? 3,
-          run_delay_seconds: this.config.consolidation.run_delay_seconds ?? 30,
-        };
-        const sessionId = this.id;
-        const transcriptEvents = events ?? this.getTranscriptEvents();
-
-        setTimeout(async () => {
-          try {
-            const summarizer = store.getSummarizer();
-            if (!summarizer) return;
-            const result = await runConsolidation({
-              store,
-              llm: summarizer,
-              sessionId,
-              events: transcriptEvents,
-              config: consolidationConfig,
-            });
-            if (result.promotions > 0) {
-              this.getLogger().child("memory").info(
-                `Consolidated: ${result.promotions} patterns promoted to deep memory`,
-              );
-            }
-            if (result.newEntries > 0 || result.confirmations > 0) {
-              this.getLogger().child("memory").info(
-                `Consolidation complete: ${result.newEntries} new, ${result.confirmations} confirmed, ${result.contradictions} contradicted`,
-              );
-            }
-          } catch (err) {
-            this.getLogger().child("memory").warn("Background consolidation failed", {
-              cause: err as Error,
-            });
-          }
-        }, consolidationConfig.run_delay_seconds * 1000).unref();
-      }
-
-      // #504: promote surviving notes to cognitive memory at session end
-      try {
-        await this.promoteSurvivingNotesToMemory();
-      } catch (err) {
-        this.getLogger().child("memory").warn("Note promotion failed", {
-          cause: err as Error,
-        });
-      }
-    }
 
     if (this.contextEngine) {
       try {
@@ -1576,25 +1258,11 @@ export class Session {
         });
       }
 
-      // M4 artifact promotion (build-spec §4 / decisions/003 Finding #421):
-      // high-value session artifacts (accessed >= MIN_ARTIFACT_ACCESS_COUNT
-      // times) are promoted into Cognitive Memory so they survive session
-      // end. Runs once at session end, before the engine closes its DB.
-      if (this.memoryEnabled && this.memoryStore) {
-        try {
-          await this.promoteHighValueArtifactsToMemory();
-        } catch (err) {
-          this.getLogger().child("memory").warn("Artifact promotion failed", {
-            cause: err as Error,
-          });
-        }
-      }
     }
 
     // Flush skill effectiveness (issue #467): update usefulness in skill_stats.
-    // Engine mode only (skillRuntime is null in classic). Runs after memory store
-    // sessionEnd (Step A) so isSessionGood has the full event log, and before
-    // scorecard flush (Step C) so syncScorecardFromRuntime captures the real used count.
+    // Engine mode only (skillRuntime is null in classic), before scorecard flush
+    // so syncScorecardFromRuntime captures the real used count.
     if (this.skillRuntime && this.skillStatsStore) {
       try {
         const endEvents = events ?? this.getTranscriptEvents();
@@ -1614,8 +1282,7 @@ export class Session {
     // Flush scorecard while the context DB is still open (shares connection with ContextEngine).
     try {
       this.syncScorecardFromRuntime();
-      const memPath = this.getMemoryDbPath();
-      await this.scorecard.flush(memPath ?? undefined, recallUsedCount);
+      await this.scorecard.flush(undefined, recallUsedCount);
     } catch (err) {
       this.getLogger().child("context_engine").warn("Scorecard flush failed", {
         cause: err as Error,
@@ -1643,100 +1310,56 @@ export class Session {
       stateObjects: summary.stateObjects,
       rememberCalls: summary.memoriesStored,
       recallUsed: recallUsedCount,
-      // Only report learnings when summarizer finished in-process.
-      learningsStored: memoryStatus === "completed" ? learningsStored : 0,
+      learningsStored: 0,
     };
   }
 
-  /**
-   * M4 artifact promotion (build-spec §4 / decisions/003 Finding #421).
-   * Promote high-value session artifacts — those accessed at least
-   * MIN_ARTIFACT_ACCESS_COUNT times — into Cognitive Memory. These are
-   * the artifacts the agent had to revisit to do its job; the spec flags
-   * them as more useful than the one-sentence summary the summarizer would
-   * otherwise extract.
-   *
-   * - Triggers on access_count >= MIN_ARTIFACT_ACCESS_COUNT (default 2).
-   * - Stores the artifact's *summary* (already distilled; raw is too large
-   *   and would be hard-truncated by MemoryStore.remember anyway).
-   * - kind: "fact"; scope: project (caller-provided default scopes already
-   *   include context:<cwd>); the existing dedup path prevents re-stating
-   *   a previously-promoted artifact from creating a second row.
-   * - Failures are caught and logged (M4 must not block session shutdown).
-   */
-  private async promoteHighValueArtifactsToMemory(): Promise<void> {
-    if (!this.contextEngine || !this.memoryStore) return;
-    // Threshold of 3: a file read twice in one session is normal; three
-    // accesses signals the agent genuinely kept returning to it.
-    const MIN_ARTIFACT_ACCESS_COUNT = 3;
-    const artifacts = this.contextEngine.listHighValueArtifacts(
-      MIN_ARTIFACT_ACCESS_COUNT,
-    );
-    if (artifacts.length === 0) return;
-    // Only promote artifacts whose distilled summary is human-readable prose.
-    // code/json/search_results/other are produced by GenericDistiller and
-    // contain raw JSON blobs or head-tail truncated source — not learnings.
-    const PROMOTABLE_CONTENT_TYPES = new Set(["prose", "diff", "log", "test_output", "build_output"]);
-    let promoted = 0;
-    let reinforced = 0;
-    let skipped = 0;
-    for (const artifact of artifacts) {
-      if (!PROMOTABLE_CONTENT_TYPES.has(artifact.contentType)) {
-        skipped++;
-        continue;
-      }
-      // Extra guards: skip empty summaries (stub cards with no matching
-      // distiller) and summaries that look like JSON blobs (start with {/[).
-      if (!isPromotableArtifactSummary(artifact.summary)) {
-        skipped++;
-        continue;
-      }
-      // Cap to 200 chars — matches the learning size from the LLM summariser.
-      const content = artifact.summary.trimStart().slice(0, 200);
-      try {
-        const result = await this.memoryStore.remember(content, {
-          kind: "fact",
-          certainty: "medium",
-        });
-        if (result.reinforced) {
-          reinforced++;
-        } else {
-          promoted++;
-        }
-      } catch (err) {
-        this.getLogger().child("memory").warn(
-          `Failed to promote artifact ${artifact.id}`,
-          { cause: err as Error },
-        );
-      }
-    }
-    this.getLogger().child("memory").info(
-      `Artifact promotion: ${promoted} new, ${reinforced} reinforced-dedup, ${skipped} skipped (min access=${MIN_ARTIFACT_ACCESS_COUNT})`,
-    );
+  private createFileMemory(incognito = this.incognito): FileMemoryStore {
+    return createFileMemoryStore({
+      home: dirname(appHomePath()),
+      cwd: this.cwd,
+      incognito,
+    });
   }
 
-  private async initMemoryStore(): Promise<MemoryStore> {
-    const configuredPath = this.config.memory?.db_path;
-    let dbPath: string;
-
-    if (configuredPath) {
-      dbPath = resolveAgainstCwd(expandHome(configuredPath), this.cwd);
-    } else {
-      dbPath = resolveDefaultMemoryDbPath();
+  private async initFileMemory(): Promise<void> {
+    if (!this.memoryEnabled) return;
+    try {
+      this.fileMemory = this.createFileMemory();
+      const index = await this.fileMemory.buildMemoryIndex();
+      this.digest = index.ok && index.total > 0 ? index.text : null;
+      if (!index.ok) throw new Error(index.error);
+      this.memoryPromptIndex = { shown: index.shown, total: index.total };
+      this.memoryError = null;
+      if (index.skippedScopes?.length) {
+        this.getLogger().child("memory").warn("File memory scope skipped", {
+          details: { skippedScopes: index.skippedScopes },
+        });
+      }
+    } catch (err) {
+      this.memoryError = memoryErrorMessage(err, appHomePath("memory"));
+      this.getLogger().child("memory").warn("Failed to initialize file memory, continuing without memory", {
+        code: "MEMORY_INIT_FAILED",
+        cause: err as Error,
+      });
+      this.memoryEnabled = false;
+      this.fileMemory = null;
+      this.digest = null;
+      this.memoryPromptIndex = null;
     }
+  }
 
-    const embedder = await createEmbedder(this.config.memory, {
-      logger: this.getLogger(),
-    });
-    const summarizer = await createSummarizer(this.config.memory);
-
-    return new MemoryStore({
-      dbPath,
-      embedder,
-      summarizer,
-      logger: this.getLogger(),
-      embeddingBackend: resolveEmbeddingBackend(this.config.memory, embedder),
-    });
+  private async initEmbedder(): Promise<void> {
+    if (!this.config.memory.enabled) return;
+    try {
+      this.embedder = await createEmbedder(this.config.memory, { logger: this.getLogger() });
+      this.embeddingBackend = resolveEmbeddingBackend(this.config.memory, this.embedder);
+    } catch (err) {
+      this.getLogger().child("context_engine").warn("Failed to initialize semantic scoring, continuing without embeddings", {
+        cause: err as Error,
+      });
+      this.embedder = null;
+    }
   }
 }
 
@@ -1745,7 +1368,7 @@ export class Session {
 function initContextEngine(session: Session): void {
   const engineConfig = resolveContextEngineConfig(session.config);
   const measurementMode = engineConfig.measurement_mode;
-  const scorecardOptions = createScorecardOptions(session.cwd);
+  const scorecardOptions = {};
 
   if (!session.isContextEngineEnabled()) {
     // Measurement mode: open a minimal context DB just for the scorecard
@@ -1802,52 +1425,17 @@ function initContextEngine(session: Session): void {
   }
 }
 
-function createScorecardOptions(cwd: string): ScorecardTrackerOptions {
-  const contextScope = `context:${hashString(cwd)}`;
-  return {
-    memoryAverages: (memoryDbPath) => readScopedMemoryAverages(memoryDbPath, contextScope),
-  };
-}
-
-function readScopedMemoryAverages(
-  memoryDbPath: string,
-  contextScope: string,
-): { validityAvg: number; usefulnessAvg: number } {
-  try {
-    const memDb = openDatabase(memoryDbPath, { readonly: true });
-    try {
-      return getMemorySignalAverages(memDb, contextScope);
-    } finally {
-      memDb.close();
-    }
-  } catch {
-    return { validityAvg: 0, usefulnessAvg: 0 };
-  }
-}
-
-function basename(p: string): string {
-  return p.split("/").pop() ?? p;
-}
-
 function expandHome(p: string): string {
   return p.startsWith("~/") ? p.replace(/^~\//, `${homedir()}/`) : p;
 }
 
-/** One-line user-facing reason for a failed memory DB open, including its path. */
-function memoryInitErrorMessage(err: unknown, dbPath: string | null): string {
-  const msg = (err as Error).message;
+/** One-line user-facing reason for failed file memory initialization. */
+function memoryErrorMessage(err: unknown, dbPath: string): string {
+  const msg = err instanceof Error ? err.message : String(err);
   if (msg.includes("EACCES") || msg.includes("permission")) {
     return "Cannot write to ~/.praana/. Check permissions or set PRAANA_HOME.";
   }
   return dbPath && !msg.includes(dbPath) ? `${msg} (${dbPath})` : msg;
-}
-
-async function waitForCompletion(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
-  const timeout = new Promise<boolean>((resolve) => {
-    setTimeout(() => resolve(false), timeoutMs);
-  });
-  const done = promise.then(() => true);
-  return Promise.race([done, timeout]);
 }
 
 /**
@@ -1937,7 +1525,7 @@ export function loadAgentsContext(
       AGENTS_TRUNCATION_LOG_MESSAGE,
       { details },
     );
-    return combined.slice(0, MAX_CHARS) + "\n\n<!-- [truncated] -->";
+    return `${combined.slice(0, MAX_CHARS)}\n\n<!-- [truncated] -->`;
   }
   return combined;
 }

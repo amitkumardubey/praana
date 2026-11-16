@@ -1052,7 +1052,7 @@ describe("search_transcript tool (PR3)", () => {
       const tools = createAllTools({
         eventLog: log,
         stateGraph,
-        memoryStore: null,
+        fileMemory: null,
         memoryEnabled: false,
         incognito: false,
         contextEngine: null,

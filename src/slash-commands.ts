@@ -6,6 +6,8 @@ import {
   sessionActivityAt,
 } from "./event-log.js";
 import type { Session } from "./session.js";
+import { describeFileMemory } from "./app-banner.js";
+import type { MemoryScope } from "./file-memory/paths.js";
 import { nativeStatusToString } from "./native/index.js";
 import { explainUnitScore } from "./context-engine/engine-compiler.js";
 import { resolveContextEngineConfig, resolveContextDbPath } from "./context-engine/index.js";
@@ -93,18 +95,18 @@ export const SLASH_COMMAND_METADATA: SlashCommandMeta[] = [
   { name: "/model", description: "Switch model mid-session", argumentHint: "[provider] <id>", category: "Model & Config" },
   { name: "/sessions", description: "List past sessions", category: "Session" },
   { name: "/settings", description: "View or update persistent settings", argumentHint: "[set <key> <value>|reset]", category: "Model & Config" },
-  { name: "/stats", description: "Session metadata + memory stats", category: "Insight" },
+  { name: "/stats", description: "Session metadata and file memory counts", category: "Insight" },
   { name: "/state", description: "List working-memory state objects", category: "Insight" },
-  { name: "/digest", description: "Show Cognitive Memory digest", category: "Memory" },
-  { name: "/recall", description: "Search Cognitive Memory", argumentHint: "<query>", category: "Memory" },
+  { name: "/digest", description: "Show the file memory index", category: "Memory" },
+  { name: "/recall", description: "Search file memories", argumentHint: "<query>", category: "Memory" },
   { name: "/events", description: "Show recent event-log entries", category: "Insight" },
   { name: "/scorecard", description: "Per-session telemetry scorecard", category: "Insight" },
   { name: "/why", description: "Explain context-unit scoring", argumentHint: "<unit-id>", category: "Insight" },
   { name: "/thinking", description: "Toggle reasoning stream visibility", argumentHint: "on|off", category: "Model & Config" },
   { name: "/reasoning", description: "Set reasoning effort level", argumentHint: "off|minimal|low|medium|high|xhigh", category: "Model & Config" },
   { name: "/plan", description: "Toggle plan mode", argumentHint: "on|off|execute|go", category: "Tools" },
-  { name: "/incognito", description: "Toggle memory persistence", argumentHint: "on|off", category: "Memory" },
-  { name: "/memory", description: "Manage Cognitive Memory", argumentHint: "dedupe", category: "Memory" },
+  { name: "/incognito", description: "Block or allow memory writes", argumentHint: "on|off", category: "Memory" },
+  { name: "/memory", description: "List, show, forget, or prune file memories (prune lists the oldest candidates and does not delete)", argumentHint: "show|forget|prune", category: "Memory" },
   { name: "/debug", description: "Toggle debug mode", category: "Tools" },
   { name: "/shell", description: "Run a shell command directly", argumentHint: "<command>", category: "Tools" },
   { name: "/login", description: "Add or update a provider", argumentHint: "[provider]", category: "Model & Config" },
@@ -239,29 +241,28 @@ async function applySettingToSession(
   handlers: SlashHandlers,
   key: UserSettingsKey,
   value: string | boolean,
-): Promise<void> {
+): Promise<string | null> {
   switch (key) {
     case "model":
       session.setModelOverride(String(value));
       handlers.setModel(String(value));
-      break;
+      return null;
     case "provider":
       session.setProviderOverride(String(value));
-      break;
+      return null;
     case "thinking":
       handlers.setThinking(Boolean(value));
-      break;
+      return null;
     case "incognito":
-      await session.setIncognito(Boolean(value));
-      break;
+      return session.setIncognito(Boolean(value));
     case "debug":
       session.debug = Boolean(value);
-      break;
+      return null;
     case "theme":
       // Persisted only — theming UI lands in #441.
-      break;
+      return null;
     case "auto_update":
-      break;
+      return null;
   }
 }
 
@@ -337,13 +338,28 @@ async function handleSettingsCommand(
       lines.push(parsed.error);
       return result("none", "toast", "error");
     }
+    // Incognito can change the live privacy state even if rebuilding the store fails.
+    // Apply it before persisting so a failed switch never becomes a default.
+    if (key === "incognito") {
+      const appliedError = await applySettingToSession(session, handlers, key, parsed.value);
+      if (appliedError) {
+        lines.push(`Failed to apply ${key}: ${appliedError}`);
+        return result("refresh_status", "toast", "error");
+      }
+    }
     const patch: Partial<UserSettings> = { [key]: parsed.value };
     const updated = updateUserSettings(patch);
     if (!updated.ok) {
       lines.push(`Failed to save settings: ${updated.error}`);
-      return result("none", "toast", "error");
+      return result(key === "incognito" ? "refresh_status" : "none", "toast", "error");
     }
-    await applySettingToSession(session, handlers, key, parsed.value);
+    if (key !== "incognito") {
+      const appliedError = await applySettingToSession(session, handlers, key, parsed.value);
+      if (appliedError) {
+        lines.push(`Failed to apply ${key}: ${appliedError}`);
+        return result("none", "toast", "error");
+      }
+    }
     lines.push(`Saved ${key}=${formatSettingValue(parsed.value)} (persisted + applied).`);
     return result("refresh_status", "toast", "success");
   }
@@ -443,8 +459,9 @@ export async function executeSlashCommand(
       } else {
         lines.push(`State objects (${objects.length}):`);
         for (const o of objects) {
-          const tierIcon =
-            o.tier === "active" ? "●" : o.tier === "soft" ? "○" : "·";
+          let tierIcon = "·";
+          if (o.tier === "active") tierIcon = "●";
+          else if (o.tier === "soft") tierIcon = "○";
           lines.push(`  ${tierIcon} ${o.id} [${o.kind}] ${o.tier}: ${o.summary}`);
         }
       }
@@ -471,7 +488,7 @@ export async function executeSlashCommand(
       const stats = session.getMemoryStats();
       const startedAt = new Date(session.getStartedAt()).toISOString();
       const uptimeSec = Math.floor(session.getUptimeMs() / 1000);
-      const persistentCount = session.getPersistentMemoryEntryCount();
+      const fileMemory = await describeFileMemory(session);
       lines.push("", "Session:");
       lines.push(`  Session ID: ${session.id}`);
       lines.push(`  Turns: ${session.getTurnCount()}`);
@@ -496,10 +513,18 @@ export async function executeSlashCommand(
         .map(([kind, count]) => `${kind}:${count}`);
       lines.push(`  By kind: ${kindParts.length ? kindParts.join(", ") : "(none)"}`);
 
-      if (session.memoryEnabled) {
-        lines.push("", "Cognitive Memory (SQLite):");
-        lines.push(`  Total memories: ${persistentCount ?? "(unavailable)"}`);
-        lines.push(`  Memory DB: ${session.getMemoryDbPath() ?? "(unknown)"}`);
+      lines.push("", "File memory:");
+      if (fileMemory.kind === "counts") {
+        lines.push(`  global: ${fileMemory.global}`);
+        lines.push(`  project: ${fileMemory.project}`);
+        lines.push(`  skipped files: ${fileMemory.skipped}`);
+        const promptIndex = session.getMemoryPromptIndex();
+        if (promptIndex) {
+          lines.push(`  prompt index (fixed at session start): ${promptIndex.shown}/${promptIndex.total}`);
+        }
+        if (session.isIncognito()) lines.push("  writes: blocked");
+      } else {
+        lines.push(`  ${fileMemory.kind}`);
       }
 
       lines.push("", `Native addon: ${session.nativeStatus ? nativeStatusToString(session.nativeStatus) : "unknown"}`);
@@ -591,9 +616,13 @@ export async function executeSlashCommand(
 
     case "/digest": {
       if (session.digest) {
-        lines.push("", session.digest);
+        lines.push(session.digest);
+      } else if (session.memoryError) {
+        lines.push(`Memory unavailable: ${session.memoryError}`);
+      } else if (!session.memoryEnabled || !session.fileMemory) {
+        lines.push("Memory is off.");
       } else {
-        lines.push("No digest available.");
+        lines.push("No memories yet.");
       }
       break;
     }
@@ -606,21 +635,22 @@ export async function executeSlashCommand(
         lines.push(``, `Last ${events.length} events:`);
         for (const ev of events) {
           const time = new Date(ev.timestamp).toISOString().slice(11, 19);
-          const summary =
-            ev.kind === "user_message"
-              ? `User: ${(ev.payload.text as string)?.slice(0, 60)}`
-              : ev.kind === "agent_message"
-                ? `Agent: ${(ev.payload.text as string)?.slice(0, 60)}`
-                : ev.kind === "tool_call"
-                  ? `Tool: ${ev.payload.tool ?? "?"}`
-                  : ev.kind === "tool_result"
-                    ? `Result: ${JSON.stringify(ev.payload.result)?.slice(0, 60)}`
-                    : ev.kind === "context_action"
-                      ? `Context: ${ev.payload.action}`
-                      : ev.kind === "system_note" &&
-                          ev.payload.type === "error"
-                        ? `Error: ${String(ev.payload.message).slice(0, 60)}`
-                        : ev.kind;
+          let summary: string;
+          if (ev.kind === "user_message") {
+            summary = `User: ${(ev.payload.text as string)?.slice(0, 60)}`;
+          } else if (ev.kind === "agent_message") {
+            summary = `Agent: ${(ev.payload.text as string)?.slice(0, 60)}`;
+          } else if (ev.kind === "tool_call") {
+            summary = `Tool: ${ev.payload.tool ?? "?"}`;
+          } else if (ev.kind === "tool_result") {
+            summary = `Result: ${JSON.stringify(ev.payload.result)?.slice(0, 60)}`;
+          } else if (ev.kind === "context_action") {
+            summary = `Context: ${ev.payload.action}`;
+          } else if (ev.kind === "system_note" && ev.payload.type === "error") {
+            summary = `Error: ${String(ev.payload.message).slice(0, 60)}`;
+          } else {
+            summary = ev.kind;
+          }
           lines.push(`  ${time} ${ev.kind.padEnd(16)} ${summary}`);
         }
       }
@@ -628,33 +658,27 @@ export async function executeSlashCommand(
     }
 
     case "/recall": {
-      const query = parts.slice(1).join(" ");
-      if (!query || !session.memoryEnabled || !session.memoryStore) {
-        lines.push("Usage: /recall <query> (requires memory enabled)");
+      const query = parts.slice(1).join(" ").trim();
+      if (!query) {
+        lines.push("Usage: /recall <query>");
         break;
       }
-      try {
-        const recallResult = await session.memoryStore.recall(query, {
-          limit: 20,
-          minMatch: session.config.compiler.recall_min_score ?? 0.35,
-        });
-        if (recallResult.notice) {
-          lines.push(recallResult.notice);
-        }
-        if (recallResult.entries.length === 0) {
-          if (!recallResult.notice) {
-            lines.push("No results found.");
-          }
-        } else {
-          lines.push(``, `Recall results for "${query}":`);
-          for (const e of recallResult.entries) {
-            lines.push(
-              `  - [${e.kind}] ${e.content.slice(0, 100)} (match: ${e.match.toFixed(2)} | valid: ${e.validity.toFixed(2)} | useful: ${e.usefulness.toFixed(2)})`
-            );
-          }
-        }
-      } catch (err) {
-        lines.push(`Recall error: ${(err as Error).message}`);
+      if (!session.fileMemory) {
+        lines.push(session.memoryError ? "Memory unavailable." : "Memory is off.");
+        break;
+      }
+      const recalled = await session.fileMemory.recall({ query });
+      if (!recalled.ok || !("matches" in recalled)) {
+        lines.push(recalled.ok ? "No memories matched." : recalled.error);
+        break;
+      }
+      if (recalled.matches.length === 0) {
+        lines.push("No memories matched.");
+        break;
+      }
+      for (const match of recalled.matches) {
+        lines.push(`${match.name}  ${match.scope}  ${match.description}`);
+        lines.push(`  ${match.snippet}`);
       }
       break;
     }
@@ -902,14 +926,26 @@ export async function executeSlashCommand(
         return result("none", "toast");
       }
       if (arg === "on") {
-        await session.setIncognito(true);
-        lines.push("Incognito enabled — Cognitive Memory disabled.");
-      } else if (arg === "off") {
-        await session.setIncognito(false);
+        const failure = await session.setIncognito(true);
+        if (failure) {
+          lines.push(`Incognito switch failed: ${failure}`);
+          return result("refresh_status", "toast", "error");
+        }
         lines.push(
-          session.memoryEnabled
-            ? "Incognito disabled — Cognitive Memory enabled."
-            : "Incognito disabled — memory remains unavailable (check config.memory.enabled)."
+          session.memoryEnabled && session.fileMemory
+            ? "Incognito enabled — memory writes are blocked; memories stay readable."
+            : "Incognito enabled — memory writes are blocked.",
+        );
+      } else if (arg === "off") {
+        const failure = await session.setIncognito(false);
+        if (failure) {
+          lines.push(`Incognito switch failed: ${failure}`);
+          return result("refresh_status", "toast", "error");
+        }
+        lines.push(
+          session.memoryEnabled && session.fileMemory
+            ? "Incognito disabled — memory writes are allowed."
+            : "Incognito disabled — memory remains unavailable (check config.memory.enabled).",
         );
       } else {
         lines.push("Usage: /incognito <on|off>");
@@ -977,26 +1013,49 @@ export async function executeSlashCommand(
     }
 
     case "/memory": {
+      const usage = "Usage: /memory [show <name> [global|project] | forget <name> [global|project] | prune (lists oldest candidates, does not delete)]";
       const sub = (parts[1] ?? "").toLowerCase();
-      if (sub !== "dedupe") {
-        lines.push("Usage: /memory dedupe");
+      const store = session.fileMemory;
+      const unavailable = session.memoryError ? "Memory unavailable." : "Memory is off.";
+      const scopeOf = (raw: string | undefined): MemoryScope | undefined => raw as MemoryScope | undefined;
+      const entryLine = (entry: { name: string; scope: string; type: string; age: number; stale: boolean }) =>
+        `${entry.name}  ${entry.scope}  ${entry.type}  ${entry.age}d${entry.stale ? "  stale" : ""}`;
+      if (!sub) {
+        if (!store) { lines.push(unavailable); break; }
+        const listed = await store.list();
+        if (!listed.ok) { lines.push(listed.error); break; }
+        if (listed.entries.length === 0) { lines.push("No memories yet."); break; }
+        for (const entry of listed.entries) lines.push(entryLine(entry));
         break;
       }
-      if (!session.memoryEnabled || !session.memoryStore) {
-        lines.push("Memory dedupe requires memory to be enabled.");
-        break;
-      }
-      try {
-        const result = await session.runMemoryDedupe();
-        lines.push(
-          `Merged ${result.clustersMerged} duplicate ${result.clustersMerged === 1 ? "cluster" : "clusters"}, removed ${result.entriesRemoved} ${result.entriesRemoved === 1 ? "entry" : "entries"}.`,
-        );
-        if (session.digest) {
-          lines.push("", "Digest refreshed.");
+      if (sub === "show" || sub === "forget") {
+        const name = parts[2];
+        if (!name) { lines.push(usage); break; }
+        if (!store) { lines.push(unavailable); break; }
+        const scope = scopeOf(parts[3]);
+        if (sub === "show") {
+          const shown = await store.read({ name, ...(scope !== undefined ? { scope } : {}) });
+          if (!shown.ok) { lines.push(shown.error); break; }
+          lines.push(`${shown.memory.name}  ${shown.memory.scope}  ${shown.memory.type}`);
+          lines.push(shown.memory.description);
+          lines.push(shown.memory.body);
+          break;
         }
-      } catch (err) {
-        lines.push(`Memory dedupe error: ${(err as Error).message}`);
+        const removed = await store.remove({ name, ...(scope !== undefined ? { scope } : {}) });
+        lines.push(removed.ok ? `Forgot ${name}.` : removed.error);
+        break;
       }
+      if (sub === "prune") {
+        if (!store) { lines.push(unavailable); break; }
+        const listed = await store.list();
+        if (!listed.ok) { lines.push(listed.error); break; }
+        const oldest = [...listed.entries].reverse().slice(0, 10);
+        if (oldest.length === 0) { lines.push("No memories yet."); break; }
+        lines.push("Oldest memories (not deleted):");
+        for (const entry of oldest) lines.push(entryLine(entry));
+        break;
+      }
+      lines.push(usage);
       break;
     }
 

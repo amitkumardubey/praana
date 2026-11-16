@@ -8,7 +8,7 @@ import type { Session } from "../src/session.js";
 // Minimal Session-shaped stub — only the members the welcome formatter touches.
 function stubSession(overrides: Partial<{
   digest: string;
-  persistentCount: number;
+  promptIndex: { shown: number; total: number } | null;
   engine: boolean;
   skillsCount: number;
   turns: number;
@@ -18,7 +18,7 @@ function stubSession(overrides: Partial<{
 }> = {}): Session {
   return {
     digest: overrides.digest ?? "",
-    getPersistentMemoryEntryCount: () => overrides.persistentCount ?? 0,
+    getMemoryPromptIndex: () => overrides.promptIndex ?? null,
     isContextEngineEnabled: () => overrides.engine ?? false,
     skills: new Array(overrides.skillsCount ?? 0) as unknown as Session["skills"],
     getTurnCount: () => overrides.turns ?? 0,
@@ -54,7 +54,7 @@ describe("formatTuiWelcomeLine", () => {
   it("returns empty for a fresh session (launch canvas owns idle branding)", () => {
     const session = stubSession({
       digest: "one\n\ntwo\n",
-      persistentCount: 142,
+      promptIndex: { shown: 100, total: 142 },
       engine: true,
       skillsCount: 104,
     });

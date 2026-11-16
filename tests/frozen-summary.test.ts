@@ -655,7 +655,7 @@ test("getLastEvent returns null for an internal-only log but raw anchors remain 
   expect(log.getLastEvent({ includeInternal: true })?.event_id).toBe("commit-1");
 });
 
-test("auto-compact selection keeps identical ids, counts and content in a commit-filled log", async () => {
+test("retired memory compaction preserves history in a commit-filled log", async () => {
   const { log } = openLog();
   const config = loadConfig();
   config.compiler = { ...config.compiler, auto_compact_at: 0.75, auto_compact_clear_at: 0.55, compact_chunk_fraction: 0.5, reserved_output_tokens: 0 };
@@ -665,13 +665,10 @@ test("auto-compact selection keeps identical ids, counts and content in a commit
   commitNoise(log, 20);
   for (let i = 0; i < 6; i++) visible(log, `legacy-${i}`, i % 2 ? "agent_message" : "user_message", { text: `message ${i}` });
   const result = await maybeAutoCompactClassic(session, 8000, "test/model");
-  expect(result).toMatchObject({ compacted: true, eventsCompacted: 3, factsStored: 2 });
-  expect(compressed).toHaveBeenCalledWith(["legacy-0", "legacy-1", "legacy-2"]);
-  expect(compressTurns.mock.calls[0][0]).toEqual([
-    { type: "user_message", timestamp: 123, content: "message 0" },
-    { type: "agent_message", timestamp: 123, content: "message 1" },
-    { type: "user_message", timestamp: 123, content: "message 2" },
-  ]);
+  expect(result).toMatchObject({ compacted: false, eventsCompacted: 0, factsStored: 0 });
+  expect(compressed).not.toHaveBeenCalled();
+  expect(compressTurns).not.toHaveBeenCalled();
+  expect(log.readAll()).toHaveLength(6);
 });
 
 test("events command retains its twenty visible entries despite trailing commits", async () => {
@@ -696,12 +693,12 @@ test("recent banner is not starved by trailing internal commits", () => {
 
 test("memory statistics retain legitimate recalls outside a commit-filled fifty-event window", () => {
   const { log } = openLog();
-  visible(log, "recall", "system_note", { type: "memory_recall", hits: 7 });
+  visible(log, "recall", "tool_result", { tool: "recall", result: { ok: true, matches: Array.from({ length: 5 }, () => ({ name: "observation" })) } });
   const session = { eventLog: log, getMemoryStats: () => ({ active: 0, total: 0 }), digest: null } as unknown as Session;
   const baseline = computeMemoryStats(session, 0);
   commitNoise(log, 50);
   expect(computeMemoryStats(session, 0)).toEqual(baseline);
-  expect(baseline).toMatchObject({ recallCalls: 1, recallHits: 7 });
+  expect(baseline).toMatchObject({ recallCalls: 1, recallHits: 5 });
 });
 
 test("checkpoint anchors resolve a hidden commit id and resume replays the following action", async () => {

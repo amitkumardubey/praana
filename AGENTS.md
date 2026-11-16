@@ -3,7 +3,7 @@
 PRAANA is a TypeScript CLI coding agent built around two systems:
 
 - **Adaptive Context** — state objects (tasks, decisions, constraints, notes) are tiered `active` / `soft` / `hard` by idle turn count; in engine mode a compiler assembles a token-budgeted context window every turn.
-- **Cognitive Memory** — cross-session persistent knowledge (SQLite); at session end an LLM summariser extracts concise learnings, scoped project/global, decaying over time; at session start a ranked digest is injected into the prompt. The compiler consumes the memory digest as one prompt section.
+- **File Memory** — cross-session persistent knowledge stored as markdown files (global `~/.praana/memory`, project `~/.praana/projects/<key>/memory`). At session start/resume a capped index of the newest memories is built once and injected into the prompt. There is no session-end summariser and no automatic promotion of notes, constraints, decisions, or artifacts; the model saves deliberately with `remember`.
 
 ## Public repository
 
@@ -61,14 +61,14 @@ Key env vars: provider API keys (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHRO
 | `/clear` | Reset in-session context |
 | `/new` | Start a new session |
 | `/state` | List state objects/tiers |
-| `/stats` | Session + memory stats |
+| `/stats` | Session + file memory counts |
 | `/scorecard` | Telemetry scorecard |
 | `/events` | Last 20 log entries |
 | `/why <unit-id>` | Explain context-unit scoring |
-| `/digest` | Show memory digest |
-| `/recall <query>` | Search Cognitive Memory manually |
-| `/incognito <on\|off>` | Toggle memory persistence |
-| `/memory` | Manage Cognitive Memory |
+| `/digest` | Show the current file memory index |
+| `/recall <query>` | Search file memories |
+| `/incognito <on\|off>` | Block or allow memory writes (memories stay readable) |
+| `/memory` | List, show, forget, or prune file memories |
 | `/model [provider] <id>` | Switch model (bare `/model` opens selector) |
 | `/reasoning <level>` | Set reasoning effort |
 | `/thinking <on\|off>` | Toggle reasoning stream |
@@ -95,8 +95,8 @@ TypeScript strict mode; NodeNext modules — `.js` extensions in imports (`impor
 ## Security
 
 - **Shell tool:** runs arbitrary commands with the user's permissions. Optional sandbox allowlist via `[shell]` (`enabled`, `allowed_paths`); off by default.
-- **Event log / recall:** `~/.praana/sessions/<session_id>/events.jsonl`; tool results and logged tool-call args are always-on redacted (`[REDACTED:<kind>]`), user/agent chat is not. `search_session_log` reads this session; `recall` searches cross-session Cognitive Memory only.
-- **Memory DB:** `~/.praana/memory.db` — plaintext SQLite, no encryption.
+- **Event log / search:** `~/.praana/sessions/<session_id>/events.jsonl`; tool results and logged tool-call args are always-on redacted (`[REDACTED:<kind>]`), user/agent chat is not. `search_session_log` reads this session; `recall` searches cross-session file memories only.
+- **File memory:** global `~/.praana/memory`, project `~/.praana/projects/<key>/memory` — markdown files with frontmatter (modes 0700/0600). The context engine's scorecard, artifacts, turn ledger, and skill stats still live in `~/.praana/memory.db` (plaintext SQLite).
 - **Provider keys:** credential store (`~/.praana/credentials.json`, mode 0600) preferred; env vars as fallback. Never hardcode or log. Codex subscription login (`/login openai-codex`) uses browser or device-code flow with a manual paste prompt — `src/oauth-codex.ts`; saves are atomic (`src/credentials.ts`: a corrupt store is copied aside, never replaced before the atomic save) under SQLite-based OS advisory locks (`src/credential-lock.ts`, single-flight refresh). Refresh failures never become assistant messages and a failed credential does not count as a turn.
 
 ## Architecture
@@ -116,7 +116,8 @@ src/
   native/ — lazy loader for `@praana/natives` (npm package or sidecar)
   lsp/ — JSON-RPC LSP client + manager (opt-in `[lsp]`)
   setup/ interactive-setup.ts — wizard; update/ — version check, install-kind, upgrade
-  memory/ — MemoryStore, SQLite schema + vectors, embedders, summariser
+  memory/ — legacy Cognitive Memory (SQLite, embedders, summariser)
+  file-memory/ — File Memory store, format, index, recall, tools
   context-engine/ — compiler, scoring, checkpoint, distillers, telemetry
   skills/ — skill discovery, load tracking, usefulness stats
   tools/ — registry: system, git, knowledge, memory, search-code, find-files, code-intel, lsp, run-tests + test-runner/
@@ -134,7 +135,7 @@ src/
 - `/plan on` blocks `write_file` / `edit_file` / `batch_*` / `git_commit` / LSP edit tools / branch-creating shell until an approval word (`go`/`execute`/`proceed`/`continue`) or `/plan execute`; user-armed only, and approval words are ignored before deferrals like `continue reading` / `execute a search`.
 - Repeat-read interceptor: a second read of an unchanged file returns the artifact card (configurable `[tools] block_repeat_reads`); in engine mode use `retrieve_artifact(id)` instead of re-reading.
 - Skills: catalog (name + description) injected every turn, usefulness-ranked in both modes; `load_skill(skill_id)` fetches the body on demand (load tracking + stale eviction are engine mode only).
-- Memory scopes: default `user:<prefix>`, `agent:praana`, `context:<prefix>` — 12-char SHA-256 prefixes (`hashString`) of `$USER` / cwd; project memories carry all three, global `user` + `agent` only; recall enforces AND-scoping.
+- File memory scopes: global memories are shared across projects; project memories are isolated by project key. `recall` searches both scopes or reads a named memory from an explicit scope.
 - Responses driver: Codex rejects a function-call argument delta that does not extend a call announced by `output_item.added` (non-retryable). Other Responses providers buffer those deltas by `item_id` and complete the call at `output_item.done`; a call that never receives `done` is the same error. `tests/responses-driver.test.ts` compares against `tests/fixtures/openai-responses-main-golden.json` (regenerate with `PRAANA_UPDATE_RESPONSES_GOLDEN=1`).
 - TUI (`src/ui/tui/`): Ctrl+C copies the selection (`clipboard.ts`); wizard Esc walks a visited-step history (`src/setup/wizard-nav.ts`); Esc in any OAuth prompt raises `OAuthUserCancelledError` (quiet step back) while other aborts are `AbortError`; mouse selection never steals prompt focus; `/help` and `praana --help` share one help source; exit codes: 0 after successful setup, 1 if setup succeeded but no session started.
 - Windows: absolute-path decisions use `resolveAgainstCwd` / `path.isAbsolute` (`src/app-identity.ts`), never `startsWith("/")`; the app logger suppresses stderr while the TUI owns the terminal (`withStderrSuppressed`).

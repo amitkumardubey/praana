@@ -1,3 +1,5 @@
+/// <reference types="bun-types" />
+/** @jsxImportSource @opentui/solid */
 /**
  * Terminal-free scroll-bounce harness.
  *

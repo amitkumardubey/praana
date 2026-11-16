@@ -1,12 +1,7 @@
 import type { Event } from "./types.js";
 import type { Session } from "./session.js";
 import type { SessionEvent } from "./memory/types.js";
-import {
-  computeContextPressureRatio,
-  resolveCompactionConfig,
-  shouldTriggerAutoCompact,
-} from "./context-pressure.js";
-import { getAppLogger } from "./logger.js";
+import { computeContextPressureRatio } from "./context-pressure.js";
 
 export interface ClassicCompactionResult {
   compacted: boolean;
@@ -56,85 +51,21 @@ export function eventsToSessionEvents(events: Event[]): SessionEvent[] {
   return out;
 }
 
-function selectableHistoryEvents(events: Event[]): Event[] {
-  return events.filter(
-    (e) => e.kind !== "context_action" && e.kind !== "system_note",
-  );
-}
-
-/**
- * Classic-mode compaction: summarise oldest transcript events into Cognitive Memory
- * and mark them compressed so they leave the compiled prompt.
- */
+/** Classic-mode compaction is retired until the compiler cutover: this stub never
+ * compacts, writes no memories, and hides no history. `compiler.auto_compact_at`
+ * and `compiler.compact_chunk_fraction` have no effect in classic mode. Retain
+ * this compatibility result API. */
 export async function maybeAutoCompactClassic(
   session: Session,
   promptTokens: number,
   modelId: string,
 ): Promise<ClassicCompactionResult> {
-  const reserved = session.config.compiler.reserved_output_tokens ?? 0;
-  const contextWindow = session.getContextWindowTokens(modelId);
   const pressureRatio = computeContextPressureRatio(
     promptTokens,
-    contextWindow,
-    reserved,
+    session.getContextWindowTokens(modelId),
+    session.config.compiler.reserved_output_tokens ?? 0,
   );
-
-  const { trigger, armed } = shouldTriggerAutoCompact(
-    pressureRatio,
-    session.config.compiler,
-    session.isCompactionArmed(),
-  );
-  session.setCompactionArmed(armed);
-
-  if (!trigger) {
-    return { compacted: false, eventsCompacted: 0, factsStored: 0, pressureRatio };
-  }
-
-  if (!session.memoryEnabled || !session.memoryStore) {
-    return { compacted: false, eventsCompacted: 0, factsStored: 0, pressureRatio };
-  }
-
-  const { compactChunkFraction } = resolveCompactionConfig(session.config.compiler);
-  const all = session.eventLog.readAllUncompressedAfterResetBoundary();
-  const filtered = selectableHistoryEvents(all);
-  if (filtered.length < 4) {
-    return { compacted: false, eventsCompacted: 0, factsStored: 0, pressureRatio };
-  }
-
-  const chunkSize = Math.max(2, Math.floor(filtered.length * compactChunkFraction));
-  const toCompress = filtered.slice(0, chunkSize);
-  if (toCompress.length === 0) {
-    return { compacted: false, eventsCompacted: 0, factsStored: 0, pressureRatio };
-  }
-
-  const sessionEvents = eventsToSessionEvents(toCompress);
-  const factsStored = await session.memoryStore.compressTurns(sessionEvents);
-  session.eventLog.markEventsAsCompressed(toCompress.map((e) => e.event_id));
-
-  session.eventLog.append({
-    kind: "system_note",
-    actor: "kernel",
-    payload: {
-      type: "history_compacted",
-      eventsCompacted: toCompress.length,
-      factsStored,
-      pressureRatio: Number(pressureRatio.toFixed(3)),
-    },
-  });
-
-  if (session.debug) {
-    getAppLogger().child("session").debug(
-      `${toCompress.length} event(s) → ${factsStored} memory fact(s) (pressure ${(pressureRatio * 100).toFixed(0)}%)`,
-      { details: { events: toCompress.length, factsStored, pressureRatio } },
-    );
-  }
-
-  return {
-    compacted: true,
-    eventsCompacted: toCompress.length,
-    factsStored,
-    pressureRatio,
-  };
+  return { compacted: false, eventsCompacted: 0, factsStored: 0, pressureRatio };
 }
 
 export function formatCompactionBanner(result: ClassicCompactionResult): string | null {

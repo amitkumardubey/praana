@@ -421,9 +421,13 @@ export function createFileMemoryStore(options: StoreOptions) {
 
   async function list(input: { scope?: MemoryScope } = {}): Promise<({ ok: true; entries: ListEntry[]; skipped: number } & ScopeWarnings) | ({ entries: ListEntry[]; skipped: number } & ResultError)> {
     try {
+      const snapshot = snapshotInput(input, ["scope"]);
+      if (!snapshot) return { ok: false, error: FIELD_READ_REFUSAL, entries: [], skipped: 0 };
+      const invalidScope = scopeRefusal(snapshot.values.scope);
+      if (invalidScope) return { ...invalidScope, entries: [], skipped: 0 };
       const result: ListEntry[] = [];
       let skipped = 0;
-      const scanned = await visitScopes(input.scope, async (scope) => ({ scope, ...await entries(scope, true) }));
+      const scanned = await visitScopes(requestedScope(snapshot.values.scope), async (scope) => ({ scope, ...await entries(scope, true) }));
       if (!scanned.ok) return { ...scanned, entries: [], skipped: 0 };
       for (const data of scanned.values) {
         const { scope } = data;

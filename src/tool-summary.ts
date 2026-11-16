@@ -31,11 +31,11 @@ export function summarizeArgs(toolName: string, args: Record<string, unknown>): 
       return String(args.summary ?? "").slice(0, 60);
     case "recall":
     case "search_session_log":
-      return String(args.query ?? "").slice(0, 60);
+      return String(args.query ?? args.name ?? "").slice(0, 60);
     case "search_transcript":
       return String(args.query ?? args.id ?? "").slice(0, 60);
     case "remember":
-      return String(args.content ?? "").slice(0, 60);
+      return String(args.name ?? args.content ?? "").slice(0, 60);
     default:
       return Object.entries(args)
         .map(([k, v]) => `${k}=${JSON.stringify(v).slice(0, 40)}`)

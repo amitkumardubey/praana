@@ -521,6 +521,7 @@ export interface SessionMeta {
 
 export interface CompilerOptions {
   stateGraph: any; // StateGraph instance (circular dep, typed loosely)
+  memoryEnabled: boolean;
   memoryDigest: string | null;
   recentEvents: Event[];
   userInput: string;

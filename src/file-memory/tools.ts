@@ -8,9 +8,12 @@ const NAME_RULE = "Invalid memory name";
 // The one name pattern reaches the model as a JSON Schema `pattern`, so the schema and
 // `validName` cannot describe different names. The field description says what the pattern
 // enforces and that the store, not the schema, refuses the reserved names.
-const NAME_DESCRIPTION = "A plain lowercase slug of at most 64 characters: [a-z0-9] first, then [a-z0-9-]. The pattern is the whole name rule; reserved names are refused by the store with the single message \"Invalid memory name\"";
+const NAME_DESCRIPTION = "A plain lowercase slug of at most 64 characters: [a-z0-9] first, then [a-z0-9-]. The pattern is the whole name rule; reserved names are refused by the store with the single message \"Invalid memory name\" (memory, con, prn, aux, nul, com1-com9, lpt1-lpt9)";
 const name = z.string().regex(MEMORY_NAME_PATTERN, NAME_RULE).describe(NAME_DESCRIPTION);
 const scope = z.enum(["global", "project"]);
+const absentIfBlank = (value: unknown) => typeof value === "string" && !value.trim() ? undefined : value;
+const optionalName = z.preprocess(absentIfBlank, name.optional());
+const optionalScope = z.preprocess(absentIfBlank, scope.optional());
 
 function execute<T>(schema: z.ZodType<T>, operation: (args: T) => Promise<unknown>) {
   return async (input: unknown) => {
@@ -33,14 +36,14 @@ export function createFileMemoryTools(store: ToolStore) {
     description: z.string(),
     body: z.string(),
   }).strict();
-  const recall = z.object({ query: z.string().optional(), name: name.optional(), scope: scope.optional() }).strict()
+  const recall = z.object({ query: z.preprocess(absentIfBlank, z.string().optional()), name: optionalName, scope: optionalScope }).strict()
     .refine((args) => (args.query !== undefined) !== (args.name !== undefined), "Provide exactly one of query or name")
     .refine((args) => args.scope === undefined || args.name !== undefined, "scope applies only to a name lookup; queries always search global and project");
-  const forget = z.object({ name, scope: scope.optional() }).strict();
+  const forget = z.object({ name, scope: optionalScope }).strict();
 
   return {
     remember: defineTool({
-      description: "Save or update a dated file memory in global or project scope. Name: a plain lowercase slug, at most 64 characters (reserved names are refused by the store). Description: one line, at most 300 code points. Body: at most 2048 UTF-8 bytes; split or tighten longer text. Feedback/project bodies require **Why:** and **How to apply:** lines. Secrets and near-duplicates are refused; update a suggested existing memory instead. Incognito prevents writes.",
+      description: "Save or update a dated file memory in global or project scope. Name: a plain lowercase slug, at most 64 characters (memory, con, prn, aux, nul, com1-com9 and lpt1-lpt9 are reserved). Description: one line, at most 300 code points. Body: at most 2048 UTF-8 bytes; split or tighten longer text. Feedback/project bodies require **Why:** and **How to apply:** lines. Secrets and near-duplicates are refused; update a suggested existing memory instead. Incognito prevents writes.",
       parameters: remember,
       execute: execute(remember, async (args) => store.write(args)),
     }),
@@ -50,7 +53,7 @@ export function createFileMemoryTools(store: ToolStore) {
       execute: execute(recall, async (args) => store.recall(args)),
     }),
     forget_memory: defineTool({
-      description: "Hard-delete a file memory by its plain lowercase slug (at most 64 characters; reserved names are refused by the store). Optional scope is global or project; two removable matches require explicit scope. Missing and non-regular files are refused. Incognito prevents deletion.",
+      description: "Hard-delete a file memory by its plain lowercase slug (at most 64 characters; memory, con, prn, aux, nul, com1-com9 and lpt1-lpt9 are reserved). Optional scope is global or project; two removable matches require explicit scope. Missing and non-regular files are refused. Incognito prevents deletion.",
       parameters: forget,
       execute: execute(forget, async (args) => store.remove(args)),
     }),

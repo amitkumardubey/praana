@@ -920,7 +920,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
         const tools = createAllTools({
           eventLog: {} as unknown as EventLog,
           stateGraph: {} as unknown as StateGraph,
-          memoryStore: null,
+          fileMemory: null,
           memoryEnabled: true,
           incognito: false,
           contextEngine,
@@ -973,7 +973,7 @@ describe("tool-output ingestion shaper and batch stubber (PR2b)", () => {
       createAllTools({
         eventLog: {} as unknown as EventLog,
         stateGraph: {} as unknown as StateGraph,
-        memoryStore: null,
+        fileMemory: null,
         memoryEnabled: true,
         incognito: false,
         contextEngine: null,

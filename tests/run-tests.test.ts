@@ -401,7 +401,7 @@ describe("executeTests & run_tests Tool", () => {
     const all = createAllTools({
       eventLog: {} as any,
       stateGraph: {} as any,
-      memoryStore: null,
+      fileMemory: null,
       memoryEnabled: false,
       incognito: false,
       contextEngine: null,

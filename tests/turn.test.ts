@@ -281,7 +281,8 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
     config,
     eventLog,
     stateGraph,
-    memoryStore: null,
+    fileMemory: null,
+    embedder: null,
     memoryEnabled: false,
     incognito: false,
     contextEngine: null,
@@ -545,20 +546,20 @@ describe("computeMemoryStats", () => {
     const sg = new StateGraph();
     const eventLog = {
       readLast: mock(() => [
-        { kind: "system_note", payload: { type: "memory_recall", hits: 3 } },
-        { kind: "system_note", payload: { type: "memory_recall", hits: 2 } },
+        { kind: "tool_result", payload: { tool: "recall", result: { ok: true, matches: [{}, {}, {}] } } },
+        { kind: "tool_result", payload: { tool: "recall", result: { ok: true, matches: [{}, {}] } } },
         { kind: "system_note", payload: { type: "other" } },
         { kind: "tool_call", payload: { tool: "recall" } },
       ] as Event[]),
       readLastUncompressed: mock(() => [
-        { kind: "system_note", payload: { type: "memory_recall", hits: 3 } },
-        { kind: "system_note", payload: { type: "memory_recall", hits: 2 } },
+        { kind: "tool_result", payload: { tool: "recall", result: { ok: true, matches: [{}, {}, {}] } } },
+        { kind: "tool_result", payload: { tool: "recall", result: { ok: true, matches: [{}, {}] } } },
         { kind: "system_note", payload: { type: "other" } },
         { kind: "tool_call", payload: { tool: "recall" } },
       ] as Event[]),
       readLastUncompressedAfterResetBoundary: mock(() => [
-        { kind: "system_note", payload: { type: "memory_recall", hits: 3 } },
-        { kind: "system_note", payload: { type: "memory_recall", hits: 2 } },
+        { kind: "tool_result", payload: { tool: "recall", result: { ok: true, matches: [{}, {}, {}] } } },
+        { kind: "tool_result", payload: { tool: "recall", result: { ok: true, matches: [{}, {}] } } },
         { kind: "system_note", payload: { type: "other" } },
         { kind: "tool_call", payload: { tool: "recall" } },
       ] as Event[]),
@@ -1641,7 +1642,7 @@ describe("runTurn", () => {
     expect(touchAccess).toHaveBeenCalledWith("art-1", 0);
   });
 
-  it("reinforces recalled memories when a later tool succeeds in the same turn", async () => {
+  it("does not reinforce old memories when a later tool succeeds in the same turn", async () => {
     const firstStep = (async function* () {
       yield {
         type: "toolcall_end",
@@ -1699,10 +1700,10 @@ describe("runTurn", () => {
 
     await runTurn(session, "verify streaming");
 
-    expect(reinforceFromSuccessfulToolOutcome).toHaveBeenCalledWith(["m1"]);
+    expect(reinforceFromSuccessfulToolOutcome).not.toHaveBeenCalled();
   });
 
-  it("reinforces recalled memories only once per batch even with multiple succeeding tools", async () => {
+  it("does not reinforce old memories even with multiple succeeding tools", async () => {
     const firstStep = (async function* () {
       yield {
         type: "toolcall_end",
@@ -1769,11 +1770,10 @@ describe("runTurn", () => {
 
     await runTurn(session, "verify streaming");
 
-    expect(reinforceFromSuccessfulToolOutcome).toHaveBeenCalledTimes(1);
-    expect(reinforceFromSuccessfulToolOutcome).toHaveBeenCalledWith(["m1"]);
+    expect(reinforceFromSuccessfulToolOutcome).not.toHaveBeenCalled();
   });
 
-  it("does not double-boost a recalled entry when it is recalled again in a later batch of the same turn", async () => {
+  it("does not boost old entries recalled in multiple batches", async () => {
     const firstStep = (async function* () {
       yield {
         type: "toolcall_end",
@@ -1850,8 +1850,7 @@ describe("runTurn", () => {
 
     await runTurn(session, "verify streaming twice");
 
-    expect(reinforceFromSuccessfulToolOutcome).toHaveBeenCalledTimes(1);
-    expect(reinforceFromSuccessfulToolOutcome).toHaveBeenCalledWith(["m1"]);
+    expect(reinforceFromSuccessfulToolOutcome).not.toHaveBeenCalled();
   });
 
   it("calls incrementTurn and prints memory banner on success", async () => {

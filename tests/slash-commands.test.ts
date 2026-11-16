@@ -628,7 +628,7 @@ describe("executeSlashCommand", () => {
       getTurnCount: () => 3,
       getInputTokens: () => 0,
       getOutputTokens: () => 0,
-      getPersistentMemoryEntryCount: () => null,
+      getMemoryPromptIndex: () => null,
       getMemoryDbPath: () => null,
       getMemoryStats: () => ({
         total: 1,
@@ -717,7 +717,7 @@ describe("executeSlashCommand", () => {
       getInputTokens: () => 0,
       getOutputTokens: () => 0,
       getMemoryStats: () => ({ total: 0, active: 0, soft: 0, hard: 0, byKind: {} }),
-      getPersistentMemoryEntryCount: () => 0,
+      getMemoryPromptIndex: () => null,
       memoryEnabled: false,
       isContextEngineEnabled: () => false,
       isScorecardEnabled: () => true,
@@ -840,7 +840,7 @@ describe("executeSlashCommand", () => {
         cwd,
         agent: "praana",
       };
-      writeFileSync(join(dir, "meta.json"), JSON.stringify(meta, null, 2) + "\n");
+      writeFileSync(join(dir, "meta.json"), `${JSON.stringify(meta, null, 2)}\n`);
       const eventsPath = join(dir, EVENT_LOG_FILENAME);
       writeFileSync(eventsPath, "");
       const seconds = activityAt / 1000;
@@ -901,10 +901,10 @@ describe("executeSlashCommand", () => {
     });
 
     afterEach(() => {
-      if (originalPraanaHome !== undefined) {
-        process.env.PRAANA_HOME = originalPraanaHome;
-      } else {
+      if (originalPraanaHome === undefined) {
         delete process.env.PRAANA_HOME;
+      } else {
+        process.env.PRAANA_HOME = originalPraanaHome;
       }
       rmSync(praanaHome, { recursive: true, force: true });
     });
@@ -933,6 +933,40 @@ describe("executeSlashCommand", () => {
       expect(result.lines.some((l) => l.includes("thinking="))).toBe(true);
       expect(result.lines.some((l) => l.includes("/settings set"))).toBe(true);
       expect(existsSync(join(praanaHome, ".praana", "settings.json"))).toBe(true);
+    });
+
+    it("refreshes status when incognito rebuild fails without persisting settings", async () => {
+      const settingsFile = join(praanaHome, ".praana", "settings.json");
+      const original = '{"incognito":false,"theme":"dark"}';
+      writeFileSync(settingsFile, original);
+      let incognito = false;
+      const session = settingsSession({
+        isIncognito: () => incognito,
+        setIncognito: mock(async () => { incognito = true; return "rebuild failed"; }),
+      });
+      const result = await executeSlashCommand("/settings set incognito on", session, {
+        setModel: mock(), setThinking: mock(), getThinking: () => true,
+      });
+      expect(session.isIncognito()).toBe(true);
+      expect(readFileSync(settingsFile, "utf-8")).toBe(original);
+      expect(result.action).toBe("refresh_status");
+      expect(result.toastTone).toBe("error");
+      expect(result.lines.join("\n")).toContain("rebuild failed");
+    });
+
+    it("refreshes status when the incognito command rebuild fails", async () => {
+      let incognito = false;
+      const session = settingsSession({
+        isIncognito: () => incognito,
+        setIncognito: mock(async () => { incognito = true; return "rebuild failed"; }),
+      });
+      const result = await executeSlashCommand("/incognito on", session, {
+        setModel: mock(), setThinking: mock(), getThinking: () => true,
+      });
+      expect(session.isIncognito()).toBe(true);
+      expect(result.action).toBe("refresh_status");
+      expect(result.toastTone).toBe("error");
+      expect(result.lines.join("\n")).toContain("rebuild failed");
     });
 
     it("set persists and applies thinking", async () => {
@@ -1067,14 +1101,14 @@ describe("executeSlashCommand", () => {
       const settingsPath = join(praanaHome, ".praana", "settings.json");
       writeFileSync(
         settingsPath,
-        JSON.stringify({
+        `${JSON.stringify({
           model: "",
           provider: "",
           thinking: true,
           incognito: false,
           debug: false,
           theme: "default",
-        }) + "\n",
+        })}\n`,
         "utf-8",
       );
       const before = readFileSync(settingsPath, "utf-8");

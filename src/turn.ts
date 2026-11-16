@@ -691,13 +691,6 @@ export async function runTurn(
 ): Promise<string> {
   /* Always have a sink — default routes to legacy stdout/stderr helpers. */
   const s = options?.sink ?? createDefaultTurnSink();
-  const successfulToolResult = (result: unknown, isError: boolean): boolean => {
-    if (isError) return false;
-    if (result && typeof result === "object" && "ok" in result) {
-      return (result as { ok?: unknown }).ok !== false;
-    }
-    return true;
-  };
 
   const turnRecorder = new TurnRecorder(userInput);
   const stateBeforeTurn = session.contextEngine?.captureStateSnapshot(
@@ -755,12 +748,16 @@ export async function runTurn(
   // 2. Build tools — boundaryTurn is captured once; /clear cannot run mid-turn
   // (TUI disables input + executeSlashCommand guards), so the value is stable.
   const boundaryTurn = session.getLastResetBoundaryTurn();
+  // One flag for the registry and every compile input: tools exist only when
+  // memory is on and the store was indexed. Incognito still registers reads.
+  const memoryEnabled = session.memoryEnabled && !!session.fileMemory;
+  const incognito = session.isIncognito();
   const tools = createAllTools({
     eventLog: session.eventLog,
     stateGraph: session.stateGraph,
-    memoryStore: session.memoryStore,
-    memoryEnabled: session.memoryEnabled,
-    incognito: session.isIncognito(),
+    fileMemory: session.fileMemory,
+    memoryEnabled,
+    incognito,
     contextEngine: session.contextEngine,
     scorecard: session.scorecard,
     onScorecardFileRead: (absPath, mtimeMs, countAsRepeat) =>
@@ -826,7 +823,7 @@ export async function runTurn(
   const recentEvents = session.eventLog.readLastUncompressedAfterResetBoundary(
     session.config.compiler.recent_turns
   );
-  const toolDescs = describeTools({ contextEngineEnabled, classicMode });
+  const toolDescs = describeTools({ contextEngineEnabled, classicMode, memoryEnabled });
 
   const skillsSection = buildSkillMetadataCatalog(session.skills, session.skillUsefulness ?? undefined) || null;
   const tokenBudget = session.config.compiler.token_budget;
@@ -843,6 +840,8 @@ export async function runTurn(
 
   const compileInput = {
     stateGraph: session.stateGraph,
+    memoryEnabled,
+    incognito,
     memoryDigest: session.digest,
     recentEvents,
     userInput,
@@ -897,7 +896,7 @@ export async function runTurn(
       engineConfig,
       contextWindowTokens,
       hydratedTexts: autoHydrated.map((r) => r.text),
-      embedder: session.memoryStore?.embedder ?? null,
+      embedder: session.embedder,
       embeddingCache: session.embeddingCache,
       workflowPatterns,
       agentHints: buildAgentHints({
@@ -946,6 +945,8 @@ export async function runTurn(
       agentsContext: session.agentsContext,
       projectContext: session.projectContext,
       skillsCatalog: skillsSection,
+      memoryEnabled,
+      incognito,
       memoryDigest: session.digest,
       events: session.eventLog.readAllUncompressed(),
       userInput,
@@ -974,6 +975,8 @@ export async function runTurn(
         agentsContext: session.agentsContext,
         projectContext: session.projectContext,
         skillsCatalog: skillsSection,
+        memoryEnabled,
+        incognito,
         memoryDigest: session.digest,
         events: session.eventLog.readAllUncompressed(),
         userInput,
@@ -1124,9 +1127,6 @@ export async function runTurn(
   let hadNonLoadSkillTool = false;
   const nudgeStart = snapshotScorecardNudge(session);
   let noOpToolsThisTurn = 0;
-  // Tracks memory entries already reinforced this turn so a recalled entry is
-  // boosted at most once even if it appears in multiple parallel batches.
-  const reinforcedEntryIdsThisTurn = new Set<string>();
 
   // Active model/provider may switch to fallback config if the primary fails.
   // Fallback is applied only to the initial stream attempt (step 0). Subsequent
@@ -1675,7 +1675,6 @@ export async function runTurn(
     }
 
     const toolResults: Array<{ toolCallId?: string; toolName: string; result: unknown }> = [];
-    const recalledEntryIdsThisTurn = new Set<string>();
 
 
     // Notify caller that tool calls are about to execute (e.g. close thinking block)
@@ -1762,20 +1761,6 @@ export async function runTurn(
       );
 
       s.onSpinnerStart?.("thinking…");
-
-      // Collect recalled entries from all recall calls in the batch.
-      for (const { tc, result, isError } of executedResults) {
-        if (tc.toolName === "recall" && successfulToolResult(result, isError)) {
-          const entries = (result as { entries?: Array<{ id?: string }> }).entries;
-          if (Array.isArray(entries)) {
-            for (const entry of entries) {
-              if (typeof entry?.id === "string" && entry.id) {
-                recalledEntryIdsThisTurn.add(entry.id);
-              }
-            }
-          }
-        }
-      }
 
       // Process results in original order to keep history/event log deterministic.
       for (const { tc, result, isError } of executedResults) {
@@ -1923,25 +1908,6 @@ export async function runTurn(
         const uiResultText =
           tc.toolName === "shell" ? toolResultRawText(result) : promptResultText;
         s.onToolResult?.(tc.toolCallId, tc.toolName, uiResultText, isError);
-      }
-
-      // Reinforce any recalled entries once per turn when at least one non-recall
-      // tool succeeds. Skip entries already reinforced earlier in this turn so a
-      // recalled entry is boosted at most once even if it appears in multiple batches.
-      const newEntryIds = Array.from(recalledEntryIdsThisTurn).filter(
-        (id) => !reinforcedEntryIdsThisTurn.has(id),
-      );
-      if (
-        newEntryIds.length > 0 &&
-        executedResults.some(
-          ({ tc, result, isError }) =>
-            tc.toolName !== "recall" && successfulToolResult(result, isError),
-        )
-      ) {
-        session.memoryStore?.reinforceFromSuccessfulToolOutcome(newEntryIds);
-        for (const id of newEntryIds) {
-          reinforcedEntryIdsThisTurn.add(id);
-        }
       }
 
       if (options?.signal?.aborted) {
@@ -2326,9 +2292,12 @@ export function computeMemoryStats(
   let recallCalls = 0;
   let recallHits = 0;
   for (const ev of recentEvents) {
-    if (ev.kind === "system_note" && (ev.payload.type as string) === "memory_recall") {
+    if (ev.kind === "tool_result" && ev.payload.tool === "recall") {
       recallCalls++;
-      recallHits += (ev.payload.hits as number) ?? 0;
+      const result = ev.payload.result as { ok?: boolean; matches?: unknown[]; memory?: unknown } | undefined;
+      if (result?.ok === true) {
+        recallHits += Array.isArray(result.matches) ? result.matches.length : result.memory ? 1 : 0;
+      }
     }
   }
   return {
