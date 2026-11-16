@@ -112,7 +112,7 @@ No config file is needed to start. To customise, run the setup wizard:
 praana setup   # Interactive provider/config setup wizard (also `praana init` alias)
 ```
 
-Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harbor/CI), `praana resume` (continues your most recent session for the current project when given no id), `praana upgrade` (installs the latest GitHub Release binary + sidecar; alias `praana update`), `praana doctor` (checks config + provider keys), `praana providers` (lists configured providers; `--all` includes unconfigured), `praana models` (lists models), and `praana memory dedupe` (merges duplicate Cognitive Memory entries). See [`praana.config.example.toml`](https://github.com/amitkumardubey/praana/blob/main/praana.config.example.toml) for all settings. Harbor / Terminal-Bench: [`harbor_eval/README.md`](https://github.com/amitkumardubey/praana/blob/main/harbor_eval/README.md).
+Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harbor/CI), `praana resume` (continues your most recent session for the current project when given no id), `praana upgrade` (installs the latest GitHub Release binary + sidecar; alias `praana update`), `praana doctor` (checks config + provider keys), `praana providers` (lists configured providers; `--all` includes unconfigured), `praana models` (lists models), and `praana memory dedupe` (legacy CLI; merges duplicate Cognitive Memory entries). See [`praana.config.example.toml`](https://github.com/amitkumardubey/praana/blob/main/praana.config.example.toml) for all settings. Harbor / Terminal-Bench: [`harbor_eval/README.md`](https://github.com/amitkumardubey/praana/blob/main/harbor_eval/README.md).
 
 ### Per-turn step budget
 
@@ -455,13 +455,13 @@ A normal quit — `/exit`, or Ctrl+C with an empty prompt — exits `0` when a s
 | Command | Purpose |
 |---|---|
 | `/help` | Slash commands (grouped, with aliases), prompt keys, and the status-bar legend. Command-line commands stay on `praana --help` |
-| `/exit` (alias `/quit`) | End session — runs summariser when memory is on |
+| `/exit` (alias `/quit`) | End session |
 | `/clear` | Reset in-session context (same session ID; clears working memory and model-visible history) |
-| `/new` | Start a new session (new ID, reload config, background summariser) |
+| `/new` | Start a new session (new ID, reload config) |
 | `/state` | Working-memory objects (engine mode) |
-| `/digest` | Cognitive Memory digest |
-| `/recall <query>` | Search Cognitive Memory |
-| `/memory dedupe` | Merge duplicate Cognitive Memory entries |
+| `/digest` | Show the current file memory index |
+| `/recall <query>` | Search file memories |
+| `/memory` | List file memories; show/forget/prune (prune lists the oldest candidates, does not delete) |
 | `/stats` | Session + memory stats |
 | `/scorecard` | Per-session telemetry signals |
 | `/events` | Last 20 session log events |
@@ -473,7 +473,7 @@ A normal quit — `/exit`, or Ctrl+C with an empty prompt — exits `0` when a s
 | `/shell <cmd>` | Run a shell command inline (also `! <cmd>`) |
 | `/plan <on\|off\|execute>` | Plan mode: block mutating tools until you approve |
 | `/thinking <on\|off>` | Show or hide reasoning text |
-| `/incognito <on\|off>` | Disable Cognitive Memory writes |
+| `/incognito <on\|off>` | Block or allow memory writes (memories stay readable) |
 | `/settings` | View/set persistent preferences (`~/.praana/settings.json`) |
 | `/debug` | Verbose tooling + saved prompts |
 | `/why <id>` | Why a context unit was included (engine + debug) |
@@ -531,7 +531,7 @@ The footer abbreviations, also listed by `/help`:
 | `skills` | Loaded skills, or the catalog size when none are loaded |
 | `think` | Reasoning effort (`think medium`), or the stream when thinking is on |
 | `engine` | Context engine is on |
-| `mem` | Cognitive Memory writes are on or off. Incognito replaces this with `incognito` |
+| `mem` | File memory writes are on or blocked (incognito). Incognito replaces this with `incognito` |
 | `debug` | Debug mode is on |
 | `plan` | Plan mode is on: mutating tools are blocked |
 | `update` | A newer version is available |
@@ -549,12 +549,14 @@ The footer abbreviations, also listed by `/help`:
 | **Engine** | Yes | Tiered working memory, stub artifact cards + retrieve on demand, session checkpoint, scored prompt compilation, progressive skills. |
 | **Classic** | Fallback / explicit disable | Full verbatim transcript. Same shape as most coding agents. |
 
-**Cognitive Memory** (on by default; turn it off with `[memory] enabled = false`, or pause writes for a session with `/incognito on`):
+**File Memory** (on by default; turn it off with `[memory] enabled = false`, or block writes for a session with `/incognito on`):
 
-- At `/exit`, extracts facts, decisions, patterns, mistakes, preferences, and constraints from the transcript.
-- Next session starts with a ranked digest in the prompt.
-- Project sessions query both project-scoped and global memories and merge results.
-- Entries decay over time with a half-life per kind: constraints never decay, mistakes 60 days, facts 90, preferences 180, decisions and patterns 365. Entries confirmed in two or more distinct sessions (with validity of at least 0.7) promote to deep memory (Layer 2), which decays four times slower.
+- Memories are markdown files: global `~/.praana/memory`, project `~/.praana/projects/<key>/memory`.
+- At start/resume, one capped index of the newest memories is built once and injected into the prompt; it is never rebuilt after in-session writes.
+- `remember` saves deliberately; `recall` searches or reads by name; `forget_memory` deletes. Incognito blocks writes and keeps reads.
+- There is no session-end summariser and no automatic note/constraint/decision/artifact promotion.
+- Classic mode (`[context_engine] enabled = false`) has no auto-compaction until the compiler cutover: `compiler.auto_compact_at` and `compiler.compact_chunk_fraction` have no effect there.
+- `[memory]` embedder/summarizer keys are no longer used by memory; the embedder is still used by engine mode for semantic scoring.
 
 **Skills:** discovers `SKILL.md` files in project and user paths. Compact catalog injected every turn, sorted by usefulness score. `load_skill(id)` fetches the full body on demand. Engine mode tracks whether each skill was used and updates its score in `memory.db`.
 
@@ -578,15 +580,15 @@ These are real gaps, not a roadmap dressed as marketing.
 
 | Area | What's weak |
 |---|---|
-| **Memory reinforcement** | Memory stores, recalls, and applies time decay. Confidence boost on session success is wired but dormant until the session-success signal ships (#506). |
+| **Memory writes** | Memory is written only when the model calls `remember`; there is no automatic extraction at session end. |
 | **No published A/B evals** | Headless `praana run` and a Harbor / Terminal-Bench adapter exist. The fixed A/B task suite + scoring that would compare engine vs classic (#424) is not shipped. We don't publish benchmark claims we can't back. |
-| **Semantic recall** | ONNX weights download on first run (about 90 MB for the default model, cached in `~/.praana/models/`) after a one-time consent prompt. Ollama is opt-in. Near-duplicate or conflicting memory entries are not automatically reconciled. |
+| **Recall matching** | Recall is keyword-based; the embedder is used only by engine-mode semantic scoring, not by memory. Near-duplicate or conflicting memories are not automatically reconciled. |
 | **Context engine** | On by default. Falls back to classic if initialization fails or if you set `[context_engine] enabled = false`. |
-| **Background consolidation** | Runs about 30 seconds after a session ends (`[consolidation]`, on by default). It confirms, contradicts and promotes entries, but the wider learning loop is incomplete (see memory reinforcement). |
+| **No session-end consolidation** | There is no summariser or consolidation at session end; nothing is written to memory automatically. |
 | **Model routing** | Not started. You choose the model; PRAANA does not pick one per task. |
 | **Shell tool** | Runs with your user permissions. Optional path/command sandbox via `[shell]` in config — off by default. |
 
-If Cognitive Memory doesn't help you after a few real projects, tell us. That's useful feedback, not a surprise.
+If File Memory doesn't help you after a few real projects, tell us. That's useful feedback, not a surprise.
 
 ## Development
 

@@ -49,7 +49,7 @@ When the agent or user wants an object gone from working memory — a stale task
 - `praana resume <session_id>` can replay history faithfully.
 - The action is auditable: a `retract` `context_action` event is logged with the object ID and kind.
 
-The same tombstone pattern applies in Cognitive Memory via `forget_memory(id)` — the `retracted` column is set to 1, the row is excluded from recall and digest, and it remains in the database for audit.
+File Memory has no tombstones: `forget_memory({ name, scope? })` hard-deletes the memory file.
 
 ---
 
@@ -88,7 +88,7 @@ Engine mode is **on by default** (`context_engine.enabled = true`). We have not 
 | Old user intent (full text) | Partial | Only the latest request in **Active request**; earlier intent may survive in narrative if captured |
 | Deep reasoning chains | Gap | Narrative captures *what* happened, not full multi-step *why* — use `search_turn_events` or `retrieve_artifact` |
 | Contradiction detection | Gap | Old and new decisions can coexist in the checkpoint without an explicit alert |
-| Cross-session continuity | Memory layer | Within-session checkpoint does not replace Cognitive Memory for the next session |
+| Cross-session continuity | File Memory | Within-session checkpoint does not replace File Memory for the next session |
 
 Classic mode remains the simpler fallback: full verbatim transcript, no checkpoint or tiering. Disable the engine when you want the plain transcript baseline; expect rough edges on long conversational threads in either mode.
 
@@ -104,71 +104,32 @@ Classic mode is intentionally simple:
 - **No Adaptive Context** — no `create_task`, `decide`, tier demotion, or auto-hydrate. Working memory is the transcript itself.
 - **No context engine** — no distillers, artifact store, checkpoint, turn ledger, or scored compilation.
 - **Skills as catalog** — discovered skill names and descriptions are listed in the prompt; the agent loads bodies with `load_skill` when needed. No residency tiers or eviction tracking.
-- **Cognitive Memory unchanged** — `recall` / `remember` and the session-start digest still work.
+- **File Memory works the same** — `recall` / `remember` / `forget_memory` and the session-start index are shared with engine mode.
+- **No auto-compaction yet** — until the compiler cutover, `compiler.auto_compact_at` and `compiler.compact_chunk_fraction` have no effect in classic mode.
 
 Classic mode is a simpler alternative when the context engine is disabled or unavailable. Set `measurement_mode = true` to record engine-style telemetry while running classic (for internal debugging only).
 
 ---
 
-## Cognitive Memory
+## File Memory
 
-**Cognitive Memory** is PRAANA's learning memory — it accumulates, scores, and consolidates knowledge across sessions.
+**File Memory** is PRAANA's cross-session knowledge, stored as markdown files instead of database rows. Global memories live in `~/.praana/memory`; project memories in `~/.praana/projects/<key>/memory` (the key derives from the real git root — or the real cwd outside git — as a readable basename plus a six-character hash suffix). Each file has YAML frontmatter (`name`, `scope`, `type`, `description`, `updated`) and a body, with lowercase-slug names. Memories are dated observations, not instructions: the compiled index opens with a trust caveat ("a memory is an observation at its date; verify files, functions and flags it names before recommending them").
 
-### Memory Kinds
+### Tools
 
-Six kinds of knowledge, each with distinct semantics:
+The agent saves deliberately with `remember({ scope, type, name, description, body })` (`scope` is `global` or `project`; nothing is saved automatically). `recall({ query })` searches both scopes and returns up to five `{ name, scope, description, snippet }` matches; `recall({ name, scope? })` reads one memory in full. `forget_memory({ name, scope? })` hard-deletes a memory file.
 
-| Kind | What it stores | Example |
-|---|---|---|
-| `fact` | Verifiable project knowledge | `"Uses Vitest for testing"` |
-| `preference` | Working style preferences | `"Prefers functional components over classes"` |
-| `decision` | Architectural choices made | `"JWT over session cookies — simpler for this API"` |
-| `pattern` | Recurring approaches that work | `"Zod validation before every DB write"` |
-| `mistake` | A failure and the lesson extracted | `"Forgot await on verify() → 401s on all routes"` |
-| `constraint` | A rule that must always hold | `"Never commit .env files"` |
+### Incognito
 
-`pattern`, `mistake`, and `constraint` are particularly valuable — they encode *what was learned from experience*, not just what happened.
+`/incognito on` blocks memory writes and deletes while keeping reads, `recall`, and the index available. `[memory] enabled = false` is the only "fully off" switch: no store, no tools, no index, no policy text.
 
-### Memory Levels
+### Index
 
-Entries exist at two levels:
+At session start (and on resume) PRAANA builds the prompt index exactly once: the newest memories across both scopes, capped at 200 lines / 25,600 bytes. The index is never rebuilt after in-session writes or incognito toggles. A store with nothing readable adds no index section.
 
-**Project-level** — scoped to the current working directory. Only visible in sessions started from that project. Most `fact`, `decision`, and `pattern` entries belong here.
+### No session-end memory work
 
-> `"Uses Vitest for testing"` · `"JWT over session cookies for this API"` · `"Auth middleware lives in src/lib/auth"`
-
-**Global** — scoped to the user across all projects. Preferences, personal constraints, and universal working patterns that apply everywhere.
-
-> `"Always write tests before implementation"` · `"Never use any in TypeScript"` · `"Prefer functional over class-based components"`
-
-At session start, PRAANA builds a ranked digest from memory in scope for the current session.
-
-### Scoping
-
-Every memory entry carries scope labels: `user:<hash>`, `agent:praana`, and `context:<cwd_hash>`. Recall enforces strict AND-scoping — a memory is only returned if it carries *all* scopes in the query.
-
-Project-level memories carry all three scopes — only visible within that project. Global memories carry only `user` and `agent` scopes, making them visible in any project session. In project sessions, recall and the session-start digest query both scopes and merge results (global entries never carry `context:`). Ranking is unified; there is no automatic override when a global preference and a project fact disagree — both can appear until one is retracted or decays.
-
-### Ranking and Confidence
-
-Recalled memories are ranked by a fusion of three signals:
-- **Vector similarity** — how close the query is to the stored content
-- **Confidence** — starts at `high` (0.8), `medium` (0.5), or `low` (0.3) based on extraction certainty, then decays with a half-life that depends on the entry kind (constraints never decay; mistakes 60 days, facts 90, preferences 180, decisions and patterns 365)
-- **Recency** — entries accessed recently receive a small boost
-- **Pinned** — explicitly pinned entries receive a strong boost and are always included in the digest
-- **Tool outcomes** — every entry **surfaced** in a session — whether shown in the session-start digest or returned by `recall()` — has its validity reinforced at session end. Usefulness is boosted only when the entry was acted on and the placeholder session-success signal is positive; acted-on entries in sessions without that signal are neutral, and ignored entries decay. An entry surfaced across ≥2 distinct sessions with validity ≥0.7 is **promoted from Layer 1 to Layer 2** (deep memory, 4× slower decay).
-
-### Embeddings — Honest Note
-
-PRAANA supports multiple embedders: `auto` (native ONNX via `@praana/natives`), `transformers`, `transformers-nomic`, and `ollama`. First weight download prompts for consent; weights cache in `~/.praana/models/`. Vector recall uses BLOB storage + cosine kNN (no sqlite-vec / Homebrew SQLite).
-
-When no semantic embedder is available, recall uses **keyword-only search** (FTS) — never fake vectors.
-
-### Session Lifecycle
-
-**Session start:** PRAANA queries the memory store for all entries in scope, ranks them, and builds a markdown digest. This digest is included in the system prompt on every turn.
-
-**Session end** (`/exit`): PRAANA sends the transcript plus loaded project context (AGENTS.md / README) to a summariser model. The summariser extracts up to 5 **concise key-point** learnings (one short sentence each), skips anything already documented in project context, and classifies each as `project` or `global` so scopes are set correctly. Each learning is stored as a new memory entry with an initial confidence score. The summariser is configurable — disabled if no API key is available.
+There is no session-end summariser, consolidation, or automatic promotion of notes, constraints, decisions, or high-value artifacts. Anything worth keeping must be saved during the session with `remember`.
 
 ---
 
@@ -183,7 +144,7 @@ PRAANA's tool surface is small and deliberately shared across modes. The goal: e
 | File mutation | `write_file`, `edit_file`, `batch_write`, `batch_edit` (concurrent batches OK; same-path mutators fail). Missing/unread `edit_file` is fail-fast with fuzzy suggestions (#577). Opt-in `[verify]` (issue #576) attaches syntax / scoped tsc / affected-test results on the same tool result | Both |
 | Shell | `shell` (with optional sandbox allowlist; timeout kills the process group). First-token PATH / cwd checked before execute (#577) | Both |
 | Session search | `search_session_log` (other in-session events), `search_transcript` (BM25 + substring over canonical session records, including compacted/stubbed turns; current reset epoch by default, `include_previous_resets=true` crosses `/clear`; full/ranged content and neighbors by ID) | Both |
-| Cognitive Memory | `recall`, `remember`, `forget_memory` | Both |
+| File Memory | `remember`, `recall`, `forget_memory` | Both |
 | Adaptive Context | `create_task`, `decide`, `add_constraint`, `add_note`, `hydrate`, `soft_unload`, `hard_unload`, `list_state` | Engine |
 | Context engine | `retrieve_artifact`, `context_summary`, `search_turn_events`, `event_lineage` | Engine |
 
@@ -207,13 +168,13 @@ Always-on **circuit breakers** (#578) hard-gate a mutating tool that repeats the
 
 ## How the Two Systems Relate
 
-Adaptive Context and Cognitive Memory are complementary but distinct:
+Adaptive Context and File Memory are complementary but distinct:
 
-| | Adaptive Context | Cognitive Memory |
+| | Adaptive Context | File Memory |
 |---|---|---|
 | Scope | Within a session | Across sessions |
-| Storage | In-memory (StateGraph) | SQLite on disk |
-| Managed by | Agent tools + automatic demotion | Session end extraction + agent tools |
+| Storage | In-memory (StateGraph) | Markdown files under `~/.praana` |
+| Managed by | Agent tools + automatic demotion | Agent tools (`remember` / `forget_memory`) |
 | Purpose | Curate what the model sees *right now* | Preserve what was learned *over time* |
 
-At session start, the digest from Cognitive Memory is injected into the context compiled by Adaptive Context. The two systems share the same context window — memory takes up one section of the compiled prompt alongside active state, peripheral stubs, and recent turns (engine mode), or alongside the full verbatim transcript (classic mode).
+At session start, the index from File Memory is injected into the context compiled by Adaptive Context. The two systems share the same context window — memory takes up one section of the compiled prompt alongside active state, peripheral stubs, and recent turns (engine mode), or alongside the full verbatim transcript (classic mode).
