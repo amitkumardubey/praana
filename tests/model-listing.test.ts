@@ -490,6 +490,22 @@ describe("listAllAvailableModels (parallel, static-first)", () => {
     expect(ids).toEqual([...ids].sort());
   });
 
+  it("curates the current Gemini 4 ids for google", () => {
+    const google = getCuratedModels("google");
+    const ids = google.map((m) => m.id);
+    for (const id of ["gemini-4-hydrogen", "gemini-4-argon", "gemini-4-carbon"]) {
+      const entry = google.find((m) => m.id === id);
+      expect(entry).toBeDefined();
+      expect(entry!.provider).toBe("google");
+      expect(entry!.contextWindow).toBe(1_048_576);
+      expect(entry!.reasoning).toBe(true);
+    }
+    expect(ids[0]).toBe("gemini-4-hydrogen");
+    expect(ids).toContain("gemini-2.0-flash");
+    expect(ids).not.toContain("gemini-2.0-pro-exp-02-05");
+    expect(ids).not.toContain("gemini-2.0-flash-thinking-exp-01-21");
+  });
+
   it("listStaticAvailableModels retains curated order within each provider", () => {
     process.env.GROQ_API_KEY = "sk-test-groq";
     const byProvider = new Map<string, ModelListEntry[]>();

@@ -53,7 +53,7 @@ for (const provider of ["google", "vertex"]) {
   }
 
   // Vertex takes publisher model ids, not slash-containing resource names.
-  for (const model of ["gemini-3.8-flash", "gemini-4-xyz", provider === "google" ? "models/gemini-3.7-flash" : "gemini-3.7-flash", "my-custom-model"]) {
+  for (const model of ["gemini-3.8-flash", "gemini-4-hydrogen", "gemini-4-xyz", provider === "google" ? "models/gemini-3.7-flash" : "gemini-3.7-flash", "my-custom-model"]) {
     test(`${provider} injects the sentinel on the first call only for ${model}`, async () => {
       const { body } = await request(provider, model, [
         { role: "user", content: "go" },
