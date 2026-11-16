@@ -228,7 +228,6 @@ export class MemoryStore {
 
     // Determine session-success bit for utility updates.
     // TODO(scorecard): placeholder — replace with real scorecard signal (ADR-005 C1 / #488).
-    // Legacy MemoryStore keeps a string reason; narrow it for the classifier.
     const sessionGood = isSessionGood(reason, events);
 
     // Fetch surfaced entries with content in one JOIN — no N+1 getEntryById calls.
