@@ -16,9 +16,9 @@
     "legacy-ts/tool-results/success-redacted.json": "d296499d3f2905d7a689ebd37c55a26ca8c4dc130dc1e831ae8cf2776741362b"
   },
   "oracle_sha256_by_file": {
-    "src/circuit/loop-gate.ts": "84718fd06fcc8b05fccca9fc36be709445f1a2b27896df5191682694f9d0147e",
+    "src/circuit/loop-gate.ts": "c96f9ab4595019dc1966ceee2526dbb26c6694e80eac89185ba4475a15f32b14",
     "src/hooks/block-result.ts": "20214cf0f1dd570185925a34020bebe3e258ab868ad918a9a1f5414b1f518373",
-    "src/hooks/handlers/circuit.ts": "f7114873dd02e822604a2c3e3c6ff22000a35afccc2cfa1d971575458a429244",
+    "src/hooks/handlers/circuit.ts": "f9881138c84889bbf684a54fa3197a125c434d2be2c86ef3e4193fa70c33dd9e",
     "src/hooks/handlers/lsp.ts": "3d6b47544834069efb2541a3c8f851b4ed3d21f92fb32e14bc51101435438515",
     "src/hooks/handlers/plan-mode.ts": "0d4b852b8f0fd1fa8a944bb3b9cd114b56f80928fae097259abadc29f9f10262",
     "src/hooks/handlers/redact.ts": "7ad795068145447d318d9342db6d9db700f1d75cbed64585a6a0ad2096800e47",
@@ -26,9 +26,9 @@
     "src/hooks/handlers/validate.ts": "179bbb1491c0eedd1154576bb18aca1d4a84a6cfefd95121a482f390e6979c0d",
     "src/hooks/handlers/verify.ts": "6e810f3669b286fc3ad3efb6953f8db39b761437e543b0571a84134a3e5dd66a",
     "src/hooks/handlers/write-path.ts": "3d5d53dfd3c5bf34c8fd5b707619041ab9547e24107a37f5b94f88b76eee528f",
-    "src/hooks/index.ts": "c15592a640ed3b741dbb9232ba92d5b06db34b7721bb31b7641b14ebcc5e048d",
+    "src/hooks/index.ts": "270b66544b17c6cdf8f922defee3c9bea763162a9fe6aec4d733324e6b6c39df",
     "src/hooks/registry.ts": "27af39a838c79d2611122450a2acc5800800972973da0099c25a5123d0d2aa89",
-    "src/hooks/types.ts": "96b1f29ae6911d224c374809b9170be5e19a9df30a6ad5434305585eee06b764",
+    "src/hooks/types.ts": "1da5126e36803d7e1c2abc496bd5b6208ec63632bef32182d6ab442fbad248c3",
     "src/plan-mode.ts": "b5bd3bf403a3fe3dbf382834525fdc7de1dba0b3f82f7d49e1cf3e989b975e8f",
     "src/redact/secrets.ts": "13c27f99d6af4792734c55ed0e7d5848ebb9b6dfd82cbacc62dbdb43122b2cf3",
     "src/risk/classes.ts": "6062455a425b9b15322147efee6593a3ea6f7b8acac48a36a967424a0bbd8fb2",

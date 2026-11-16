@@ -10,6 +10,7 @@ function sessionWithGate(cwd: string): HookSessionLike {
   const gate = new LoopGate({ threshold: 3 });
   return {
     cwd,
+    loopGate: gate,
     isPlanMode: () => false,
     observeCircuitPre: (tool, args) => gate.observePre(tool, args),
     observeCircuitPost: (tool, args, isError) => gate.observePost(tool, args, isError),
@@ -62,6 +63,20 @@ describe("circuit pre_tool_call", () => {
     expect(third.action).toBe("block");
     if (third.action === "block") {
       expect(third.error).toContain("Circuit breaker:");
+    }
+    await registry.runPostTurn({ session: sess, turn: 1 });
+    expect((await registry.runPreToolCall({ toolName: "shell", args, session: sess })).action).toBe("continue");
+  });
+
+  it("advises in the failing result without blocking the next distinct edit", async () => {
+    const registry = createBuiltinHookRegistry("/proj", { validate: { pathExists: () => true } });
+    const session = sessionWithGate("/proj");
+    for (let i = 0; i < 3; i++) {
+      const args = { path: "a.ts", oldText: String(i), newText: "x" };
+      expect((await registry.runPreToolCall({ toolName: "edit_file", args, session })).action).toBe("continue");
+      const post = await registry.runPostToolCall({ toolName: "edit_file", args, session, isError: true, result: { ok: false, error: "not found" } });
+      expect(JSON.stringify(post.result).includes("Two or more failed attempts")).toBe(i >= 1);
+      expect(post.isError).toBe(true);
     }
   });
 

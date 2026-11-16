@@ -5,6 +5,7 @@
  */
 
 import type { RiskClass, RiskConfirmResult } from "../risk/classes.js";
+import type { LoopGate } from "../circuit/loop-gate.js";
 
 export interface HookLogger {
   child(domain: string): {
@@ -15,6 +16,7 @@ export interface HookLogger {
 /** Minimal session surface consumed by hook handlers. Avoids importing Session. */
 export interface HookSessionLike {
   cwd: string;
+  loopGate?: LoopGate;
   isPlanMode(): boolean;
   /** Runtime logger; typed loosely so Session is assignable without circular imports. */
   getLogger?(): unknown;
