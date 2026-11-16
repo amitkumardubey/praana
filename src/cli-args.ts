@@ -20,6 +20,8 @@ export interface CliArgs {
   versionMode: boolean;
   doctorMode: boolean;
   upgradeMode: boolean;
+  /** `praana memory ...`: the removed legacy memory CLI. */
+  memoryCommandMode: boolean;
   homeDir: string | undefined;
 }
 
@@ -42,6 +44,7 @@ export function parseCliArgs(args: string[]): CliArgs {
   let versionMode = false;
   let doctorMode = false;
   let upgradeMode = false;
+  let memoryCommandMode = false;
   let homeDir: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
@@ -98,6 +101,10 @@ export function parseCliArgs(args: string[]): CliArgs {
     if (args[i] === "upgrade" || args[i] === "update") {
       upgradeMode = true;
       continue;
+    }
+    if (args[i] === "memory") {
+      memoryCommandMode = true;
+      break;
     }
     if (args[i] === "providers") {
       providersMode = true;
@@ -175,6 +182,7 @@ export function parseCliArgs(args: string[]): CliArgs {
     versionMode,
     doctorMode,
     upgradeMode,
+    memoryCommandMode,
     homeDir,
   };
 }

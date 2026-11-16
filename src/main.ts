@@ -14,7 +14,7 @@ import { runInteractiveSetup } from "./interactive-setup.js";
 import { tryAutoSelectProvider } from "./setup/logic.js";
 import { writeProviderConfig } from "./setup/config-writer.js";
 import { ensureCredentialsFileMode } from "./credentials.js";
-import { isFirstRun, markInitialized, APP_NAME } from "./app-identity.js";
+import { isFirstRun, markInitialized, APP_NAME, CLI_NAME } from "./app-identity.js";
 import { formatProviderListForDisplay } from "./provider-registry.js";
 import { handleDoctor } from "./doctor.js";
 import { isInteractiveTerminal } from "./terminal.js";
@@ -41,6 +41,13 @@ export async function main() {
   if (parsed.versionMode) {
     console.log(`${APP_NAME} ${APP_VERSION}`);
     process.exit(0);
+  }
+
+  if (parsed.memoryCommandMode) {
+    console.error(
+      `${CLI_NAME} memory was removed. Memories are plain files under ~/.praana/memory and ~/.praana/projects/<key>/memory; use /memory inside a session.`,
+    );
+    process.exit(2);
   }
 
   if (parsed.providersMode) {
