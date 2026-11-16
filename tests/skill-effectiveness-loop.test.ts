@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { SkillRuntime, buildSkillMetadataCatalog } from "../src/skills/index.js";
 import { SkillStatsStore } from "../src/skills/skill-stats-store.js";
+import { isSessionGood } from "../src/session-outcome.js";
 import { openDatabase } from "../src/sqlite.js";
 import { ensureSkillStatsTable, getSkillUsefulness } from "../src/memory/db.js";
 import type { SkillsRuntimeConfig, SkillRecord } from "../src/skills/types.js";
@@ -134,8 +135,8 @@ describe("SkillStatsStore flush", () => {
     return join(tmpBase, "memory.db");
   }
 
-  it("session 1: used∧good=false (raw reason 'clean') → neutral (no change)", () => {
-    // isSessionGood returns false for reason='clean', so all effects are neutral or decay.
+  it("session 1: used∧good=false → neutral (no change)", () => {
+    // Raw good=false (e.g. aborted/error end) → all effects are neutral or decay.
     const dbPath = makeDbPath();
     // Pre-create the db + table
     const db = openDatabase(dbPath);
@@ -211,6 +212,99 @@ describe("SkillStatsStore flush", () => {
     const store = new SkillStatsStore(dbPath, "context:test");
     // Should not throw even if db doesn't exist yet
     expect(() => store.flush("sess-x", false, [], [])).not.toThrow();
+  });
+
+  it("session ending with reason 'clean' and ok tool results is recorded as good", () => {
+    // Drive the real flush path the way Session.end does: derive `good` from the
+    // actual end reason + events via isSessionGood, then flush to skill_stats.
+    const dbPath = makeDbPath();
+    const db = openDatabase(dbPath);
+    ensureSkillStatsTable(db);
+    db.close();
+
+    const endEvents = [{ type: "tool_result", result: { ok: true } }];
+    const good = isSessionGood("clean", endEvents);
+    expect(good).toBe(true);
+
+    const store = new SkillStatsStore(dbPath, "context:test");
+    store.flush("sess-clean", good, [
+      { skillId: "C", scope: "context:test", loaded: true, used: true },
+    ], []);
+
+    const db2 = openDatabase(dbPath, { readonly: true, create: false });
+    ensureSkillStatsTable(db2);
+    const map = getSkillUsefulness(db2, "context:test");
+    db2.close();
+
+    // used∧good → boost → 0.5 + (1 − 0.5) * 0.15 = 0.575
+    expect(map.get("C")).toBeCloseTo(0.575, 3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isSessionGood — session-outcome classification
+// ---------------------------------------------------------------------------
+
+describe("isSessionGood", () => {
+  const okTool: { type: string; result?: unknown } = {
+    type: "tool_result",
+    result: { ok: true },
+  };
+  const failingTool: { type: string; result?: unknown } = {
+    type: "tool_result",
+    result: { ok: false },
+  };
+  const userMsg: { type: string; result?: unknown } = {
+    type: "user",
+  };
+
+  it("reason 'clean' with a tool_result result { ok: true } → true", () => {
+    expect(isSessionGood("clean", [okTool])).toBe(true);
+  });
+
+  it("reason 'clean' with no events → true", () => {
+    expect(isSessionGood("clean", undefined)).toBe(true);
+    expect(isSessionGood("clean", [])).toBe(true);
+  });
+
+  it("reason 'aborted' → false regardless of events", () => {
+    expect(isSessionGood("aborted", [okTool])).toBe(false);
+    expect(isSessionGood("aborted", undefined)).toBe(false);
+  });
+
+  it("reason 'error' → false regardless of events", () => {
+    expect(isSessionGood("error", [okTool])).toBe(false);
+    expect(isSessionGood("error", undefined)).toBe(false);
+  });
+
+  it("reason 'normal' still behaves as before", () => {
+    expect(isSessionGood("normal", [okTool])).toBe(true);
+    expect(isSessionGood("normal", undefined)).toBe(true);
+    expect(isSessionGood("normal", [failingTool])).toBe(false);
+    expect(isSessionGood("normal", [userMsg])).toBe(false);
+  });
+
+  it("reason 'clean' with a failing tool_result → false", () => {
+    expect(isSessionGood("clean", [failingTool])).toBe(false);
+  });
+
+  it("reason 'clean' with only a load_skill ok result → false", () => {
+    const loadSkillOk: { type: string; result?: unknown; tool_name?: string } = {
+      type: "tool_result",
+      tool_name: "load_skill",
+      result: { ok: true },
+    };
+    expect(isSessionGood("clean", [loadSkillOk])).toBe(false);
+    expect(isSessionGood("clean", [userMsg, loadSkillOk])).toBe(false);
+  });
+
+  it("reason 'clean' with a load_skill ok result plus another tool ok → true", () => {
+    const loadSkillOk: { type: string; result?: unknown; tool_name?: string } = {
+      type: "tool_result",
+      tool_name: "load_skill",
+      result: { ok: true },
+    };
+    expect(isSessionGood("clean", [loadSkillOk, okTool])).toBe(true);
   });
 });
 

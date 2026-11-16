@@ -432,7 +432,7 @@ export class AppController {
   }
 
 
-  async shutdown(): Promise<ShutdownStatus> {
+  async shutdown(reason: "clean" | "aborted" = "clean"): Promise<ShutdownStatus> {
     if (this.sessionEnded || !this.session) {
       return {
         memory: "noop",
@@ -447,7 +447,7 @@ export class AppController {
     const events = this.session.getTranscriptEvents();
     const memoryTimeoutMs =
       this.config.session.shutdown_memory_timeout_ms ?? 2_000;
-    return this.session.end("clean", events, { memoryTimeoutMs });
+    return this.session.end(reason, events, { memoryTimeoutMs });
   }
 }
 

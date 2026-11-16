@@ -277,7 +277,7 @@ export async function main() {
 
     console.error(`\nReceived ${signal}, saving session…`);
     try {
-      const status = await controller.shutdown();
+      const status = await controller.shutdown("aborted");
       if (
         status.turns > 0 ||
         status.stateObjects > 0 ||
