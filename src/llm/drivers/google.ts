@@ -61,8 +61,7 @@ export class GoogleDriver implements LlmDriver {
       } catch (err) {
         yield {
           type: "error",
-          error: err instanceof Error ? err : new Error(String(err)),
-          status: 401,
+          error: err instanceof Error ? err : new Error("Vertex AI credential resolution failed"),
           retryable: false,
         };
         return;

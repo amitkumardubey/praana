@@ -104,7 +104,7 @@ export interface ResolvedAuth {
   isKeyless?: boolean;
   /** Ambient AWS chain (profile / IRSA / container) — resolve at request time. */
   awsAmbient?: boolean;
-  /** Vertex ADC via GOOGLE_APPLICATION_CREDENTIALS — mint at request time. */
+  /** Vertex ADC via an explicit, stored or well-known file — cached in memory. */
   googleAdc?: boolean;
 }
 

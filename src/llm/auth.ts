@@ -2,7 +2,8 @@
 // PRAANA — Unified Auth & Credential Resolution
 // ============================================================
 
-import { resolveApiKey, hasApiKey, getOAuthToken } from "../credentials.js";
+import { resolveApiKey, resolveAuth, hasApiKey, getOAuthToken } from "../credentials.js";
+import { looksLikeGoogleCredentialPath, vertexCredentialFile } from "./vertex-credentials.js";
 import type { ResolvedAuth } from "./types.js";
 import { getProviderEnvKeys, getUserProviderEnvKey } from "../provider-registry.js";
 import {
@@ -52,13 +53,12 @@ export function resolveProviderAuth(provider: string, customEnvKey?: string | nu
   if (provider === "vertex") {
     const token = process.env.GCP_ACCESS_TOKEN?.trim();
     if (token) return { bearerToken: token };
-    if (hasApiKey("vertex")) {
-      const key = resolveApiKey("vertex");
-      if (key && !looksLikeFilePath(key)) return { bearerToken: key };
+    if (process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()) return { googleAdc: true };
+    const key = resolveAuth("vertex")?.apiKey.trim();
+    if (key) {
+      return looksLikeGoogleCredentialPath(key) ? { googleAdc: true, apiKey: key } : { bearerToken: key };
     }
-    if (process.env.GOOGLE_APPLICATION_CREDENTIALS?.trim()) {
-      return { googleAdc: true };
-    }
+    if (vertexCredentialFile()) return { googleAdc: true };
     return null;
   }
 
@@ -82,9 +82,6 @@ export function resolveProviderAuth(provider: string, customEnvKey?: string | nu
     const value = process.env[name]?.trim();
     if (!value) continue;
     if (provider === "github-copilot" || provider === "openai-codex") {
-      return { bearerToken: value };
-    }
-    if (provider === "vertex") {
       return { bearerToken: value };
     }
     return { apiKey: value };
@@ -112,8 +109,4 @@ function collectEnvKeys(provider: string, customEnvKey?: string | null): string[
     for (const alias of mapping.aliases ?? []) add(alias);
   }
   return [...new Set(keys)];
-}
-
-function looksLikeFilePath(value: string): boolean {
-  return value.endsWith(".json") || value.includes("/") || value.includes("\\");
 }
