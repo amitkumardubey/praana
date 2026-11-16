@@ -51,8 +51,10 @@ export function eventsToSessionEvents(events: Event[]): SessionEvent[] {
   return out;
 }
 
-/** The retired memory-backed compactor must neither write memories nor hide history.
- * Session-local compaction has its own path; retain this compatibility result API. */
+/** Classic-mode compaction is retired until the compiler cutover: this stub never
+ * compacts, writes no memories, and hides no history. `compiler.auto_compact_at`
+ * and `compiler.compact_chunk_fraction` have no effect in classic mode. Retain
+ * this compatibility result API. */
 export async function maybeAutoCompactClassic(
   session: Session,
   promptTokens: number,

@@ -237,11 +237,14 @@ function configuredIdleTimeoutMs(value: number | undefined): number {
 export async function runLlmStream(input: LlmStreamInput): Promise<LlmStreamResult> {
   const canonicalMessages: ConversationMessage[] = (input.history || []).map((m: any) => {
     if (m.role === "toolResult" || m.role === "tool_result") {
-      const text = Array.isArray(m.content)
-        ? m.content.map((c: any) => c.text || "").join("")
-        : typeof m.content === "string"
-          ? m.content
-          : JSON.stringify(m.content);
+      let text: string;
+      if (Array.isArray(m.content)) {
+        text = m.content.map((c: any) => c.text || "").join("");
+      } else if (typeof m.content === "string") {
+        text = m.content;
+      } else {
+        text = JSON.stringify(m.content);
+      }
       return {
         role: "tool_result" as const,
         toolCallId: m.toolCallId || "",
@@ -1127,8 +1130,6 @@ export async function runTurn(
   let hadNonLoadSkillTool = false;
   const nudgeStart = snapshotScorecardNudge(session);
   let noOpToolsThisTurn = 0;
-  // Tracks memory entries already reinforced this turn so a recalled entry is
-  // boosted at most once even if it appears in multiple parallel batches.
 
   // Active model/provider may switch to fallback config if the primary fails.
   // Fallback is applied only to the initial stream attempt (step 0). Subsequent
