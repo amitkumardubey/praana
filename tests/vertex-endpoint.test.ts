@@ -9,8 +9,8 @@ const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; });
 
 const cases = [
-  ...["Global", "us/central1", "us-central1.evil.example", "us_central1", "us central1", "global?x=1", "%67lobal", " global-test"].map((value) => ["location", value]),
-  ...[".", "..", "%2e%2e", "%2E%2E", "a/b", "a\\b", "a?b", "a#b", "a b", "a%20b", "a "].map((value) => ["project", value]),
+  ...["Global", "us/central1", "us-central1.evil.example", "us_central1", "us central1", "global?x=1", "%67lobal", "global test"].map((value) => ["location", value]),
+  ...[".", "..", "%2e%2e", "%2E%2E", "a/b", "a\\b", "a?b", "a#b", "a b", "a%20b"].map((value) => ["project", value]),
   ...["projects/p/locations/l/endpoints/1", "publishers/google/models/gemini-x", "models/gemini-x", "gemini-x?alt=json", "gemini-x:generateContent", "gemini-x#frag", "%2e%2e", "..", ".", "gemini x", "", "123456"].map((value) => ["model", value]),
 ];
 

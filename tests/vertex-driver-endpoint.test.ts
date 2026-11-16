@@ -65,6 +65,19 @@ test("project env precedence is VERTEX_PROJECT_ID > GOOGLE_CLOUD_PROJECT > GCP_P
   expect((await run()).calls[0].url).toContain("/projects/fake-vertex/");
 });
 
+test.each(["VERTEX_REGION", "GOOGLE_CLOUD_LOCATION"])("trims padded %s", async (key) => {
+  process.env.VERTEX_PROJECT_ID = "fake-project";
+  process.env[key] = "  global\n";
+  const { calls } = await run();
+  expect(calls[0]?.url).toContain("/locations/global/");
+});
+
+test.each(["VERTEX_PROJECT_ID", "GOOGLE_CLOUD_PROJECT", "GCP_PROJECT"])("trims padded %s", async (key) => {
+  process.env[key] = "  fake-project\n";
+  const { calls } = await run();
+  expect(calls[0]?.url).toContain("/projects/fake-project/");
+});
+
 test("missing project refuses before auth or fetch and never claims an HTTP 401", async () => {
   const { events, calls } = await run("vertex", {});
   expect(refusal(events)).toBe("Vertex AI project is not set: set VERTEX_PROJECT_ID or GOOGLE_CLOUD_PROJECT");

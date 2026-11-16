@@ -35,8 +35,8 @@ function firstEnv(
   keys: readonly string[],
 ): { key: string; value: string } | undefined {
   for (const key of keys) {
-    const value = env[key];
-    if (value?.trim()) return { key, value };
+    const value = env[key]?.trim();
+    if (value) return { key, value };
   }
   return undefined;
 }
