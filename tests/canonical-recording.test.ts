@@ -342,3 +342,230 @@ test("a pre-tool-call block without a secret keeps the same result text", async 
   expect(expected).not.toContain("[REDACTED:");
   expect(expected).toBe('{"ok":false,"error":"Path does not exist: src/maiin.ts (/workspace/praana/src/maiin.ts)","suggestions":["/workspace/praana/src/main.ts"]}');
 });
+
+// ---- Canonical ids are normalized per session; provider ids stay untouched ----
+
+const callMsg = (ids: string[], name: string | string[] = "echo"): AssistantMessage => ({
+  role: "assistant", content: "",
+  toolCalls: ids.map((id, i) => ({ id, name: typeof name === "string" ? name : name[i]!, args: {} })),
+});
+function ids(recs: canonical.CanonicalRecord[]) {
+  return {
+    calls: recs.flatMap((r) => r.kind === "assistant" ? (r.message.toolCalls ?? []).map((c) => c.id) : []),
+    results: recs.flatMap((r) => r.kind === "tool_result" ? [r.message.callId] : []),
+  };
+}
+function validates(recs: canonical.CanonicalRecord[]) {
+  const validator = new canonical.CanonicalValidator();
+  for (const r of recs) validator.accept(r);
+  expect(validator.repairs()).toEqual([]);
+}
+
+test("an empty provider call id is recorded under a non-empty unique canonical id", async () => {
+  const { session, records } = setup();
+  const errors: unknown[] = [];
+  const w = writer(session.eventLog, errors);
+  const turnId = await w.startTurn("go");
+  await w.assistant(turnId, callMsg([""]));
+  await w.result(turnId, "", "echo", "ok", false);
+  expect(errors).toEqual([]);
+  const got = ids(records());
+  expect(got.calls).toHaveLength(1);
+  expect(got.calls[0]).not.toBe("");
+  expect(got.results).toEqual(got.calls);
+  validates(records());
+  expect(canonical.emitCanonicalTranscript(records())).toHaveLength(3);
+});
+
+test("a call id reused across steps and turns is recorded with unique canonical ids", async () => {
+  const { session, records } = setup();
+  const errors: unknown[] = [];
+  const w = writer(session.eventLog, errors);
+  for (const text of ["one", "two"]) {
+    const turnId = await w.startTurn(text);
+    for (let step = 0; step < 2; step++) {
+      await w.assistant(turnId, callMsg(["call_0"]));
+      await w.result(turnId, "call_0", "echo", "ok", false);
+    }
+  }
+  expect(errors).toEqual([]);
+  const got = ids(records());
+  expect(got.calls).toHaveLength(4);
+  expect(got.calls[0]).toBe("call_0");
+  expect(new Set(got.calls).size).toBe(4);
+  expect(got.results).toEqual(got.calls);
+  validates(records());
+});
+
+test("parallel calls sharing an empty id each receive one result, in order", async () => {
+  const { session, records } = setup();
+  const errors: unknown[] = [];
+  const w = writer(session.eventLog, errors);
+  const turnId = await w.startTurn("go");
+  await w.assistant(turnId, { ...callMsg(["", ""]), blocks: [{ type: "tool_use", id: "" }, { type: "tool_use", id: "" }] });
+  await w.result(turnId, "", "echo", "first", false);
+  await w.result(turnId, "", "echo", "second", false);
+  expect(errors).toEqual([]);
+  const recs = records();
+  const got = ids(recs);
+  expect(got.calls).toHaveLength(2);
+  expect(new Set(got.calls).size).toBe(2);
+  expect(got.results).toEqual(got.calls);
+  expect(recs.filter((r) => r.kind === "tool_result").map((r) => (r.message as { text: string }).text)).toEqual(["first", "second"]);
+  const assistant = recs[1] as canonical.CanonicalAssistantRecord;
+  expect(assistant.message.blocks?.map((b) => b.type === "tool_use" ? b.id : "")).toEqual(got.calls);
+  validates(recs);
+});
+
+test("unique provider ids are written unchanged", async () => {
+  const { session, records } = setup();
+  const errors: unknown[] = [];
+  const w = writer(session.eventLog, errors);
+  const turnId = await w.startTurn("go");
+  await w.assistant(turnId, { ...callMsg(["a", "b"]), blocks: [{ type: "tool_use", id: "a" }, { type: "tool_use", id: "b" }] });
+  await w.result(turnId, "b", "echo", "B", false);
+  await w.result(turnId, "a", "echo", "A", false);
+  expect(errors).toEqual([]);
+  expect(ids(records())).toEqual({ calls: ["a", "b"], results: ["b", "a"] });
+});
+
+test("a result with no matching pending call keeps its id and the validator rejects it", async () => {
+  const { session } = setup();
+  const errors: unknown[] = [];
+  const w = writer(session.eventLog, errors);
+  const turnId = await w.startTurn("go");
+  await w.assistant(turnId, callMsg(["a"]));
+  await w.result(turnId, "zzz", "echo", "x", false);
+  expect(errors).toHaveLength(1);
+});
+
+test("a fresh writer on a log that already used call_0 still records a new call_0", async () => {
+  const { session, records } = setup();
+  const first = writer(session.eventLog);
+  const t1 = await first.startTurn("one");
+  await first.assistant(t1, callMsg(["call_0"]));
+  await first.result(t1, "call_0", "echo", "ok", false);
+  const errors: unknown[] = [];
+  const second = writer(session.eventLog, errors);
+  const t2 = await second.startTurn("two");
+  await second.assistant(t2, callMsg(["call_0", ""]));
+  await second.result(t2, "call_0", "echo", "ok", false);
+  await second.result(t2, "", "echo", "ok", false);
+  expect(errors).toEqual([]);
+  const got = ids(records());
+  expect(got.calls).toHaveLength(3);
+  expect(new Set(got.calls).size).toBe(3);
+  expect(got.results.slice(1)).toEqual(got.calls.slice(1));
+  validates(records());
+});
+
+test("a synthesized id never collides with a real provider id in the same batch or session", async () => {
+  const { session, records } = setup();
+  const errors: unknown[] = [];
+  const w = writer(session.eventLog, errors);
+  const turnId = await w.startTurn("go");
+  await w.assistant(turnId, callMsg(["", "canon_1_1", "canon_1_1", ""]));
+  for (const id of ["", "canon_1_1", "canon_1_1", ""]) await w.result(turnId, id, "echo", "ok", false);
+  expect(errors).toEqual([]);
+  const got = ids(records());
+  expect(new Set(got.calls).size).toBe(4);
+  expect(got.results).toEqual(got.calls);
+  validates(records());
+});
+
+test("randomized mixes of empty, reused and unique ids are always recorded", async () => {
+  let seed = 0x2f6e2b1;
+  const rand = () => {
+    seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0;
+    return seed / 2 ** 32;
+  };
+  for (let round = 0; round < 25; round++) {
+    const { session, records } = setup();
+    const errors: unknown[] = [];
+    let w = writer(session.eventLog, errors);
+    let expectedCalls = 0;
+    for (let t = 0; t < 3; t++) {
+      if (rand() < 0.3) w = writer(session.eventLog, errors); // simulated resume
+      const turnId = await w.startTurn(`t${t}`);
+      for (let step = 0; step < 1 + Math.floor(rand() * 3); step++) {
+        const pool = ["", "call_0", "call_1", `u${round}_${t}_${step}`];
+        const batchIds = Array.from({ length: 1 + Math.floor(rand() * 3) }, () => pool[Math.floor(rand() * pool.length)]!);
+        await w.assistant(turnId, callMsg(batchIds));
+        expectedCalls += batchIds.length;
+        for (const id of batchIds) await w.result(turnId, id, "echo", "ok", false);
+      }
+    }
+    expect(errors).toEqual([]);
+    const recs = records();
+    const got = ids(recs);
+    expect(got.calls).toHaveLength(expectedCalls);
+    expect(new Set(got.calls).size).toBe(expectedCalls);
+    expect(got.results).toEqual(got.calls);
+    validates(recs);
+  }
+});
+
+test("runTurn records empty and reused provider ids while requests keep the original ids", async () => {
+  const { session, records } = setup();
+  const execute = mock(async () => ({ ok: true }));
+  spyOn(toolRegistry, "createAllTools").mockReturnValue({ echo: { execute } } as any);
+  const requests: ConversationMessage[][] = [];
+  // Per turn: call_0, call_0 again, an empty id, then a final text step.
+  const script: (string[] | undefined)[] = [["call_0"], ["call_0"], [""], undefined];
+  let n = 0;
+  spyOn(nativeLlm, "streamLlmResponse").mockImplementation((req) => {
+    requests.push(structuredClone(req.messages));
+    const batchIds = script[n++ % script.length];
+    return batchIds
+      ? stream(callMsg(batchIds), "toolUse")
+      : stream({ role: "assistant", content: "done" });
+  });
+  await runTurn(session, "first", undefined, { sink: {} });
+  await runTurn(session, "second", undefined, { sink: {} });
+  const recs = records();
+  validates(recs);
+  const got = ids(recs);
+  expect(got.calls).toHaveLength(6);
+  expect(new Set(got.calls).size).toBe(got.calls.length);
+  expect(got.calls.every((id) => id !== "")).toBe(true);
+  expect(got.results).toEqual(got.calls);
+  const sentIds = requests.flatMap((m) => m.flatMap((msg) => msg.role === "tool_result" ? [msg.toolCallId] : []));
+  expect(sentIds).toContain("call_0");
+  expect(sentIds).toContain("");
+});
+
+test.each(["", "call_0"])("duplicate provider id %j pairs results with calls by tool name", async (dup) => {
+  const { session, records } = setup();
+  const errors: unknown[] = [];
+  const w = writer(session.eventLog, errors);
+  const turnId = await w.startTurn("go");
+  await w.assistant(turnId, callMsg([dup, dup], ["read_file", "shell"]));
+  await w.result(turnId, dup, "shell", "S", false);
+  await w.result(turnId, dup, "read_file", "R", false);
+  expect(errors).toEqual([]);
+  const recs = records();
+  validates(recs);
+  const [call] = recs.filter((r): r is canonical.CanonicalAssistantRecord => r.kind === "assistant");
+  const byName = Object.fromEntries((call.message.toolCalls ?? []).map((c) => [c.name, c.id]));
+  expect(new Set(Object.values(byName)).size).toBe(2);
+  const results = recs.filter((r): r is canonical.CanonicalToolResultRecord => r.kind === "tool_result");
+  expect(results.map((r) => [r.message.toolName, r.message.callId, r.message.text])).toEqual([
+    ["shell", byName.shell, "S"], ["read_file", byName.read_file, "R"],
+  ]);
+});
+
+test("same-tool duplicate provider ids still pair in call order", async () => {
+  const { session, records } = setup();
+  const errors: unknown[] = [];
+  const w = writer(session.eventLog, errors);
+  const turnId = await w.startTurn("go");
+  await w.assistant(turnId, callMsg(["", "", "x"], ["shell", "shell", "read_file"]));
+  await w.result(turnId, "", "shell", "1", false);
+  await w.result(turnId, "x", "read_file", "x", false);
+  await w.result(turnId, "", "shell", "2", false);
+  expect(errors).toEqual([]);
+  const recs = records();
+  validates(recs);
+  const got = ids(recs);
+  expect(got.results).toEqual([got.calls[0], got.calls[2], got.calls[1]]);
+});

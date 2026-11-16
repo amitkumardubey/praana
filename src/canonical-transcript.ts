@@ -272,6 +272,11 @@ export class CanonicalValidator {
     this.index++;
   }
 
+  /** True when an assistant record already used this call id (resolved or not). */
+  hasCallId(id: string): boolean {
+    return this.calls.has(id);
+  }
+
   nextTurnId(): number {
     if (this.turnId === Number.MAX_SAFE_INTEGER) fail("invalid_turn", this.index, "turn id sequence exhausted");
     return (this.turnId ?? 0) + 1;
@@ -341,6 +346,12 @@ export async function repairCanonicalTranscript(
 export class CanonicalWriter {
   private validator: CanonicalValidator | undefined;
   private failed = false;
+  /**
+   * Provider call id -> canonical ids of the current batch still awaiting a result, in call
+   * order. Provider ids may be empty or reused across steps/turns, so canonical ids are
+   * normalized here and the live turn keeps using the provider's own ids.
+   */
+  private pendingIds = new Map<string, { id: string; name: string }[]>();
 
   constructor(
     private readonly log: Pick<EventLog, "readAll" | "append">,
@@ -384,34 +395,83 @@ export class CanonicalWriter {
     return record?.turnId ?? null;
   }
 
+  /**
+   * Canonical id for each call of a batch: the provider id when it is non-empty and unused in
+   * this session's canonical log or earlier in the batch, otherwise a synthesized unique id.
+   */
+  private assignCallIds(turnId: number, providerIds: readonly string[]): string[] {
+    const reserved = new Set<string>();
+    const taken = (id: string): boolean => reserved.has(id) || this.validator!.hasCallId(id);
+    let counter = 0;
+    return providerIds.map((providerId) => {
+      let id = providerId;
+      while (id === "" || taken(id)) id = `canon_${turnId}_${++counter}`;
+      reserved.add(id);
+      return id;
+    });
+  }
+
   async assistant(turnId: number | null, message: AssistantMessage): Promise<void> {
     if (turnId === null) return;
-    await this.write("assistant", () => ({
-      formatVersion: CANONICAL_TRANSCRIPT_VERSION, kind: "assistant", turnId,
-      message: {
-        text: typeof message.content === "string" ? message.content :
-          (message.content as Array<{ type: string; text?: string }>).filter((part) => part.type === "text").map((part) => part.text ?? "").join(""),
-        ...(message.thinking !== undefined ? { thinking: message.thinking } : {}),
-        ...(message.thinkingSignature !== undefined ? { thinkingSignature: message.thinkingSignature } : {}),
-        ...(message.blocks !== undefined ? { blocks: structuredClone(message.blocks) } : {}),
-        ...(message.toolCalls !== undefined ? { toolCalls: message.toolCalls.map((call) => {
-          const args = redactSecrets(call.args) as JsonObject;
-          // Never retain raw input: duplicate JSON keys can conceal secrets.
-          return {
-            id: call.id, name: call.name, args, rawArgs: JSON.stringify(args),
-            // Opaque provider metadata must not pass through secret redaction.
-            ...(call.thoughtSignature === undefined ? {} : { thoughtSignature: call.thoughtSignature }),
-          };
-        }) } : {}),
-      },
-    }));
+    await this.write("assistant", () => {
+      const calls = message.toolCalls;
+      this.pendingIds = new Map();
+      const canonicalIds = calls ? this.assignCallIds(turnId, calls.map((call) => call.id)) : [];
+      (calls ?? []).forEach((call, i) => {
+        const queue = this.pendingIds.get(call.id);
+        const entry = { id: canonicalIds[i]!, name: call.name };
+        if (queue) queue.push(entry);
+        else this.pendingIds.set(call.id, [entry]);
+      });
+      // Ordered blocks reference calls by provider id; the n-th block for an id takes the n-th canonical id.
+      const blockCursor = new Map<string, number>();
+      const blocks = message.blocks === undefined ? undefined : structuredClone(message.blocks).map((block) => {
+        if (block.type !== "tool_use") return block;
+        const n = blockCursor.get(block.id) ?? 0;
+        blockCursor.set(block.id, n + 1);
+        const mapped = this.pendingIds.get(block.id)?.[n];
+        return mapped === undefined ? block : { ...block, id: mapped.id };
+      });
+      return {
+        formatVersion: CANONICAL_TRANSCRIPT_VERSION, kind: "assistant", turnId,
+        message: {
+          text: typeof message.content === "string" ? message.content :
+            (message.content as Array<{ type: string; text?: string }>).filter((part) => part.type === "text").map((part) => part.text ?? "").join(""),
+          ...(message.thinking !== undefined ? { thinking: message.thinking } : {}),
+          ...(message.thinkingSignature !== undefined ? { thinkingSignature: message.thinkingSignature } : {}),
+          ...(blocks !== undefined ? { blocks } : {}),
+          ...(calls !== undefined ? { toolCalls: calls.map((call, i) => {
+            const args = redactSecrets(call.args) as JsonObject;
+            // Never retain raw input: duplicate JSON keys can conceal secrets.
+            return {
+              id: canonicalIds[i]!, name: call.name, args, rawArgs: JSON.stringify(args),
+              // Opaque provider metadata must not pass through secret redaction.
+              ...(call.thoughtSignature === undefined ? {} : { thoughtSignature: call.thoughtSignature }),
+            };
+          }) } : {}),
+        },
+      };
+    });
+  }
+
+  /**
+   * The oldest unmatched canonical id of this batch for a provider id whose call has this tool
+   * name; failing that, the oldest for the provider id; failing that, the id as given.
+   */
+  private takeCallId(providerId: string, toolName: string): string {
+    const queue = this.pendingIds.get(providerId);
+    if (!queue?.length) return providerId;
+    const found = queue.findIndex((entry) => entry.name === toolName);
+    const [entry] = queue.splice(found === -1 ? 0 : found, 1);
+    if (queue.length === 0) this.pendingIds.delete(providerId);
+    return entry!.id;
   }
 
   async result(turnId: number | null, callId: string, toolName: string, text: string, isError: boolean): Promise<void> {
     if (turnId === null) return;
     await this.write("tool_result", () => ({
       formatVersion: CANONICAL_TRANSCRIPT_VERSION, kind: "tool_result", turnId,
-      message: { callId, toolName, text: redactSecrets(text) as string, isError },
+      message: { callId: this.takeCallId(callId, toolName), toolName, text: redactSecrets(text) as string, isError },
     }));
   }
 
