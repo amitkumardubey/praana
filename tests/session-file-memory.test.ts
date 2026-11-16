@@ -62,7 +62,8 @@ it("owns a file store under the parent of .praana, including in incognito", asyn
   expect(result.ok).toBe(true);
 });
 
-it("records no memory signal averages in the scorecard at start/resume/end", async () => {
+it("counts recall calls in the scorecard and writes no memory signal columns", async () => {
+  config.context_engine.enabled = true;
   const model = scriptedMemoryModel(config, [
     [{ name: "remember", args: { scope: "global", name: "runtime-observation", type: "user", description: "Keep boundaries clear", body: "Prefer explicit interfaces." } }],
     [{ name: "recall", args: { query: "boundaries" } }],
@@ -71,14 +72,16 @@ it("records no memory signal averages in the scorecard at start/resume/end", asy
   const session = await start();
   await runTurn(session, "Save and recall this preference", undefined, { sink: {} });
   expect((await maybeAutoCompactClassic(session, 128000, "scripted")).compacted).toBe(false);
+  expect(session.scorecard.getCounters().recallCalls).toBe(1);
   await session.end("clean");
   const db = openContextEngineDb(session.getMemoryDbPath()!);
-  db.query("UPDATE scorecard SET validity_avg_start = 0.9, validity_avg_end = 0.8, usefulness_avg_start = 0.7, usefulness_avg_end = 0.6 WHERE session_id = ?").run(session.id);
+  const row = db.query("SELECT recall_calls, recall_used_count, validity_avg_start, usefulness_avg_end FROM scorecard WHERE session_id = ?").get(session.id) as Record<string, number>;
   db.close();
+  expect(row).toEqual({ recall_calls: 1, recall_used_count: 1, validity_avg_start: 0, usefulness_avg_end: 0 });
   const resumed = await Session.resume(session.id, home, config);
   sessions.push(resumed);
+  expect(resumed.scorecard.getCounters().recallCalls).toBe(1);
   await resumed.end("clean");
-  expect(resumed.scorecard.getMemorySnapshot()).toEqual({ validityAvgStart: 0, validityAvgEnd: 0, usefulnessAvgStart: 0, usefulnessAvgEnd: 0 });
 });
 
 it.each([false, true])("injects the seeded startup index through the real %s engine turn", async (engine) => {
@@ -242,14 +245,6 @@ it("keeps the configured embedder active in real incognito engine scoring", asyn
   restore.push(() => embed.mockRestore());
   for (let turn = 0; turn < 5; turn++) await runTurn(session, `Inspect module boundaries ${turn}`, undefined, { sink: {} });
   expect(embed).toHaveBeenCalled();
-});
-
-it("leaves the scorecard memory snapshot at zero in an enabled session", async () => {
-  const session = await start();
-  await session.scorecard.recordMemoryStart(session.getMemoryDbPath()!);
-  session.scorecard.persistProgress();
-  await session.end("clean");
-  expect(session.scorecard.getMemorySnapshot()).toEqual({ validityAvgStart: 0, validityAvgEnd: 0, usefulnessAvgStart: 0, usefulnessAvgEnd: 0 });
 });
 
 it("continues with a visible warning when both file memory scopes fail", async () => {

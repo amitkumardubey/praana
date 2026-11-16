@@ -173,3 +173,18 @@ test("each execute validates before delegation, preserves store errors and never
     refused(await throwing.forget_memory.execute({ name: "coffee" }));
   }
 });
+
+test("onRecall fires once per well-formed recall and never for remember or forget", async () => {
+  const calls: number[] = [];
+  const store = {
+    write: async () => ({ ok: true }),
+    recall: async () => ({ ok: true, matches: [] }),
+    remove: async () => ({ ok: true }),
+  } as never;
+  const tools = createFileMemoryTools(store, { onRecall: () => calls.push(1) });
+  await tools.recall.execute({ query: "coffee" });
+  await tools.recall.execute({ name: "some-name" });
+  await tools.recall.execute({ query: "x", name: "y" }); // refused by the schema
+  await tools.forget_memory.execute({ name: "some-name" });
+  expect(calls).toHaveLength(2);
+});

@@ -1264,7 +1264,7 @@ export class Session {
     // Flush scorecard while the context DB is still open (shares connection with ContextEngine).
     try {
       this.syncScorecardFromRuntime();
-      await this.scorecard.flush(undefined, recallUsedCount);
+      await this.scorecard.flush(recallUsedCount);
     } catch (err) {
       this.getLogger().child("context_engine").warn("Scorecard flush failed", {
         cause: err as Error,
@@ -1349,8 +1349,6 @@ export class Session {
 function initContextEngine(session: Session): void {
   const engineConfig = resolveContextEngineConfig(session.config);
   const measurementMode = engineConfig.measurement_mode;
-  const scorecardOptions = {};
-
   if (!session.isContextEngineEnabled()) {
     // Measurement mode: open a minimal context DB just for the scorecard
     if (measurementMode) {
@@ -1358,7 +1356,7 @@ function initContextEngine(session: Session): void {
         const dbPath = resolveContextDbPath(session.config, session.cwd);
         mkdirSync(dirname(dbPath), { recursive: true });
         const db = openContextEngineDb(dbPath);
-        session.scorecard = new ScorecardTracker(db, session.id, false, scorecardOptions);
+        session.scorecard = new ScorecardTracker(db, session.id, false);
         session.scorecard.restoreFromDb();
         session.getLogger().child("context_engine").notice("measurement mode enabled (scorecard only)");
       } catch (err) {
@@ -1378,7 +1376,6 @@ function initContextEngine(session: Session): void {
       dbPath,
       session.id,
       engineConfig,
-      scorecardOptions,
       findLastResetBoundaryTurn(session.eventLog.readAll()),
     );
     session.scorecard = session.contextEngine.scorecard;

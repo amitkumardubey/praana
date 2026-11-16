@@ -157,7 +157,7 @@ export function createAllTools(ctx: ToolRegistryContext) {
   return {
     ...memoryTools,
     ...knowledgeTools,
-    ...(ctx.memoryEnabled && ctx.fileMemory ? createFileMemoryTools(ctx.fileMemory) : {}),
+    ...(ctx.memoryEnabled && ctx.fileMemory ? createFileMemoryTools(ctx.fileMemory, { onRecall: () => ctx.scorecard?.inc("recallCalls") }) : {}),
     ...searchTranscriptTools,
     ...systemTools,
     ...searchCodeTools,
