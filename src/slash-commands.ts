@@ -872,13 +872,17 @@ export async function executeSlashCommand(
       }
       if (arg === "on") {
         await session.setIncognito(true);
-        lines.push("Incognito enabled — Cognitive Memory disabled.");
+        lines.push(
+          session.memoryEnabled && session.fileMemory
+            ? "Incognito enabled — memory writes are blocked; memories stay readable."
+            : "Incognito enabled — memory writes are blocked.",
+        );
       } else if (arg === "off") {
         await session.setIncognito(false);
         lines.push(
-          session.memoryEnabled
-            ? "Incognito disabled — Cognitive Memory enabled."
-            : "Incognito disabled — memory remains unavailable (check config.memory.enabled)."
+          session.memoryEnabled && session.fileMemory
+            ? "Incognito disabled — memory writes are allowed."
+            : "Incognito disabled — memory remains unavailable (check config.memory.enabled).",
         );
       } else {
         lines.push("Usage: /incognito <on|off>");

@@ -388,3 +388,28 @@ it.each([false, true])("keeps recall guidance and drops the save policy while in
   if (engine) expect(prompt).toContain(ENGINE_RECALL);
   else expect(prompt).toContain(CLASSIC_RECALL);
 });
+
+it("describes incognito as blocked writes while a readable store exists", async () => {
+  seed();
+  const session = await start();
+  const on = await executeSlashCommand("/incognito on", session, slashHandlers);
+  expect(on.lines.join("\n")).toContain("memory writes are blocked; memories stay readable.");
+  expect(on.lines.join("\n")).not.toContain("Cognitive Memory");
+  const off = await executeSlashCommand("/incognito off", session, slashHandlers);
+  expect(off.lines.join("\n")).toContain("memory writes are allowed.");
+  expect(off.lines.join("\n")).not.toContain("Cognitive Memory");
+});
+
+it("does not claim memories are readable when incognito has no store", async () => {
+  config.memory.enabled = false;
+  const session = await start();
+  const on = await executeSlashCommand("/incognito on", session, slashHandlers);
+  const onText = on.lines.join("\n");
+  expect(onText).toContain("memory writes are blocked.");
+  expect(onText).not.toContain("readable");
+  expect(onText).not.toContain("Cognitive Memory");
+  const off = await executeSlashCommand("/incognito off", session, slashHandlers);
+  const offText = off.lines.join("\n");
+  expect(offText).toContain("memory remains unavailable");
+  expect(offText).not.toContain("Cognitive Memory");
+});
