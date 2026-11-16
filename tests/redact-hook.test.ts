@@ -24,13 +24,25 @@ describe("redact post_tool_call", () => {
     expect(patch?.isError).toBeUndefined();
   });
 
-  it("redacts secrets in a Map result", async () => {
+  it("logs only the redacted JSON projection of Buffer and Map tool results", async () => {
     const post = createRedactPostToolCallHandler();
-    const result = new Map([["key", "AKIAIOSFODNN7EXAMPLE"]]);
+    const secret = "AKIAIOSFODNN7EXAMPLE";
+    const bytes = Buffer.from(secret);
+    const map = Object.assign(new Map([[secret, secret]]), { token: secret });
+    const result = { ok: true, bytes, map };
     const patch = await post({ toolName: "shell", args: {}, result, isError: false, session: session() });
-    expect(patch?.result).toBeInstanceOf(Map);
-    expect(patch?.result).not.toBe(result);
-    expect([...(patch!.result as Map<string, string>)]).toEqual([["key", "[REDACTED:aws-access-key]"]]);
+    const logged = JSON.stringify({ kind: "tool_result", payload: { result: patch?.result } });
+    expect(logged).not.toContain(secret);
+    expect(logged).not.toContain(JSON.stringify([...bytes]));
+    const projected = JSON.parse(JSON.stringify({
+      ok: true, bytes: `[binary: ${bytes.length} bytes]`, map,
+    }));
+    const projectedPatch = await post({ toolName: "shell", args: {}, result: projected, isError: false, session: session() });
+    expect(patch?.result).toEqual(projectedPatch?.result);
+    expect(patch?.result).toEqual({
+      ok: true, bytes: `[binary: ${bytes.length} bytes]`, map: { token: "[REDACTED:aws-access-key]" },
+    });
+    expect(patch?.isError).toBeUndefined();
   });
 
   it("runs after enrich so suggestions are scanned", async () => {

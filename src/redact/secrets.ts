@@ -6,10 +6,8 @@ import { types } from "node:util";
 import { redactUrlsInText } from "./url-query.js";
 
 const MAX_DEPTH = 8;
-/** Upper bound on the containers one depth-limit walk may visit. */
-const MAX_DEEP_NODES = 100_000;
-/** Upper bound on the characters one depth-limit walk may redact. */
-const MAX_DEEP_CHARS = 4_194_304;
+const MAX_NODES = 100_000;
+const MAX_CHARS = 4_194_304;
 const PLACEHOLDER = (kind: string) => `[REDACTED:${kind}]`;
 
 const DETECTORS: Array<{ kind: string; re: RegExp }> = [
@@ -62,286 +60,188 @@ function typeName(value: unknown): string {
   return typeof name === "string" && name ? name : "object";
 }
 
-/** A copied container: a plain object or an array, both written by string key. */
-type DeepContainer = Record<string, unknown> | unknown[];
+type JsonValue = string | number | boolean | null | JsonContainer;
+type JsonContainer = { [key: string]: JsonValue } | JsonValue[];
 
-/** Values the deep walk can hand back: copied containers and kept primitives. */
-type DeepCopy =
-  | string
-  | number
-  | boolean
-  | bigint
-  | symbol
-  | null
-  | undefined
-  | DeepContainer;
-
-/** Primitives that carry no redactable text, so the deep walk keeps them as-is. */
-function isKeptPrimitive(
-  value: unknown,
-): value is number | boolean | bigint | symbol | null | undefined {
-  return (
-    value === null ||
-    typeof value === "number" ||
-    typeof value === "boolean" ||
-    typeof value === "bigint" ||
-    typeof value === "symbol" ||
-    value === undefined
-  );
-}
-
-interface DeepFrame {
-  /** Node being copied; arrays are read through the same string-keyed shape. */
+interface JsonFrame {
   readonly source: Record<string, unknown>;
-  readonly target: DeepContainer;
-  readonly keys: string[];
+  readonly target: JsonContainer;
+  readonly keys: string[] | null;
+  readonly length: number;
+  readonly suffixes: Map<string, number>;
   cursor: number;
 }
 
-function setOwn(container: DeepContainer, key: string, value: unknown): void {
-  // SAFETY: both branches of the union take string-keyed writes; an array keeps its
-  // array-ness because its length is set before any key from `Object.keys` is written.
+function setOwn(container: JsonContainer, key: string, value: JsonValue): void {
   Object.defineProperty(container, key, { value, enumerable: true, writable: true, configurable: true });
 }
 
-/**
- * Fail closed at the depth limit in non-strict mode: walk the over-limit subtree
- * and redact every string leaf the walk can reach. Redacting the real string
- * leaves means escapes (`\n`, `\t`) never hide a secret from the detectors.
- *
- * The walk is iterative, so a very deep chain cannot overflow the call stack, and
- * it never serializes, so `toJSON` is not consulted and no text is allocated up
- * front. Plain objects and arrays are copied with the same keys/indexes, which
- * keeps the original shape. Whatever the walk cannot read (cycles, class
- * instances, Maps, throwing getters) becomes a placeholder, and both the visited
- * nodes and the redacted characters are budgeted: anything past a budget becomes
- * `[REDACTED:depth-limit]` instead of the original value.
- */
-function redactAtDepthLimit(value: unknown): DeepCopy {
-  // A string at the limit is a leaf of this walk, so it has to go through the
-  // character cap below rather than being scanned whole here.
-  if (typeof value === "function") return PLACEHOLDER("unwalkable");
-  if (isKeptPrimitive(value)) return value;
+function uniqueKey(frame: JsonFrame, base: string): string {
+  let suffix = frame.suffixes.get(base) ?? 1;
+  let key = base;
+  while (Object.hasOwn(frame.target, key)) key = `${base}#${++suffix}`;
+  frame.suffixes.set(base, suffix);
+  return key;
+}
 
+function binaryPlaceholder(value: unknown): string | undefined {
+  let prototype: object;
+  if (types.isTypedArray(value)) prototype = Object.getPrototypeOf(Uint8Array.prototype);
+  else if (types.isDataView(value)) prototype = DataView.prototype;
+  else if (types.isArrayBuffer(value)) prototype = ArrayBuffer.prototype;
+  else if (types.isSharedArrayBuffer(value)) prototype = SharedArrayBuffer.prototype;
+  else return undefined;
+  // Intrinsic getters read the byte count, not an overridable instance property.
+  const getter = Object.getOwnPropertyDescriptor(prototype, "byteLength")!.get!;
+  return `[binary: ${getter.call(value)} bytes]`;
+}
+
+/**
+ * Non-strict redaction walks the JSON projection in one iterative stack. Call
+ * toJSON once per value with its original JSON key (root: ""); then unbox JSON
+ * primitives, omit functions/symbols/undefined in objects, and use null in arrays.
+ * Arrays read indices through length; every other object (including classes,
+ * Maps/Sets and Errors) reads only own enumerable string keys, never entries or
+ * hidden fields. Redact both string leaves and keys; suffix colliding keys in
+ * traversal order. Write only own configurable data properties on fresh copies.
+ *
+ * Deliberate JSON differences: binary values become byte-count strings BEFORE
+ * toJSON (also if returned by it); BigInts become redacted decimal strings;
+ * revisited containers, including shared references, become [REDACTED:cycle].
+ * Getters, toJSON and proxy failures replace only the affected value. No input
+ * identity, prototype, accessor or callable is retained in the plain JSON output.
+ * Only original string roots stay scalar; other scalar projections are wrapped
+ * as { error: scalar }, with redaction-error for an omitted root.
+ *
+ * MAX_DEPTH is strict-only. Here a global budget reserves the root and all
+ * property/index slots before opening a container; one that cannot fit becomes
+ * [REDACTED:depth-limit]. MAX_CHARS bounds scanned leaves AND keys. Oversized
+ * strings become the same placeholder without spending the remaining budget.
+ * This bounds our traversal, not execution of user hooks or key enumeration.
+ */
+function redactJsonProjection(value: unknown): JsonValue | undefined {
   const visited = new WeakSet<object>();
-  const frames: DeepFrame[] = [];
-  let nodes = 0;
+  const frames: JsonFrame[] = [];
+  let nodes = 1;
   let chars = 0;
 
   const redactLeaf = (leaf: string): string => {
-    if (chars + leaf.length > MAX_DEEP_CHARS) return PLACEHOLDER("depth-limit");
+    if (chars + leaf.length > MAX_CHARS) return PLACEHOLDER("depth-limit");
     chars += leaf.length;
     return redactString(leaf);
   };
 
-  /** Copy a container's own keys, or return the placeholder that replaces it. */
-  const open = (node: Record<string, unknown>): DeepFrame | string => {
-    if (visited.has(node)) return PLACEHOLDER("cycle");
-    if (nodes >= MAX_DEEP_NODES) return PLACEHOLDER("depth-limit");
-    let keys: string[];
-    let target: DeepContainer;
-    try {
-      const isArray = Array.isArray(node);
-      const prototype = isArray ? null : Object.getPrototypeOf(node);
-      if (!isArray && prototype !== Object.prototype && prototype !== null) {
-        return PLACEHOLDER("unwalkable");
-      }
-      keys = Object.keys(node);
-      if (isArray) {
-        const list: unknown[] = [];
-        // Same length, holes preserved: only `keys` is ever written below.
-        list.length = node.length;
-        target = list;
-      } else {
-        target = {};
-      }
-    } catch {
-      // Enumeration can fail (e.g. a Proxy); nothing of the node can be trusted.
-      return PLACEHOLDER("redaction-error");
+  const seed = (child: unknown, key: string): JsonValue | undefined => {
+    let binary = binaryPlaceholder(child);
+    if (binary !== undefined) return binary;
+    if (child !== null && (typeof child === "object" || typeof child === "function" || typeof child === "bigint")) {
+      const toJSON = (child as { toJSON?: unknown }).toJSON;
+      // Use the intrinsic Call, never an input-owned toJSON.call/apply property.
+      if (typeof toJSON === "function") child = Function.prototype.call.call(toJSON, child, key);
     }
-    visited.add(node);
-    nodes++;
-    return { source: node, target, keys, cursor: 0 };
+    binary = binaryPlaceholder(child);
+    if (binary !== undefined) return binary;
+    if (types.isNumberObject(child)) child = +(child as number);
+    else if (types.isStringObject(child)) child = `${child as string}`;
+    else if (types.isBooleanObject(child)) child = Boolean.prototype.valueOf.call(child);
+    else if (types.isBigIntObject(child)) child = BigInt.prototype.valueOf.call(child);
+
+    if (typeof child === "string") return redactLeaf(child);
+    if (typeof child === "bigint") return redactLeaf(String(child));
+    if (typeof child === "number") return Number.isFinite(child) ? (child === 0 ? 0 : child) : null;
+    if (typeof child === "boolean" || child === null) return child;
+    if (typeof child !== "object") return undefined;
+    if (visited.has(child)) return PLACEHOLDER("cycle");
+
+    const isArray = Array.isArray(child);
+    const source = child as Record<string, unknown>;
+    const keys = isArray ? null : Object.keys(child);
+    // Unary + uses JSON's ToNumber semantics (unlike Number(), rejects BigInt).
+    const length = isArray
+      ? Math.min(Math.max(Math.floor(+(source.length as number)) || 0, 0), Number.MAX_SAFE_INTEGER)
+      : keys!.length;
+    if (length > MAX_NODES - nodes) return PLACEHOLDER("depth-limit");
+    nodes += length;
+    const target: JsonContainer = isArray ? [] : {};
+    visited.add(child);
+    frames.push({ source, target, keys, length, suffixes: new Map(), cursor: 0 });
+    return target;
   };
 
-  const seed = (child: unknown, assign: (copied: DeepCopy) => void): void => {
-    if (typeof child === "string") {
-      assign(redactLeaf(child));
-      return;
-    }
-    if (typeof child === "function") {
-      assign(PLACEHOLDER("unwalkable"));
-      return;
-    }
-    if (isKeptPrimitive(child)) {
-      assign(child);
-      return;
-    }
-    // SAFETY: `open` re-checks the array or plain/null-prototype shape before reading keys.
-    const opened = open(child as Record<string, unknown>);
-    if (typeof opened === "string") {
-      assign(opened);
-      return;
-    }
-    assign(opened.target);
-    frames.push(opened);
-  };
-
-  let root: DeepCopy = PLACEHOLDER("depth-limit");
-  seed(value, (copied) => {
-    root = copied;
-  });
-
+  const root = seed(value, "");
   while (frames.length > 0) {
-    const frame = frames.at(-1);
-    if (frame === undefined) break;
-    if (frame.cursor >= frame.keys.length) {
+    const frame = frames.at(-1)!;
+    if (frame.cursor >= frame.length) {
       frames.pop();
       continue;
     }
-    const key = frame.keys[frame.cursor++] ?? "";
-    const target = frame.target;
-    if (nodes >= MAX_DEEP_NODES) {
-      // The node budget is spent: do not read what is left, and do not keep it.
-      setOwn(target, key, PLACEHOLDER("depth-limit"));
-      continue;
-    }
-    let child: unknown;
+    const index = frame.cursor++;
+    const key = frame.keys === null ? String(index) : frame.keys[index]!;
+    let outputKey: string | undefined;
     try {
-      child = frame.source[key];
+      let copied: JsonValue | undefined;
+      try {
+        copied = seed(frame.source[key], key);
+      } catch {
+        copied = PLACEHOLDER("redaction-error");
+      }
+      if (copied === undefined && frame.keys !== null) continue;
+      outputKey = frame.keys === null ? key : uniqueKey(frame, redactLeaf(key));
+      setOwn(frame.target, outputKey, copied === undefined ? null : copied);
     } catch {
-      // A property read that throws costs only that value.
-      setOwn(target, key, PLACEHOLDER("redaction-error"));
-      continue;
+      // A failed key redaction/write cannot abort siblings or write a prototype.
+      try {
+        outputKey ??= frame.keys === null ? key : uniqueKey(frame, PLACEHOLDER("redaction-error"));
+        setOwn(frame.target, outputKey, PLACEHOLDER("redaction-error"));
+      } catch {
+        // Even a failed fallback write is isolated to this property.
+      }
     }
-    seed(child, (copied) => setOwn(target, key, copied));
   }
-
   return root;
 }
 
-function walk(value: unknown, depth: number, strict = false): unknown {
-  if (depth >= MAX_DEPTH) {
-    if (strict) throw new Error("Secret redaction depth limit exceeded");
-    return redactAtDepthLimit(value);
-  }
+type StrictCopy = string | number | boolean | bigint | symbol | null | undefined
+  | { [key: string]: StrictCopy } | StrictCopy[];
+
+function walkStrict(value: unknown, depth: number): StrictCopy {
+  if (depth >= MAX_DEPTH) throw new Error("Secret redaction depth limit exceeded");
   if (typeof value === "string") return redactString(value);
-  if (!strict && value !== null && typeof value === "object") {
-    let isArray: boolean;
-    let prototype: object | null;
-    let error: boolean;
-    let isMap: boolean;
-    let isSet: boolean;
-    try {
-      isArray = Array.isArray(value);
-      prototype = Object.getPrototypeOf(value);
-      error = value instanceof Error;
-      isMap = value instanceof Map;
-      isSet = value instanceof Set;
-    } catch {
-      return PLACEHOLDER("redaction-error");
-    }
-
-    // Plain-object and array proxies can be walked, with failing traps isolated.
-    // A proxy around an exotic object cannot be trusted as that built-in type.
-    if (types.isProxy(value) && !isArray && prototype !== Object.prototype && prototype !== null) {
-      return PLACEHOLDER("unwalkable");
-    }
-
-    if (isArray || prototype === Object.prototype || prototype === null || error) {
-      let keys: string[];
-      let copy: DeepContainer;
-      try {
-        keys = Object.keys(value);
-        copy = isArray ? new Array((value as unknown[]).length) : {};
-      } catch {
-        return PLACEHOLDER("redaction-error");
-      }
-      const source = value as Record<string, unknown>;
-      const copyKey = (key: string): void => {
-        let child: unknown;
-        try {
-          child = source[key];
-        } catch {
-          setOwn(copy, key, PLACEHOLDER("redaction-error"));
-          return;
-        }
-        setOwn(copy, key, walk(child, depth + 1));
-      };
-      if (error) {
-        copyKey("name");
-        copyKey("message");
-      }
-      for (const key of keys) {
-        if (error && (key === "stack" || key === "name" || key === "message")) continue;
-        copyKey(key);
-      }
-      return copy;
-    }
-
-    // Known limitation: Maps and Sets are copied recursively; Errors and plain or
-    // null-prototype objects are copied above. Opaque built-ins are retained by
-    // identity, so their custom properties are not scanned. Other objects fail closed.
-    if (isMap) {
-      let entries: MapIterator<[unknown, unknown]>;
-      try { entries = Map.prototype.entries.call(value); } catch { return PLACEHOLDER("unwalkable"); }
-      const copy = new Map<unknown, unknown>();
-      for (const [key, child] of entries) copy.set(walk(key, depth + 1), walk(child, depth + 1));
-      return copy;
-    }
-    if (isSet) {
-      let values: SetIterator<unknown>;
-      try { values = Set.prototype.values.call(value); } catch { return PLACEHOLDER("unwalkable"); }
-      const copy = new Set<unknown>();
-      for (const child of values) copy.add(walk(child, depth + 1));
-      return copy;
-    }
-    if (ArrayBuffer.isView(value)) return value;
-    try {
-      if (value instanceof Date) { Date.prototype.getTime.call(value); return value; }
-      if (value instanceof RegExp) { Object.getOwnPropertyDescriptor(RegExp.prototype, "source")!.get!.call(value); return value; }
-      if (value instanceof ArrayBuffer) { Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength")!.get!.call(value); return value; }
-    } catch {
-      return PLACEHOLDER("unwalkable");
-    }
-    return PLACEHOLDER("unwalkable");
-  }
   if (Array.isArray(value)) {
-    return value.map((item) => walk(item, depth + 1, strict));
+    return value.map((item) => walkStrict(item, depth + 1));
   }
   if (typeof value === "function") {
-    if (strict) throw new TypeError("Secret redaction cannot walk a function");
-    return value;
+    throw new TypeError("Secret redaction cannot walk a function");
   }
   if (value !== null && typeof value === "object") {
     const prototype = Object.getPrototypeOf(value);
-    // Strict mode also walks null-prototype objects like plain objects.
-    if (prototype === Object.prototype || (strict && prototype === null)) {
-      const copy: Record<string, unknown> = {};
+    if (prototype === Object.prototype || prototype === null) {
+      const copy: Record<string, StrictCopy> = {};
       for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        copy[k] = walk(v, depth + 1, strict);
+        copy[k] = walkStrict(v, depth + 1);
       }
       return copy;
     }
     // Fails closed: anything else (class instances, Map, Set, Date, typed arrays) is
     // unreadable to this walk, so strict mode refuses it instead of passing it through.
-    if (strict) throw new TypeError(`Secret redaction cannot walk a ${typeName(value)}`);
-    return value;
+    throw new TypeError(`Secret redaction cannot walk a ${typeName(value)}`);
   }
-  return value;
+  // All objects and functions were handled above; only primitives remain.
+  return value as StrictCopy;
 }
 
 export function redactSecretsStrict<T>(value: T): T {
-  return walk(value, 0, true) as T;
+  return walkStrict(value, 0) as T;
 }
 
-export function redactSecrets(value: unknown): unknown {
+export function redactSecrets(value: unknown): JsonValue {
   try {
-    return walk(value, 0);
+    const result = redactJsonProjection(value);
+    if (typeof value === "string") return result === undefined ? PLACEHOLDER("redaction-error") : result;
+    if (result !== null && typeof result === "object") return result;
+    return { error: result === undefined ? PLACEHOLDER("redaction-error") : result };
   } catch {
-    // Fail closed: a value this walk could not finish must never be logged as-is.
-    // Callers cast the result to a record or array, so only a string input keeps
-    // the bare placeholder; anything else keeps a container shape.
+    // Last-resort failure must never return the original input.
     if (typeof value === "string") return PLACEHOLDER("redaction-error");
     return { error: PLACEHOLDER("redaction-error") };
   }
