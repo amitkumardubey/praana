@@ -386,22 +386,24 @@ describe("settings store", () => {
   test("loadSettingsFile reports per-key invalidKeys, ignoredUnknownKeys, rejectedOverrides, and warnings", async () => {
     const { loadSettingsFile, parseDefaultModel } = await storeApi();
 
-    expect(parseDefaultModel(undefined)).toEqual({ value: null, errors: [] });
+    expect(parseDefaultModel(undefined)).toEqual({ value: null, errors: [], ignoredKeys: [] });
     expect(parseDefaultModel("bad")).toEqual({
       value: null,
       errors: [{ key: "default_model", reason: expect.stringMatching(/plain object/i) }],
+      ignoredKeys: [],
     });
     expect(parseDefaultModel({ provider: "", model: "gpt-4o", reasoning: "invalid", extra: 1 })).toEqual({
       value: null,
       errors: [
         { key: "default_model.provider", reason: expect.any(String) },
         { key: "default_model.reasoning", reason: expect.any(String) },
-        { key: "default_model.extra", reason: expect.any(String) },
       ],
+      ignoredKeys: ["default_model.extra"],
     });
     expect(parseDefaultModel({ provider: "openai", model: "gpt-4o", reasoning: "high" })).toEqual({
       value: { provider: "openai", model: "gpt-4o", reasoning: "high" },
       errors: [],
+      ignoredKeys: [],
     });
 
     const doc = {
@@ -442,6 +444,61 @@ describe("settings store", () => {
     const resolved = resolveActiveModelAndProvider();
     expect(resolved.provider).toBe("ollama");
     expect(resolved.model).toBe("custom-ollama-model");
+  });
+
+  test("unknown default_model sub-fields are ignored with a warning while the valid pair is used", async () => {
+    const { loadSettingsFile } = await storeApi();
+
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ default_model: { provider: "openai", model: "gpt-4o", foo: 1 } }),
+      "utf-8",
+    );
+    const loaded = loadSettingsFile();
+
+    expect(loaded.defaultModel).toEqual({ provider: "openai", model: "gpt-4o" });
+    expect(loaded.invalidKeys).toEqual([]);
+    expect(loaded.ignoredUnknownKeys).toEqual([]);
+    const unknownWarnings = loaded.warnings.filter((w) => w.includes("default_model.foo"));
+    expect(unknownWarnings).toEqual(['Ignored unknown setting "default_model.foo"']);
+  });
+
+  test("unknown default_model sub-fields stay warnings even when a known field is invalid", async () => {
+    const { loadSettingsFile } = await storeApi();
+
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ default_model: { provider: "openai", model: "", foo: 1 } }),
+      "utf-8",
+    );
+    const loaded = loadSettingsFile();
+
+    expect(loaded.defaultModel).toBeNull();
+    expect(loaded.invalidKeys.map((k) => k.key)).toEqual(["default_model.model"]);
+    expect(loaded.warnings).toContain('Ignored unknown setting "default_model.foo"');
+    expect(loaded.invalidKeys.some((k) => k.key === "default_model.foo")).toBe(false);
+    expect(loaded.ignoredUnknownKeys).toEqual([]);
+  });
+
+  test("round trip through the store preserves unknown default_model sub-fields", async () => {
+    const { loadSettingsFile, readSettingsDocument, updateSettingsDocument } = await storeApi();
+
+    writeFileSync(
+      settingsPath,
+      JSON.stringify({ default_model: { provider: "openai", model: "gpt-4o", foo: 1 } }),
+      "utf-8",
+    );
+    expect(loadSettingsFile().defaultModel).toEqual({ provider: "openai", model: "gpt-4o" });
+
+    // An unrelated write must not strip the ignored sub-field from disk.
+    expect(updateSettingsDocument({ theme: "dark" })).toMatchObject({ ok: true });
+    const reread = readSettingsDocument();
+    expect(reread.state).toBe("ok");
+    expect(reread.doc.default_model).toEqual({ provider: "openai", model: "gpt-4o", foo: 1 });
+
+    const reloaded = loadSettingsFile();
+    expect(reloaded.defaultModel).toEqual({ provider: "openai", model: "gpt-4o" });
+    expect(reloaded.warnings).toContain('Ignored unknown setting "default_model.foo"');
   });
 
   test("multi-process concurrency: sequential barrier phases preserve cross-process legacy & store keys, and overlapping writers never produce torn JSON", async () => {

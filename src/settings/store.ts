@@ -1217,15 +1217,22 @@ export interface InvalidKeyEntry {
   reason: string;
 }
 
+/**
+ * Validate `default_model`. Invalid known fields are errors (and null the value);
+ * unknown sub-fields are ignored and reported separately in `ignoredKeys` so the
+ * valid provider/model/reasoning pair is still usable.
+ */
 export function parseDefaultModel(raw: unknown): {
   value: DefaultModel | null;
   errors: InvalidKeyEntry[];
+  ignoredKeys: string[];
 } {
-  if (raw === undefined) return { value: null, errors: [] };
+  if (raw === undefined) return { value: null, errors: [], ignoredKeys: [] };
   if (!isPlainObject(raw)) {
     return {
       value: null,
       errors: [{ key: "default_model", reason: "default_model must be a plain object" }],
+      ignoredKeys: [],
     };
   }
 
@@ -1253,14 +1260,15 @@ export function parseDefaultModel(raw: unknown): {
     }
   }
 
+  const ignoredKeys: string[] = [];
   for (const key of Object.keys(raw)) {
     if (key !== "provider" && key !== "model" && key !== "reasoning") {
-      errors.push({ key: `default_model.${key}`, reason: `Unknown field "${key}" in default_model` });
+      ignoredKeys.push(`default_model.${key}`);
     }
   }
 
   if (errors.length > 0) {
-    return { value: null, errors };
+    return { value: null, errors, ignoredKeys };
   }
 
   return {
@@ -1270,6 +1278,7 @@ export function parseDefaultModel(raw: unknown): {
       ...(reasoning !== undefined ? { reasoning } : {}),
     },
     errors: [],
+    ignoredKeys,
   };
 }
 
@@ -1369,6 +1378,8 @@ export function loadSettingsFile(options?: SettingsStoreOptions): LoadSettingsFi
   const settingsFromDoc = legacy.settings;
   invalidKeys.push(...legacy.invalidKeys);
 
+  // Unknown `default_model` sub-fields are ignored (not invalid) and preserved on write;
+  // they stay out of `ignoredUnknownKeys`, which holds top-level keys only.
   const dm = parseDefaultModel(doc.default_model);
   invalidKeys.push(...dm.errors);
 
@@ -1386,6 +1397,9 @@ export function loadSettingsFile(options?: SettingsStoreOptions): LoadSettingsFi
 
   for (const inv of invalidKeys) {
     warnings.push(`Invalid setting "${inv.key}": ${inv.reason}`);
+  }
+  for (const key of dm.ignoredKeys) {
+    warnings.push(`Ignored unknown setting "${key}"`);
   }
   for (const rej of rejectedOverrides) {
     if (rej.path === "config_overrides") continue;
