@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, wr
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Session } from "../src/session.js";
+import { AppController } from "../src/app-controller.js";
 import { loadConfig } from "../src/config.js";
 import type { PraanaConfig } from "../src/types.js";
 import * as legacy from "../src/memory/index.js";
@@ -345,27 +346,129 @@ it("keeps file memory unset when incognito toggles after an unreadable memory ro
   }
 });
 
-it("keeps the old store and flag when an incognito toggle fails to rebuild", async () => {
-  seed();
-  const session = await start();
-  const originalStore = session.fileMemory;
+function forceCreateFileMemoryFailure(session: Session): () => void {
   const originalCreate = (session as unknown as { createFileMemory: () => FileMemoryStore }).createFileMemory;
   (session as unknown as { createFileMemory: () => FileMemoryStore }).createFileMemory = () => {
     throw new Error("forced constructor failure");
   };
+  return () => {
+    (session as unknown as { createFileMemory: () => FileMemoryStore }).createFileMemory = originalCreate;
+  };
+}
+
+it("fails closed when enabling incognito cannot rebuild the store", async () => {
+  seed();
+  const session = await start();
+  const restoreCreate = forceCreateFileMemoryFailure(session);
   try {
     const failure = await session.setIncognito(true);
     expect(failure).toContain("forced constructor failure");
-    expect(session.isIncognito()).toBe(false);
-    expect(session.fileMemory).toBe(originalStore);
-    const result = await executeSlashCommand("/incognito on", session, slashHandlers);
-    expect(result.lines.join("\n")).toContain("Incognito switch failed: forced constructor failure");
-    expect(session.isIncognito()).toBe(false);
-    expect(session.fileMemory).toBe(originalStore);
-    const recalled = await session.fileMemory!.recall({ query: "boundaries" });
-    expect(recalled.ok).toBe(true);
+    expect(session.isIncognito()).toBe(true);
+    expect(session.fileMemory).toBeNull();
+    expect(session.memoryEnabled).toBe(false);
+    expect(session.digest).toBeNull();
+    expect(session.memoryPromptIndex).toBeNull();
+    expect(session.memoryError).toContain("forced constructor failure");
+    // Memory tools are unregistered: no store means no recall/remember.
+    const model = scriptedMemoryModel(config);
+    restore.push(() => model.close());
+    await runTurn(session, "Hello", undefined, { sink: {} });
+    const names = (model.requests[0].tools as Array<{ function: { name: string } }>).map((tool) => tool.function.name);
+    expect(names).not.toContain("recall");
+    expect(names).not.toContain("remember");
+    expect(names).not.toContain("forget_memory");
   } finally {
-    (session as unknown as { createFileMemory: () => FileMemoryStore }).createFileMemory = originalCreate;
+    restoreCreate();
+  }
+});
+
+it("keeps the old store and flag when disabling incognito fails to rebuild", async () => {
+  seed();
+  const session = await start(true);
+  const originalStore = session.fileMemory!;
+  expect(session.isIncognito()).toBe(true);
+  const restoreCreate = forceCreateFileMemoryFailure(session);
+  try {
+    const failure = await session.setIncognito(false);
+    expect(failure).toContain("forced constructor failure");
+    expect(session.isIncognito()).toBe(true);
+    expect(session.fileMemory).toBe(originalStore);
+    expect(session.memoryEnabled).toBe(true);
+    expect(session.memoryError).toBeNull();
+    // The old store stays write-refusing.
+    const refused = await originalStore.remove({ name: "stable-preference", scope: "global" });
+    expect(refused).toMatchObject({ ok: false, error: "Incognito mode prevents removal" });
+    // A later enable attempt still fails closed.
+    const again = await session.setIncognito(true);
+    expect(again).toContain("forced constructor failure");
+    expect(session.isIncognito()).toBe(true);
+    expect(session.fileMemory).toBeNull();
+    expect(session.memoryEnabled).toBe(false);
+  } finally {
+    restoreCreate();
+  }
+});
+
+it("app-controller surfaces a persisted incognito apply failure and leaves no writable store", async () => {
+  seed();
+  const session = await start();
+  const restoreCreate = forceCreateFileMemoryFailure(session);
+  try {
+    const controller = new AppController({
+      cwd: home,
+      config,
+      parsed: {
+        sessionId: null,
+        resumeMode: false,
+        debug: false,
+        incognito: false,
+        configPath: undefined,
+        showHelp: false,
+        force: false,
+        initMode: false,
+        memoryDedupeMode: false,
+      },
+    });
+    controller.session = session;
+    const notices = await controller.applyPersistedSettings({
+      applyModel: false,
+      settings: {
+        model: "",
+        provider: "",
+        thinking: false,
+        incognito: true,
+        debug: false,
+        theme: "default",
+        auto_update: false,
+      },
+    });
+    expect(notices.some((n) => n.includes("Incognito setting could not be applied"))).toBe(true);
+    expect(notices.some((n) => n.includes("forced constructor failure"))).toBe(true);
+    // Fail closed: no writable store remains anywhere.
+    expect(session.isIncognito()).toBe(true);
+    expect(session.fileMemory).toBeNull();
+    expect(session.memoryEnabled).toBe(false);
+  } finally {
+    restoreCreate();
+  }
+});
+
+it("/settings set incognito true reports a rebuild failure instead of success", async () => {
+  seed();
+  const session = await start();
+  const restoreCreate = forceCreateFileMemoryFailure(session);
+  try {
+    const result = await executeSlashCommand("/settings set incognito true", session, slashHandlers);
+    const text = result.lines.join("\n");
+    expect(text).toContain("Failed to apply incognito");
+    expect(text).toContain("forced constructor failure");
+    expect(text).not.toContain("Saved incognito=true");
+    expect(text).not.toContain("persisted + applied");
+    expect(result.toastTone).toBe("error");
+    expect(session.isIncognito()).toBe(true);
+    expect(session.fileMemory).toBeNull();
+  } finally {
+    restoreCreate();
   }
 });
 

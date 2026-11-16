@@ -193,7 +193,10 @@ export class AppController {
     }
 
     if (!this.parsed.incognito && settings.incognito && !this.session.isIncognito()) {
-      await this.session.setIncognito(true);
+      const failure = await this.session.setIncognito(true);
+      if (failure) {
+        notices.push(`⚠ Incognito setting could not be applied: ${failure}`);
+      }
     }
 
     if (opts.applyModel) {

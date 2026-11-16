@@ -914,11 +914,22 @@ export class Session {
     try {
       nextStore = this.createFileMemory(enabled);
     } catch (err) {
+      const error = memoryErrorMessage(err, appHomePath("memory"));
       this.getLogger().child("memory").warn("Failed to rebuild file memory store for incognito toggle", {
         code: "MEMORY_INCOGNITO_REBUILD_FAILED",
         cause: err as Error,
       });
-      return memoryErrorMessage(err, appHomePath("memory"));
+      if (enabled) {
+        // Fail closed: the user asked for incognito, so never leave the old
+        // writable store in place when the replacement cannot be built.
+        this.incognito = true;
+        this.fileMemory = null;
+        this.digest = null;
+        this.memoryPromptIndex = null;
+        this.memoryEnabled = false;
+        this.memoryError = error;
+      }
+      return error;
     }
     this.incognito = enabled;
     this.fileMemory = nextStore;
@@ -1512,7 +1523,7 @@ export function loadAgentsContext(
       AGENTS_TRUNCATION_LOG_MESSAGE,
       { details },
     );
-    return combined.slice(0, MAX_CHARS) + "\n\n<!-- [truncated] -->";
+    return `${combined.slice(0, MAX_CHARS)}\n\n<!-- [truncated] -->`;
   }
   return combined;
 }

@@ -241,29 +241,28 @@ async function applySettingToSession(
   handlers: SlashHandlers,
   key: UserSettingsKey,
   value: string | boolean,
-): Promise<void> {
+): Promise<string | null> {
   switch (key) {
     case "model":
       session.setModelOverride(String(value));
       handlers.setModel(String(value));
-      break;
+      return null;
     case "provider":
       session.setProviderOverride(String(value));
-      break;
+      return null;
     case "thinking":
       handlers.setThinking(Boolean(value));
-      break;
+      return null;
     case "incognito":
-      await session.setIncognito(Boolean(value));
-      break;
+      return session.setIncognito(Boolean(value));
     case "debug":
       session.debug = Boolean(value);
-      break;
+      return null;
     case "theme":
       // Persisted only — theming UI lands in #441.
-      break;
+      return null;
     case "auto_update":
-      break;
+      return null;
   }
 }
 
@@ -345,7 +344,11 @@ async function handleSettingsCommand(
       lines.push(`Failed to save settings: ${updated.error}`);
       return result("none", "toast", "error");
     }
-    await applySettingToSession(session, handlers, key, parsed.value);
+    const appliedError = await applySettingToSession(session, handlers, key, parsed.value);
+    if (appliedError) {
+      lines.push(`Failed to apply ${key}: ${appliedError}`);
+      return result("none", "toast", "error");
+    }
     lines.push(`Saved ${key}=${formatSettingValue(parsed.value)} (persisted + applied).`);
     return result("refresh_status", "toast", "success");
   }
@@ -445,8 +448,9 @@ export async function executeSlashCommand(
       } else {
         lines.push(`State objects (${objects.length}):`);
         for (const o of objects) {
-          const tierIcon =
-            o.tier === "active" ? "●" : o.tier === "soft" ? "○" : "·";
+          let tierIcon = "·";
+          if (o.tier === "active") tierIcon = "●";
+          else if (o.tier === "soft") tierIcon = "○";
           lines.push(`  ${tierIcon} ${o.id} [${o.kind}] ${o.tier}: ${o.summary}`);
         }
       }
@@ -620,21 +624,22 @@ export async function executeSlashCommand(
         lines.push(``, `Last ${events.length} events:`);
         for (const ev of events) {
           const time = new Date(ev.timestamp).toISOString().slice(11, 19);
-          const summary =
-            ev.kind === "user_message"
-              ? `User: ${(ev.payload.text as string)?.slice(0, 60)}`
-              : ev.kind === "agent_message"
-                ? `Agent: ${(ev.payload.text as string)?.slice(0, 60)}`
-                : ev.kind === "tool_call"
-                  ? `Tool: ${ev.payload.tool ?? "?"}`
-                  : ev.kind === "tool_result"
-                    ? `Result: ${JSON.stringify(ev.payload.result)?.slice(0, 60)}`
-                    : ev.kind === "context_action"
-                      ? `Context: ${ev.payload.action}`
-                      : ev.kind === "system_note" &&
-                          ev.payload.type === "error"
-                        ? `Error: ${String(ev.payload.message).slice(0, 60)}`
-                        : ev.kind;
+          let summary: string;
+          if (ev.kind === "user_message") {
+            summary = `User: ${(ev.payload.text as string)?.slice(0, 60)}`;
+          } else if (ev.kind === "agent_message") {
+            summary = `Agent: ${(ev.payload.text as string)?.slice(0, 60)}`;
+          } else if (ev.kind === "tool_call") {
+            summary = `Tool: ${ev.payload.tool ?? "?"}`;
+          } else if (ev.kind === "tool_result") {
+            summary = `Result: ${JSON.stringify(ev.payload.result)?.slice(0, 60)}`;
+          } else if (ev.kind === "context_action") {
+            summary = `Context: ${ev.payload.action}`;
+          } else if (ev.kind === "system_note" && ev.payload.type === "error") {
+            summary = `Error: ${String(ev.payload.message).slice(0, 60)}`;
+          } else {
+            summary = ev.kind;
+          }
           lines.push(`  ${time} ${ev.kind.padEnd(16)} ${summary}`);
         }
       }
