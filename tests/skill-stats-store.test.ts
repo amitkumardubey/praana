@@ -1,5 +1,10 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, spyOn } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import * as sqliteModule from "../src/sqlite.js";
 import { openDatabase } from "../src/sqlite.js";
+import { SkillStatsStore } from "../src/skills/skill-stats-store.js";
 import {
   ensureSkillStatsTable,
   getSkillUsefulness,
@@ -187,5 +192,28 @@ describe("bumpSkillCooccurrence", () => {
 
     expect(row?.count).toBe(2);
     db.close();
+  });
+});
+
+describe("SkillStatsStore connection pragmas", () => {
+  it("flush opens memory.db with WAL and busy_timeout like the context engine", () => {
+    const dir = mkdtempSync(join(tmpdir(), "praana-skill-stats-"));
+    const dbPath = join(dir, "memory.db");
+    const spy = spyOn(sqliteModule, "applyConcurrencyPragmas");
+    try {
+      const store = new SkillStatsStore(dbPath, "context:proj");
+      store.flush("s1", true, [{ skillId: "alpha", scope: "context:proj", loaded: true, used: true }], []);
+      expect(spy).toHaveBeenCalledTimes(1);
+      const db = openDatabase(dbPath);
+      try {
+        expect((db.query("PRAGMA journal_mode").get() as { journal_mode: string }).journal_mode.toLowerCase()).toBe("wal");
+      } finally {
+        db.close();
+      }
+      expect(store.loadUsefulness().get("alpha")).toBeGreaterThan(0.5);
+    } finally {
+      spy.mockRestore();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
