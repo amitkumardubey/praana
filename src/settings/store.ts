@@ -1399,7 +1399,7 @@ export function loadSettingsFile(options?: SettingsStoreOptions): LoadSettingsFi
     warnings.push(`Invalid setting "${inv.key}": ${inv.reason}`);
   }
   for (const key of dm.ignoredKeys) {
-    warnings.push(`Ignored unknown field "${key}" in default_model`);
+    warnings.push(`Ignored unknown setting "${key}"`);
   }
   for (const rej of rejectedOverrides) {
     if (rej.path === "config_overrides") continue;

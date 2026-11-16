@@ -460,7 +460,7 @@ describe("settings store", () => {
     expect(loaded.invalidKeys).toEqual([]);
     expect(loaded.ignoredUnknownKeys).toEqual([]);
     const unknownWarnings = loaded.warnings.filter((w) => w.includes("default_model.foo"));
-    expect(unknownWarnings).toEqual(['Ignored unknown field "default_model.foo" in default_model']);
+    expect(unknownWarnings).toEqual(['Ignored unknown setting "default_model.foo"']);
   });
 
   test("unknown default_model sub-fields stay warnings even when a known field is invalid", async () => {
@@ -475,7 +475,7 @@ describe("settings store", () => {
 
     expect(loaded.defaultModel).toBeNull();
     expect(loaded.invalidKeys.map((k) => k.key)).toEqual(["default_model.model"]);
-    expect(loaded.warnings).toContain('Ignored unknown field "default_model.foo" in default_model');
+    expect(loaded.warnings).toContain('Ignored unknown setting "default_model.foo"');
     expect(loaded.invalidKeys.some((k) => k.key === "default_model.foo")).toBe(false);
     expect(loaded.ignoredUnknownKeys).toEqual([]);
   });
@@ -498,7 +498,7 @@ describe("settings store", () => {
 
     const reloaded = loadSettingsFile();
     expect(reloaded.defaultModel).toEqual({ provider: "openai", model: "gpt-4o" });
-    expect(reloaded.warnings).toContain('Ignored unknown field "default_model.foo" in default_model');
+    expect(reloaded.warnings).toContain('Ignored unknown setting "default_model.foo"');
   });
 
   test("multi-process concurrency: sequential barrier phases preserve cross-process legacy & store keys, and overlapping writers never produce torn JSON", async () => {
