@@ -59,7 +59,7 @@ export class GoogleDriver implements LlmDriver {
       }
     }
 
-    const { contents, systemInstruction } = this.formatContents(req.messages, req.systemPrompt);
+    const { contents, systemInstruction } = this.formatContents(req.messages, req.systemPrompt, req.model);
     const tools = this.formatTools(req.tools);
 
     const body: Record<string, unknown> = {
@@ -181,6 +181,8 @@ export class GoogleDriver implements LlmDriver {
                 id: `call_${Math.random().toString(36).slice(2, 10)}`,
                 name: part.functionCall.name,
                 args,
+                ...(typeof part.thoughtSignature === "string" && part.thoughtSignature
+                  ? { thoughtSignature: part.thoughtSignature } : {}),
               };
               pendingToolCalls.push(tc);
               emittedDelta = true;
@@ -229,6 +231,7 @@ export class GoogleDriver implements LlmDriver {
   private formatContents(
     messages: ConversationMessage[],
     systemPrompt?: string,
+    model?: string,
   ): {
     systemInstruction?: { parts: Array<{ text: string }> };
     contents: Array<Record<string, unknown>>;
@@ -243,7 +246,26 @@ export class GoogleDriver implements LlmDriver {
     // turn had functionCall parts, so consecutive tool results share one content.
     let openToolResults: Array<Record<string, unknown>> | null = null;
 
-    for (const msg of messages) {
+    // An assistant message belongs to the current turn when it comes after the
+    // last user message; tool results do not end the turn. With no user message
+    // at all, every assistant message counts as current.
+    let lastUserIndex = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "user") {
+        lastUserIndex = i;
+        break;
+      }
+    }
+    // Gemini 3+ requires the sentinel on unsigned calls; 1.x/2.x never return
+    // signatures and must not see it. A model id that does not parse as a
+    // gemini-<major> (custom or unknown names) counts as requiring it.
+    const modelRequiresSignature = () => {
+      const match = model?.match(/^(?:models\/)?gemini-(\d+)/);
+      if (!match) return true;
+      return parseInt(match[1], 10) >= 3;
+    };
+
+    for (const [messageIndex, msg] of messages.entries()) {
       if (msg.role !== "tool_result") openToolResults = null;
       if (msg.role === "system") {
         if (!systemInstruction) systemInstruction = { parts: [] };
@@ -266,9 +288,20 @@ export class GoogleDriver implements LlmDriver {
       } else if (msg.role === "assistant") {
         const parts: Array<Record<string, unknown>> = [];
         if (msg.content) parts.push({ text: msg.content });
-        if (msg.toolCalls) {
-          for (const tc of msg.toolCalls) {
-            parts.push({ functionCall: { name: tc.name, args: tc.args } });
+        if (msg.toolCalls?.length) {
+          const hasSignature = msg.toolCalls.some(tc => !!tc.thoughtSignature);
+          // Only current-turn unsigned batches on signature-requiring models get
+          // the sentinel, placed on the first call of the batch.
+          const injectSentinel = messageIndex > lastUserIndex && modelRequiresSignature() && !hasSignature;
+          for (const [index, tc] of msg.toolCalls.entries()) {
+            // Legacy or cross-provider history has no signature to echo. Gemini
+            // accepts this sentinel on the first call, not on every parallel call.
+            const thoughtSignature = tc.thoughtSignature ||
+              (injectSentinel && index === 0 ? "skip_thought_signature_validator" : undefined);
+            parts.push({
+              functionCall: { name: tc.name, args: tc.args },
+              ...(thoughtSignature === undefined ? {} : { thoughtSignature }),
+            });
           }
         }
         contents.push({ role: "model", parts: parts.length > 0 ? parts : [{ text: "" }] });

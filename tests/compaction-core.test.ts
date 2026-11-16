@@ -2,6 +2,7 @@ import { expect, spyOn, test } from "bun:test";
 import * as tokenEstimator from "../src/token-estimate.js";
 import { CanonicalTranscriptError, emitCanonicalTranscript, type CanonicalRecord } from "../src/canonical-transcript.js";
 import type { ConversationMessage } from "../src/llm/types.js";
+import { THOUGHT_SIGNATURE } from "./helpers/google-thought-signature.js";
 import { buildCommitEvent, FrozenSummaryError, restoreFrozenState, SESSION_START_EPOCH, type FrozenState } from "../src/frozen-summary.js";
 import { estimateTokens } from "../src/token-estimate.js";
 import type { Event } from "../src/types.js";
@@ -130,6 +131,30 @@ test("message estimator includes thinking but excludes opaque signatures despite
   const thinking = { ...base, thinking: "reason".repeat(200) };
   expect(estimateMessageTokens(thinking)).toBeGreaterThan(estimateMessageTokens(base) + 250);
   expect(estimateMessageTokens({ ...thinking, thinkingSignature: "sig".repeat(200) })).toBe(estimateMessageTokens(thinking));
+});
+
+test("message estimator strips per-call thought signatures without mutating the input", async () => {
+  const { estimateMessageTokens } = await api();
+  const signed: ConversationMessage = { role: "assistant", content: "", toolCalls: [
+    { id: "a", name: "read_file", args: { path: "a.txt" }, thoughtSignature: THOUGHT_SIGNATURE },
+  ] };
+  const unsigned: ConversationMessage = { role: "assistant", content: "", toolCalls: [
+    { id: "a", name: "read_file", args: { path: "a.txt" } },
+  ] };
+  const before = structuredClone(signed);
+  expect(estimateMessageTokens(signed)).toBe(estimateMessageTokens(unsigned));
+  expect(signed).toEqual(before);
+  const signedBlocks: ConversationMessage = { role: "assistant", content: "", blocks: [{ type: "tool_use", id: "a" }], toolCalls: [
+    { id: "a", name: "read_file", args: { path: "a.txt" }, thoughtSignature: THOUGHT_SIGNATURE },
+    { id: "b", name: "read_file", args: { path: "b.txt" }, thoughtSignature: THOUGHT_SIGNATURE },
+  ] };
+  const unsignedBlocks: ConversationMessage = { role: "assistant", content: "", blocks: [{ type: "tool_use", id: "a" }], toolCalls: [
+    { id: "a", name: "read_file", args: { path: "a.txt" } },
+    { id: "b", name: "read_file", args: { path: "b.txt" } },
+  ] };
+  const beforeBlocks = structuredClone(signedBlocks);
+  expect(estimateMessageTokens(signedBlocks)).toBe(estimateMessageTokens(unsignedBlocks));
+  expect(signedBlocks).toEqual(beforeBlocks);
 });
 
 test("message estimator counts ordered text, thinking, redacted bytes and tool-use blocks", async () => {

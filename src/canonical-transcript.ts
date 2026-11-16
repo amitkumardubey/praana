@@ -12,6 +12,7 @@ export interface CanonicalToolCall {
   name: string;
   args: JsonObject;
   rawArgs?: string;
+  thoughtSignature?: string;
 }
 interface RecordBase<K extends string, M> {
   formatVersion: typeof CANONICAL_TRANSCRIPT_VERSION;
@@ -94,8 +95,9 @@ function nonempty(value: unknown): value is string {
 }
 
 function isToolCall(value: unknown): boolean {
-  return object(value) && onlyKeys(value, ["id", "name", "args", "rawArgs"]) &&
-    nonempty(value.id) && nonempty(value.name) && object(value.args) && optionalString(value, "rawArgs");
+  return object(value) && onlyKeys(value, ["id", "name", "args", "rawArgs", "thoughtSignature"]) &&
+    nonempty(value.id) && nonempty(value.name) && object(value.args) && optionalString(value, "rawArgs") &&
+    (!("thoughtSignature" in value) || nonempty(value.thoughtSignature));
 }
 
 function isBlock(value: unknown): boolean {
@@ -395,7 +397,11 @@ export class CanonicalWriter {
         ...(message.toolCalls !== undefined ? { toolCalls: message.toolCalls.map((call) => {
           const args = redactSecrets(call.args) as JsonObject;
           // Never retain raw input: duplicate JSON keys can conceal secrets.
-          return { id: call.id, name: call.name, args, rawArgs: JSON.stringify(args) };
+          return {
+            id: call.id, name: call.name, args, rawArgs: JSON.stringify(args),
+            // Opaque provider metadata must not pass through secret redaction.
+            ...(call.thoughtSignature === undefined ? {} : { thoughtSignature: call.thoughtSignature }),
+          };
         }) } : {}),
       },
     }));

@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { buildBatchSummaryRequest, buildSameModelSummaryRequest } from "../src/compaction-requests.js";
 import { buildSummaryInstruction, renderSummaryMessage } from "../src/frozen-summary.js";
+import { SKIP_THOUGHT_SIGNATURE } from "./helpers/google-thought-signature.js";
 import { AnthropicDriver } from "../src/llm/drivers/anthropic.js";
 import { OpenAICompatibleDriver } from "../src/llm/drivers/openai.js";
 import { OpenAIResponsesDriver } from "../src/llm/drivers/responses.js";
@@ -140,7 +141,24 @@ for (const { name, provider, driver, key } of drivers) {
       const liveItems = liveWire.body[key] as WireItem[];
       const summaryItems = summaryWire.body[key] as WireItem[];
       expect(summaryItems).toHaveLength(liveItems.length + 1);
-      expect(summaryItems.slice(0, -1)).toEqual(liveItems);
+      if (provider === "google") {
+        // Appending the instruction user message ends the turn, so the unsigned
+        // assistant batch in the summary request drops its current-turn sentinel;
+        // everything else must stay byte-identical to the live wire.
+        const withoutSentinel = (items: WireItem[]) => items.map(item => item.role === "model"
+          ? { ...item, parts: (item.parts as Array<Record<string, unknown>>).map(part =>
+              part.thoughtSignature === SKIP_THOUGHT_SIGNATURE ? { functionCall: part.functionCall } : part) }
+          : item);
+        const liveAssistant = liveItems.find(item => item.role === "model") as WireItem;
+        const summaryAssistant = summaryItems.slice(0, -1).find(item => item.role === "model") as WireItem;
+        expect((liveAssistant.parts as Array<Record<string, unknown>>)[1]).toMatchObject({
+          functionCall: { name: "read_a", args: { path: "a" } }, thoughtSignature: SKIP_THOUGHT_SIGNATURE,
+        });
+        expect((summaryAssistant.parts as Array<Record<string, unknown>>)[1]).not.toHaveProperty("thoughtSignature");
+        expect(withoutSentinel(summaryItems.slice(0, -1))).toEqual(withoutSentinel(liveItems));
+      } else {
+        expect(summaryItems.slice(0, -1)).toEqual(liveItems);
+      }
       // Compare all wire fields, not a hand-picked subset of system/tools/parameters.
       expect({ ...summaryWire, body: { ...summaryWire.body, [key]: liveItems } }).toEqual(liveWire);
       expect(summaryWire.headers["x-shape-test"]).toBe("same-bytes");
