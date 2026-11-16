@@ -351,7 +351,7 @@ export class CanonicalWriter {
    * order. Provider ids may be empty or reused across steps/turns, so canonical ids are
    * normalized here and the live turn keeps using the provider's own ids.
    */
-  private pendingIds = new Map<string, string[]>();
+  private pendingIds = new Map<string, { id: string; name: string }[]>();
 
   constructor(
     private readonly log: Pick<EventLog, "readAll" | "append">,
@@ -419,8 +419,9 @@ export class CanonicalWriter {
       const canonicalIds = calls ? this.assignCallIds(turnId, calls.map((call) => call.id)) : [];
       (calls ?? []).forEach((call, i) => {
         const queue = this.pendingIds.get(call.id);
-        if (queue) queue.push(canonicalIds[i]!);
-        else this.pendingIds.set(call.id, [canonicalIds[i]!]);
+        const entry = { id: canonicalIds[i]!, name: call.name };
+        if (queue) queue.push(entry);
+        else this.pendingIds.set(call.id, [entry]);
       });
       // Ordered blocks reference calls by provider id; the n-th block for an id takes the n-th canonical id.
       const blockCursor = new Map<string, number>();
@@ -429,7 +430,7 @@ export class CanonicalWriter {
         const n = blockCursor.get(block.id) ?? 0;
         blockCursor.set(block.id, n + 1);
         const mapped = this.pendingIds.get(block.id)?.[n];
-        return mapped === undefined ? block : { ...block, id: mapped };
+        return mapped === undefined ? block : { ...block, id: mapped.id };
       });
       return {
         formatVersion: CANONICAL_TRANSCRIPT_VERSION, kind: "assistant", turnId,
@@ -453,19 +454,24 @@ export class CanonicalWriter {
     });
   }
 
-  /** The oldest unmatched canonical id of this batch for a provider id, or the id as given. */
-  private takeCallId(providerId: string): string {
+  /**
+   * The oldest unmatched canonical id of this batch for a provider id whose call has this tool
+   * name; failing that, the oldest for the provider id; failing that, the id as given.
+   */
+  private takeCallId(providerId: string, toolName: string): string {
     const queue = this.pendingIds.get(providerId);
-    const id = queue?.shift();
-    if (queue && queue.length === 0) this.pendingIds.delete(providerId);
-    return id ?? providerId;
+    if (!queue?.length) return providerId;
+    const found = queue.findIndex((entry) => entry.name === toolName);
+    const [entry] = queue.splice(found === -1 ? 0 : found, 1);
+    if (queue.length === 0) this.pendingIds.delete(providerId);
+    return entry!.id;
   }
 
   async result(turnId: number | null, callId: string, toolName: string, text: string, isError: boolean): Promise<void> {
     if (turnId === null) return;
     await this.write("tool_result", () => ({
       formatVersion: CANONICAL_TRANSCRIPT_VERSION, kind: "tool_result", turnId,
-      message: { callId: this.takeCallId(callId), toolName, text: redactSecrets(text) as string, isError },
+      message: { callId: this.takeCallId(callId, toolName), toolName, text: redactSecrets(text) as string, isError },
     }));
   }
 
