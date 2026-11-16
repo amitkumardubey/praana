@@ -17,7 +17,6 @@ async function start(enabled = true) {
   process.env.PRAANA_HOME = home;
   const config = structuredClone(loadConfig());
   config.memory.enabled = enabled;
-  config.memory.summarizer = "disabled";
   config.native.enabled = false;
   config.context_engine.enabled = false;
   config.context_engine.measurement_mode = false;

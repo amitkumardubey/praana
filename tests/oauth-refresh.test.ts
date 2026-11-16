@@ -68,7 +68,7 @@ function holdLock(kind: "store" | "refresh", provider = "openai-codex"): Credent
 function turnConfig(logDir: string, home: string): PraanaConfig {
   return {
     llm: { provider: "openai-codex", model: "gpt-6.1-sol" },
-    memory: { enabled: false, summarizer: "disabled", db_path: join(home, "memory.db") },
+    memory: { enabled: false, db_path: join(home, "memory.db") },
     compiler: { token_budget: 100_000, recent_turns: 2, recent_turns_token_budget: 8_000 },
     tiers: { idle_soft_after_turns: 20, idle_hard_after_turns: 50 },
     session: { log_dir: logDir },
@@ -607,7 +607,7 @@ describe("serialized OAuth refresh", () => {
     mkdirSync(logDir, { recursive: true });
     const config = {
       llm: { provider: "openai-codex", model: "gpt-6.1-sol" },
-      memory: { enabled: false, summarizer: "disabled", db_path: join(praanaHome, "memory.db") },
+      memory: { enabled: false, db_path: join(praanaHome, "memory.db") },
       compiler: { token_budget: 100_000, recent_turns: 2, recent_turns_token_budget: 8_000 },
       tiers: { idle_soft_after_turns: 20, idle_hard_after_turns: 50 },
       session: { log_dir: logDir },

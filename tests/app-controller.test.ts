@@ -82,7 +82,7 @@ mock.module("../src/session.js", () => ({
 
 const baseConfig: PraanaConfig = {
   llm: { provider: "openrouter", model: "test/model" },
-  memory: { enabled: false, summarizer: "disabled", db_path: ":memory:" },
+  memory: { enabled: false, db_path: ":memory:" },
   compiler: {
     token_budget: 100_000,
     recent_turns: 10,
@@ -256,7 +256,7 @@ describe("AppController", () => {
     expect(result.lines.length).toBeGreaterThan(0);
   });
 
-  it("shutdown() returns the memory status from session.end() and passes a default 2s timeout", async () => {
+  it("shutdown() returns the memory status from session.end()", async () => {
     const controller = new AppController({
       cwd: "/tmp",
       config: baseConfig,
@@ -275,30 +275,7 @@ describe("AppController", () => {
 
     const status = await controller.shutdown();
     expect(status.memory).toBe("background");
-    expect(end).toHaveBeenCalledWith("clean", [], { memoryTimeoutMs: 2_000 });
-  });
-
-  it("shutdown() honours config.session.shutdown_memory_timeout_ms when set", async () => {
-    const controller = new AppController({
-      cwd: "/tmp",
-      config: { ...baseConfig, session: { ...baseConfig.session, shutdown_memory_timeout_ms: 500 } },
-      parsed: baseParsed,
-    });
-    await controller.start();
-    const end = controller.session.end as ReturnType<typeof mock>;
-    end.mockResolvedValueOnce({
-      memory: "completed",
-      turns: 1,
-      stateObjects: 0,
-      rememberCalls: 0,
-      recallUsed: 0,
-      learningsStored: 2,
-    });
-
-    const status = await controller.shutdown();
-    expect(status.memory).toBe("completed");
-    expect(status.learningsStored).toBe(2);
-    expect(end).toHaveBeenCalledWith("clean", [], { memoryTimeoutMs: 500 });
+    expect(end).toHaveBeenCalledWith("clean", []);
   });
 
   it("shutdown('aborted') passes 'aborted' to session.end(), shutdown() passes 'clean'", async () => {
@@ -319,7 +296,7 @@ describe("AppController", () => {
       learningsStored: 0,
     });
     await aborted.shutdown("aborted");
-    expect(abortedEnd).toHaveBeenCalledWith("aborted", [], { memoryTimeoutMs: 2_000 });
+    expect(abortedEnd).toHaveBeenCalledWith("aborted", []);
 
     // Normal shutdown stays "clean".
     const normal = new AppController({
@@ -338,7 +315,7 @@ describe("AppController", () => {
       learningsStored: 0,
     });
     await normal.shutdown();
-    expect(normalEnd).toHaveBeenCalledWith("clean", [], { memoryTimeoutMs: 2_000 });
+    expect(normalEnd).toHaveBeenCalledWith("clean", []);
   });
 
   it("startNewSession() ends the current session quickly, reloads config, and creates a fresh one", async () => {

@@ -113,7 +113,7 @@ export type SessionEndEpilogueInput = {
   stateObjects: number;
   rememberCalls: number;
   recallUsed: number;
-  /** Summarizer learnings stored in-process; omit/0 when background or unknown. */
+  /** Always 0: sessions store no learnings automatically. */
   learningsStored: number;
 };
 

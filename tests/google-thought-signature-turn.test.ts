@@ -65,7 +65,6 @@ for (const engine of [false, true]) {
     const config = loadConfig();
     config.session.log_dir = join(root, "logs");
     config.memory.enabled = false;
-    config.memory.summarizer = "disabled";
     config.context_engine!.enabled = engine;
     config.context_engine!.llm_digest = false;
     config.native = { ...config.native!, enabled: false };

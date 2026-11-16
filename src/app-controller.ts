@@ -445,9 +445,7 @@ export class AppController {
     }
     this.sessionEnded = true;
     const events = this.session.getTranscriptEvents();
-    const memoryTimeoutMs =
-      this.config.session.shutdown_memory_timeout_ms ?? 2_000;
-    return this.session.end(reason, events, { memoryTimeoutMs });
+    return this.session.end(reason, events);
   }
 }
 

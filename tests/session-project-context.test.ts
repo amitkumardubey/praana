@@ -33,7 +33,6 @@ function makeConfig(overrides: Partial<PraanaConfig> = {}): PraanaConfig {
     llm: { provider: "openrouter", model: "test/model" },
     memory: {
       enabled: false,
-      summarizer: "disabled",
       db_path: join(testRoot, "memory.db"),
       embedder: "auto",
       ollama_url: "http://localhost:11434",
@@ -62,11 +61,6 @@ function makeConfig(overrides: Partial<PraanaConfig> = {}): PraanaConfig {
     },
     shell: { enabled: false, allowed_paths: [] },
     edit: { confirm: false },
-    consolidation: {
-      enabled: false,
-      promotion_threshold: 3,
-      run_delay_seconds: 30,
-    },
     project_detection: { enabled: true },
     ...overrides,
   };

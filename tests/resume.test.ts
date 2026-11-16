@@ -34,7 +34,7 @@ async function endTrackedSessions(): Promise<void> {
 }
 const testConfig: PraanaConfig = {
   llm: { provider: "openrouter", model: "anthropic/claude-sonnet-4" },
-  memory: { enabled: false, summarizer: "disabled", db_path: join(testRoot, "memory.db") },
+  memory: { enabled: false, db_path: join(testRoot, "memory.db") },
   compiler: { token_budget: 100_000, recent_turns: 10, recent_turns_token_budget: 30_000 },
   tiers: { idle_soft_after_turns: 20, idle_hard_after_turns: 50 },
   session: { log_dir: testLogDir },

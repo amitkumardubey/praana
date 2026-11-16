@@ -110,7 +110,7 @@ if (isolated) {
   applyIsolation();
   beforeEach(applyIsolation);
   // Restore the isolated env after every test too: async work started by a test
-  // (session-end consolidation, log flushes) can land in the gap after its own
+  // (session-end flushes, log writes) can land in the gap after its own
   // afterEach deleted PRAANA_HOME, and would then write to the real home.
   afterEach(applyIsolation);
 

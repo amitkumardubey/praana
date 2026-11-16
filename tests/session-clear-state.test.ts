@@ -33,7 +33,7 @@ async function endTrackedSessions(): Promise<void> {
 
 const testConfig: PraanaConfig = {
   llm: { provider: "openrouter", model: "test/model" },
-  memory: { enabled: false, summarizer: "disabled", db_path: join(testRoot, "memory.db") },
+  memory: { enabled: false, db_path: join(testRoot, "memory.db") },
   compiler: { token_budget: 100_000, recent_turns: 10, recent_turns_token_budget: 30_000 },
   tiers: { idle_soft_after_turns: 20, idle_hard_after_turns: 50 },
   session: { log_dir: testLogDir },
@@ -299,7 +299,7 @@ describe("Session.getVisibleSessionCheckpoint (integration)", () => {
     dbPath = join(tmpdir(), `praana-test-ctx-${Date.now()}-${Math.random().toString(36).slice(2)}.db`);
     return {
       llm: { provider: "openrouter", model: "test/model" },
-      memory: { enabled: false, summarizer: "disabled", db_path: dbPath },
+      memory: { enabled: false, db_path: dbPath },
       compiler: { token_budget: 100_000, recent_turns: 10, recent_turns_token_budget: 30_000 },
       tiers: { idle_soft_after_turns: 20, idle_hard_after_turns: 50 },
       session: { log_dir: intDir },

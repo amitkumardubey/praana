@@ -18,7 +18,6 @@ function baseConfig(): PraanaConfig {
     llm: { provider: "openrouter", model: "anthropic/claude-sonnet-5" },
     memory: {
       enabled: false,
-      summarizer: "openrouter",
       db_path: ":memory:",
       embedder: "auto",
       ollama_url: "http://localhost:11434",
@@ -31,11 +30,6 @@ function baseConfig(): PraanaConfig {
     },
     tiers: { idle_soft_after_turns: 3, idle_hard_after_turns: 6 },
     session: { log_dir: "/tmp/praana-headless-test" },
-    consolidation: {
-      enabled: false,
-      promotion_threshold: 3,
-      run_delay_seconds: 30,
-    },
     shell: { enabled: false, allowed_paths: [] },
     edit: { confirm: false },
     skills: {

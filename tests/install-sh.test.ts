@@ -128,7 +128,6 @@ describe("installer self-check vs real doctor output", () => {
           compiler: { token_budget: 100000 },
           tiers: {},
           session: { log_dir: process.env.PRAANA_HOME },
-          consolidation: {},
           shell: {},
           edit: { confirm: false },
           skills: { enabled: false },
