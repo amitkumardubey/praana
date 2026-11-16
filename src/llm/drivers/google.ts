@@ -215,7 +215,7 @@ export class GoogleDriver implements LlmDriver {
     for await (const event of guarded) {
       // HTTP errors occur before any SSE frame; keep Google's message/status.
       if (isVertex && event.type === "error" && event.status === 404 && event.error instanceof ProviderHttpError) {
-        event.error.message += " Vertex AI model or location is not available to this project; try another VERTEX_REGION (for example global for Gemini 3.x).";
+        event.error.message += " Vertex AI model or location is not available to this project; try another VERTEX_REGION (Gemini 3 and later models need global, us or eu).";
       }
       yield event;
     }

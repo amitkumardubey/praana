@@ -191,9 +191,11 @@ the request is refused locally. Location precedence: `VERTEX_REGION` →
 `GOOGLE_CLOUD_LOCATION` → `us-central1`. Set `VERTEX_REGION=global` to use the
 global endpoint. Model availability depends on the project and location; a
 Vertex HTTP 404 retains Google's message and suggests trying another location.
-The default model is `gemini-4-hydrogen`; choose an accessible Gemini model
-explicitly when your project cannot serve that model. Non-Gemini routes and tuned-model/endpoint resource
-names are not supported.
+The default model is `gemini-4-hydrogen`. Gemini 3 and later models are served
+from the `global`, `us` and `eu` locations, not from the `us-central1` default, so
+set `VERTEX_REGION=global` when using them. Choose an accessible Gemini model
+explicitly when your project cannot serve the default. Non-Gemini routes and
+tuned-model/endpoint resource names are not supported.
 
 ### First-party OpenAI API routing
 
