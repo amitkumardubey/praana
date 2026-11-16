@@ -935,6 +935,40 @@ describe("executeSlashCommand", () => {
       expect(existsSync(join(praanaHome, ".praana", "settings.json"))).toBe(true);
     });
 
+    it("refreshes status when incognito rebuild fails without persisting settings", async () => {
+      const settingsFile = join(praanaHome, ".praana", "settings.json");
+      const original = '{"incognito":false,"theme":"dark"}';
+      writeFileSync(settingsFile, original);
+      let incognito = false;
+      const session = settingsSession({
+        isIncognito: () => incognito,
+        setIncognito: mock(async () => { incognito = true; return "rebuild failed"; }),
+      });
+      const result = await executeSlashCommand("/settings set incognito on", session, {
+        setModel: mock(), setThinking: mock(), getThinking: () => true,
+      });
+      expect(session.isIncognito()).toBe(true);
+      expect(readFileSync(settingsFile, "utf-8")).toBe(original);
+      expect(result.action).toBe("refresh_status");
+      expect(result.toastTone).toBe("error");
+      expect(result.lines.join("\n")).toContain("rebuild failed");
+    });
+
+    it("refreshes status when the incognito command rebuild fails", async () => {
+      let incognito = false;
+      const session = settingsSession({
+        isIncognito: () => incognito,
+        setIncognito: mock(async () => { incognito = true; return "rebuild failed"; }),
+      });
+      const result = await executeSlashCommand("/incognito on", session, {
+        setModel: mock(), setThinking: mock(), getThinking: () => true,
+      });
+      expect(session.isIncognito()).toBe(true);
+      expect(result.action).toBe("refresh_status");
+      expect(result.toastTone).toBe("error");
+      expect(result.lines.join("\n")).toContain("rebuild failed");
+    });
+
     it("set persists and applies thinking", async () => {
       const setThinking = mock();
       const result = await executeSlashCommand(

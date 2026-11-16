@@ -338,16 +338,27 @@ async function handleSettingsCommand(
       lines.push(parsed.error);
       return result("none", "toast", "error");
     }
+    // Incognito can change the live privacy state even if rebuilding the store fails.
+    // Apply it before persisting so a failed switch never becomes a default.
+    if (key === "incognito") {
+      const appliedError = await applySettingToSession(session, handlers, key, parsed.value);
+      if (appliedError) {
+        lines.push(`Failed to apply ${key}: ${appliedError}`);
+        return result("refresh_status", "toast", "error");
+      }
+    }
     const patch: Partial<UserSettings> = { [key]: parsed.value };
     const updated = updateUserSettings(patch);
     if (!updated.ok) {
       lines.push(`Failed to save settings: ${updated.error}`);
-      return result("none", "toast", "error");
+      return result(key === "incognito" ? "refresh_status" : "none", "toast", "error");
     }
-    const appliedError = await applySettingToSession(session, handlers, key, parsed.value);
-    if (appliedError) {
-      lines.push(`Failed to apply ${key}: ${appliedError}`);
-      return result("none", "toast", "error");
+    if (key !== "incognito") {
+      const appliedError = await applySettingToSession(session, handlers, key, parsed.value);
+      if (appliedError) {
+        lines.push(`Failed to apply ${key}: ${appliedError}`);
+        return result("none", "toast", "error");
+      }
     }
     lines.push(`Saved ${key}=${formatSettingValue(parsed.value)} (persisted + applied).`);
     return result("refresh_status", "toast", "success");
@@ -918,7 +929,7 @@ export async function executeSlashCommand(
         const failure = await session.setIncognito(true);
         if (failure) {
           lines.push(`Incognito switch failed: ${failure}`);
-          return result("none", "toast", "error");
+          return result("refresh_status", "toast", "error");
         }
         lines.push(
           session.memoryEnabled && session.fileMemory
@@ -929,7 +940,7 @@ export async function executeSlashCommand(
         const failure = await session.setIncognito(false);
         if (failure) {
           lines.push(`Incognito switch failed: ${failure}`);
-          return result("none", "toast", "error");
+          return result("refresh_status", "toast", "error");
         }
         lines.push(
           session.memoryEnabled && session.fileMemory
