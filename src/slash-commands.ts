@@ -106,7 +106,7 @@ export const SLASH_COMMAND_METADATA: SlashCommandMeta[] = [
   { name: "/reasoning", description: "Set reasoning effort level", argumentHint: "off|minimal|low|medium|high|xhigh", category: "Model & Config" },
   { name: "/plan", description: "Toggle plan mode", argumentHint: "on|off|execute|go", category: "Tools" },
   { name: "/incognito", description: "Block or allow memory writes", argumentHint: "on|off", category: "Memory" },
-  { name: "/memory", description: "List, show, forget, or prune file memories", argumentHint: "show|forget|prune", category: "Memory" },
+  { name: "/memory", description: "List, show, forget, or prune file memories (prune lists the oldest candidates and does not delete)", argumentHint: "show|forget|prune", category: "Memory" },
   { name: "/debug", description: "Toggle debug mode", category: "Tools" },
   { name: "/shell", description: "Run a shell command directly", argumentHint: "<command>", category: "Tools" },
   { name: "/login", description: "Add or update a provider", argumentHint: "[provider]", category: "Model & Config" },
@@ -600,7 +600,15 @@ export async function executeSlashCommand(
     }
 
     case "/digest": {
-      lines.push(session.digest ?? "No memories yet.");
+      if (session.digest) {
+        lines.push(session.digest);
+      } else if (session.memoryError) {
+        lines.push(`Memory unavailable: ${session.memoryError}`);
+      } else if (!session.memoryEnabled || !session.fileMemory) {
+        lines.push("Memory is off.");
+      } else {
+        lines.push("No memories yet.");
+      }
       break;
     }
 
@@ -989,7 +997,7 @@ export async function executeSlashCommand(
     }
 
     case "/memory": {
-      const usage = "Usage: /memory [show <name> [global|project] | forget <name> [global|project] | prune]";
+      const usage = "Usage: /memory [show <name> [global|project] | forget <name> [global|project] | prune (lists oldest candidates, does not delete)]";
       const sub = (parts[1] ?? "").toLowerCase();
       const store = session.fileMemory;
       const unavailable = session.memoryError ? "Memory unavailable." : "Memory is off.";

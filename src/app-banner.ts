@@ -227,7 +227,7 @@ export const SLASH_COMMANDS_HELP_BLOCK = [
   "  /digest                  Print the current file memory index",
   "  /events                  Show last 20 events",
   "  /recall <query>          Search file memories",
-  "  /memory                  List file memories (show, forget, prune)",
+  "  /memory                  List file memories; show/forget/prune (prune lists the oldest candidates, does not delete)",
   "  /login [provider]        Add or update a provider",
   "  /logout [provider]       Remove a provider's credentials",
   "  /model [provider] <id>   Switch model (bare /model opens selector)",

@@ -15,7 +15,7 @@ import { computeMemoryStats, runTurn } from "../src/turn.js";
 import { scriptedMemoryModel } from "./helpers/scripted-memory-model.js";
 import { projectKey } from "../src/file-memory/paths.js";
 import { MEMORY_POLICY, type FileMemoryStore } from "../src/file-memory/index.js";
-import { executeSlashCommand } from "../src/slash-commands.js";
+import { buildInAppHelpLines, executeSlashCommand } from "../src/slash-commands.js";
 import { openContextEngineDb } from "../src/context-engine/db.js";
 import { maybeAutoCompactClassic } from "../src/auto-compact.js";
 import { formatSessionBannerLines, printHelp, SLASH_COMMANDS_HELP_BLOCK } from "../src/app-banner.js";
@@ -583,4 +583,35 @@ it("says there are no memories yet when the index is empty", async () => {
   expect(digest.lines.join("\n")).toBe("No memories yet.");
   const listed = await executeSlashCommand("/memory", session, slashHandlers);
   expect(listed.lines.join("\n")).toBe("No memories yet.");
+});
+
+it("says memory is off or unavailable in /digest when the store is absent", async () => {
+  config.memory.enabled = false;
+  const off = await start();
+  const offDigest = await executeSlashCommand("/digest", off, slashHandlers);
+  expect(offDigest.lines.join("\n")).toBe("Memory is off.");
+  config.memory.enabled = true;
+  mkdirSync(join(home, ".praana"), { recursive: true });
+  writeFileSync(join(home, ".praana", "memory"), "not a directory");
+  writeFileSync(join(home, ".praana", "projects"), "not a directory");
+  const session = await start();
+  expect(session.memoryError).toBeTruthy();
+  const digest = await executeSlashCommand("/digest", session, slashHandlers);
+  expect(digest.lines.join("\n")).toBe(`Memory unavailable: ${session.memoryError}`);
+});
+
+it("describes prune as list-only across usage, palette, and help", async () => {
+  seed();
+  const session = await start();
+  const deduped = await executeSlashCommand("/memory dedupe", session, slashHandlers);
+  const usage = deduped.lines.join("\n");
+  expect(usage).toContain("Usage: /memory");
+  expect(usage).toContain("does not delete");
+  expect(usage).toContain("oldest candidates");
+  const memoryCommand = SLASH_COMMAND_METADATA.find((command) => command.name === "/memory");
+  expect(memoryCommand?.description ?? "").toContain("does not delete");
+  expect(SLASH_COMMANDS_HELP_BLOCK.join("\n")).toContain("does not delete");
+  const out = buildInAppHelpLines().join("\n");
+  expect(out).toContain("does not delete");
+  expect(out).not.toContain("/memory dedupe");
 });
