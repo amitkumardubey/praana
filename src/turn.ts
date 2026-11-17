@@ -779,6 +779,8 @@ export async function runTurn(
       session.contextEngine?.clearFileReadAllRanges(absPath);
     },
     lspManager: session.lspManager,
+    // Declared just below; the closure only runs when a tool executes (#811).
+    getContextWindowTokens: () => contextWindowTokens,
   });
 
   const modelName = modelOverride ?? session.config.llm.model;

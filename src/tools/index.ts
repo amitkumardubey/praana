@@ -48,6 +48,8 @@ export interface ToolRegistryContext {
   skillRuntime: SkillRuntime | null;
   getReadPathMtime?: (absPath: string) => number | undefined;
   clearReadPath?: (absPath: string) => void;
+  /** Model context window in tokens; `read_file` sizes its per-call cap from it (#811). */
+  getContextWindowTokens?: () => number | undefined;
   lspManager?: LspManager | null;
   webConfig?: WebToolsConfig;
   headless?: boolean;
@@ -95,6 +97,7 @@ export function createAllTools(ctx: ToolRegistryContext) {
     getCurrentTurn: ctx.getCurrentTurn ?? (() => 0),
     getReadPathMtime: ctx.getReadPathMtime,
     clearReadPath: ctx.clearReadPath,
+    getContextWindowTokens: ctx.getContextWindowTokens,
   });
   const searchCodeTools = createSearchCodeTool({
     cwd: ctx.cwd,

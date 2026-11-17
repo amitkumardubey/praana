@@ -1308,6 +1308,64 @@ describe("runTurn", () => {
     });
   }
 
+  it("caps an engine-mode read_file and keeps the stored artifact content exact", async () => {
+    const cacheDir = join(homedir(), ".cache");
+    mkdirSync(cacheDir, { recursive: true });
+    const cwd = mkdtempSync(join(cacheDir, "praana-engine-read-cap-"));
+    const config = makeConfig({ context_engine: { ...makeConfig().context_engine, enabled: true } });
+    const engine = ceReal.ContextEngine.open(":memory:", "read-cap-test", config.context_engine!);
+    const session = makeMockSession({ config, cwd, contextEngine: engine, scorecard: engine.scorecard });
+    const requests: ConversationMessage[][] = [];
+    const shown: string[] = [];
+    const ingest = spyOn(engine, "ingestToolResult");
+    const compilerMock = compileEngineWithMetrics as ReturnType<typeof mock>;
+    const previousCompiler = compilerMock.getMockImplementation()!;
+    compilerMock.mockImplementation(ceReal.compileEngineWithMetrics);
+    const tools = createSystemTools({ cwd, skills: [], skillRuntime: null, getCurrentTurn: () => session.getTurnCount() });
+    (createAllTools as ReturnType<typeof mock>).mockImplementationOnce(() => ({ read_file: tools.read_file }));
+    const lines = Array.from({ length: 3000 }, (_, i) => `row ${i + 1}`);
+    writeFileSync(join(cwd, "big.txt"), lines.join("\n") + "\n");
+    let reads = 0;
+    (piStream as ReturnType<typeof mock>).mockImplementation((req: StreamRequest) => {
+      requests.push(structuredClone(req.messages));
+      return (async function* () {
+        if (reads++ === 0) {
+          const toolUse = { id: "read-cap", name: "read_file", args: { path: "big.txt" } };
+          yield { type: "tool_call_end", toolCall: toolUse };
+          yield { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [toolUse] } };
+        } else {
+          yield { type: "text_delta", delta: "done" };
+          yield { type: "done", reason: "stop", message: { role: "assistant", content: "done" } };
+        }
+      })();
+    });
+    try {
+      await runTurn(session, "read the big file", undefined, {
+        sink: { onToolResult: (_id, _name, text) => shown.push(text) },
+      });
+      const text = requests[1]!.filter((m) => m.role === "tool_result").at(-1)!.result;
+      const payload = JSON.parse(text);
+      // The model sees the capped part plus how to read the rest.
+      expect(payload.truncated).toBe(true);
+      expect(payload.total_lines).toBe(3000);
+      expect(payload.note).toContain("offset=2001");
+      expect(payload.content.split("\n")).toHaveLength(2000);
+      expect(payload.content.split("\n").at(-1)).toBe("row 2000");
+      expect(shown[0]).toBe(text);
+      // `content` stays pure file lines, so the lossless artifact keeps an exact range.
+      const artifactId = ingest.mock.results[0]!.value.artifactId as string;
+      const artifact = engine.getArtifact(artifactId)!;
+      expect(artifact.rawText).toBe(payload.content);
+      expect(artifact.sourceLineStart).toBe(1);
+      expect(artifact.sourceLineEnd).toBe(2000);
+    } finally {
+      compilerMock.mockImplementation(previousCompiler);
+      ingest.mockRestore();
+      engine.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("presents a failed engine-mode read_file as the error, not as an artifact card", async () => {
     const cacheDir = join(homedir(), ".cache");
     mkdirSync(cacheDir, { recursive: true });
