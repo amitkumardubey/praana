@@ -32,11 +32,18 @@ import { runHeadless } from "./headless-run.js";
 import { refreshUpdateCheck, refreshUpgradeCheck } from "./update/check.js";
 import { runUpgrade } from "./update/upgrade.js";
 
+/** Debug-level report for a failed app-home permission fix-up (best effort). */
+function logAppHomeFixupFailure(path: string, err: unknown): void {
+  getAppLogger().debug("failed to tighten app home permissions", {
+    details: { path, cause: (err as Error)?.message },
+  });
+}
+
 export async function main() {
   const parsed = parseCliArgs(process.argv.slice(2));
   // Before any branch that can exit early (--models, --providers, doctor, ...):
   // an app home left 0755 by an older version must not stay world-readable.
-  tightenAppHomePermissions();
+  tightenAppHomePermissions({ onError: logAppHomeFixupFailure });
   if (parsed.showHelp) {
     printHelp();
     process.exit(0);

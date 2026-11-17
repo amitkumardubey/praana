@@ -306,6 +306,37 @@ describe("tightenAppHomePermissions", () => {
     expect(existsSync(appHomePath())).toBe(false);
   });
 
+  it.skipIf(isWindows)("reports a failed chmod through onError for each directory", () => {
+    const { home, sessions } = makeHome(0o755, 0o755);
+    const reported: Array<{ path: string; message: string }> = [];
+
+    tightenAppHomePermissions({
+      chmod: () => {
+        throw new Error("EPERM: operation not permitted");
+      },
+      onError: (path, err) =>
+        reported.push({ path, message: (err as Error).message }),
+    });
+
+    expect(reported.map((r) => r.path)).toEqual([home, sessions]);
+    expect(reported[0]!.message).toContain("EPERM");
+  });
+
+  it.skipIf(isWindows)("survives an onError callback that throws", () => {
+    makeHome(0o755, 0o755);
+
+    expect(() =>
+      tightenAppHomePermissions({
+        chmod: () => {
+          throw new Error("EPERM");
+        },
+        onError: () => {
+          throw new Error("logger not ready");
+        },
+      }),
+    ).not.toThrow();
+  });
+
   it.skipIf(isWindows)("swallows a chmod failure", () => {
     const { home } = makeHome(0o755, 0o755);
 
@@ -325,7 +356,7 @@ describe("startup fix-up call order", () => {
   it("runs before every early-exit CLI branch in main()", () => {
     const src = readFileSync(join(import.meta.dir, "../src/main.ts"), "utf-8");
     const body = src.slice(src.indexOf("export async function main()"));
-    const fixUp = body.indexOf("tightenAppHomePermissions()");
+    const fixUp = body.indexOf("tightenAppHomePermissions(");
     expect(fixUp).toBeGreaterThan(-1);
     for (const branch of [
       "parsed.showHelp",
@@ -341,6 +372,19 @@ describe("startup fix-up call order", () => {
       expect(fixUp).toBeLessThan(at);
     }
     // Called once, not again after the early branches.
-    expect(body.split("tightenAppHomePermissions()").length - 1).toBe(1);
+    expect(body.split("tightenAppHomePermissions(").length - 1).toBe(1);
+  });
+});
+
+describe("app-identity module graph", () => {
+  it("does not import the logger (no import cycle)", () => {
+    const src = readFileSync(join(import.meta.dir, "../src/app-identity.ts"), "utf-8");
+    const specifiers = [...src.matchAll(/from\s+["']([^"']+)["']/g)].map((m) => m[1]!);
+    expect(specifiers.length).toBeGreaterThan(0);
+    // Only node: builtins: nothing in src/ can import back into a cycle.
+    for (const spec of specifiers) {
+      expect(spec.startsWith("node:")).toBe(true);
+    }
+    expect(src).not.toContain("logger.js");
   });
 });

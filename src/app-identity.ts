@@ -8,7 +8,6 @@ import {
   writeFileSync,
   type Stats,
 } from "node:fs";
-import { getAppLogger } from "./logger.js";
 
 /** Product identity — single source of truth for rename-sensitive strings. */
 export const APP_NAME = "PRAANA";
@@ -102,6 +101,8 @@ export interface AppHomePermissionFixes {
   lstat?: (path: string) => Pick<Stats, "mode" | "uid" | "isSymbolicLink">;
   /** Current user id; `undefined` where the platform has none. */
   getuid?: () => number | undefined;
+  /** Called with the path and error when a fix-up fails; never throws out. */
+  onError?: (path: string, err: unknown) => void;
 }
 
 /**
@@ -109,7 +110,7 @@ export interface AppHomePermissionFixes {
  * touching group bits or setgid/sticky bits, so a deliberately group-shared
  * directory keeps its group access. Skips a missing path, a symlink (never
  * chmod through a link) and a directory owned by another user. Best effort:
- * a failure is logged at debug level and never throws. No-op on Windows.
+ * a failure is reported through `deps.onError` and never throws. No-op on Windows.
  * Returns true when the mode was changed.
  */
 export function tightenDirPermissions(
@@ -136,11 +137,9 @@ export function tightenDirPermissions(
     return true;
   } catch (err) {
     try {
-      getAppLogger().debug("failed to tighten app home permissions", {
-        details: { path: dir, cause: (err as Error)?.message },
-      });
+      deps.onError?.(dir, err);
     } catch {
-      // Logging is best effort too.
+      // Reporting is best effort too.
     }
     return false;
   }
