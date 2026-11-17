@@ -117,7 +117,8 @@ export function getSessionSystemLogPath(sessionLogDir: string, sessionId: string
 function ensureParentDir(filePath: string): void {
   const dir = dirname(filePath);
   if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
+    // Logs live under the app home; keep every directory we create owner-only.
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
 }
 

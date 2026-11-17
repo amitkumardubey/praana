@@ -14,8 +14,8 @@ import { runInteractiveSetup } from "./interactive-setup.js";
 import { tryAutoSelectProvider } from "./setup/logic.js";
 import { writeProviderConfig } from "./setup/config-writer.js";
 import { ensureCredentialsFileMode } from "./credentials.js";
+import { isFirstRun, markInitialized, tightenAppHomePermissions, APP_NAME } from "./app-identity.js";
 import { runMemoryDedupe } from "./memory-dedupe-cli.js";
-import { isFirstRun, markInitialized, APP_NAME } from "./app-identity.js";
 import { formatProviderListForDisplay } from "./provider-registry.js";
 import { handleDoctor } from "./doctor.js";
 import { isInteractiveTerminal } from "./terminal.js";
@@ -74,6 +74,7 @@ export async function main() {
 
   await initAppLogFile();
   ensureCredentialsFileMode();
+  tightenAppHomePermissions();
 
   // Handle setup command early (before config loading, needs a TTY)
   if (parsed.setupMode) {

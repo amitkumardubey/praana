@@ -1375,7 +1375,7 @@ function initContextEngine(session: Session): void {
     if (measurementMode) {
       try {
         const dbPath = resolveContextDbPath(session.config, session.cwd);
-        mkdirSync(dirname(dbPath), { recursive: true });
+        mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
         const db = openContextEngineDb(dbPath);
         session.scorecard = new ScorecardTracker(db, session.id, false, scorecardOptions);
         session.scorecard.restoreFromDb();
@@ -1392,7 +1392,7 @@ function initContextEngine(session: Session): void {
 
   try {
     const dbPath = resolveContextDbPath(session.config, session.cwd);
-    mkdirSync(dirname(dbPath), { recursive: true });
+    mkdirSync(dirname(dbPath), { recursive: true, mode: 0o700 });
     session.contextEngine = ContextEngine.open(
       dbPath,
       session.id,
