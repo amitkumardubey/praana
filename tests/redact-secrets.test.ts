@@ -631,13 +631,40 @@ describe("redactSecrets", () => {
         throw new Error("redaction failed");
       };
       expect(redactSecrets("AKIAIOSFODNN7EXAMPLE")).toBe("[REDACTED:redaction-error]");
-      expect(redactSecrets({ text: "AKIAIOSFODNN7EXAMPLE" })).toEqual({
-        "[REDACTED:redaction-error]": "[REDACTED:redaction-error]",
-      });
+      // A key the prefilter skips is never scanned; a long one that fails is replaced.
+      expect(redactSecrets({ text: "AKIAIOSFODNN7EXAMPLE" })).toEqual({ text: "[REDACTED:redaction-error]" });
+      expect(redactSecrets({ "log_text_key_long": 1 })).toEqual({ "[REDACTED:redaction-error]": 1 });
     } finally {
       RegExp.prototype[Symbol.replace] = original;
     }
     expect(redactSecrets("AKIAIOSFODNN7EXAMPLE")).toBe("[REDACTED:aws-access-key]");
+  });
+
+  it("redacts every secret-looking key, whatever the key prefilter skips", () => {
+    const keyOf = (key: string): string => Object.keys(redactSecrets({ [key]: 0 }) as object)[0]!;
+    const secrets = [
+      "AKIAIOSFODNN7EXAMPLE", `ghp_${"a".repeat(36)}`, `github_pat_${"b".repeat(22)}`, `glpat-${"c".repeat(20)}`,
+      `sk-ant-${"d".repeat(20)}`, `sk-${"e".repeat(20)}`, `API_KEY=${"A1b2-".repeat(5)}`, `TOKEN: ${"G2h3-".repeat(5)}`,
+      "-----BEGIN RSA PRIVATE KEY-----\nMIIE\n-----END RSA PRIVATE KEY-----",
+      "http://a@b", "HTTPS://:p@h", "https://x.test/?token=1", "http://h/#key=v",
+    ];
+    for (const secret of secrets) {
+      expect(keyOf(secret)).toBe(redactSecrets(secret) as string);
+      expect(keyOf(secret)).not.toBe(secret);
+      expect(keyOf(`id ${secret} end`)).toBe(redactSecrets(`id ${secret} end`) as string);
+    }
+    // Short or special-character-free keys are untouched.
+    for (const key of ["stdout", "exit_code", "description", "a-b", "AKIA", "KEY=1"]) expect(keyOf(key)).toBe(key);
+    // Fragment fuzz, including truncated secrets at every length near the thresholds.
+    let state = 0x6b3;
+    const next = () => (state = (Math.imul(state, 1664525) + 1013904223) >>> 0) >>> 8;
+    const pieces = [...secrets, "x", " ", "_", "-", ":", "=", "AKIA", "ASIA", "KEY", "key", "http", "://", "@", "?", "/", "token", "A1b2C3d4E5f6G7h8I9j0"];
+    for (let i = 0; i < 3000; i++) {
+      let key = "";
+      for (let n = 1 + next() % 4; n > 0; n--) key += pieces[next() % pieces.length]!;
+      key = key.slice(0, next() % (key.length + 1));
+      expect(keyOf(key)).toBe(redactSecrets(key) as string);
+    }
   });
 
   it("redacts seeded randomized JSON projections without throwing", () => {

@@ -67,7 +67,8 @@ interface JsonFrame {
   readonly target: JsonContainer;
   readonly keys: string[] | null;
   readonly length: number;
-  readonly suffixes: Map<string, number>;
+  /** Created on the first key collision in this container. */
+  suffixes: Map<string, number> | null;
   cursor: number;
 }
 
@@ -76,10 +77,12 @@ function setOwn(container: JsonContainer, key: string, value: JsonValue): void {
 }
 
 function uniqueKey(frame: JsonFrame, base: string): string {
-  let suffix = frame.suffixes.get(base) ?? 1;
+  if (!Object.hasOwn(frame.target, base)) return base;
+  const suffixes = (frame.suffixes ??= new Map());
+  let suffix = suffixes.get(base) ?? 1;
   let key = base;
   while (Object.hasOwn(frame.target, key)) key = `${base}#${++suffix}`;
-  frame.suffixes.set(base, suffix);
+  suffixes.set(base, suffix);
   return key;
 }
 
@@ -94,10 +97,26 @@ function errorKeys(error: object): string[] {
   return ["name", "message", ...rest];
 }
 
+/**
+ * Keys that cannot match any detector skip redactString. Derived from the
+ * detectors above; keep in sync when one is added or changed:
+ * - length: the shortest match is a URL userinfo (`http://a@b`, 10 characters);
+ *   every other detector needs at least 20.
+ * - content: each detector needs at least one of `=` or `:` (assignments, and
+ *   `://` for URLs), `_` (`ghp_`, `github_pat_`), `-` (`glpat-`, `sk-`, PEM
+ *   armor), or `AKIA` / `ASIA` (AWS key ids).
+ */
+const MIN_DETECTABLE_LENGTH = 10;
+const DETECTOR_TRIGGER_RE = /[=:_-]|AKIA|ASIA/;
+
+function mayContainSecret(text: string): boolean {
+  return text.length >= MIN_DETECTABLE_LENGTH && DETECTOR_TRIGGER_RE.test(text);
+}
+
 /** A key whose redaction fails is replaced, never written as the original name. */
 function redactKey(key: string): string {
   try {
-    return redactString(key);
+    return mayContainSecret(key) ? redactString(key) : key;
   } catch {
     return PLACEHOLDER("redaction-error");
   }
@@ -179,7 +198,7 @@ function redactJsonProjection(value: unknown): JsonValue | undefined {
       : keys!.length;
     const target: JsonContainer = isArray ? [] : {};
     ancestors.add(child);
-    frames.push({ source, target, keys, length, suffixes: new Map(), cursor: 0 });
+    frames.push({ source, target, keys, length, suffixes: null, cursor: 0 });
     return target;
   };
 
