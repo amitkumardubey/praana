@@ -134,7 +134,9 @@ export class LoopGate {
 
   observePost(toolName: string, args: Record<string, unknown>, isError: boolean, cwd = process.cwd()): true | undefined {
     const path = typeof args.path === "string" ? resolve(cwd, args.path) : undefined;
-    if (!isError && path && (toolName === "read_file" || toolName === "read_and_summarize")) {
+    // Any successful call on a path (read or mutating) clears every streak for
+    // that path. Command-keyed streaks (shell) are cleared only by the same key.
+    if (!isError && path && typeof args.command !== "string") {
       for (const [key, streak] of this.errorHits) {
         if (streak.path === path) this.errorHits.delete(key);
       }

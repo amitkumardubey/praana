@@ -53,6 +53,26 @@ describe("LoopGate", () => {
     for (const tool of ["edit_file", "write_file"]) expect(gate.observePost(tool, abs, true, cwd)).toBeUndefined();
   });
 
+  it("clears an edit_file streak when write_file succeeds on the same path but not on another path", () => {
+    const gate = new LoopGate();
+    const edit = { path: "a.ts", oldText: "a", newText: "b" };
+    gate.observePost("edit_file", edit, true, "/project");
+    gate.observePost("write_file", { path: "b.ts", content: "x" }, false, "/project");
+    expect(gate.observePost("edit_file", edit, true, "/project")).toBe(true);
+    gate.observePost("write_file", { path: "./a.ts", content: "x" }, false, "/project");
+    expect(gate.observePost("edit_file", edit, true, "/project")).toBeUndefined();
+  });
+
+  it("clears a shell streak only through the same command", () => {
+    const gate = new LoopGate();
+    const cmd = { command: "rm -rf build", path: "a.ts" };
+    gate.observePost("shell", cmd, true, "/project");
+    gate.observePost("write_file", { path: "a.ts", content: "x" }, false, "/project");
+    expect(gate.observePost("shell", cmd, true, "/project")).toBe(true);
+    gate.observePost("shell", cmd, false, "/project");
+    expect(gate.observePost("shell", cmd, true, "/project")).toBeUndefined();
+  });
+
   it("does not clear another path or clear a streak on a failed read", () => {
     const gate = new LoopGate();
     const a = { path: "a.ts" };
@@ -100,9 +120,10 @@ describe("LoopGate", () => {
     let seed = 0x91827364;
     const rand = (n: number) => { seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0; return (seed >>> 8) % n; };
     for (let i = 0; i < 2000; i++) {
-      const op = rand(5);
+      const op = rand(6);
       const path = `src/${rand(3)}.ts`;
       if (op === 0) { counts.clear(); errors.clear(); gate.resetTurn(); continue; }
+      if (op === 5) { errors.delete(path); gate.observePost("write_file", { path, content: String(i) }, false, "/project"); continue; }
       if (op === 3) { errors.delete(path); gate.observePost("read_file", { path }, false, "/project"); continue; }
       const args = { path, oldText: op === 4 ? "repeat" : String(i), newText: "x" };
       const key = JSON.stringify(args);
