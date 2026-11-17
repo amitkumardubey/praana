@@ -17,6 +17,7 @@ import { join, resolve } from "node:path";
 import { ulid } from "ulid";
 import type { Event, EventActor, EventKind } from "./types.js";
 import { getAppLogger } from "./logger.js";
+import { APP_HOME_DIR_MODE } from "./app-identity.js";
 import {
   AmbiguousSessionPrefixError,
   SessionNotFoundError,
@@ -44,8 +45,6 @@ export interface EventSearchMatch {
 export const EVENT_LOG_FILENAME = "events.jsonl";
 export const LEGACY_EVENT_LOG_FILENAME = "events.log";
 
-/** Owner-only directory mode for session directories. */
-const SESSION_DIR_MODE = 0o700;
 /** Owner-only file mode for session files (transcripts, meta, checkpoints). */
 const SESSION_FILE_MODE = 0o600;
 
@@ -54,9 +53,9 @@ const SESSION_FILE_MODE = 0o600;
  * directories it creates, so an existing directory is tightened here instead.
  */
 function ensureSessionDir(sessionDir: string): void {
-  mkdirSync(sessionDir, { recursive: true, mode: SESSION_DIR_MODE });
+  mkdirSync(sessionDir, { recursive: true, mode: APP_HOME_DIR_MODE });
   try {
-    chmodSync(sessionDir, SESSION_DIR_MODE);
+    chmodSync(sessionDir, APP_HOME_DIR_MODE);
   } catch {
     // Best effort: a directory we cannot chmod must not break logging.
   }

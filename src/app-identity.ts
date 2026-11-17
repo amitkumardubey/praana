@@ -30,13 +30,29 @@ export function appHomePath(...parts: string[]): string {
   return join(base, ...parts);
 }
 
+/**
+ * Create `appHomePath(...parts)` (and any missing parents) owner-only and
+ * return the path. The app home itself is created first, so it is private even
+ * when `parts` is empty or the first command to run creates a nested directory.
+ * `recursive` applies the mode to every directory it creates; existing
+ * directories are left alone (see `tightenAppHomePermissions`).
+ */
+export function ensureAppHome(...parts: string[]): string {
+  mkdirSync(appHomePath(), { recursive: true, mode: APP_HOME_DIR_MODE });
+  const dir = appHomePath(...parts);
+  if (parts.length > 0) {
+    mkdirSync(dir, { recursive: true, mode: APP_HOME_DIR_MODE });
+  }
+  return dir;
+}
+
 export function isFirstRun(): boolean {
   return !existsSync(appHomePath(".initialized"));
 }
 
 export function markInitialized(): boolean {
   try {
-    mkdirSync(appHomePath(), { recursive: true, mode: APP_HOME_DIR_MODE });
+    ensureAppHome();
     writeFileSync(appHomePath(".initialized"), new Date().toISOString());
     return true;
   } catch {

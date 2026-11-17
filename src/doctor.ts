@@ -1,9 +1,9 @@
-import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getMissingKeyMessage } from "./llm.js";
 import { getConfigWarnings } from "./config.js";
-import { appHomePath, APP_NAME } from "./app-identity.js";
+import { appHomePath, ensureAppHome, APP_NAME } from "./app-identity.js";
 import { isModelCached, isTransformersAvailable } from "./memory/transformers-embedder.js";
 import { resolveTransformersModel } from "./memory/transformers-models.js";
 import { loadNative, formatNativeStatus, tryGetNative } from "./native/index.js";
@@ -41,7 +41,7 @@ export async function handleDoctor(
 
   const homeDir = appHomePath();
   try {
-    mkdirSync(homeDir, { recursive: true });
+    ensureAppHome();
     lines.push(`✓ home dir: ${homeDir}`);
   } catch (err) {
     lines.push(`✗ home dir: not writable (${(err as Error).message})`);

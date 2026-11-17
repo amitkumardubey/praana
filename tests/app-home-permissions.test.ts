@@ -24,9 +24,12 @@ import { join } from "node:path";
 
 import {
   appHomePath,
+  ensureAppHome,
   resolveDefaultSessionLogDir,
   tightenAppHomePermissions,
 } from "../src/app-identity.js";
+import { setEmbedderConsent } from "../src/memory/embedder-consent.js";
+import { writeProviderConfig } from "../src/setup/config-writer.js";
 import { EventLog, writeSessionMeta } from "../src/event-log.js";
 import { isWindows } from "./helpers/platform.js";
 
@@ -34,6 +37,81 @@ import { isWindows } from "./helpers/platform.js";
 function modeOf(path: string): number {
   return statSync(path).mode & 0o777;
 }
+
+describe("ensureAppHome", () => {
+  const originalPraanaHome = process.env.PRAANA_HOME;
+  let root: string | null = null;
+
+  /** Fresh isolated PRAANA_HOME root whose app home does not exist yet. */
+  function freshRoot(): void {
+    root = mkdtempSync(join(tmpdir(), "praana-perms-test-"));
+    process.env.PRAANA_HOME = root;
+  }
+
+  afterEach(() => {
+    if (originalPraanaHome !== undefined) {
+      process.env.PRAANA_HOME = originalPraanaHome;
+    } else {
+      delete process.env.PRAANA_HOME;
+    }
+    if (root) {
+      rmSync(root, { recursive: true, force: true });
+      root = null;
+    }
+  });
+
+  it.skipIf(isWindows)("creates the app home and nested directories 0700", () => {
+    freshRoot();
+
+    const dir = ensureAppHome("a", "b");
+
+    expect(dir).toBe(appHomePath("a", "b"));
+    expect(modeOf(appHomePath())).toBe(0o700);
+    expect(modeOf(appHomePath("a"))).toBe(0o700);
+    expect(modeOf(dir)).toBe(0o700);
+  });
+
+  it.skipIf(isWindows)("creates only the app home when called without parts", () => {
+    freshRoot();
+
+    expect(ensureAppHome()).toBe(appHomePath());
+    expect(modeOf(appHomePath())).toBe(0o700);
+  });
+
+  it.skipIf(isWindows)("is private even under a permissive umask", () => {
+    freshRoot();
+    const previous = process.umask(0o000);
+    try {
+      ensureAppHome("models");
+    } finally {
+      process.umask(previous);
+    }
+
+    expect(modeOf(appHomePath())).toBe(0o700);
+    expect(modeOf(appHomePath("models"))).toBe(0o700);
+  });
+
+  it.skipIf(isWindows)("leaves an existing directory's mode alone", () => {
+    freshRoot();
+    mkdirSync(appHomePath(), { recursive: true });
+    chmodSync(appHomePath(), 0o755);
+
+    ensureAppHome();
+
+    expect(modeOf(appHomePath())).toBe(0o755);
+  });
+
+  it.skipIf(isWindows)("is used by writers that create the app home", () => {
+    freshRoot();
+    setEmbedderConsent("skip");
+    expect(modeOf(appHomePath())).toBe(0o700);
+
+    rmSync(appHomePath(), { recursive: true, force: true });
+    const result = writeProviderConfig("openrouter", { model: "x/y" });
+    expect(result.written).toBe(true);
+    expect(modeOf(appHomePath())).toBe(0o700);
+  });
+});
 
 describe("session directory and file modes", () => {
   const created: string[] = [];
