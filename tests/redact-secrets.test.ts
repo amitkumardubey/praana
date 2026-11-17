@@ -775,8 +775,23 @@ describe("redactSecrets", () => {
     }
     const logged = lines.filter((line) => line.includes("Secret redaction replaced a value"));
     expect(logged).toHaveLength(1);
-    expect(logged[0]).toContain("scan failed");
+    expect(logged[0]).toContain('"error":"Error"');
+    expect(logged[0]).not.toContain("scan failed");
     expect(lines.join("\n")).not.toContain("plain-secret-value");
+  });
+
+  it("does not log a throwing getter's secret error message", () => {
+    const lines: string[] = [];
+    const previous = getAppLogger();
+    setAppLogger(new PraanaLogger({ domain: "app", debug: true, writeLine: (line) => lines.push(line) }));
+    try {
+      expect(redactSecrets({ get broken() { throw new Error("password hunter2"); } }))
+        .toEqual({ broken: "[REDACTED:redaction-error]" });
+    } finally {
+      setAppLogger(previous);
+    }
+    expect(lines.join("\n")).toContain('"error":"Error"');
+    expect(lines.join("\n")).not.toContain("hunter2");
   });
 
   it("redacts every secret-looking key exactly as a string value", () => {

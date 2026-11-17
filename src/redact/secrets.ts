@@ -114,22 +114,17 @@ function errorKeys(error: object): string[] {
 }
 
 /**
- * Failure report for a walk: a debug log line carrying the error message (never
- * the value), written at most once per walk so repeated placeholders can be
- * diagnosed without flooding the log. The message is redacted before logging.
+ * Failure report for a walk: a debug log line carrying only the error name,
+ * written at most once per walk to avoid flooding the log.
  */
 function createFailureReporter(): (error: unknown) => void {
   let reported = false;
   return (error) => {
     if (reported) return;
     reported = true;
-    let message: string;
-    try {
-      message = redactString((error instanceof Error ? error.message : String(error)).slice(0, 500));
-    } catch {
-      message = PLACEHOLDER("redaction-error");
-    }
-    getAppLogger().child("tool").debug("Secret redaction replaced a value", { details: { error: message } });
+    getAppLogger().child("tool").debug("Secret redaction replaced a value", {
+      details: { error: error instanceof Error ? error.name : "non-error" },
+    });
   };
 }
 
@@ -179,7 +174,7 @@ function finiteNumber(value: number): number | null {
  * Native Errors project as { name, message } plus own `cause`, AggregateError
  * `errors` and own enumerable properties, never `stack` (JSON.stringify writes {}).
  * Getters, toJSON and proxy failures replace only the affected value (the first
- * such failure of a walk is logged at debug level, message only); only a
+ * such failure of a walk is logged at debug level, error name only); only a
  * failure of the root itself or an unrecoverable error escapes to the caller.
  * No input identity, prototype, accessor or callable is retained in the plain JSON output.
  *
