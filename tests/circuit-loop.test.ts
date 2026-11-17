@@ -26,6 +26,15 @@ describe("LoopGate", () => {
     expect(gate.observePost("edit_file", edit(5), true)).toBeUndefined();
   });
 
+  it("resets error streaks with the turn so an old failure does not advise a later first failure", () => {
+    const gate = new LoopGate();
+    const edit = (n: number) => ({ path: "a.ts", oldText: String(n), newText: "x" });
+    expect(gate.observePost("edit_file", edit(1), true)).toBeUndefined();
+    gate.resetTurn();
+    expect(gate.observePost("edit_file", edit(2), true)).toBeUndefined();
+    expect(gate.observePost("edit_file", edit(3), true)).toBe(true);
+  });
+
   it("clears all tool streaks for a successfully read path, normalizing against cwd", () => {
     const gate = new LoopGate();
     const cwd = "/project";
@@ -93,7 +102,7 @@ describe("LoopGate", () => {
     for (let i = 0; i < 2000; i++) {
       const op = rand(5);
       const path = `src/${rand(3)}.ts`;
-      if (op === 0) { counts.clear(); gate.resetTurn(); continue; }
+      if (op === 0) { counts.clear(); errors.clear(); gate.resetTurn(); continue; }
       if (op === 3) { errors.delete(path); gate.observePost("read_file", { path }, false, "/project"); continue; }
       const args = { path, oldText: op === 4 ? "repeat" : String(i), newText: "x" };
       const key = JSON.stringify(args);

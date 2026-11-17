@@ -104,8 +104,14 @@ export class LoopGate {
     return gate;
   }
 
+  /**
+   * Start a new turn: identical-call counts and error streaks both restart, so
+   * an old failure never makes a later first failure look like a repeat. The
+   * advisory is about consecutive failures within the current work only.
+   */
   resetTurn(): void {
     this.argHits.clear();
+    this.errorHits.clear();
   }
 
   private adoptNote(text: string): void {
