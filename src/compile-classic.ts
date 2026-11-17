@@ -1,6 +1,7 @@
 import type { Event } from "./types.js";
 import type { CompileMetrics } from "./compiler.js";
-import { buildCrossSessionMemory, formatLocalDate } from "./compiler.js";
+import { buildCrossSessionMemory } from "./compiler.js";
+import { formatLocalDate } from "./local-date.js";
 import { estimateTokens as estTokens } from "./token-estimate.js";
 import { APP_VERSION } from "./app-banner.js";
 import type { NativeAddonStatus } from "./native/index.js";

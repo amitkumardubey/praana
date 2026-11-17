@@ -5,6 +5,7 @@ import { getAppLogger } from "./logger.js";
 import { APP_VERSION } from "./app-banner.js";
 import type { NativeAddonStatus } from "./native/index.js";
 import { MEMORY_POLICY } from "./file-memory/index.js";
+import { formatLocalDate } from "./local-date.js";
 
 export interface CompileInput {
   stateGraph: StateGraph;
@@ -356,13 +357,6 @@ export function buildFilesReadIndexSection(
     );
   }
   return lines.join("\n");
-}
-
-export function formatLocalDate(date = new Date()): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
 }
 
 export function buildSystemFrame(

@@ -4,6 +4,7 @@ import { randomBytes } from "node:crypto";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { redactSecretsStrict } from "../redact/secrets.js";
 import { getAppLogger } from "../logger.js";
+import { formatLocalDate } from "../local-date.js";
 import { parseMemory, searchTokens, serializeMemory, validName, validateMemory, validateQueryPolicy, type Memory, type MemoryInput } from "./format.js";
 import { globalMemoryDirectory, memoryDirectories, projectKey, type MemoryScope } from "./paths.js";
 import { buildMemoryIndex as renderMemoryIndex, type MemoryIndex } from "./index.js";
@@ -334,7 +335,7 @@ export function createFileMemoryStore(options: StoreOptions) {
       if (filenames.some((file) => file.toLowerCase() === targetName.toLowerCase() && file !== targetName)) return { ok: false, error: "Case-insensitive filename collision" };
       const dir = await directory(draft.scope, true);
       if (!dir) throw new Error("Memory directory unavailable");
-      await atomicReplace(dir, targetName, serializeMemory({ ...draft, updated: now().toISOString().slice(0, 10) }));
+      await atomicReplace(dir, targetName, serializeMemory({ ...draft, updated: formatLocalDate(now()) }));
       // The authoritative file is committed; refresh reports its own best-effort error.
       await refreshIndexFile(draft.scope);
       return { ok: true, name: draft.name, scope: draft.scope, created: !exists };
