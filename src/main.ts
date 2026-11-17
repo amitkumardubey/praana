@@ -42,8 +42,10 @@ function logAppHomeFixupFailure(path: string, err: unknown): void {
 export async function main() {
   const parsed = parseCliArgs(process.argv.slice(2));
   // Before any branch that can exit early (--models, --providers, doctor, ...):
-  // an app home left 0755 by an older version must not stay world-readable.
+  // an app home left 0755 by an older version must not stay world-readable, and
+  // neither must a credentials file left 0644.
   tightenAppHomePermissions({ onError: logAppHomeFixupFailure });
+  ensureCredentialsFileMode();
   if (parsed.showHelp) {
     printHelp();
     process.exit(0);
@@ -90,7 +92,6 @@ export async function main() {
   }
 
   await initAppLogFile();
-  ensureCredentialsFileMode();
 
   // Handle setup command early (before config loading, needs a TTY)
   if (parsed.setupMode) {

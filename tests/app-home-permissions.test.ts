@@ -396,26 +396,46 @@ describe("tightenAppHomePermissions", () => {
 });
 
 describe("startup fix-up call order", () => {
-  it("runs before every early-exit CLI branch in main()", () => {
+  const EARLY_EXIT_BRANCHES = [
+    "parsed.showHelp",
+    "parsed.versionMode",
+    "parsed.providersMode",
+    "parsed.modelsMode",
+    "parsed.setupMode",
+    "parsed.doctorMode",
+    "parsed.upgradeMode",
+  ];
+
+  /** Body of `main()` after its declaration, the same slice for every check. */
+  function mainBody(): string {
     const src = readFileSync(join(import.meta.dir, "../src/main.ts"), "utf-8");
-    const body = src.slice(src.indexOf("export async function main()"));
-    const fixUp = body.indexOf("tightenAppHomePermissions(");
-    expect(fixUp).toBeGreaterThan(-1);
-    for (const branch of [
-      "parsed.showHelp",
-      "parsed.versionMode",
-      "parsed.providersMode",
-      "parsed.modelsMode",
-      "parsed.setupMode",
-      "parsed.doctorMode",
-      "parsed.upgradeMode",
-    ]) {
-      const at = body.indexOf(branch);
-      expect(at).toBeGreaterThan(-1);
-      expect(fixUp).toBeLessThan(at);
+    return src.slice(src.indexOf("export async function main()"));
+  }
+
+  /** Every early-exit branch sits after `at` in `body`. */
+  function expectBeforeEarlyExits(body: string, at: number): void {
+    expect(at).toBeGreaterThan(-1);
+    for (const branch of EARLY_EXIT_BRANCHES) {
+      const branchAt = body.indexOf(branch);
+      expect(branchAt).toBeGreaterThan(-1);
+      expect(at).toBeLessThan(branchAt);
     }
+  }
+
+  it("runs before every early-exit CLI branch in main()", () => {
+    const body = mainBody();
+    expectBeforeEarlyExits(body, body.indexOf("tightenAppHomePermissions("));
     // Called once, not again after the early branches.
     expect(body.split("tightenAppHomePermissions(").length - 1).toBe(1);
+  });
+
+  it("fixes the credential file mode before every early-exit CLI branch in main()", () => {
+    const body = mainBody();
+    const credentialFixUp = body.indexOf("ensureCredentialsFileMode(");
+    expectBeforeEarlyExits(body, credentialFixUp);
+    // Directly after the directory fix-up, and called once.
+    expect(body.indexOf("tightenAppHomePermissions(")).toBeLessThan(credentialFixUp);
+    expect(body.split("ensureCredentialsFileMode(").length - 1).toBe(1);
   });
 });
 
