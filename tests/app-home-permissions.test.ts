@@ -25,6 +25,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  APP_HOME_OTHER_OWNER_SKIP_REASON,
   APP_HOME_SYMLINK_SKIP_REASON,
   appHomePath,
   ensureAppHome,
@@ -38,6 +39,7 @@ import {
   type AppHomeFixupReport,
 } from "../src/main.js";
 import type { PraanaLogger } from "../src/logger.js";
+import { getAppLogger, setAppLogger } from "../src/logger.js";
 import { setEmbedderConsent } from "../src/memory/embedder-consent.js";
 import { writeProviderConfig } from "../src/setup/config-writer.js";
 import { EventLog, ensureSessionDir, writeSessionMeta } from "../src/event-log.js";
@@ -243,7 +245,7 @@ describe("session directory and file modes", () => {
     ).not.toThrow();
     expect(reported).toEqual([dir]);
 
-    // The default reporter (debug log) must not throw either.
+    // The default reporter must not throw either.
     expect(() =>
       ensureSessionDir(dir, {
         chmod: () => {
@@ -251,6 +253,54 @@ describe("session directory and file modes", () => {
         },
       }),
     ).not.toThrow();
+  });
+
+  it.skipIf(isWindows)("ensureSessionDir's default reporter logs at info, not debug", () => {
+    const dir = join(
+      resolveDefaultSessionLogDir(),
+      `perm-test-info-${process.pid}-${Date.now()}`,
+    );
+    created.push(resolveDefaultSessionLogDir());
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    chmodSync(dir, 0o755);
+
+    const entries: Array<{
+      level: string;
+      message: string;
+      details?: Record<string, unknown>;
+    }> = [];
+    const record =
+      (level: string) =>
+      (message: string, opts?: { details?: Record<string, unknown> }) => {
+        entries.push({ level, message, details: opts?.details });
+      };
+    const previous = getAppLogger();
+    // A normal run's file sink starts at info: a debug report is dropped.
+    setAppLogger(
+      {
+        info: record("info"),
+        debug: record("debug"),
+        warn: record("warn"),
+        error: record("error"),
+      } as unknown as PraanaLogger,
+    );
+    try {
+      ensureSessionDir(dir, {
+        chmod: () => {
+          throw new Error("EPERM");
+        },
+      });
+    } finally {
+      setAppLogger(previous);
+    }
+
+    expect(entries).toEqual([
+      {
+        level: "info",
+        message: "failed to tighten session directory permissions",
+        details: { path: dir, cause: "EPERM" },
+      },
+    ]);
   });
 });
 
@@ -448,6 +498,39 @@ describe("tightenAppHomePermissions", () => {
     });
 
     expect(chmodded).toEqual([]);
+  });
+
+  it.skipIf(isWindows)("reports a directory owned by another user instead of skipping silently", () => {
+    const { home, sessions } = makeHome(0o755, 0o755);
+    const logs = resolveDefaultAppLogDir();
+    mkdirSync(logs, { recursive: true, mode: 0o700 });
+    chmodSync(logs, 0o755);
+    const reported: Array<{ path: string; message: string }> = [];
+    const chmodded: string[] = [];
+
+    tightenAppHomePermissions({
+      getuid: () => 1000,
+      lstat: () => ({
+        mode: 0o40755,
+        uid: 4242,
+        isSymbolicLink: () => false,
+        isDirectory: () => true,
+      }),
+      chmod: (path) => chmodded.push(path),
+      onError: (path, err) => reported.push({ path, message: (err as Error).message }),
+    });
+
+    // Nothing is chmodded, and the skip is not silent: another owner means a
+    // shared app home, which is worth a log line.
+    expect(chmodded).toEqual([]);
+    expect(reported).toEqual([
+      { path: home, message: APP_HOME_OTHER_OWNER_SKIP_REASON },
+      { path: sessions, message: APP_HOME_OTHER_OWNER_SKIP_REASON },
+      { path: logs, message: APP_HOME_OTHER_OWNER_SKIP_REASON },
+    ]);
+    expect(APP_HOME_OTHER_OWNER_SKIP_REASON).toBe("owned by another user");
+    // A different reason string, so a reporter can tell it from a symlink skip.
+    expect(APP_HOME_OTHER_OWNER_SKIP_REASON).not.toBe(APP_HOME_SYMLINK_SKIP_REASON);
   });
 
   it.skipIf(isWindows)("leaves a regular file where a directory belongs unchanged", () => {

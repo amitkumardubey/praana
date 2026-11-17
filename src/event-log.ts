@@ -67,7 +67,11 @@ export function ensureSessionDir(
   mkdirSync(sessionDir, { recursive: true, mode: APP_HOME_DIR_MODE });
   tightenDirPermissions(sessionDir, {
     onError: (path, err) => {
-      getAppLogger().debug("failed to tighten session directory permissions", {
+      // Info, not debug: the file sink starts at info, so a debug report of a
+      // skipped/failed tighten is dropped by a normal run and the shared
+      // session directory stays quiet. Info reaches the log without touching
+      // the terminal (the stderr sink starts at warn).
+      getAppLogger().info("failed to tighten session directory permissions", {
         details: { path, cause: (err as Error)?.message },
       });
     },
