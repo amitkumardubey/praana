@@ -1,5 +1,11 @@
 import { describe, it, expect, beforeEach, afterAll, mock, spyOn } from "bun:test";
 import { z } from "zod";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+import { createSystemTools } from "../src/tools/system.js";
+import { TurnRecorder } from "../src/context-engine/turn-recorder.js";
+import { estimateTokens } from "../src/token-estimate.js";
 import { AnthropicDriver } from "../src/llm/drivers/anthropic.js";
 import type { ConversationMessage, StreamRequest } from "../src/llm/types.js";
 import { anthropicSse, signedAssistant, signedBlockFrames, signedWireBlocks } from "./helpers/anthropic-blocks.js";
@@ -1219,6 +1225,94 @@ describe("runTurn", () => {
     expect(toolCalls.length).toBeGreaterThan(0);
     expect(toolResults.length).toBeGreaterThan(0);
   });
+
+  for (const scenario of [
+    { name: "first small read", contents: ["actual file bytes"] },
+    { name: "unchanged repeat read", contents: ["same file bytes", "same file bytes"] },
+    { name: "changed file re-read", contents: ["original file bytes", "changed file bytes"] },
+    { name: "ranged read", contents: ["outside first\nrequested second\nrequested third\noutside last"], offset: 2, limit: 2, expected: "requested second\nrequested third" },
+    { name: "large read without a cap", contents: ["full file contents\n".repeat(2000)] },
+  ]) {
+    it(`presents engine-mode ${scenario.name} contents now and artifact references next turn`, async () => {
+      const cacheDir = join(homedir(), ".cache");
+      mkdirSync(cacheDir, { recursive: true });
+      const cwd = mkdtempSync(join(cacheDir, "praana-engine-read-"));
+      const config = makeConfig({ context_engine: { ...makeConfig().context_engine, enabled: true } });
+      const engine = ceReal.ContextEngine.open(":memory:", "read-test", config.context_engine!);
+      const session = makeMockSession({ config, cwd, contextEngine: engine, scorecard: engine.scorecard });
+      const requests: ConversationMessage[][] = [];
+      const prompts: string[] = [];
+      const shown: string[] = [];
+      const deltas: Array<{ tokensAdded: number; source: string; distillerSavings?: number }> = [];
+      const recordToolCall = spyOn(TurnRecorder.prototype, "recordToolCall");
+      const ingest = spyOn(engine, "ingestToolResult");
+      const compilerMock = compileEngineWithMetrics as ReturnType<typeof mock>;
+      const previousCompiler = compilerMock.getMockImplementation()!;
+      compilerMock.mockImplementation(ceReal.compileEngineWithMetrics);
+      const tools = createSystemTools({ cwd, skills: [], skillRuntime: null, getCurrentTurn: () => session.getTurnCount() });
+      (createAllTools as ReturnType<typeof mock>).mockImplementationOnce(() => ({ read_file: tools.read_file }));
+      let readsRequested = 0;
+      (piStream as ReturnType<typeof mock>).mockImplementation((req: StreamRequest) => {
+        requests.push(structuredClone(req.messages));
+        prompts.push(req.systemPrompt ?? "");
+        return (async function* () {
+          if (readsRequested < scenario.contents.length) {
+            writeFileSync(join(cwd, "a.txt"), scenario.contents[readsRequested]!);
+            const toolUse = {
+              id: `read-${readsRequested++}`, name: "read_file",
+              args: { path: "a.txt", offset: scenario.offset, limit: scenario.limit },
+            };
+            yield { type: "tool_call_end", toolCall: toolUse };
+            yield { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [toolUse] } };
+          } else {
+            yield { type: "text_delta", delta: "done" };
+            yield { type: "done", reason: "stop", message: { role: "assistant", content: "done" } };
+          }
+        })();
+      });
+      try {
+        await runTurn(session, "read the file", undefined, { sink: {
+          onToolResult: (_id, _name, text) => shown.push(text),
+          onContextHistoryDelta: (delta) => deltas.push(delta),
+        } });
+        expect(requests).toHaveLength(scenario.contents.length + 1);
+        for (let i = 0; i < scenario.contents.length; i++) {
+          const message = requests[i + 1]!.filter((m) => m.role === "tool_result").at(-1)!;
+          const text = message.result;
+          expect(JSON.parse(text).content).toBe(scenario.expected ?? scenario.contents[i]);
+          expect(text).not.toContain("[artifact:");
+          expect(shown[i]).toBe(text);
+          expect(deltas.filter((d) => d.source === "tool")[i]).toEqual({
+            tokensAdded: estimateTokens(text), source: "tool", distillerSavings: undefined,
+          });
+          expect(ingest.mock.calls[i]![1]).toBe(false);
+          const artifactId = ingest.mock.results[i]!.value.artifactId;
+          expect(artifactId).toBeString();
+          expect(recordToolCall.mock.calls[i]![0].artifactId).toBe(artifactId);
+          expect(engine.getArtifact(artifactId)!.rawText).toBe(scenario.expected ?? scenario.contents[i]);
+        }
+        const ids = engine.ledger.list()[0]!.artifactIds;
+        expect(ids).toHaveLength(scenario.name === "changed file re-read" ? 2 : 1);
+        expect(engine.store.listFileReads()).toHaveLength(ids.length);
+        expect(engine.scorecard.getCounters().artifactCardsProduced).toBe(0);
+
+        await runTurn(session, "continue", undefined, { sink: {} });
+        const nextPrompt = prompts.at(-1)!;
+        for (const id of ids) expect(nextPrompt).toContain(`[artifact: ${id}]`);
+        for (const content of scenario.contents) expect(nextPrompt).not.toContain(content.split("\n")[0]!);
+        expect(nextPrompt).not.toContain("requested second");
+
+        engine.ingestToolResult({ sourceTool: "shell", rawText: "output\n".repeat(1000), createdTurn: 2 });
+        expect(engine.scorecard.getCounters().artifactCardsProduced).toBe(1);
+      } finally {
+        compilerMock.mockImplementation(previousCompiler);
+        recordToolCall.mockRestore();
+        ingest.mockRestore();
+        engine.close();
+        rmSync(cwd, { recursive: true, force: true });
+      }
+    });
+  }
 
   it("does not re-ingest retrieve_artifact results as source artifacts", async () => {
     const touchAccess = mock(() => {});

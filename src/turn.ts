@@ -1808,6 +1808,7 @@ export async function runTurn(
             requestEnd = limit !== undefined ? sourceLineStart + limit - 1 : 0;
             requestUnbounded = limit === undefined;
           }
+          const showReadContents = tc.toolName === "read_file" && !isError;
           const ingested = session.contextEngine.ingestToolResult({
             sourceTool: tc.toolName,
             command,
@@ -1818,8 +1819,10 @@ export async function runTurn(
             requestStart,
             requestEnd,
             requestUnbounded,
-          });
-          promptResultText = ingested.promptText;
+          }, !showReadContents);
+          // Keep the lossless artifact for later turns, but present the requested
+          // contents (after hooks) in this turn just as classic mode does.
+          promptResultText = showReadContents ? toolResultRawText(result) : ingested.promptText;
           artifactId = ingested.artifactId;
           const toolTokens = estimateDisplayTokens(promptResultText);
           const savings = computeDistillerSavings(

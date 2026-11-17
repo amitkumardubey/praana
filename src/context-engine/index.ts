@@ -227,9 +227,9 @@ export class ContextEngine {
     return this.extraction.captureStateSnapshot(stateGraph);
   }
 
-  ingestToolResult(input: IngestToolResultInput): IngestToolResultOutput {
+  ingestToolResult(input: IngestToolResultInput, cardPresented = true): IngestToolResultOutput {
     const result = this.store.ingestToolResult(input);
-    if (!result.inlined) {
+    if (!result.inlined && cardPresented) {
       this.scorecard.inc("artifactCardsProduced");
     }
     return result;
