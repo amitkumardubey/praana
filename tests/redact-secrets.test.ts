@@ -337,11 +337,17 @@ describe("redactSecrets", () => {
     for (let i = 0; i < 9; i++) expect((out as Record<string, unknown>)[`self${i}`]).toBe("[REDACTED:cycle]");
   });
 
-  it("uses the cycle placeholder for shared containers as well as cycles", () => {
+  it("copies a shared container each time it appears; only an ancestor cycle is replaced", () => {
     const shared = { secret: SECRETS[1] };
-    const out = redactSecrets({ first: shared, second: shared });
-    expectNoSecret(JSON.stringify(out));
-    expect(out).toEqual({ first: { secret: "[REDACTED:aws-access-key]" }, second: "[REDACTED:cycle]" });
+    const redacted = { secret: "[REDACTED:aws-access-key]" };
+    expect(expectProjection({ first: shared, second: shared, list: [shared, shared] })).toEqual({
+      first: redacted, second: redacted, list: [redacted, redacted],
+    });
+    const cyclic: Record<string, unknown> = { secret: SECRETS[1] };
+    cyclic.self = cyclic;
+    expect(redactSecrets({ a: cyclic, b: cyclic })).toEqual({
+      a: { ...redacted, self: "[REDACTED:cycle]" }, b: { ...redacted, self: "[REDACTED:cycle]" },
+    });
   });
 
   it("projects null-prototype objects and Maps identically past the old depth limit", () => {
@@ -503,59 +509,94 @@ describe("redactSecrets", () => {
     expect(() => {
       out = redactSecrets(value);
     }).not.toThrow();
-    expect(descend(out, 100_000)).toBe("[REDACTED:depth-limit]");
+    // The chain is cut by the node budget: the deepest copied object keeps its type.
+    expect(typeof descend(out, 99_000)).toBe("object");
+    expect(descend(out, 100_000)).toBeUndefined();
   });
 
-  it("stops at the node budget instead of leaking past it", () => {
+  it("keeps container types and copied entries when the node budget runs out", () => {
     const wide: Record<string, unknown> = { early: "AKIAIOSFODNN7EXAMPLE" };
     for (let i = 0; i < 100_050; i++) wide[`k${i}`] = { i };
     wide.tail = "plain-text-past-budget";
     const out = redactSecrets(nestObjects(wide, 10));
     const json = JSON.stringify(out) ?? "";
     expectNoSecret(json);
-    // A container whose property slots cannot fit is replaced as a unit.
-    expect(descend(out, 10)).toBe("[REDACTED:depth-limit]");
-    expect(json).toContain("[REDACTED:depth-limit]");
+    const cut = descend(out, 10) as Record<string, unknown>;
+    expect(Array.isArray(cut)).toBe(false);
+    expect(typeof cut).toBe("object");
+    expect(cut.early).toBe("[REDACTED:aws-access-key]");
+    expect(cut.k0).toEqual({ i: 0 });
+    expect(Object.keys(cut).length).toBeGreaterThan(1_000);
+    expect(Object.keys(cut).length).toBeLessThan(100_000);
+    expect("tail" in cut).toBe(false);
     expect(json).not.toContain("plain-text-past-budget");
+    expect(json).not.toContain("depth-limit");
   });
 
-  it("bounds wide primitive objects and sparse arrays before reading their values", () => {
+  it("keeps an array larger than the node budget as an array with a cut tail", () => {
+    const list = Array.from({ length: 150_000 }, (_, i) => (i === 140_000 ? SECRETS[1] : i));
+    const out = redactSecrets({ head: SECRETS[1], list, tail: "after" }) as { head: string; list: unknown; tail?: string };
+    expect(out.head).toBe("[REDACTED:aws-access-key]");
+    expect(Array.isArray(out.list)).toBe(true);
+    const copied = out.list as unknown[];
+    expect(copied.length).toBeGreaterThan(1_000);
+    expect(copied.length).toBeLessThan(150_000);
+    expect(copied.slice(0, 3)).toEqual([0, 1, 2]);
+    expect(out.tail).toBeUndefined();
+    expectNoSecret(JSON.stringify(out));
+    expect(redactSecrets(list)).toBeInstanceOf(Array);
+  });
+
+  it("bounds wide primitive objects and sparse arrays by the node budget", () => {
     const wide: Record<string, unknown> = {};
     for (let i = 0; i < 100_001; i++) wide[`k${i}`] = SECRETS[1];
     let reads = 0;
-    const array = new Proxy(new Array(2 ** 32 - 1), {
+    const sparse = new Proxy(new Array(2 ** 32 - 1), {
       get(target, key, receiver) {
-        if (key === "0") reads++;
+        if (typeof key === "string" && /^\d+$/.test(key)) reads++;
         return Reflect.get(target, key, receiver);
       },
     });
-    const out = redactSecrets({ wide, array, sibling: SECRETS[1] });
+    const out = redactSecrets({ sibling: SECRETS[1], sparse, wide }) as Record<string, unknown>;
     expectNoSecret(JSON.stringify(out));
-    expect(out).toEqual({ wide: "[REDACTED:depth-limit]", array: "[REDACTED:depth-limit]", sibling: "[REDACTED:aws-access-key]" });
-    expect(reads).toBe(0);
+    expect(out.sibling).toBe("[REDACTED:aws-access-key]");
+    expect(Array.isArray(out.sparse)).toBe(true);
+    expect(reads).toBeLessThanOrEqual(100_000);
+    expect(reads).toBeGreaterThan(0);
+    const wideOut = redactSecrets(wide) as Record<string, unknown>;
+    expect(Array.isArray(wideOut)).toBe(false);
+    expect(Object.keys(wideOut).length).toBeLessThan(100_001);
+    expectNoSecret(JSON.stringify(wideOut));
   });
 
-  it("caps property-name characters as well as string leaves", () => {
-    const input = { [`${"x".repeat(4_194_305)} ${SECRETS[1]}`]: SECRETS[1], sibling: SECRETS[1] };
-    const out = redactSecrets(input);
-    expectNoSecret(JSON.stringify(out));
-    expect(out).toEqual({ "[REDACTED:depth-limit]": "[REDACTED:aws-access-key]", sibling: "[REDACTED:aws-access-key]" });
+  it("scans property names in full instead of dropping them for size", () => {
+    const filler = "x".repeat(5 * 1024 * 1024);
+    const input = { [`${filler} ${SECRETS[1]}`]: SECRETS[1], sibling: SECRETS[1] };
+    const out = redactSecrets(input) as Record<string, unknown>;
+    const [name, ...rest] = Object.keys(out);
+    expect(name).toBe(`${filler} [REDACTED:aws-access-key]`);
+    expect(rest).toEqual(["sibling"]);
+    expect(out[name!]).toBe("[REDACTED:aws-access-key]");
+    expect(out.sibling).toBe("[REDACTED:aws-access-key]");
   });
 
-  it("stops at the character budget instead of copying a huge subtree", () => {
-    const payload = { blob: "x".repeat(4_194_304 + 1), secret: "AKIAIOSFODNN7EXAMPLE" };
-    const out = redactSecrets(nestObjects(payload, 10));
-    const atLimit = descend(out, 10) as { blob: string; secret: string };
-    expect(atLimit.blob).toBe("[REDACTED:depth-limit]");
-    expect(atLimit.secret).toBe("[REDACTED:aws-access-key]");
-    expect(JSON.stringify(out)).not.toContain("AKIAIOSFODNN7EXAMPLE");
+  it("never drops a string for size: a 5 MB string is redacted in full, as root and nested", () => {
+    const filler = "a".repeat(5 * 1024 * 1024);
+    const raw = `${filler} ${SECRETS[1]} tail`;
+    const expected = `${filler} [REDACTED:aws-access-key] tail`;
+    expect(redactSecrets(raw)).toBe(expected);
+    const out = redactSecrets(nestObjects({ blob: raw, secret: SECRETS[1] }, 10));
+    expect(descend(out, 10)).toEqual({ blob: expected, secret: "[REDACTED:aws-access-key]" });
+    expect(redactSecrets([raw, { raw }])).toEqual([expected, { raw: expected }]);
   });
 
-  it("caps a string that is itself the depth-limit value", () => {
-    const secret = "AKIAIOSFODNN7EXAMPLE";
-    const out = redactSecrets(nestObjects(`${"x".repeat(4_194_304 + 1)}${secret}`, 8));
-    expect(descend(out, 8)).toBe("[REDACTED:depth-limit]");
-    expect(JSON.stringify(out)).not.toContain(secret);
+  it("keeps 3 MB of stdout and 1.5 MB of stderr together", () => {
+    const stdout = `${"o".repeat(3 * 1024 * 1024)} ${SECRETS[1]}`;
+    const stderr = `${"e".repeat(1_500_000)} ${SECRETS[1]}`;
+    const out = redactSecrets({ ok: false, stdout, stderr }) as { ok: boolean; stdout: string; stderr: string };
+    expect(out.stdout).toBe(`${"o".repeat(3 * 1024 * 1024)} [REDACTED:aws-access-key]`);
+    expect(out.stderr).toBe(`${"e".repeat(1_500_000)} [REDACTED:aws-access-key]`);
+    expect(out.ok).toBe(false);
   });
 
   it("fails closed when root enumeration throws", () => {
@@ -583,13 +624,26 @@ describe("redactSecrets", () => {
 
   it("redacts seeded randomized JSON projections without throwing", () => {
     let state = 0x782;
-    const random = () => (state = (Math.imul(state, 1664525) + 1013904223) >>> 0);
+    // High bits only: the low bits of this LCG cycle with a tiny period.
+    const random = () => (state = (Math.imul(state, 1664525) + 1013904223) >>> 0) >>> 8;
     const seen = new Set<number>();
+    const big = `${"z".repeat(5 * 1024 * 1024)} ${SECRETS[1]} end`;
     // The oracle differs only by replacing binary leaves before JSON projection.
     const build = (depth: number): [unknown, unknown] => {
-      const kind = depth === 0 ? 7 + random() % 2 : random() % 9;
+      const kind = depth === 0 ? 7 + random() % 2 : random() % 10;
       seen.add(kind);
-      if (kind === 7) return [`log ${SECRETS[1]} end`, `log ${SECRETS[1]} end`];
+      if (kind === 7) {
+        // Occasionally a string far above the old character budget.
+        if (random() % 25 === 0) { seen.add(10); return [big, big]; }
+        return [`log ${SECRETS[1]} end`, `log ${SECRETS[1]} end`];
+      }
+      if (kind === 9) {
+        // One value referenced twice without a cycle: JSON writes it twice.
+        const [raw, projected] = build(depth - 1);
+        return random() % 2 === 0
+          ? [[raw, raw], [projected, projected]]
+          : [{ a: raw, b: raw }, { a: projected, b: projected }];
+      }
       if (kind === 8) { const n = random(); return [n, n]; }
       if (kind === 4) { const d = new Date(random()); return [d, d.toJSON()]; }
       if (kind === 5) { const b = Buffer.from(SECRETS[1]!); return [b, `[binary: ${b.length} bytes]`]; }
@@ -613,7 +667,7 @@ describe("redactSecrets", () => {
       expectNoSecret(JSON.stringify(out));
       expect(out).toEqual(redactSecrets(JSON.parse(JSON.stringify({ value: projected }))));
     }
-    expect([...seen].sort()).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
+    expect([...seen].sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
   });
 
   it("does not redact short dummy keys in credentials fixtures", () => {

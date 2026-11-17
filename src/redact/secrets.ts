@@ -7,7 +7,6 @@ import { redactUrlsInText } from "./url-query.js";
 
 const MAX_DEPTH = 8;
 const MAX_NODES = 100_000;
-const MAX_CHARS = 4_194_304;
 const PLACEHOLDER = (kind: string) => `[REDACTED:${kind}]`;
 
 const DETECTORS: Array<{ kind: string; re: RegExp }> = [
@@ -107,29 +106,24 @@ function binaryPlaceholder(value: unknown): string | undefined {
  *
  * Deliberate JSON differences: binary values become byte-count strings BEFORE
  * toJSON (also if returned by it); BigInts become redacted decimal strings;
- * revisited containers, including shared references, become [REDACTED:cycle].
+ * an object that is its own ancestor becomes [REDACTED:cycle]. Cycle detection
+ * tracks the current ancestor path only, so a shared reference that is not an
+ * ancestor of itself is copied each time, as JSON.stringify would write it.
  * Getters, toJSON and proxy failures replace only the affected value. No input
  * identity, prototype, accessor or callable is retained in the plain JSON output.
- * Only original string roots stay scalar; other scalar projections are wrapped
- * as { error: scalar }, with redaction-error for an omitted root.
  *
- * MAX_DEPTH is strict-only. Here a global budget reserves the root and all
- * property/index slots before opening a container; one that cannot fit becomes
- * [REDACTED:depth-limit]. MAX_CHARS bounds scanned leaves AND keys. Oversized
- * strings become the same placeholder without spending the remaining budget.
+ * MAX_NODES bounds traversal only: the root and every property/index slot visited
+ * count as one node. When it runs out, every open container keeps its type and
+ * the entries already copied, and the remaining entries are cut (no entry is
+ * invented and no container becomes a string). Strings are never dropped for
+ * size: every string leaf and key is scanned in full by the linear redactString.
  * This bounds our traversal, not execution of user hooks or key enumeration.
  */
 function redactJsonProjection(value: unknown): JsonValue | undefined {
-  const visited = new WeakSet<object>();
+  // Containers on the current path only: added when opened, removed when finished.
+  const ancestors = new WeakSet<object>();
   const frames: JsonFrame[] = [];
   let nodes = 1;
-  let chars = 0;
-
-  const redactLeaf = (leaf: string): string => {
-    if (chars + leaf.length > MAX_CHARS) return PLACEHOLDER("depth-limit");
-    chars += leaf.length;
-    return redactString(leaf);
-  };
 
   const seed = (child: unknown, key: string): JsonValue | undefined => {
     let binary = binaryPlaceholder(child);
@@ -146,12 +140,12 @@ function redactJsonProjection(value: unknown): JsonValue | undefined {
     else if (types.isBooleanObject(child)) child = Boolean.prototype.valueOf.call(child);
     else if (types.isBigIntObject(child)) child = BigInt.prototype.valueOf.call(child);
 
-    if (typeof child === "string") return redactLeaf(child);
-    if (typeof child === "bigint") return redactLeaf(String(child));
+    if (typeof child === "string") return redactString(child);
+    if (typeof child === "bigint") return redactString(String(child));
     if (typeof child === "number") return Number.isFinite(child) ? (child === 0 ? 0 : child) : null;
     if (typeof child === "boolean" || child === null) return child;
     if (typeof child !== "object") return undefined;
-    if (visited.has(child)) return PLACEHOLDER("cycle");
+    if (ancestors.has(child)) return PLACEHOLDER("cycle");
 
     const isArray = Array.isArray(child);
     const source = child as Record<string, unknown>;
@@ -160,10 +154,8 @@ function redactJsonProjection(value: unknown): JsonValue | undefined {
     const length = isArray
       ? Math.min(Math.max(Math.floor(+(source.length as number)) || 0, 0), Number.MAX_SAFE_INTEGER)
       : keys!.length;
-    if (length > MAX_NODES - nodes) return PLACEHOLDER("depth-limit");
-    nodes += length;
     const target: JsonContainer = isArray ? [] : {};
-    visited.add(child);
+    ancestors.add(child);
     frames.push({ source, target, keys, length, suffixes: new Map(), cursor: 0 });
     return target;
   };
@@ -173,8 +165,12 @@ function redactJsonProjection(value: unknown): JsonValue | undefined {
     const frame = frames.at(-1)!;
     if (frame.cursor >= frame.length) {
       frames.pop();
+      ancestors.delete(frame.source);
       continue;
     }
+    // Out of budget: every open container keeps what it has and the rest is cut.
+    if (nodes >= MAX_NODES) break;
+    nodes++;
     const index = frame.cursor++;
     const key = frame.keys === null ? String(index) : frame.keys[index]!;
     let outputKey: string | undefined;
@@ -186,7 +182,7 @@ function redactJsonProjection(value: unknown): JsonValue | undefined {
         copied = PLACEHOLDER("redaction-error");
       }
       if (copied === undefined && frame.keys !== null) continue;
-      outputKey = frame.keys === null ? key : uniqueKey(frame, redactLeaf(key));
+      outputKey = frame.keys === null ? key : uniqueKey(frame, redactString(key));
       setOwn(frame.target, outputKey, copied === undefined ? null : copied);
     } catch {
       // A failed key redaction/write cannot abort siblings or write a prototype.

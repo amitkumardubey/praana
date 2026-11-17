@@ -45,6 +45,21 @@ describe("redact post_tool_call", () => {
     expect(patch?.isError).toBeUndefined();
   });
 
+  it("redacts a 5 MB string in full instead of replacing it", async () => {
+    const post = createRedactPostToolCallHandler();
+    const filler = "q".repeat(5 * 1024 * 1024);
+    const patch = await post({
+      toolName: "shell",
+      args: {},
+      result: { ok: true, stdout: `${filler} AKIAIOSFODNN7EXAMPLE tail`, stderr: "warn" },
+      isError: false,
+      session: session(),
+    });
+    expect(patch?.result).toEqual({
+      ok: true, stdout: `${filler} [REDACTED:aws-access-key] tail`, stderr: "warn",
+    });
+  });
+
   it("runs after enrich so suggestions are scanned", async () => {
     const registry = createBuiltinHookRegistry("/proj", {
       validate: { pathExists: () => false, listRepoFiles: () => [] },
