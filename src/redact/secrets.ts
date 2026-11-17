@@ -146,6 +146,11 @@ function binaryPlaceholder(value: unknown): string | undefined {
   return `[binary: ${getter!.call(value)} bytes]`;
 }
 
+function isJsonScalar(value: unknown): value is string | number | boolean | bigint | null {
+  return value === null || typeof value === "string" || typeof value === "number"
+    || typeof value === "boolean" || typeof value === "bigint";
+}
+
 function finiteNumber(value: number): number | null {
   return Number.isFinite(value) ? (value === 0 ? 0 : value) : null;
 }
@@ -243,10 +248,12 @@ function redactJsonProjection(value: unknown): JsonValue | undefined {
     else if (types.isBooleanObject(child)) child = Boolean.prototype.valueOf.call(child);
     else if (types.isBigIntObject(child)) child = BigInt.prototype.valueOf.call(child);
 
-    if (typeof child === "string") return redactText(child);
-    if (typeof child === "bigint") return redactText(String(child));
-    if (typeof child === "number") return finiteNumber(child);
-    if (typeof child === "boolean" || child === null) return child;
+    if (isJsonScalar(child)) {
+      if (typeof child === "string") return redactText(child);
+      if (typeof child === "bigint") return redactText(String(child));
+      if (typeof child === "number") return finiteNumber(child);
+      return child;
+    }
     if (typeof child !== "object") return undefined;
     if (child !== input && ancestors.has(child)) return PLACEHOLDER("cycle");
     if (frames.length >= MAX_OUTPUT_DEPTH) return PLACEHOLDER("depth-limit");
@@ -282,9 +289,9 @@ function redactJsonProjection(value: unknown): JsonValue | undefined {
         let copied: JsonValue | undefined;
         try {
           const raw = frame.source[key];
-          const type = typeof raw;
-          const scalar = raw === null || type === "string" || type === "number" || type === "boolean" || type === "bigint";
-          copied = scalar ? seed(raw, key) : undefined;
+          copied = isJsonScalar(raw)
+            ? typeof raw === "bigint" ? redactText(String(raw)) : seed(raw, key)
+            : undefined;
         } catch (error) {
           report(error);
           copied = PLACEHOLDER("redaction-error");

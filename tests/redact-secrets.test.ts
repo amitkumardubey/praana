@@ -629,6 +629,23 @@ describe("redactSecrets", () => {
     expectNoSecret(JSON.stringify(out));
   }, 30_000);
 
+  it("does not open a bigint toJSON frame while closing exhausted containers", () => {
+    const original = Object.getOwnPropertyDescriptor(BigInt.prototype, "toJSON");
+    let calls = 0;
+    Object.defineProperty(BigInt.prototype, "toJSON", {
+      value: () => { calls++; return { secret: SECRETS[1] }; }, configurable: true,
+    });
+    try {
+      const out = redactSecrets({ list: new Array(1_000_000).fill(0), b: 7n }) as Record<string, unknown>;
+      expect(out.b).toBe("7");
+      expect(out["[REDACTED:node-budget]"]).toBe(true);
+      expect(calls).toBe(0);
+    } finally {
+      if (original) Object.defineProperty(BigInt.prototype, "toJSON", original);
+      else delete (BigInt.prototype as { toJSON?: unknown }).toJSON;
+    }
+  }, 30_000);
+
   it("bounds an exponential shared-reference structure", () => {
     let node: unknown = { secret: SECRETS[1] };
     for (let i = 0; i < 60; i++) node = { a: node, b: node, flag: true };
