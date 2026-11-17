@@ -105,10 +105,25 @@ export interface AppHomePermissionFixes {
   onError?: (path: string, err: unknown) => void;
 }
 
+/** Group-write or setgid marks a directory as deliberately group-shared. */
+const GROUP_SHARED_BITS = 0o2020;
+
 /**
- * Remove the "other" permission bits from one existing directory, never
- * touching group bits or setgid/sticky bits, so a deliberately group-shared
- * directory keeps its group access. Skips a missing path, a symlink (never
+ * Mode an existing directory is tightened to: "other" bits are always removed;
+ * group bits are removed too unless the directory is deliberately group-shared
+ * (group-write or setgid set), where only "other" goes. Setgid/sticky bits are
+ * kept. 0755 -> 0700, 0750 -> 0700, 0775 -> 0770, 2775 -> 2770, 2770 and 0700
+ * unchanged.
+ */
+export function tightenedDirMode(mode: number): number {
+  const current = mode & 0o7777;
+  const drop = (current & GROUP_SHARED_BITS) !== 0 ? 0o007 : 0o077;
+  return current & ~drop;
+}
+
+/**
+ * Tighten one existing directory (see `tightenedDirMode`): a deliberately
+ * group-shared directory keeps its group access and setgid bit. Skips a missing path, a symlink (never
  * chmod through a link) and a directory owned by another user. Best effort:
  * a failure is reported through `deps.onError` and never throws. No-op on Windows.
  * Returns true when the mode was changed.
@@ -132,8 +147,10 @@ export function tightenDirPermissions(
     if (stat.isSymbolicLink()) return false;
     const uid = getuid();
     if (uid !== undefined && stat.uid !== uid) return false;
-    if ((stat.mode & 0o007) === 0) return false;
-    chmod(dir, (stat.mode & 0o7777) & ~0o007);
+    const current = stat.mode & 0o7777;
+    const target = tightenedDirMode(current);
+    if (target === current) return false;
+    chmod(dir, target);
     return true;
   } catch (err) {
     try {

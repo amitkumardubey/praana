@@ -156,7 +156,7 @@ describe("session directory and file modes", () => {
     }
   });
 
-  it.skipIf(isWindows)("removes other access from an existing permissive session directory on open", () => {
+  it.skipIf(isWindows)("makes an existing 0755 session directory private on open", () => {
     const logDir = resolveDefaultSessionLogDir();
     created.push(logDir);
 
@@ -169,14 +169,14 @@ describe("session directory and file modes", () => {
 
     const eventLog = new EventLog(sessionId, logDir);
     try {
-      expect(modeOf(sessionDir)).toBe(0o750);
+      expect(modeOf(sessionDir)).toBe(0o700);
       expect(modeOf(join(sessionDir, "events.jsonl"))).toBe(0o600);
     } finally {
       eventLog.close();
     }
   });
 
-  it.skipIf(isWindows)("ensureSessionDir only chmods a directory that is open to others", () => {
+  it.skipIf(isWindows)("ensureSessionDir only chmods a directory that is not private or is open to others", () => {
     const dir = join(resolveDefaultSessionLogDir(), `perm-test-ensure-${process.pid}-${Date.now()}`);
     created.push(resolveDefaultSessionLogDir());
     const chmodded: Array<[string, number]> = [];
@@ -191,6 +191,16 @@ describe("session directory and file modes", () => {
     chmodSync(dir, 0o2775);
     ensureSessionDir(dir, { chmod });
     expect(chmodded).toEqual([[dir, 0o2770]]);
+
+    chmodded.length = 0;
+    chmodSync(dir, 0o750);
+    ensureSessionDir(dir, { chmod });
+    expect(chmodded).toEqual([[dir, 0o700]]);
+
+    chmodded.length = 0;
+    chmodSync(dir, 0o775);
+    ensureSessionDir(dir, { chmod });
+    expect(chmodded).toEqual([[dir, 0o770]]);
   });
 
   it.skipIf(isWindows)("ensureSessionDir reports a chmod failure and does not throw", () => {
@@ -255,7 +265,7 @@ describe("tightenAppHomePermissions", () => {
     return { home, sessions };
   }
 
-  it.skipIf(isWindows)("removes other access from an existing 0755 app home, sessions root and logs dir", () => {
+  it.skipIf(isWindows)("makes an existing 0755 app home, sessions root and logs dir", () => {
     const { home, sessions } = makeHome(0o755, 0o755);
     const logs = resolveDefaultAppLogDir();
     mkdirSync(logs, { recursive: true });
@@ -263,10 +273,9 @@ describe("tightenAppHomePermissions", () => {
 
     tightenAppHomePermissions();
 
-    // Only the "other" bits go; group bits are kept (see group-shared test).
-    expect(modeOf(home)).toBe(0o750);
-    expect(modeOf(sessions)).toBe(0o750);
-    expect(modeOf(logs)).toBe(0o750);
+    expect(modeOf(home)).toBe(0o700);
+    expect(modeOf(sessions)).toBe(0o700);
+    expect(modeOf(logs)).toBe(0o700);
   });
 
   it.skipIf(isWindows)("keeps group access and the setgid bit of a group-shared home", () => {
@@ -276,6 +285,33 @@ describe("tightenAppHomePermissions", () => {
 
     expect(statSync(home).mode & 0o7777).toBe(0o2770);
     expect(statSync(sessions).mode & 0o7777).toBe(0o2770);
+  });
+
+  it.skipIf(isWindows)("makes a group-readable 0750 home private", () => {
+    const { home, sessions } = makeHome(0o750, 0o750);
+
+    tightenAppHomePermissions();
+
+    expect(modeOf(home)).toBe(0o700);
+    expect(modeOf(sessions)).toBe(0o700);
+  });
+
+  it.skipIf(isWindows)("keeps group access of a group-writable 0775 home and drops other", () => {
+    const { home, sessions } = makeHome(0o775, 0o775);
+
+    tightenAppHomePermissions();
+
+    expect(modeOf(home)).toBe(0o770);
+    expect(modeOf(sessions)).toBe(0o770);
+  });
+
+  it.skipIf(isWindows)("leaves a 2770 group-shared home unchanged without chmod", () => {
+    makeHome(0o2770, 0o2770);
+    const chmodded: string[] = [];
+
+    tightenAppHomePermissions({ chmod: (path) => chmodded.push(path) });
+
+    expect(chmodded).toEqual([]);
   });
 
   it.skipIf(isWindows)("does not chmod through a symlinked app home", () => {
@@ -302,7 +338,7 @@ describe("tightenAppHomePermissions", () => {
 
     tightenAppHomePermissions();
 
-    expect(modeOf(home)).toBe(0o750);
+    expect(modeOf(home)).toBe(0o700);
     expect(modeOf(target)).toBe(0o755);
   });
 
