@@ -3,9 +3,10 @@ import { isAbsolute, join } from "node:path";
 import {
   chmodSync,
   existsSync,
+  lstatSync,
   mkdirSync,
-  statSync,
   writeFileSync,
+  type Stats,
 } from "node:fs";
 import { getAppLogger } from "./logger.js";
 
@@ -90,37 +91,86 @@ export function resolveDefaultSessionLogDir(): string {
   return appHomePath("sessions");
 }
 
-/** Injectable `fs` seams — the default is the real `node:fs` implementation. */
+export function resolveDefaultAppLogDir(): string {
+  return appHomePath("logs");
+}
+
+/** Injectable `fs` seams — the defaults are the real `node:fs` implementations. */
 export interface AppHomePermissionFixes {
   chmod?: (path: string, mode: number) => void;
+  /** Must not follow symlinks (default `lstatSync`). */
+  lstat?: (path: string) => Pick<Stats, "mode" | "uid" | "isSymbolicLink">;
+  /** Current user id; `undefined` where the platform has none. */
+  getuid?: () => number | undefined;
 }
 
 /**
- * Best-effort startup fix-up: make an existing app home and sessions root
- * owner-only (`0700`). Directories created before the `0700` enforcement keep
- * the default umask (`0755`), which lets any local user read session
- * transcripts. Only paths inside the app home are touched, modes are not
- * enforced on Windows, and a failure is logged at debug level — it never fails
- * startup.
+ * Remove the "other" permission bits from one existing directory, never
+ * touching group bits or setgid/sticky bits, so a deliberately group-shared
+ * directory keeps its group access. Skips a missing path, a symlink (never
+ * chmod through a link) and a directory owned by another user. Best effort:
+ * a failure is logged at debug level and never throws. No-op on Windows.
+ * Returns true when the mode was changed.
+ */
+export function tightenDirPermissions(
+  dir: string,
+  deps: AppHomePermissionFixes = {},
+): boolean {
+  if (process.platform === "win32") return false;
+  const chmod = deps.chmod ?? chmodSync;
+  const lstat = deps.lstat ?? lstatSync;
+  const getuid = deps.getuid ?? (() => process.getuid?.());
+  try {
+    let stat;
+    try {
+      stat = lstat(dir);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return false;
+      throw err;
+    }
+    if (stat.isSymbolicLink()) return false;
+    const uid = getuid();
+    if (uid !== undefined && stat.uid !== uid) return false;
+    if ((stat.mode & 0o007) === 0) return false;
+    chmod(dir, (stat.mode & 0o7777) & ~0o007);
+    return true;
+  } catch (err) {
+    try {
+      getAppLogger().debug("failed to tighten app home permissions", {
+        details: { path: dir, cause: (err as Error)?.message },
+      });
+    } catch {
+      // Logging is best effort too.
+    }
+    return false;
+  }
+}
+
+function isSymlink(path: string, deps: AppHomePermissionFixes): boolean {
+  try {
+    return (deps.lstat ?? lstatSync)(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Best-effort startup fix-up: remove world access from an existing app home,
+ * sessions root and app logs directory. Directories created before the `0700`
+ * enforcement keep the default umask (`0755`), which lets any local user read
+ * session transcripts. Only paths inside the app home are touched; it never
+ * fails startup.
  */
 export function tightenAppHomePermissions(deps: AppHomePermissionFixes = {}): void {
-  if (process.platform === "win32") return;
-  const chmod = deps.chmod ?? chmodSync;
-  for (const dir of [appHomePath(), resolveDefaultSessionLogDir()]) {
-    try {
-      if (!existsSync(dir)) continue;
-      // Only fix directories that are more permissive than 0700.
-      if ((statSync(dir).mode & 0o077) === 0) continue;
-      chmod(dir, APP_HOME_DIR_MODE);
-    } catch (err) {
-      try {
-        getAppLogger().debug("failed to tighten app home permissions", {
-          details: { path: dir, cause: (err as Error)?.message },
-        });
-      } catch {
-        // Logging is best effort too.
-      }
-    }
+  // A symlinked app home points somewhere PRAANA did not create: leave the
+  // whole tree alone rather than chmod directories reached through the link.
+  if (isSymlink(appHomePath(), deps)) return;
+  for (const dir of [
+    appHomePath(),
+    resolveDefaultSessionLogDir(),
+    resolveDefaultAppLogDir(),
+  ]) {
+    tightenDirPermissions(dir, deps);
   }
 }
 

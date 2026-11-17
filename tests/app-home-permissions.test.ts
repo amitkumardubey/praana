@@ -18,6 +18,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -25,6 +26,7 @@ import { join } from "node:path";
 import {
   appHomePath,
   ensureAppHome,
+  resolveDefaultAppLogDir,
   resolveDefaultSessionLogDir,
   tightenAppHomePermissions,
 } from "../src/app-identity.js";
@@ -209,13 +211,82 @@ describe("tightenAppHomePermissions", () => {
     return { home, sessions };
   }
 
-  it.skipIf(isWindows)("tightens an existing 0755 app home and sessions root to 0700", () => {
+  it.skipIf(isWindows)("removes other access from an existing 0755 app home, sessions root and logs dir", () => {
     const { home, sessions } = makeHome(0o755, 0o755);
+    const logs = resolveDefaultAppLogDir();
+    mkdirSync(logs, { recursive: true });
+    chmodSync(logs, 0o755);
 
     tightenAppHomePermissions();
 
-    expect(modeOf(home)).toBe(0o700);
-    expect(modeOf(sessions)).toBe(0o700);
+    // Only the "other" bits go; group bits are kept (see group-shared test).
+    expect(modeOf(home)).toBe(0o750);
+    expect(modeOf(sessions)).toBe(0o750);
+    expect(modeOf(logs)).toBe(0o750);
+  });
+
+  it.skipIf(isWindows)("keeps group access and the setgid bit of a group-shared home", () => {
+    const { home, sessions } = makeHome(0o2775, 0o2775);
+
+    tightenAppHomePermissions();
+
+    expect(statSync(home).mode & 0o7777).toBe(0o2770);
+    expect(statSync(sessions).mode & 0o7777).toBe(0o2770);
+  });
+
+  it.skipIf(isWindows)("does not chmod through a symlinked app home", () => {
+    root = mkdtempSync(join(tmpdir(), "praana-perms-test-"));
+    process.env.PRAANA_HOME = root;
+    const target = join(root, "elsewhere");
+    mkdirSync(join(target, "sessions"), { recursive: true });
+    chmodSync(target, 0o755);
+    chmodSync(join(target, "sessions"), 0o755);
+    symlinkSync(target, appHomePath());
+
+    tightenAppHomePermissions();
+
+    expect(modeOf(target)).toBe(0o755);
+    expect(modeOf(join(target, "sessions"))).toBe(0o755);
+  });
+
+  it.skipIf(isWindows)("skips a symlinked sessions directory", () => {
+    const { home } = makeHome(0o755, null);
+    const target = join(root!, "elsewhere");
+    mkdirSync(target, { recursive: true });
+    chmodSync(target, 0o755);
+    symlinkSync(target, resolveDefaultSessionLogDir());
+
+    tightenAppHomePermissions();
+
+    expect(modeOf(home)).toBe(0o750);
+    expect(modeOf(target)).toBe(0o755);
+  });
+
+  it.skipIf(isWindows)("skips a directory owned by another user", () => {
+    const { home } = makeHome(0o755, 0o755);
+    const chmodded: string[] = [];
+    const realUid = process.getuid!();
+
+    tightenAppHomePermissions({
+      getuid: () => realUid + 1,
+      chmod: (path) => chmodded.push(path),
+    });
+
+    expect(chmodded).toEqual([]);
+    expect(modeOf(home)).toBe(0o755);
+  });
+
+  it.skipIf(isWindows)("skips a directory whose injected stat reports another owner", () => {
+    makeHome(0o755, null);
+    const chmodded: string[] = [];
+
+    tightenAppHomePermissions({
+      getuid: () => 1000,
+      lstat: () => ({ mode: 0o40755, uid: 4242, isSymbolicLink: () => false }),
+      chmod: (path) => chmodded.push(path),
+    });
+
+    expect(chmodded).toEqual([]);
   });
 
   it.skipIf(isWindows)("leaves an already 0700 app home unchanged", () => {
