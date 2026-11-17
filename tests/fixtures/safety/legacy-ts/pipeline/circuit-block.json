@@ -17,13 +17,13 @@
   "dispatch": {
     "pre": {
       "action": "block",
-      "error": "Circuit breaker: edit_file with the same arguments repeated or failed 3 times; required: different approach or ask the user.",
+      "error": "Circuit breaker: edit_file called with identical arguments 3 times in one turn; required: different approach or ask the user.",
       "isError": true
     },
     "post": null
   },
   "result": {
     "ok": false,
-    "error": "Circuit breaker: edit_file with the same arguments repeated or failed 3 times; required: different approach or ask the user."
+    "error": "Circuit breaker: edit_file called with identical arguments 3 times in one turn; required: different approach or ask the user."
   }
 }

@@ -3,7 +3,7 @@
   "fixture_schema_version": 1,
   "fixture_sha256_by_file": {
     "README.md": "2530b44793a6b6b55e439f4ecc0b44b74d3fa7df33611a8593283218be5a4cf2",
-    "legacy-ts/pipeline/circuit-block.json": "9251bd21564e3b6f2d4c9c28ff12f0bf8d7c285fbd3105961f4fb876ce6aa165",
+    "legacy-ts/pipeline/circuit-block.json": "900158bf755f1619c2d9ec8ea4c72fff57afd9fa00b4507a7f1f269b8a8b5e41",
     "legacy-ts/pipeline/plan-block.json": "2afe41e1752cac41d8026bc35465e0f9d821c517cf38627a70abd925d9494721",
     "legacy-ts/pipeline/post-enrich-redact-release.json": "260768e33ec9f580ba646ebfa9432c221357d086bb8a6cb04c38bec81d41b83c",
     "legacy-ts/pipeline/risk-decline.json": "3052c77b02bdc3169f17d8d2bcac1b6d47965708c309a140bc2cc146f728f6f5",
