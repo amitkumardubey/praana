@@ -1,5 +1,4 @@
 import {
-  chmodSync,
   mkdirSync,
   openSync,
   writeSync,
@@ -17,7 +16,11 @@ import { join, resolve } from "node:path";
 import { ulid } from "ulid";
 import type { Event, EventActor, EventKind } from "./types.js";
 import { getAppLogger } from "./logger.js";
-import { APP_HOME_DIR_MODE } from "./app-identity.js";
+import {
+  APP_HOME_DIR_MODE,
+  tightenDirPermissions,
+  type AppHomePermissionFixes,
+} from "./app-identity.js";
 import {
   AmbiguousSessionPrefixError,
   SessionNotFoundError,
@@ -50,15 +53,24 @@ const SESSION_FILE_MODE = 0o600;
 
 /**
  * Create the session directory owner-only. `recursive` applies `mode` only to
- * directories it creates, so an existing directory is tightened here instead.
+ * directories it creates, so an existing directory that is accessible to
+ * "other" users has those bits removed here (group bits are kept; symlinks and
+ * directories owned by another user are skipped). A failure is logged at debug
+ * level and never breaks logging.
  */
-function ensureSessionDir(sessionDir: string): void {
+export function ensureSessionDir(
+  sessionDir: string,
+  deps: AppHomePermissionFixes = {},
+): void {
   mkdirSync(sessionDir, { recursive: true, mode: APP_HOME_DIR_MODE });
-  try {
-    chmodSync(sessionDir, APP_HOME_DIR_MODE);
-  } catch {
-    // Best effort: a directory we cannot chmod must not break logging.
-  }
+  tightenDirPermissions(sessionDir, {
+    onError: (path, err) => {
+      getAppLogger().debug("failed to tighten session directory permissions", {
+        details: { path, cause: (err as Error)?.message },
+      });
+    },
+    ...deps,
+  });
 }
 
 export function getEventLogPath(sessionDir: string): string {

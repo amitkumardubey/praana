@@ -32,7 +32,7 @@ import {
 } from "../src/app-identity.js";
 import { setEmbedderConsent } from "../src/memory/embedder-consent.js";
 import { writeProviderConfig } from "../src/setup/config-writer.js";
-import { EventLog, writeSessionMeta } from "../src/event-log.js";
+import { EventLog, ensureSessionDir, writeSessionMeta } from "../src/event-log.js";
 import { isWindows } from "./helpers/platform.js";
 
 /** Permission bits (lowest 9) of a path. */
@@ -156,7 +156,7 @@ describe("session directory and file modes", () => {
     }
   });
 
-  it.skipIf(isWindows)("tightens an existing permissive session directory on open", () => {
+  it.skipIf(isWindows)("removes other access from an existing permissive session directory on open", () => {
     const logDir = resolveDefaultSessionLogDir();
     created.push(logDir);
 
@@ -169,11 +169,55 @@ describe("session directory and file modes", () => {
 
     const eventLog = new EventLog(sessionId, logDir);
     try {
-      expect(modeOf(sessionDir)).toBe(0o700);
+      expect(modeOf(sessionDir)).toBe(0o750);
       expect(modeOf(join(sessionDir, "events.jsonl"))).toBe(0o600);
     } finally {
       eventLog.close();
     }
+  });
+
+  it.skipIf(isWindows)("ensureSessionDir only chmods a directory that is open to others", () => {
+    const dir = join(resolveDefaultSessionLogDir(), `perm-test-ensure-${process.pid}-${Date.now()}`);
+    created.push(resolveDefaultSessionLogDir());
+    const chmodded: Array<[string, number]> = [];
+    const chmod = (path: string, mode: number) => {
+      chmodded.push([path, mode]);
+    };
+
+    ensureSessionDir(dir, { chmod });
+    expect(modeOf(dir)).toBe(0o700);
+    expect(chmodded).toEqual([]);
+
+    chmodSync(dir, 0o2775);
+    ensureSessionDir(dir, { chmod });
+    expect(chmodded).toEqual([[dir, 0o2770]]);
+  });
+
+  it.skipIf(isWindows)("ensureSessionDir reports a chmod failure and does not throw", () => {
+    const dir = join(resolveDefaultSessionLogDir(), `perm-test-fail-${process.pid}-${Date.now()}`);
+    created.push(resolveDefaultSessionLogDir());
+    mkdirSync(dir, { recursive: true });
+    chmodSync(dir, 0o755);
+    const reported: string[] = [];
+
+    expect(() =>
+      ensureSessionDir(dir, {
+        chmod: () => {
+          throw new Error("EPERM");
+        },
+        onError: (path) => reported.push(path),
+      }),
+    ).not.toThrow();
+    expect(reported).toEqual([dir]);
+
+    // The default reporter (debug log) must not throw either.
+    expect(() =>
+      ensureSessionDir(dir, {
+        chmod: () => {
+          throw new Error("EPERM");
+        },
+      }),
+    ).not.toThrow();
   });
 });
 
