@@ -249,3 +249,27 @@ describe("tightenAppHomePermissions", () => {
     expect(modeOf(home)).toBe(0o755);
   });
 });
+
+describe("startup fix-up call order", () => {
+  it("runs before every early-exit CLI branch in main()", () => {
+    const src = readFileSync(join(import.meta.dir, "../src/main.ts"), "utf-8");
+    const body = src.slice(src.indexOf("export async function main()"));
+    const fixUp = body.indexOf("tightenAppHomePermissions()");
+    expect(fixUp).toBeGreaterThan(-1);
+    for (const branch of [
+      "parsed.showHelp",
+      "parsed.versionMode",
+      "parsed.providersMode",
+      "parsed.modelsMode",
+      "parsed.setupMode",
+      "parsed.doctorMode",
+      "parsed.upgradeMode",
+    ]) {
+      const at = body.indexOf(branch);
+      expect(at).toBeGreaterThan(-1);
+      expect(fixUp).toBeLessThan(at);
+    }
+    // Called once, not again after the early branches.
+    expect(body.split("tightenAppHomePermissions()").length - 1).toBe(1);
+  });
+});
