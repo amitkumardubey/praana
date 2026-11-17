@@ -181,17 +181,29 @@ describe("redactSecrets", () => {
     }
   });
 
-  it("does not expose non-enumerable Error messages but redacts enumerable code and stack", () => {
-    expect(expectProjection(new Error(SECRETS[0]))).toEqual({});
-    const input = Object.assign(new Error(SECRETS[0]), { code: SECRETS[1] });
-    expect(expectProjection(input)).toEqual({ code: "[REDACTED:aws-access-key]" });
-    Object.defineProperty(input, "stack", { value: SECRETS[1], enumerable: true });
-    expect(expectProjection(input)).toEqual({
-      code: "[REDACTED:aws-access-key]", stack: "[REDACTED:aws-access-key]",
+  it("projects Errors as name and message plus own enumerable properties, never the stack", () => {
+    const named = "[REDACTED:aws-access-key]";
+    expect(redactSecrets(new Error(`boom ${SECRETS[1]}`))).toEqual({ name: "Error", message: `boom ${named}` });
+    expect(redactSecrets({ ok: false, error: new Error(`boom ${SECRETS[1]}`) })).toEqual({
+      ok: false, error: { name: "Error", message: `boom ${named}` },
     });
-    Object.defineProperty(input, "message", { value: SECRETS[1], enumerable: true });
-    expect(expectProjection(input)).toEqual({
-      code: "[REDACTED:aws-access-key]", stack: "[REDACTED:aws-access-key]", message: "[REDACTED:aws-access-key]",
+    expect(redactSecrets(new TypeError("bad"))).toEqual({ name: "TypeError", message: "bad" });
+    const withCode = Object.assign(new Error(SECRETS[0]), { code: SECRETS[1], name: "Custom" });
+    expect(redactSecrets(withCode)).toEqual({
+      name: "Custom", message: "ANTHROPIC_API_KEY=[REDACTED:key-assignment]", code: named,
+    });
+    // An enumerable stack or message is neither copied (stack) nor duplicated (message).
+    Object.defineProperty(withCode, "stack", { value: SECRETS[1], enumerable: true });
+    Object.defineProperty(withCode, "message", { value: SECRETS[1], enumerable: true });
+    const out = redactSecrets(withCode);
+    expect(Object.keys(out as object)).toEqual(["name", "message", "code"]);
+    expect(out).toEqual({ name: "Custom", message: named, code: named });
+    expectNoSecret(JSON.stringify(out));
+    // `cause` is not an own enumerable property, so it is not copied.
+    expect(redactSecrets(new Error("x", { cause: SECRETS[1] }))).toEqual({ name: "Error", message: "x" });
+    const hostile = Object.defineProperty(new Error("x"), "message", { get() { throw new Error("no"); } });
+    expect(redactSecrets({ hostile, sibling: SECRETS[1] })).toEqual({
+      hostile: { name: "Error", message: "[REDACTED:redaction-error]" }, sibling: named,
     });
   });
 

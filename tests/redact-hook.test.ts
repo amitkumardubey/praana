@@ -60,6 +60,20 @@ describe("redact post_tool_call", () => {
     });
   });
 
+  it("keeps a redacted Error message in a failed result", async () => {
+    const post = createRedactPostToolCallHandler();
+    const patch = await post({
+      toolName: "shell",
+      args: {},
+      result: { ok: false, error: new Error("boom AKIAIOSFODNN7EXAMPLE") },
+      isError: true,
+      session: session(),
+    });
+    expect(patch?.result).toEqual({
+      ok: false, error: { name: "Error", message: "boom [REDACTED:aws-access-key]" },
+    });
+  });
+
   it("runs after enrich so suggestions are scanned", async () => {
     const registry = createBuiltinHookRegistry("/proj", {
       validate: { pathExists: () => false, listRepoFiles: () => [] },

@@ -83,6 +83,17 @@ function uniqueKey(frame: JsonFrame, base: string): string {
   return key;
 }
 
+/**
+ * Error projection keys: `name` and `message` first, then own enumerable
+ * properties. JSON.stringify writes `{}` for an Error because both fields are
+ * non-enumerable; diagnostics matter more here, and both values are redacted as
+ * strings like any other leaf. `stack` is never copied, even when enumerable.
+ */
+function errorKeys(error: object): string[] {
+  const rest = Object.keys(error).filter((key) => key !== "name" && key !== "message" && key !== "stack");
+  return ["name", "message", ...rest];
+}
+
 /** A key whose redaction fails is replaced, never written as the original name. */
 function redactKey(key: string): string {
   try {
@@ -118,6 +129,8 @@ function binaryPlaceholder(value: unknown): string | undefined {
  * an object that is its own ancestor becomes [REDACTED:cycle]. Cycle detection
  * tracks the current ancestor path only, so a shared reference that is not an
  * ancestor of itself is copied each time, as JSON.stringify would write it.
+ * Deliberate difference for native Errors: they project as { name, message } plus
+ * own enumerable properties other than `stack` (JSON.stringify writes {}).
  * Getters, toJSON and proxy failures replace only the affected value; only a
  * failure of the root itself or an unrecoverable error escapes to the caller.
  * No input identity, prototype, accessor or callable is retained in the plain JSON output.
@@ -159,7 +172,7 @@ function redactJsonProjection(value: unknown): JsonValue | undefined {
 
     const isArray = Array.isArray(child);
     const source = child as Record<string, unknown>;
-    const keys = isArray ? null : Object.keys(child);
+    const keys = isArray ? null : types.isNativeError(child) ? errorKeys(child) : Object.keys(child);
     // Unary + uses JSON's ToNumber semantics (unlike Number(), rejects BigInt).
     const length = isArray
       ? Math.min(Math.max(Math.floor(+(source.length as number)) || 0, 0), Number.MAX_SAFE_INTEGER)
