@@ -185,7 +185,7 @@ const DEFAULT_CONFIG: PraanaConfig = {
     enabled: true,
   },
   turn: {
-    max_steps: 25,
+    max_steps: 100,
     pause_after_steps: 50,
     hard_max_steps: 300,
   },

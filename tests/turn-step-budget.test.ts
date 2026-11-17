@@ -1745,12 +1745,12 @@ describe("per-turn step budget — config validation", () => {
     writeFileSync(join(root, ".praana", "config.toml"), content, "utf-8");
   }
 
-  it("defaults to max_steps=25, pause_after_steps=50, hard_max_steps=300", () => {
+  it("defaults to max_steps=100, pause_after_steps=50, hard_max_steps=300", () => {
     writeTurnConfig("# empty\n");
     getConfigWarnings(); // drain warnings left by earlier test files before asserting none
     const config = loadConfig();
     const t = config.turn as TurnConfig;
-    expect(t.max_steps).toBe(25);
+    expect(t.max_steps).toBe(100);
     expect(t.pause_after_steps).toBe(50);
     expect(t.hard_max_steps).toBe(300);
     expect(getConfigWarnings()).toHaveLength(0);
@@ -1775,7 +1775,7 @@ describe("per-turn step budget — config validation", () => {
     );
     const config = loadConfig();
     const t = config.turn as TurnConfig;
-    expect(t.max_steps).toBe(25);
+    expect(t.max_steps).toBe(100);
     expect(t.pause_after_steps).toBe(50);
     expect(t.hard_max_steps).toBe(300);
     const warnings = getConfigWarnings();

@@ -200,6 +200,15 @@ confirm = false
 # Directory where session event logs are stored
 log_dir = "~/.praana/sessions"
 
+[turn]
+# Hard cap on steps per user message when the session is headless (praana run,
+# Harbor, CI) or the UI sink cannot pause. --max-steps N overrides it for one run.
+max_steps = 100
+# Interactive pause: ask to continue every N steps (onStepPause sinks only).
+pause_after_steps = 50
+# Absolute ceiling for interactive sessions; stops without asking.
+hard_max_steps = 300
+
 [search_code]
 # search_code and find_files use @praana/natives (gitignore-aware walk + grep).
 # scan_timeout_ms is unused (kept for config compatibility).
