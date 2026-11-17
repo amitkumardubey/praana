@@ -360,7 +360,7 @@ export class AppController {
   async startNewSession(): Promise<StartupInfo> {
     if (!this.sessionEnded) {
       const events = this.session.getTranscriptEvents();
-      await this.session.end("clean", events, { memoryTimeoutMs: 50 });
+      await this.session.end("clean", events);
       this.sessionEnded = true;
     }
 
@@ -440,17 +440,12 @@ export class AppController {
         stateObjects: 0,
         rememberCalls: 0,
         recallUsed: 0,
-        learningsStored: 0,
       };
     }
     this.sessionEnded = true;
     const events = this.session.getTranscriptEvents();
-    const memoryTimeoutMs =
-      this.config.session.shutdown_memory_timeout_ms ?? 2_000;
-    return this.session.end(reason, events, { memoryTimeoutMs });
+    return this.session.end(reason, events);
   }
 }
 
-export type ShutdownStatus = Omit<SessionEndStatus, "memory"> & {
-  memory: SessionEndStatus["memory"] | "noop";
-};
+export type ShutdownStatus = SessionEndStatus;

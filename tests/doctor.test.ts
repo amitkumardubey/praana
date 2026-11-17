@@ -13,7 +13,6 @@ const baseConfig: PraanaConfig = {
   compiler: { token_budget: 100000 },
   tiers: {},
   session: { log_dir: testLogDir },
-  consolidation: {},
   shell: {},
   edit: { confirm: false },
   skills: { enabled: false },
@@ -82,7 +81,6 @@ describe("handleDoctor", () => {
     expect(embedderLine).toBeDefined();
     expect(result.lines.some((l) => l.includes("native:"))).toBe(true);
     expect(result.lines.some((l) => l.includes("search:"))).toBe(true);
-    expect(result.lines.some((l) => l.includes("vectors:"))).toBe(true);
     if (embedderLine!.startsWith("⚠")) {
       expect(embedderLine).toMatch(/keyword-only|weights not downloaded|addon missing|runtime missing/);
     }
@@ -106,7 +104,7 @@ describe("handleDoctor", () => {
         "",
         "Configuration warnings:",
         "  ⚠ Invalid memory.embedder, using default 'auto'",
-        "  ⚠ Invalid memory.summarizer 'nope', using 'disabled'",
+        "  ⚠ Invalid compiler.token_budget, using default 100000",
         "",
       ]),
     ).toBe(3);
@@ -119,15 +117,13 @@ describe("handleDoctor", () => {
   it("config warnings are indented and still fail the run", async () => {
     writeFileSync(
       join(praanaHome, "warn.toml"),
-      '[memory]\nembedder = "nope"\nsummarizer = "nope"\n',
+      '[memory]\nembedder = "nope"\n[compiler]\ntoken_budget = 5\n',
     );
     loadConfig(join(praanaHome, "warn.toml"));
     const result = await handleDoctor(baseConfig);
     const indented = result.lines.filter((l) => l.startsWith("  ⚠ "));
     expect(indented).toContain("  ⚠ Invalid memory.embedder, using default 'auto'");
-    expect(indented).toContain(
-      "  ⚠ Invalid memory.summarizer 'nope', using 'disabled'",
-    );
+    expect(indented).toContain("  ⚠ Invalid compiler.token_budget, using default 100000");
     expect(result.success).toBe(false);
     expect(result.lines.at(-1)).toBe("Some checks failed.");
     expect(countPrintedWarnings(result.lines)).toBe(
@@ -138,7 +134,7 @@ describe("handleDoctor", () => {
   it("mixed unindented and indented warnings are both counted, and the run still fails", async () => {
     writeFileSync(
       join(praanaHome, "warn.toml"),
-      '[memory]\nembedder = "nope"\nsummarizer = "nope"\n',
+      '[memory]\nembedder = "nope"\n[compiler]\ntoken_budget = 5\n',
     );
     loadConfig(join(praanaHome, "warn.toml"));
     const result = await handleDoctor(baseConfig);

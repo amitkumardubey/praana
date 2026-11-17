@@ -1,10 +1,9 @@
-import { afterEach, expect, it, spyOn } from "bun:test";
+import { afterEach, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Session } from "../src/session.js";
 import { loadConfig } from "../src/config.js";
-import { MemoryStore } from "../src/memory/index.js";
 
 let session: Session | undefined;
 let home: string | undefined;
@@ -17,7 +16,7 @@ async function start(incognito = false, enabled = true) {
   home = mkdtempSync(join(tmpdir(), "no-note-promotion-"));
   process.env.PRAANA_HOME = home;
   const config = structuredClone(loadConfig());
-  config.memory = { ...config.memory, enabled, summarizer: "disabled", db_path: join(home, "context.db") };
+  config.memory = { ...config.memory, enabled, db_path: join(home, "context.db") };
   config.native.enabled = false;
   config.context_engine.enabled = false;
   config.context_engine.measurement_mode = false;
@@ -27,17 +26,13 @@ async function start(incognito = false, enabled = true) {
   return session;
 }
 
-it.each(["active", "soft", "hard", "retracted", "activity"])("does not promote a %s note to either memory backend", async (state) => {
+it.each(["active", "soft", "hard", "retracted", "activity"])("does not promote a %s note to a file memory", async (state) => {
   const session = await start();
-  const remember = spyOn(MemoryStore.prototype, "remember");
-  try {
-    const note = session.stateGraph.create("note", { text: state === "activity" ? "Read src/index.ts and src/app.ts" : "Prefer explicit module boundaries" });
-    if (state === "soft" || state === "hard") session.stateGraph.setTier(note.id, state);
-    if (state === "retracted") session.stateGraph.retractObject(note.id);
-    expect((await session.end("clean", [])).memory).toBe("noop");
-    expect(remember).not.toHaveBeenCalled();
-    expect((await session.fileMemory!.list()).entries).toEqual([]);
-  } finally { remember.mockRestore(); }
+  const note = session.stateGraph.create("note", { text: state === "activity" ? "Read src/index.ts and src/app.ts" : "Prefer explicit module boundaries" });
+  if (state === "soft" || state === "hard") session.stateGraph.setTier(note.id, state);
+  if (state === "retracted") session.stateGraph.retractObject(note.id);
+  expect((await session.end("clean", [])).memory).toBe("noop");
+  expect((await session.fileMemory!.list()).entries).toEqual([]);
 });
 it("does not promote multiple surviving notes", async () => {
   const session = await start();

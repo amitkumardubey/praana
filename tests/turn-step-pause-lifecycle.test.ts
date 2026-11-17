@@ -287,11 +287,10 @@ function makeSession(logDir: string, limit: Limit) {
         : { max_steps: 25, pause_after_steps: 1, hard_max_steps: 300 };
   const config = {
     llm: { provider: "lifecycle-test", model: "test-model" },
-    memory: { enabled: false, summarizer: "openrouter", db_path: ":memory:", embedder: "auto", ollama_url: "http://localhost:11434", ollama_model: "nomic-embed-text" },
+    memory: { enabled: false, db_path: ":memory:", embedder: "auto", ollama_url: "http://localhost:11434", ollama_model: "nomic-embed-text" },
     compiler: { token_budget: 100_000, recent_turns: 10, recent_turns_token_budget: 30_000 },
     tiers: { idle_soft_after_turns: 3, idle_hard_after_turns: 6 },
     session: { log_dir: logDir },
-    consolidation: { enabled: false, promotion_threshold: 3, run_delay_seconds: 30 },
     shell: { enabled: false, allowed_paths: [] },
     edit: { confirm: false },
     skills: { enabled: false, max_token_budget_ratio: 0.2, max_loaded_skills: 3, stale_threshold_turns: 10, max_depth: 6 },

@@ -10,7 +10,7 @@ import {
   isTransformersAvailable,
   isModelCached,
   resetTransformersEmbedderForTests,
-} from "../src/memory/index.js";
+} from "../src/memory/transformers-embedder.js";
 import { createTestLogger } from "../src/logger.js";
 import type { MemoryConfig } from "../src/types.js";
 import type { Embedder } from "../src/memory/types.js";
@@ -40,7 +40,6 @@ afterAll(() => {
 function makeConfig(overrides: Partial<MemoryConfig> = {}): MemoryConfig {
   return {
     enabled: true,
-    summarizer: "disabled",
     embedder: "auto",
     ollama_url: "http://localhost:11434",
     ollama_model: "nomic-embed-text",

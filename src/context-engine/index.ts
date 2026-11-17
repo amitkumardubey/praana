@@ -69,8 +69,6 @@ export {
   formatScorecardLines,
   scorecardHasData,
   type ScorecardInc,
-  type ScorecardTrackerOptions,
-  type MemoryAveragesProvider,
   renderSessionTelemetrySummary,
   type SessionTelemetrySummary,
 } from "./telemetry.js";
@@ -182,7 +180,6 @@ export class ContextEngine {
     dbPath: string,
     sessionId: string,
     config: Partial<ContextEngineConfig> & Pick<ContextEngineConfig, "enabled">,
-    scorecardOptions?: import("./telemetry.js").ScorecardTrackerOptions,
     /**
      * Last turn before the most recent reset_boundary (-1 if none). Used only by
      * the digest-replay fallback when no persisted checkpoint exists: pre-clear
@@ -198,7 +195,7 @@ export class ContextEngine {
     const checkpoint = resolved.checkpoint_enabled
       ? CheckpointStore.open(store.getDb(), sessionId, boundaryTurn)
       : null;
-    const scorecard = new ScorecardTracker(store.getDb(), sessionId, resolved.enabled, scorecardOptions);
+    const scorecard = new ScorecardTracker(store.getDb(), sessionId, resolved.enabled);
     const telemetry = new TelemetryRecorder(
       store.getDb(),
       sessionId,
@@ -454,17 +451,6 @@ export class ContextEngine {
    */
   listSessionArtifacts(): ContextArtifact[] {
     return listSessionArtifacts(this.store.getDb(), this.store.getSessionId());
-  }
-
-  /**
-   * M4 artifact promotion: list this session's high-value artifacts (those
-   * accessed >= minAccessCount times). The actual promotion into Cognitive Memory
-   * is done by the session via MemoryStore.remember, since the ContextEngine
-   * does not depend on MemoryStore (preserves the per-session / Cognitive Memory
-   * boundary).
-   */
-  listHighValueArtifacts(minAccessCount: number): ContextArtifact[] {
-    return this.store.listHighValueArtifacts(minAccessCount);
   }
 
   // ---------------------------------------------------------------------------

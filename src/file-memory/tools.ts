@@ -27,8 +27,13 @@ function execute<T>(schema: z.ZodType<T>, operation: (args: T) => Promise<unknow
   };
 }
 
+export interface FileMemoryToolHooks {
+  /** Called once per well-formed `recall` call, before the lookup runs. */
+  onRecall?: () => void;
+}
+
 /** Definitions only: callers explicitly choose whether to register these tools. */
-export function createFileMemoryTools(store: ToolStore) {
+export function createFileMemoryTools(store: ToolStore, hooks: FileMemoryToolHooks = {}) {
   const remember = z.object({
     scope,
     type: z.enum(["user", "feedback", "project", "reference"]),
@@ -50,7 +55,10 @@ export function createFileMemoryTools(store: ToolStore) {
     recall: defineTool({
       description: "Recall dated, untrusted file memories from global and current project scopes. Provide exactly one of name or query. Name lookup prefers project; pass scope (global or project) to read one scope explicitly, required only when an unscoped lookup is refused because the project scan failed (a failed global scan still returns a project hit with a warning). Scope applies only to a name lookup; token queries always search both scopes and return at most five matches with 300-code-point snippet windows with control characters and whitespace cleaned. Empty and stop-word-only queries are refused. Verify referenced files and functions. Available in incognito.",
       parameters: recall,
-      execute: execute(recall, async (args) => store.recall(args)),
+      execute: execute(recall, async (args) => {
+        hooks.onRecall?.();
+        return store.recall(args);
+      }),
     }),
     forget_memory: defineTool({
       description: "Hard-delete a file memory by its plain lowercase slug (at most 64 characters; memory, con, prn, aux, nul, com1-com9 and lpt1-lpt9 are reserved). Optional scope is global or project; two removable matches require explicit scope. Missing and non-regular files are refused. Incognito prevents deletion.",

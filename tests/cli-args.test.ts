@@ -1,5 +1,9 @@
 import { describe, it, expect } from "bun:test";
 import { parseCliArgs } from "../src/cli-args.js";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 
 describe("parseCliArgs", () => {
   it("parses help flag", () => {
@@ -53,6 +57,31 @@ describe("parseCliArgs", () => {
 
   it("parses doctor subcommand", () => {
     expect(parseCliArgs(["doctor"]).doctorMode).toBe(true);
+  });
+
+  it("flags the removed `memory` command and consumes option values first", () => {
+    expect(parseCliArgs(["memory", "dedupe"]).memoryCommandMode).toBe(true);
+    expect(parseCliArgs(["memory"]).memoryCommandMode).toBe(true);
+    expect(parseCliArgs(["--config", "memory"]).memoryCommandMode).toBe(false);
+    expect(parseCliArgs(["resume", "memory"]).memoryCommandMode).toBe(false);
+    expect(parseCliArgs(["run", "memory"]).memoryCommandMode).toBe(false);
+  });
+
+  it("`praana memory dedupe` exits non-zero with a removal message and starts no session", () => {
+    const home = mkdtempSync(join(tmpdir(), "praana-memory-cmd-"));
+    try {
+      const result = spawnSync("bun", ["src/main.ts", "memory", "dedupe"], {
+        cwd: resolve(import.meta.dir, ".."),
+        env: { ...process.env, HOME: home, PRAANA_HOME: home, PRAANA_NO_UPDATE_CHECK: "1" },
+        encoding: "utf8",
+        timeout: 60_000,
+      });
+      expect(result.status).toBe(2);
+      expect(result.stderr).toContain("memory was removed");
+      expect(result.stderr).toContain("~/.praana/memory");
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 
   it("parses upgrade and update aliases", () => {

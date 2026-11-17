@@ -6,11 +6,7 @@ import { Session } from "../src/session.js";
 import { AppController } from "../src/app-controller.js";
 import { loadConfig } from "../src/config.js";
 import type { PraanaConfig } from "../src/types.js";
-import * as legacy from "../src/memory/index.js";
-import * as memoryDb from "../src/memory/db.js";
 import * as embedderFactory from "../src/memory/embedder-factory.js";
-import * as summarizerFactory from "../src/memory/summarizer-factory.js";
-import * as consolidation from "../src/memory/consolidation.js";
 import { DeterministicTestEmbedder } from "./helpers/test-embedder.js";
 import { computeMemoryStats, runTurn } from "../src/turn.js";
 import { scriptedMemoryModel } from "./helpers/scripted-memory-model.js";
@@ -27,19 +23,20 @@ let home: string;
 let config: PraanaConfig;
 const sessions: Session[] = [];
 let restore: (() => void)[] = [];
+let createEmbedderSpy: ReturnType<typeof spyOn>;
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "praana-file-session-"));
   process.env.PRAANA_HOME = home;
   config = structuredClone(loadConfig());
-  config.memory = { ...config.memory, enabled: true, summarizer: "disabled", db_path: join(home, "context.db") };
+  config.memory = { ...config.memory, enabled: true, db_path: join(home, "context.db") };
   config.session.log_dir = join(home, "sessions");
   config.skills.enabled = false;
   config.native.enabled = false;
   config.context_engine.enabled = false;
   config.context_engine.measurement_mode = true;
-  const embedder = spyOn(embedderFactory, "createEmbedder").mockResolvedValue(new DeterministicTestEmbedder());
-  restore.push(() => embedder.mockRestore());
+  createEmbedderSpy = spyOn(embedderFactory, "createEmbedder").mockResolvedValue(new DeterministicTestEmbedder());
+  restore.push(() => createEmbedderSpy.mockRestore());
 });
 afterEach(async () => {
   for (const session of sessions.splice(0)) await session.end("aborted");
@@ -66,30 +63,26 @@ it("owns a file store under the parent of .praana, including in incognito", asyn
   expect(result.ok).toBe(true);
 });
 
-it("constructs no Cognitive Memory store and samples no Cognitive Memory tables at start/resume/end", async () => {
-  const oldStore = spyOn(legacy, "MemoryStore").mockImplementation(() => { throw new Error("Cognitive Memory constructor reached"); });
-  const averages = spyOn(memoryDb, "getMemorySignalAverages").mockImplementation(() => { throw new Error("Cognitive Memory query reached"); });
-  restore.push(() => oldStore.mockRestore(), () => averages.mockRestore());
+it("counts recall calls in the scorecard and writes no memory signal columns", async () => {
+  config.context_engine.enabled = true;
   const model = scriptedMemoryModel(config, [
     [{ name: "remember", args: { scope: "global", name: "runtime-observation", type: "user", description: "Keep boundaries clear", body: "Prefer explicit interfaces." } }],
     [{ name: "recall", args: { query: "boundaries" } }],
   ]);
   restore.push(() => model.close());
   const session = await start();
-  expect(oldStore).not.toHaveBeenCalled(); // main calls the constructor (caught init failure is not a pass)
-  expect(averages).not.toHaveBeenCalled();
   await runTurn(session, "Save and recall this preference", undefined, { sink: {} });
   expect((await maybeAutoCompactClassic(session, 128000, "scripted")).compacted).toBe(false);
+  expect(session.scorecard.getCounters().recallCalls).toBe(1);
   await session.end("clean");
   const db = openContextEngineDb(session.getMemoryDbPath()!);
-  db.query("UPDATE scorecard SET validity_avg_start = 0.9, validity_avg_end = 0.8, usefulness_avg_start = 0.7, usefulness_avg_end = 0.6 WHERE session_id = ?").run(session.id);
+  const row = db.query("SELECT recall_calls, recall_used_count, validity_avg_start, usefulness_avg_end FROM scorecard WHERE session_id = ?").get(session.id) as Record<string, number>;
   db.close();
+  expect(row).toEqual({ recall_calls: 1, recall_used_count: 1, validity_avg_start: 0, usefulness_avg_end: 0 });
   const resumed = await Session.resume(session.id, home, config);
   sessions.push(resumed);
+  expect(resumed.scorecard.getCounters().recallCalls).toBe(1);
   await resumed.end("clean");
-  expect(oldStore).not.toHaveBeenCalled();
-  expect(averages).not.toHaveBeenCalled();
-  expect(resumed.scorecard.getMemorySnapshot()).toEqual({ validityAvgStart: 0, validityAvgEnd: 0, usefulnessAvgStart: 0, usefulnessAvgEnd: 0 });
 });
 
 it.each([false, true])("injects the seeded startup index through the real %s engine turn", async (engine) => {
@@ -255,18 +248,24 @@ it("keeps the configured embedder active in real incognito engine scoring", asyn
   expect(embed).toHaveBeenCalled();
 });
 
-it("never installs a Cognitive Memory averages provider in an enabled session", async () => {
-  const averages = spyOn(memoryDb, "getMemorySignalAverages");
-  restore.push(() => averages.mockRestore());
+it("loads the embedder for engine scoring even when file memory is disabled", async () => {
+  config.context_engine.enabled = true;
+  config.memory.enabled = false;
   const session = await start();
-  await session.scorecard.recordMemoryStart(session.getMemoryDbPath()!);
-  session.scorecard.persistProgress();
-  expect(averages).not.toHaveBeenCalled(); // main installs a provider and samples at start
-  await session.end("clean");
-  expect(averages).not.toHaveBeenCalled();
+  expect(session.memoryEnabled).toBe(false);
+  expect(createEmbedderSpy).toHaveBeenCalledTimes(1);
+  expect(session.embedder).toBeInstanceOf(DeterministicTestEmbedder);
+});
+
+it("does not load or download the embedder in classic mode", async () => {
+  config.context_engine.enabled = false;
+  const session = await start();
+  expect(createEmbedderSpy).not.toHaveBeenCalled();
+  expect(session.embedder).toBeNull();
 });
 
 it("continues with a visible warning when both file memory scopes fail", async () => {
+  config.context_engine.enabled = true;
   mkdirSync(join(home, ".praana"), { recursive: true });
   writeFileSync(join(home, ".praana", "memory"), "not a directory");
   writeFileSync(join(home, ".praana", "projects"), "not a directory");
@@ -298,24 +297,12 @@ it("keeps deliberate writes from concurrent sessions and lists both on the next 
   expect(next.digest).toContain("reference-guide");
 });
 
-it("ends with no automatic memory lifecycle, summarizer, consolidation or artifact promotion", async () => {
-  const summarizer = spyOn(summarizerFactory, "createSummarizer");
-  const consolidate = spyOn(consolidation, "runConsolidation");
-  const sessionEnd = spyOn(legacy.MemoryStore.prototype, "sessionEnd");
-  restore.push(() => summarizer.mockRestore(), () => consolidate.mockRestore(), () => sessionEnd.mockRestore());
+it("ends with no automatic memory lifecycle", async () => {
   config.context_engine.enabled = true;
-  config.consolidation.enabled = true;
-  config.consolidation.run_delay_seconds = 0;
   const session = await start();
-  const artifactPromotion = spyOn(session.contextEngine!, "listHighValueArtifacts");
-  restore.push(() => artifactPromotion.mockRestore());
   session.stateGraph.create("note", { text: "A durable but not deliberately saved observation" });
-  const status = await session.end("clean", [], { memoryTimeoutMs: 10 });
-  expect(status.memory).toBe("noop"); // main runs sessionEnd and returns completed
-  expect(summarizer).not.toHaveBeenCalled();
-  expect(consolidate).not.toHaveBeenCalled();
-  expect(sessionEnd).not.toHaveBeenCalled();
-  expect(artifactPromotion).not.toHaveBeenCalled();
+  const status = await session.end("clean", []);
+  expect(status.memory).toBe("noop");
   expect(session.eventLog.readAll().some((event) => event.payload.type === "memory_lifecycle")).toBe(false);
 });
 
@@ -426,7 +413,6 @@ it("app-controller surfaces a persisted incognito apply failure and leaves no wr
         showHelp: false,
         force: false,
         initMode: false,
-        memoryDedupeMode: false,
       },
     });
     controller.session = session;
@@ -619,7 +605,7 @@ it("serves digest, recall, memory, stats, and banner counts from the live file s
   console.log = (...args: unknown[]) => logs.push(args.map(String).join(" "));
   try { printHelp(); } finally { console.log = orig; }
   const help = logs.join("\n");
-  expect(help).toContain("praana memory dedupe");
+  expect(help).not.toContain("praana memory dedupe");
   expect(help).not.toContain("/memory dedupe");
 
   const before = await executeSlashCommand("/stats", session, slashHandlers);

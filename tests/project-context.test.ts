@@ -30,11 +30,10 @@ describe("buildProjectContext", () => {
 
     const session = await Session.create(testDir, {
       llm: { provider: "openai", model: "test", context_window: 1000 },
-      memory: { enabled: false, summarizer: "disabled" },
+      memory: { enabled: false },
       compiler: { token_budget: 1000, recent_turns: 1 },
       tiers: { idle_soft_after_turns: 1, idle_hard_after_turns: 1 },
       session: { log_dir: join(testDir, "sessions") },
-      consolidation: { enabled: false, promotion_threshold: 1, run_delay_seconds: 1 },
       shell: { enabled: false, allowed_paths: [] },
       edit: { confirm: false },
       skills: { enabled: false, max_depth: 1 },

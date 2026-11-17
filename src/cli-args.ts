@@ -2,7 +2,6 @@ export interface CliArgs {
   sessionId: string | null;
   resumeMode: boolean;
   setupMode: boolean;
-  memoryDedupeMode: boolean;
   providersMode: boolean;
   modelsMode: boolean;
   modelsProvider: string | null;
@@ -21,6 +20,8 @@ export interface CliArgs {
   versionMode: boolean;
   doctorMode: boolean;
   upgradeMode: boolean;
+  /** `praana memory ...`: the removed legacy memory CLI. */
+  memoryCommandMode: boolean;
   homeDir: string | undefined;
 }
 
@@ -28,7 +29,6 @@ export function parseCliArgs(args: string[]): CliArgs {
   let sessionId: string | null = null;
   let resumeMode = false;
   let setupMode = false;
-  let memoryDedupeMode = false;
   let providersMode = false;
   let modelsMode = false;
   let modelsProvider: string | null = null;
@@ -44,6 +44,7 @@ export function parseCliArgs(args: string[]): CliArgs {
   let versionMode = false;
   let doctorMode = false;
   let upgradeMode = false;
+  let memoryCommandMode = false;
   let homeDir: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
@@ -101,6 +102,10 @@ export function parseCliArgs(args: string[]): CliArgs {
       upgradeMode = true;
       continue;
     }
+    if (args[i] === "memory") {
+      memoryCommandMode = true;
+      break;
+    }
     if (args[i] === "providers") {
       providersMode = true;
       continue;
@@ -111,11 +116,6 @@ export function parseCliArgs(args: string[]): CliArgs {
         modelsProvider = args[i + 1];
         i++;
       }
-      continue;
-    }
-    if (args[i] === "memory" && args[i + 1] === "dedupe") {
-      memoryDedupeMode = true;
-      i++;
       continue;
     }
     if (args[i] === "run") {
@@ -167,7 +167,6 @@ export function parseCliArgs(args: string[]): CliArgs {
     sessionId,
     resumeMode,
     setupMode,
-    memoryDedupeMode,
     providersMode,
     modelsMode,
     modelsProvider,
@@ -183,6 +182,7 @@ export function parseCliArgs(args: string[]): CliArgs {
     versionMode,
     doctorMode,
     upgradeMode,
+    memoryCommandMode,
     homeDir,
   };
 }

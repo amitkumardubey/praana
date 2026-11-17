@@ -43,6 +43,16 @@ import { Session } from "../src/session.js";
 import { runTurn } from "../src/turn.js";
 import type { PraanaConfig } from "../src/types.js";
 
+/** Session tests: only provider chat requests reach the stub; anything else (for example an embedder probe) fails as offline. */
+function chatOnly(handler: (url: RequestInfo | URL, init?: RequestInit) => Promise<Response>): typeof fetch {
+  return (async (url: RequestInfo | URL, init?: RequestInit) => {
+    const href = url instanceof Request ? url.url : String(url);
+    if (!href.includes("chatgpt.com")) throw new Error("offline in test: " + href);
+    return handler(url, init);
+  }) as typeof fetch;
+}
+
+
 /**
  * Logout vs refresh:
  * A refresh writes the rotated credential only while it still holds the
@@ -68,7 +78,7 @@ function holdLock(kind: "store" | "refresh", provider = "openai-codex"): Credent
 function turnConfig(logDir: string, home: string): PraanaConfig {
   return {
     llm: { provider: "openai-codex", model: "gpt-6.1-sol" },
-    memory: { enabled: false, summarizer: "disabled", db_path: join(home, "memory.db") },
+    memory: { enabled: false, db_path: join(home, "memory.db") },
     compiler: { token_budget: 100_000, recent_turns: 2, recent_turns_token_budget: 8_000 },
     tiers: { idle_soft_after_turns: 20, idle_hard_after_turns: 50 },
     session: { log_dir: logDir },
@@ -599,15 +609,15 @@ describe("serialized OAuth refresh", () => {
     resetOAuthProvidersForTests({
       fetch: (async () => { throw new Error("token endpoint down"); }) as typeof fetch,
     });
-    globalThis.fetch = (async () => {
+    globalThis.fetch = chatOnly(async () => {
       chatCalls += 1;
       throw new Error("stale token was sent");
-    }) as typeof fetch;
+    });
     const logDir = join(praanaHome, "sessions");
     mkdirSync(logDir, { recursive: true });
     const config = {
       llm: { provider: "openai-codex", model: "gpt-6.1-sol" },
-      memory: { enabled: false, summarizer: "disabled", db_path: join(praanaHome, "memory.db") },
+      memory: { enabled: false, db_path: join(praanaHome, "memory.db") },
       compiler: { token_budget: 100_000, recent_turns: 2, recent_turns_token_budget: 8_000 },
       tiers: { idle_soft_after_turns: 20, idle_hard_after_turns: 50 },
       session: { log_dir: logDir },
@@ -647,7 +657,7 @@ describe("serialized OAuth refresh", () => {
       const history = buildFullConversationHistory(session.eventLog.readAllUncompressed());
       expect(history).not.toContain("hello");
     } finally {
-      await session.end("clean", [], { memoryTimeoutMs: 1 });
+      await session.end("clean", []);
     }
   });
 
@@ -655,10 +665,10 @@ describe("serialized OAuth refresh", () => {
     seedExpiredCodex();
     const lock = holdLock("store");
     let chatCalls = 0;
-    globalThis.fetch = (async () => {
+    globalThis.fetch = chatOnly(async () => {
       chatCalls += 1;
       throw new Error("should not be called");
-    }) as typeof fetch;
+    });
     const logDir = join(praanaHome, "sessions");
     mkdirSync(logDir, { recursive: true });
     const config = turnConfig(logDir, praanaHome);
@@ -682,7 +692,7 @@ describe("serialized OAuth refresh", () => {
       expect(postTurns).toBe(0);
     } finally {
       lock.release();
-      await session.end("clean", [], { memoryTimeoutMs: 1 });
+      await session.end("clean", []);
     }
   }, { timeout: 10_000 });
 
@@ -691,10 +701,10 @@ describe("serialized OAuth refresh", () => {
     writeFileSync(getCredentialsFilePath(), "{not-json");
     resetCredentialStoreForTests();
     let chatCalls = 0;
-    globalThis.fetch = (async () => {
+    globalThis.fetch = chatOnly(async () => {
       chatCalls += 1;
       throw new Error("should not be called");
-    }) as typeof fetch;
+    });
     const logDir = join(praanaHome, "sessions");
     mkdirSync(logDir, { recursive: true });
     const config = turnConfig(logDir, praanaHome);
@@ -717,7 +727,7 @@ describe("serialized OAuth refresh", () => {
       expect(session.getTurnCount()).toBe(turnsBefore);
       expect(postTurns).toBe(0);
     } finally {
-      await session.end("clean", [], { memoryTimeoutMs: 1 });
+      await session.end("clean", []);
     }
   });
 
@@ -1275,7 +1285,7 @@ describe("serialized OAuth refresh", () => {
       expect(errors.join("\n")).not.toContain("refreshing");
     } finally {
       refreshLock.release();
-      await session.end("clean", [], { memoryTimeoutMs: 1 });
+      await session.end("clean", []);
     }
   });
 
@@ -1320,7 +1330,7 @@ describe("serialized OAuth refresh", () => {
       expect(agentText()).not.toContain("token endpoint down");
       expect(agentText()).not.toContain("Run /login");
     } finally {
-      await session.end("clean", [], { memoryTimeoutMs: 1 });
+      await session.end("clean", []);
     }
   });
 
@@ -1332,10 +1342,10 @@ describe("serialized OAuth refresh", () => {
       fetch: (async () => { throw new Error("should not refresh"); }) as typeof fetch,
     });
     setRefreshLockWaitMsForTests(30);
-    globalThis.fetch = (async () => {
+    globalThis.fetch = chatOnly(async () => {
       chatCalls += 1;
       throw new Error("stale token was sent");
-    }) as typeof fetch;
+    });
     const logDir = join(praanaHome, "sessions");
     mkdirSync(logDir, { recursive: true });
     const session = await Session.create(praanaHome, turnConfig(logDir, praanaHome), { incognito: true });
@@ -1356,7 +1366,7 @@ describe("serialized OAuth refresh", () => {
       expect(agentText).not.toContain(busy);
     } finally {
       refreshLock.release();
-      await session.end("clean", [], { memoryTimeoutMs: 1 });
+      await session.end("clean", []);
     }
   });
 });

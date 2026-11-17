@@ -45,7 +45,6 @@
     "natives:smoke": "bun run --filter @praana/natives test:smoke",
     "natives:test": "cargo test -p praana-natives && bun test tests/native-loader.test.ts",
     "natives:prepare-publish": "bun run scripts/prepare-natives-publish.ts",
-    "verify:memory-vectors": "bun run scripts/verify-memory-vectors.ts",
     "mock:no-usage": "bun run scripts/mock-openai-no-usage.ts",
     "build:compile": "bun run scripts/compile.ts",
     "package:binaries": "bun run scripts/package-release-binaries.ts"

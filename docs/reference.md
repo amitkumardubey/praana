@@ -112,7 +112,7 @@ No config file is needed to start. To customise, run the setup wizard:
 praana setup   # Interactive provider/config setup wizard (also `praana init` alias)
 ```
 
-Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harbor/CI), `praana resume` (continues your most recent session for the current project when given no id), `praana upgrade` (installs the latest GitHub Release binary + sidecar; alias `praana update`), `praana doctor` (checks config + provider keys), `praana providers` (lists configured providers; `--all` includes unconfigured), `praana models` (lists models), and `praana memory dedupe` (legacy CLI; merges duplicate Cognitive Memory entries). See [`praana.config.example.toml`](https://github.com/amitkumardubey/praana/blob/main/praana.config.example.toml) for all settings. Harbor / Terminal-Bench: [`harbor_eval/README.md`](https://github.com/amitkumardubey/praana/blob/main/harbor_eval/README.md).
+Other CLI entry points: `praana run "<instruction>"` (headless one-shot for Harbor/CI), `praana resume` (continues your most recent session for the current project when given no id), `praana upgrade` (installs the latest GitHub Release binary + sidecar; alias `praana update`), `praana doctor` (checks config + provider keys), `praana providers` (lists configured providers; `--all` includes unconfigured), `praana models` (lists models). See [`praana.config.example.toml`](https://github.com/amitkumardubey/praana/blob/main/praana.config.example.toml) for all settings. Harbor / Terminal-Bench: [`harbor_eval/README.md`](https://github.com/amitkumardubey/praana/blob/main/harbor_eval/README.md).
 
 ### Per-turn step budget
 
@@ -588,7 +588,7 @@ The footer abbreviations, also listed by `/help`:
 - `remember` saves deliberately; `recall` searches or reads by name; `forget_memory` deletes. Incognito blocks writes and keeps reads.
 - There is no session-end summariser and no automatic note/constraint/decision/artifact promotion.
 - Classic mode (`[context_engine] enabled = false`) has no auto-compaction until the compiler cutover: `compiler.auto_compact_at` and `compiler.compact_chunk_fraction` have no effect there.
-- `[memory]` embedder/summarizer keys are no longer used by memory; the embedder is still used by engine mode for semantic scoring.
+- `[memory]` embedder keys are not used by file memory; the embedder is only used by engine mode for semantic scoring.
 
 **Skills:** discovers `SKILL.md` files in project and user paths. Compact catalog injected every turn, sorted by usefulness score. `load_skill(id)` fetches the full body on demand. Engine mode tracks whether each skill was used and updates its score in `memory.db`.
 

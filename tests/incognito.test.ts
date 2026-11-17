@@ -8,7 +8,7 @@ import { tmpdir } from "node:os";
 const testLogDir = mkdtempSync(join(tmpdir(), "praana-incognito-test-"));
 const testConfig: PraanaConfig = {
   llm: { provider: "openrouter", model: "test/model" },
-  memory: { enabled: true, summarizer: "disabled", db_path: ":memory:" },
+  memory: { enabled: true, db_path: ":memory:" },
   compiler: { token_budget: 100_000, recent_turns: 10 },
   tiers: { idle_soft_after_turns: 20, idle_hard_after_turns: 50 },
   session: { log_dir: testLogDir },

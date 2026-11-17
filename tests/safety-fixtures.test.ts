@@ -566,7 +566,6 @@ function makeTurnConfig(): any {
     llm: { provider: "openrouter", model: "fixture-model" },
     memory: {
       enabled: false,
-      summarizer: "openrouter",
       db_path: ":memory:",
       embedder: "auto",
       ollama_url: "http://localhost:11434",
@@ -575,7 +574,6 @@ function makeTurnConfig(): any {
     compiler: { token_budget: 100_000, recent_turns: 10, recent_turns_token_budget: 30_000 },
     tiers: { idle_soft_after_turns: 3, idle_hard_after_turns: 6 },
     session: { log_dir: "/tmp/praana-test" },
-    consolidation: { enabled: false, promotion_threshold: 3, run_delay_seconds: 30 },
     shell: { enabled: false, allowed_paths: [] },
     edit: { confirm: false },
     skills: {

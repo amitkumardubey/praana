@@ -22,7 +22,7 @@ These exist and work — we're not claiming they're solved problems, just that t
 - **Headless / eval** — `praana run` one-shot for CI; Harbor / Terminal-Bench installed-agent adapter (`harbor_eval/`)
 - **Tools** — code search, structured git (`git_status` / `git_diff` / `git_commit`), multi-file edits, concurrent independent tool calls (write-path guards), optional shell sandbox
 - **Two context modes** — default *engine* mode (tiered working memory, tool-output distillation, session checkpoint, skills) and a *classic* fallback/disable mode (full transcript, like most agents)
-- **Cognitive Memory** (optional) — extracts concise key-point learnings at session end (skips AGENTS.md/README content; classifies project vs global); ranked digest at next start
+- **File Memory** — the agent saves dated memories deliberately with `remember` (global or per project, plain markdown files); a capped index of the newest memories is injected at session start, and `recall` searches them
 - **Plan mode** — `/plan` gates mutating tools behind your approval so the agent plans before it changes files
 - **Shell access** — `/shell` (or `!`) runs commands inline in the transcript
 - **Session UX** — persistent `/settings`; `/reasoning` effort; repeat-read interceptor (files-read index); `praana resume` (12-char id or most recent for cwd); stale-task banner + scope confirmation on resume
@@ -60,4 +60,4 @@ Smaller, concrete improvements:
 
 ## Contributing
 
-Bug reports and ideas are welcome through [Issues and Discussions](https://github.com/amitkumardubey/praana/discussions); external pull requests are not accepted (see [CONTRIBUTING.md](./CONTRIBUTING.md)). The most useful feedback right now: **after a few real projects, does Cognitive Memory actually help you?** If it doesn't, tell us — that's exactly the signal we need.
+Bug reports and ideas are welcome through [Issues and Discussions](https://github.com/amitkumardubey/praana/discussions); external pull requests are not accepted (see [CONTRIBUTING.md](./CONTRIBUTING.md)). The most useful feedback right now: **after a few real projects, does File Memory actually help you?** If it doesn't, tell us — that's exactly the signal we need.

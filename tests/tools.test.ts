@@ -8,7 +8,6 @@ import { createSystemTools } from '../src/tools/system.js';
 import { createBuiltinHookRegistry } from '../src/hooks/index.js';
 import type { EventLog } from '../src/event-log.js';
 import type { StateGraph } from '../src/state-graph.js';
-import type { MemoryStore } from '../src/memory/index.js';
 import { mkdirSync, writeFileSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { setUiWriters } from '../src/ui.js';
@@ -76,27 +75,6 @@ function mockStateGraph(): StateGraph {
     getPeripheral: mock(() => Array.from(store.values()).filter((o: any) => o.tier !== 'active')),
     getById: mock((id: string) => store.get(id) ?? null),
   } as unknown as StateGraph;
-}
-
-function mockMemoryStore(): MemoryStore {
-  const store = new Map<string, any>();
-  
-  return {
-    recall: mock().mockResolvedValue({ entries: [] }),
-    remember: mock().mockImplementation((content: string, opts?: any) => {
-      const id = 'mem-' + (store.size + 1);
-      store.set(id, { id, content, ...opts });
-      return Promise.resolve({ id });
-    }),
-    digest: mock().mockResolvedValue(null),
-    sessionStart: mock().mockResolvedValue(undefined),
-    sessionEnd: mock().mockResolvedValue(undefined),
-    close: mock(),
-    hasEntry: mock((id: string) => store.has(id)),
-    retractMemory: mock((id: string) => {
-      store.delete(id);
-    }),
-  } as unknown as MemoryStore;
 }
 
 // ---------------------------------------------------------------------------
@@ -194,70 +172,13 @@ describe('Memory Tools (createMemoryTools)', () => {
     });
   });
 
-  describe('cognitive memory mirroring', () => {
-    let memoryStore: MemoryStore;
-
-    beforeEach(() => {
-      memoryStore = mockMemoryStore();
-      tools = createMemoryTools({
-        eventLog,
-        stateGraph,
-        memoryStore,
-        memoryEnabled: true,
-        incognito: false,
-      });
-    });
-
-    it('does not mirror add_constraint to cognitive memory', async () => {
-      const result = await tools.add_constraint.execute({ text: 'Must be safe' });
-      expect(result).toEqual({ ok: true, id: expect.any(String) });
-      expect(memoryStore.remember).not.toHaveBeenCalled();
-      expect(eventLog.append).not.toHaveBeenCalledWith(expect.objectContaining({ kind: 'system_note' }));
-    });
-
-    it('does not mirror decide to cognitive memory', async () => {
-      const result = await tools.decide.execute({ summary: 'Use TypeScript', rationale: 'Type safety' });
-      expect(result).toEqual({ ok: true, id: expect.any(String) });
-      expect(memoryStore.remember).not.toHaveBeenCalled();
-    });
-
-    it('does not mirror add_note to cognitive memory in real time', async () => {
-      const result = await tools.add_note.execute({ text: 'Important finding' });
-      expect(result).toEqual({ ok: true, id: expect.any(String) });
-      expect(memoryStore.remember).not.toHaveBeenCalled();
-    });
-
-    it('skips cognitive mirror in incognito mode', async () => {
-      tools = createMemoryTools({
-        eventLog,
-        stateGraph,
-        memoryStore,
-        memoryEnabled: true,
-        incognito: true,
-      });
-      const result = await tools.add_constraint.execute({ text: 'Must be safe' });
-      expect(result).toEqual({ ok: true, id: expect.any(String) });
-      expect(memoryStore.remember).not.toHaveBeenCalled();
-    });
-
-    it('skips cognitive mirror when memory is disabled', async () => {
-      tools = createMemoryTools({
-        eventLog,
-        stateGraph,
-        memoryStore,
-        memoryEnabled: false,
-        incognito: false,
-      });
-      const result = await tools.add_constraint.execute({ text: 'Must be safe' });
-      expect(result).toEqual({ ok: true, id: expect.any(String) });
-      expect(memoryStore.remember).not.toHaveBeenCalled();
-    });
-
-    it('still succeeds when cognitive write fails', async () => {
-      (memoryStore.remember as ReturnType<typeof mock>).mockRejectedValueOnce(new Error('db down'));
-      const result = await tools.add_constraint.execute({ text: 'Must be safe' });
-      expect(result).toEqual({ ok: true, id: expect.any(String) });
+  describe('state tools', () => {
+    it('add_constraint, decide and add_note write only to the state graph', async () => {
+      expect(await tools.add_constraint.execute({ text: 'Must be safe' })).toEqual({ ok: true, id: expect.any(String) });
+      expect(await tools.decide.execute({ summary: 'Use TypeScript', rationale: 'Type safety' })).toEqual({ ok: true, id: expect.any(String) });
+      expect(await tools.add_note.execute({ text: 'Important finding' })).toEqual({ ok: true, id: expect.any(String) });
       expect(stateGraph.create).toHaveBeenCalledWith('constraint', { text: 'Must be safe' });
+      expect(eventLog.append).not.toHaveBeenCalledWith(expect.objectContaining({ kind: 'system_note' }));
     });
   });
 
@@ -382,9 +303,6 @@ describe('Memory Tools (createMemoryTools)', () => {
 function knowledgeToolCtx(overrides: Partial<Parameters<typeof createKnowledgeTools>[0]> = {}) {
   return {
     eventLog: mockEventLog(),
-    memoryStore: mockMemoryStore(),
-    memoryEnabled: true,
-    incognito: false,
     contextEngine: null,
     getCurrentTurn: () => 0,
     ...overrides,
@@ -392,127 +310,6 @@ function knowledgeToolCtx(overrides: Partial<Parameters<typeof createKnowledgeTo
 }
 
 describe('Knowledge Tools (createKnowledgeTools)', () => {
-  let eventLog: EventLog;
-  let memoryStore: MemoryStore;
-  let tools: ReturnType<typeof createKnowledgeTools>;
-
-  beforeEach(() => {
-    const ctx = knowledgeToolCtx();
-    eventLog = ctx.eventLog;
-    memoryStore = ctx.memoryStore!;
-    tools = createKnowledgeTools(ctx);
-  });
-
-  describe('recall', () => {
-    it('should search memory and return entries', async () => {
-      const entries = [
-        { id: 'm1', content: 'Test memory', kind: 'fact', validity: 0.9, usefulness: 0.5, scope: ['user:a'], created: 100, updated: 100 },
-      ];
-      (memoryStore.recall as any).mockResolvedValue({ entries });
-
-      const result = await tools.recall.execute({ query: 'test' });
-      expect(result.ok).toBe(true);
-      expect((result as any).entries).toEqual(entries);
-      expect(memoryStore.recall).toHaveBeenCalledWith('test', { limit: 10, kinds: undefined });
-    });
-
-    it('should pass kinds filter', async () => {
-      (memoryStore.recall as any).mockResolvedValue({ entries: [] });
-      const result = await tools.recall.execute({ query: 'test', kinds: ['fact', 'decision'] });
-      expect(memoryStore.recall).toHaveBeenCalledWith('test', {
-        limit: 10,
-        kinds: ['fact', 'decision'],
-      });
-      expect((result as any).note).toContain('search_session_log');
-    });
-
-    it('should return error when memory is disabled', async () => {
-      const toolsDisabled = createKnowledgeTools(knowledgeToolCtx({ eventLog, memoryStore, memoryEnabled: false }));
-      const result = await toolsDisabled.recall.execute({ query: 'test' });
-      expect(result).toEqual({ ok: false, error: 'Cognitive Memory is not available.' });
-    });
-
-    it('should return error when memory store is null', async () => {
-      const toolsNull = createKnowledgeTools(knowledgeToolCtx({ eventLog, memoryStore: null }));
-      const result = await toolsNull.recall.execute({ query: 'test' });
-      expect(result).toEqual({ ok: false, error: 'Cognitive Memory is not available.' });
-    });
-
-    it('should handle recall errors gracefully', async () => {
-      (memoryStore.recall as any).mockRejectedValue(new Error('DB error'));
-      const result = await tools.recall.execute({ query: 'test' });
-      expect(result.ok).toBe(false);
-      expect((result as any).error).toContain('DB error');
-      expect((result as any).error).toContain('search_session_log');
-    });
-
-    it('should log recall event', async () => {
-      (memoryStore.recall as any).mockResolvedValue({ entries: [] });
-      await tools.recall.execute({ query: 'something' });
-      expect(eventLog.append).toHaveBeenCalledWith(
-        expect.objectContaining({
-          kind: 'system_note',
-          payload: expect.objectContaining({ type: 'memory_recall', query: 'something' }),
-        })
-      );
-    });
-  });
-
-  describe('remember', () => {
-    it('should store a memory', async () => {
-      const result = await tools.remember.execute({ content: 'Important fact' });
-      expect(result).toEqual({ ok: true, id: 'mem-1' });
-      expect(memoryStore.remember).toHaveBeenCalled();
-    });
-
-    it('should map kinds correctly', async () => {
-      await tools.remember.execute({
-        content: 'Preference',
-        kind: 'preference',
-        certainty: 'high',
-      });
-      expect(memoryStore.remember).toHaveBeenCalledWith('Preference', {
-        kind: 'preference',
-        certainty: 'high',
-        scope: undefined,
-      });
-    });
-
-    it('should map context_fact to fact', async () => {
-      await tools.remember.execute({ content: 'Fact', kind: 'context_fact' });
-      expect(memoryStore.remember).toHaveBeenCalledWith('Fact', {
-        kind: 'fact',
-        certainty: 'medium',
-        scope: undefined,
-      });
-    });
-
-    it('should pass scope when provided', async () => {
-      await tools.remember.execute({
-        content: 'Scoped',
-        scope: ['context:my-project'],
-      });
-      expect(memoryStore.remember).toHaveBeenCalledWith('Scoped', {
-        kind: 'fact',
-        certainty: 'medium',
-        scope: ['context:my-project'],
-      });
-    });
-
-    it('should return error when memory is disabled', async () => {
-      const toolsDisabled = createKnowledgeTools(knowledgeToolCtx({ eventLog, memoryStore, memoryEnabled: false }));
-      const result = await toolsDisabled.remember.execute({ content: 'test' });
-      expect(result).toEqual({ ok: false, error: 'Cognitive Memory is not available.' });
-    });
-
-    it('should handle remember errors gracefully', async () => {
-      (memoryStore.remember as any).mockRejectedValue(new Error('Storage error'));
-      const result = await tools.remember.execute({ content: 'test' });
-      expect(result.ok).toBe(false);
-      expect((result as any).error).toContain('Storage error');
-    });
-  });
-
   describe('retrieve_artifact', () => {
     it('retrieves stored artifact content when context engine is enabled', async () => {
       const engine = ContextEngine.open(':memory:', 'sess-tools', {
@@ -543,35 +340,6 @@ describe('Knowledge Tools (createKnowledgeTools)', () => {
       });
       engine.close();
       expect(result).toEqual({ ok: true, id: ingested.artifactId, content: 'x'.repeat(500) });
-    });
-  });
-
-  describe('forget_memory', () => {
-    it('should retract a memory entry', async () => {
-      // First create a memory
-      await tools.remember.execute({ content: 'To forget' });
-      
-      const result = await tools.forget_memory.execute({ id: 'mem-1' });
-      expect(result).toEqual({ ok: true, id: 'mem-1' });
-      expect(memoryStore.retractMemory).toHaveBeenCalledWith('mem-1');
-      expect(eventLog.append).toHaveBeenCalled();
-    });
-
-    it('should return error for non-existent memory', async () => {
-      const result = await tools.forget_memory.execute({ id: 'nonexistent' });
-      expect(result).toEqual({ ok: false, error: 'Memory nonexistent not found' });
-    });
-
-    it('should return error when memory is disabled', async () => {
-      const toolsDisabled = createKnowledgeTools(knowledgeToolCtx({ eventLog, memoryStore, memoryEnabled: false }));
-      const result = await toolsDisabled.forget_memory.execute({ id: 'test' });
-      expect(result).toEqual({ ok: false, error: 'Cognitive Memory is not available.' });
-    });
-
-    it('should return incognito error when incognito mode', async () => {
-      const toolsIncognito = createKnowledgeTools(knowledgeToolCtx({ eventLog, memoryStore, incognito: true }));
-      const result = await toolsIncognito.forget_memory.execute({ id: 'test' });
-      expect(result).toEqual({ ok: false, error: 'Memory is disabled in incognito mode.' });
     });
   });
 });
@@ -1840,14 +1608,14 @@ describe('Tool registry (mode-aware)', () => {
     expect(tools.some((t) => t.startsWith('shell'))).toBe(true);
   });
 
-  it("does not construct legacy cognitive memory tools for a session", () => {
+  it("builds no recall, remember or forget_memory tool from the knowledge factory", () => {
     const spy = spyOn(knowledgeToolsModule, "createKnowledgeTools");
     createAllTools({ ...baseCtx, classicMode: false });
     const produced = spy.mock.results[0]?.value as Record<string, unknown>;
     expect(produced).not.toHaveProperty("recall");
     expect(produced).not.toHaveProperty("remember");
     expect(produced).not.toHaveProperty("forget_memory");
-    expect(createKnowledgeTools({ ...baseCtx, memoryStore: null, getCurrentTurn: () => 0 }).recall).toBeDefined();
+    expect(createKnowledgeTools({ eventLog: baseCtx.eventLog, contextEngine: null, getCurrentTurn: () => 0 })).toEqual({});
     spy.mockRestore();
   });
 

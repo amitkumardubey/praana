@@ -626,7 +626,6 @@ export async function runTui(
       stateObjects: status.stateObjects,
       rememberCalls: status.rememberCalls,
       recallUsed: status.recallUsed,
-      learningsStored: status.learningsStored,
     })) {
       console.log(line);
     }

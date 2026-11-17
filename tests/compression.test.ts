@@ -122,17 +122,3 @@ describe("EventLog compression checkpoint", () => {
     log.close();
   });
 });
-
-describe("summarizeTurns", () => {
-  it("exists and is importable from summarizer", async () => {
-    const { summarizeTurns } = await import("../src/memory/summarizer.js");
-    expect(typeof summarizeTurns).toBe("function");
-  });
-});
-
-describe("MemoryStore.compressTurns", () => {
-  it("exists and is callable", async () => {
-    const { MemoryStore } = await import("../src/memory/store.js");
-    expect(typeof MemoryStore.prototype.compressTurns).toBe("function");
-  });
-});
