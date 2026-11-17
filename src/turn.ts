@@ -1774,11 +1774,15 @@ export async function runTurn(
             const offset = args.offset;
             const limit = args.limit;
             sourceLineStart = offset ?? 1;
-            // A trailing newline leaves a phantom empty segment behind: the read
-            // ended on that newline, not on an extra line, so drop the segment and
-            // keep the range in step with the tool's `total_lines` (#811).
-            let outputLines = ingestContent.split("\n").length;
-            if (ingestContent !== "" && ingestContent.endsWith("\n")) outputLines -= 1;
+            // Ask the tool how many lines it actually returned. A read whose last
+            // returned line is blank also ends with "\n", so the content alone
+            // cannot tell it from the re-attached file-final newline (#811).
+            const returnedLines = typeof result === "object" && result !== null
+              ? (result as { returned_lines?: unknown }).returned_lines
+              : undefined;
+            const outputLines = typeof returnedLines === "number"
+              ? returnedLines
+              : ingestContent.split("\n").length;
             // sourceLineEnd reflects what was actually read, not the requested limit.
             sourceLineEnd = sourceLineStart + Math.max(0, outputLines - 1);
             // requestStart/requestEnd preserve the original request for cache key identity.

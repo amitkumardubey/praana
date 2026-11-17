@@ -44,20 +44,54 @@ describe("read_file per-call cap (#811)", () => {
   it("returns a small file unchanged plus total_lines and no truncated key", async () => {
     writeFileSync(join(cwd, "hello.txt"), "Hello World");
     const result = await tools.read_file.execute({ path: "hello.txt" });
-    expect(result).toEqual({ ok: true, content: "Hello World", total_lines: 1 });
+    expect(result).toEqual({ ok: true, content: "Hello World", total_lines: 1, returned_lines: 1 });
     expect("truncated" in result).toBe(false);
   });
 
   it("keeps a whole read byte-identical and reports no phantom line for a trailing newline", async () => {
     writeFileSync(join(cwd, "two.txt"), "alpha\nbeta\n");
     const result = await tools.read_file.execute({ path: "two.txt" });
-    expect(result).toEqual({ ok: true, content: "alpha\nbeta\n", total_lines: 2 });
+    expect(result).toEqual({ ok: true, content: "alpha\nbeta\n", total_lines: 2, returned_lines: 2 });
   });
 
   it("returns an empty file without crashing", async () => {
     writeFileSync(join(cwd, "empty.txt"), "");
     const result = await tools.read_file.execute({ path: "empty.txt" });
-    expect(result).toEqual({ ok: true, content: "", total_lines: 0 });
+    expect(result).toEqual({ ok: true, content: "", total_lines: 0, returned_lines: 0 });
+  });
+
+  it("reports how many file lines the result actually contains", async () => {
+    writeFileSync(join(cwd, "ten.txt"), Array.from({ length: 10 }, (_, i) => `n${i + 1}`).join("\n") + "\n");
+    writeFileSync(join(cwd, "big.txt"), Array.from({ length: 5000 }, (_, i) => `line ${i + 1}`).join("\n") + "\n");
+    writeFileSync(join(cwd, "blank-last.txt"), "a\n\nc\nd\n");
+
+    // A whole read counts the file's real lines, not the phantom trailing segment.
+    const whole = (await tools.read_file.execute({ path: "ten.txt" })) as any;
+    expect(whole.returned_lines).toBe(10);
+    expect(whole.total_lines).toBe(10);
+
+    // An explicit limit bounds the count.
+    const limited = (await tools.read_file.execute({ path: "ten.txt", limit: 3 })) as any;
+    expect(limited.returned_lines).toBe(3);
+
+    // A per-call cap reports the lines it returned, not the file size.
+    const capped = (await tools.read_file.execute({ path: "big.txt" })) as any;
+    expect(capped.returned_lines).toBe(MAX_READ_LINES);
+    expect(capped.total_lines).toBe(5000);
+
+    // An empty result is 0 lines, whether the file or the offset is the reason.
+    writeFileSync(join(cwd, "empty.txt"), "");
+    const empty = (await tools.read_file.execute({ path: "empty.txt" })) as any;
+    expect(empty.returned_lines).toBe(0);
+    const past = (await tools.read_file.execute({ path: "ten.txt", offset: 5000 })) as any;
+    expect(past.returned_lines).toBe(0);
+
+    // The last returned line is blank, so `content` ends with "\n" — the count
+    // still says two lines, which the artifact range depends on (#811).
+    const blank = (await tools.read_file.execute({ path: "blank-last.txt", limit: 2 })) as any;
+    expect(blank.content).toBe("a\n");
+    expect(blank.returned_lines).toBe(2);
+    expect("truncated" in blank).toBe(false);
   });
 
   it("caps a 5000-line file at MAX_READ_LINES and pages to the end", async () => {
@@ -219,6 +253,7 @@ describe("read_file per-call cap (#811)", () => {
       ok: true,
       content: "",
       total_lines: 3,
+      returned_lines: 0,
       note: "offset 5000 is past the end of the file (total_lines 3)",
     });
     expect("truncated" in result).toBe(false);
@@ -240,7 +275,7 @@ describe("read_file per-call cap (#811)", () => {
   it("gives an empty file no offset note with the default offset", async () => {
     writeFileSync(join(cwd, "empty2.txt"), "");
     const result = await tools.read_file.execute({ path: "empty2.txt" });
-    expect(result).toEqual({ ok: true, content: "", total_lines: 0 });
+    expect(result).toEqual({ ok: true, content: "", total_lines: 0, returned_lines: 0 });
     expect("note" in result).toBe(false);
   });
 });

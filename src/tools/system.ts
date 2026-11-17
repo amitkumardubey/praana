@@ -329,6 +329,14 @@ export interface CappedReadResult {
   content: string;
   /** Line count of the whole file (see the line model in the body). */
   total_lines: number;
+  /**
+   * File lines actually present in `content`, 0 when the result is empty.
+   *
+   * This is the only exact answer: `content` alone cannot tell a read whose last
+   * returned line is blank (so it ends with `\n`) from the re-attached
+   * file-final newline, and the artifact line range depends on it (#811).
+   */
+  returned_lines: number;
   /** Present only when the cap cut lines or long lines were cut. */
   truncated?: true;
   /** How to read the next part (never part of `content`). */
@@ -409,6 +417,7 @@ export function buildCappedReadResult(
     ok: true,
     content: outContent,
     total_lines: totalLines,
+    returned_lines: selected.length,
   };
   if (capCut || longLinesCut > 0) {
     const first = startIndex + 1;
@@ -522,7 +531,7 @@ export function createSystemTools(ctx: SystemToolContext) {
         "Re-reading a file always returns its current contents. " +
         "Large files are returned in parts: when the result has `truncated: true`, read the " +
         "`note` and call again with the `offset` it names to get the next part. `total_lines` " +
-        "is the line count of the whole file.",
+        "is the line count of the whole file and `returned_lines` the number of lines in this result.",
       parameters: z.object({
         path: z.string().describe("File path (relative to working dir or absolute)"),
         offset: z

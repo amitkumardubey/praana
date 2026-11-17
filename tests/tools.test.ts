@@ -370,7 +370,7 @@ describe('System Tools (createSystemTools)', () => {
     it('should read file contents', async () => {
       writeFileSync(join(testDir, 'hello.txt'), 'Hello World');
       const result = await tools.read_file.execute({ path: 'hello.txt' });
-      expect(result).toEqual({ ok: true, content: 'Hello World', total_lines: 1 });
+      expect(result).toEqual({ ok: true, content: 'Hello World', total_lines: 1, returned_lines: 1 });
     });
 
     it('should return error for missing file', async () => {

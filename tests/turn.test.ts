@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createSystemTools } from "../src/tools/system.js";
+import { createKnowledgeTools } from "../src/tools/knowledge.js";
 import { TurnRecorder } from "../src/context-engine/turn-recorder.js";
 import { estimateTokens } from "../src/token-estimate.js";
 import { AnthropicDriver } from "../src/llm/drivers/anthropic.js";
@@ -1418,6 +1419,81 @@ describe("runTurn", () => {
       const pageArtifact = engine.getArtifact(ingest.mock.results[1]!.value.artifactId as string)!;
       expect(pageArtifact.sourceLineStart).toBe(4001);
       expect(pageArtifact.sourceLineEnd).toBe(lastPage.total_lines);
+    } finally {
+      compilerMock.mockImplementation(previousCompiler);
+      ingest.mockRestore();
+      engine.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the artifact range exact when the last returned line is blank", async () => {
+    const cacheDir = join(homedir(), ".cache");
+    mkdirSync(cacheDir, { recursive: true });
+    const cwd = mkdtempSync(join(cacheDir, "praana-engine-read-blank-"));
+    const config = makeConfig({ context_engine: { ...makeConfig().context_engine, enabled: true } });
+    const engine = ceReal.ContextEngine.open(":memory:", "read-blank-test", config.context_engine!);
+    const session = makeMockSession({ config, cwd, contextEngine: engine, scorecard: engine.scorecard });
+    const requests: ConversationMessage[][] = [];
+    const ingest = spyOn(engine, "ingestToolResult");
+    const compilerMock = compileEngineWithMetrics as ReturnType<typeof mock>;
+    const previousCompiler = compilerMock.getMockImplementation()!;
+    compilerMock.mockImplementation(ceReal.compileEngineWithMetrics);
+    const tools = createSystemTools({ cwd, skills: [], skillRuntime: null, getCurrentTurn: () => session.getTurnCount() });
+    const knowledge = createKnowledgeTools({
+      eventLog: session.eventLog,
+      contextEngine: engine,
+      skillScorecard: engine.scorecard,
+      getCurrentTurn: () => session.getTurnCount(),
+    });
+    (createAllTools as ReturnType<typeof mock>).mockImplementationOnce(() => ({
+      read_file: tools.read_file,
+      retrieve_artifact: knowledge.retrieve_artifact,
+    }));
+    // Line 2 is blank, so a limit-2 read of this file also ends with "\n" —
+    // indistinguishable from a read that stopped on the file-final newline.
+    writeFileSync(join(cwd, "blank.txt"), "a\n\nc\nd\n");
+    let requested = 0;
+    (piStream as ReturnType<typeof mock>).mockImplementation((req: StreamRequest) => {
+      requests.push(structuredClone(req.messages));
+      return (async function* () {
+        if (requested === 0) {
+          requested++;
+          const toolUse = { id: "read-blank", name: "read_file", args: { path: "blank.txt", limit: 2 } };
+          yield { type: "tool_call_end", toolCall: toolUse };
+          yield { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [toolUse] } };
+        } else if (requested === 1) {
+          requested++;
+          const id = ingest.mock.results[0]!.value.artifactId as string;
+          const toolUse = { id: "retrieve-blank", name: "retrieve_artifact", args: { id, lineStart: 2, lineEnd: 2 } };
+          yield { type: "tool_call_end", toolCall: toolUse };
+          yield { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [toolUse] } };
+        } else {
+          yield { type: "text_delta", delta: "done" };
+          yield { type: "done", reason: "stop", message: { role: "assistant", content: "done" } };
+        }
+      })();
+    });
+    try {
+      await runTurn(session, "read then retrieve", undefined, { sink: {} });
+      const readResult = JSON.parse(requests[1]!.filter((m) => m.role === "tool_result").at(-1)!.result);
+      expect(readResult.content).toBe("a\n");
+      // The tool reports the two lines it returned (the second one blank).
+      expect(readResult.returned_lines).toBe(2);
+      const artifact = engine.getArtifact(ingest.mock.results[0]!.value.artifactId as string)!;
+      expect(artifact.rawText).toBe("a\n");
+      expect(artifact.sourceLineStart).toBe(1);
+      expect(artifact.sourceLineEnd).toBe(2);
+      // ...so the blank last line can still be retrieved by its file line number.
+      const retrieveEvent = session.eventLog
+        .readAll()
+        .filter((ev: any) => ev.kind === "tool_result" && ev.payload.tool === "retrieve_artifact")
+        .at(-1)! as any;
+      const retrieved = retrieveEvent.payload.result;
+      expect(retrieved.ok).toBe(true);
+      expect(retrieved.id).toBe(artifact.id);
+      expect(retrieved.content).toBe("");
+      expect(retrieved.error).toBeUndefined();
     } finally {
       compilerMock.mockImplementation(previousCompiler);
       ingest.mockRestore();
