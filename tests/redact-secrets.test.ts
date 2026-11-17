@@ -63,10 +63,7 @@ function expectProjection(input: unknown): unknown {
   expectNoSecret(JSON.stringify(out));
   const projected: unknown = JSON.parse(JSON.stringify(input));
   const redacted = redactSecrets(projected);
-  const expected = typeof input !== "string" && typeof projected === "string"
-    ? { error: redacted }
-    : redacted;
-  expect(out).toEqual(expected);
+  expect(out).toEqual(redacted);
   const envelopeProjection = JSON.parse(JSON.stringify({ value: input }));
   expect(redactSecrets({ value: input })).toEqual(redactSecrets(envelopeProjection));
   return out;
@@ -206,7 +203,7 @@ describe("redactSecrets", () => {
       expectNoSecret(JSON.stringify(out));
       expect(out).toEqual({ value: `[binary: ${bytes.byteLength} bytes]` });
       expect(JSON.stringify(out)).not.toContain(JSON.stringify([...bytes]));
-      expect(redactSecrets(value)).toEqual({ error: `[binary: ${bytes.byteLength} bytes]` });
+      expect(redactSecrets(value)).toBe(`[binary: ${bytes.byteLength} bytes]`);
     }
     const hostile = new Uint8Array(bytes);
     Object.defineProperty(hostile, "byteLength", { get() { throw new Error("not trusted"); } });
@@ -222,8 +219,8 @@ describe("redactSecrets", () => {
       url: "https://example.com/?api_key=[REDACTED]",
       date: "1970-01-01T00:00:00.000Z", custom: "custom: [REDACTED:aws-access-key]",
     });
-    expect(expectProjection(date)).toEqual({ error: "1970-01-01T00:00:00.000Z" });
-    expect(expectProjection(new Custom())).toEqual({ error: ": [REDACTED:aws-access-key]" });
+    expect(expectProjection(date)).toBe("1970-01-01T00:00:00.000Z");
+    expect(expectProjection(new Custom())).toBe(": [REDACTED:aws-access-key]");
     expectProjection({ [SECRETS[1]!]: new Custom(), list: [new Custom()] });
     // JSON does not call toJSON again on the object returned by toJSON.
     expect(expectProjection({ toJSON() { return { token: SECRETS[1], toJSON() { return "wrong"; } }; } }))
@@ -291,13 +288,22 @@ describe("redactSecrets", () => {
     expectProjection({ value: Object.assign(new String("safe"), { toString: () => SECRETS[1] }) });
   });
 
-  it("keeps a container for every non-string root, including scalar projections", () => {
-    for (const value of [null, true, 42, NaN, undefined, Symbol("x"), () => SECRETS[1], new (class { toJSON() { return SECRETS[1]; } })()]) {
-      const out = redactSecrets(value);
-      expect(out).not.toBeNull();
-      expect(typeof out).toBe("object");
-      expectNoSecret(JSON.stringify(out));
-    }
+  it("returns scalar roots as they are and never wraps them", () => {
+    expect(redactSecrets(undefined)).toBeUndefined();
+    expect(redactSecrets(null)).toBeNull();
+    expect(redactSecrets(true)).toBe(true);
+    expect(redactSecrets(false)).toBe(false);
+    expect(redactSecrets(42)).toBe(42);
+    expect(redactSecrets(-0)).toBe(-0);
+    expect(redactSecrets(NaN)).toBeNaN();
+    expect(redactSecrets(123n)).toBe("123");
+    expect(redactSecrets(SECRETS[1]!)).toBe("[REDACTED:aws-access-key]");
+    expect(redactSecrets(Object(7))).toBe(7);
+    expect(redactSecrets(new (class { toJSON() { return SECRETS[1]; } })())).toBe("[REDACTED:aws-access-key]");
+    // JSON omits these values, so the projection of the root is undefined.
+    expect(redactSecrets(Symbol(SECRETS[1]))).toBeUndefined();
+    expect(redactSecrets(() => SECRETS[1])).toBeUndefined();
+    expect(redactSecrets({ toJSON() { return undefined; } })).toBeUndefined();
   });
 
   it("isolates throwing getters and enumeration failures", () => {
@@ -499,7 +505,7 @@ describe("redactSecrets", () => {
     const leaf = descend(out, 12);
     expect(leaf).toEqual({ secret: "[REDACTED:aws-access-key]", count: "1", boxed: "2" });
     expectNoSecret(JSON.stringify(out));
-    expect(redactSecrets(123n)).toEqual({ error: "123" });
+    expect(redactSecrets(123n)).toBe("123");
   });
 
   it("bounds a 100000-level chain without overflowing the stack", () => {

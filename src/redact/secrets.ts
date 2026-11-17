@@ -83,6 +83,15 @@ function uniqueKey(frame: JsonFrame, base: string): string {
   return key;
 }
 
+/** A key whose redaction fails is replaced, never written as the original name. */
+function redactKey(key: string): string {
+  try {
+    return redactString(key);
+  } catch {
+    return PLACEHOLDER("redaction-error");
+  }
+}
+
 function binaryPlaceholder(value: unknown): string | undefined {
   let prototype: object;
   if (types.isTypedArray(value)) prototype = Object.getPrototypeOf(Uint8Array.prototype);
@@ -96,7 +105,7 @@ function binaryPlaceholder(value: unknown): string | undefined {
 }
 
 /**
- * Non-strict redaction walks the JSON projection in one iterative stack. Call
+ * Non-strict redaction walks the JSON projection of an object root in one iterative stack. Call
  * toJSON once per value with its original JSON key (root: ""); then unbox JSON
  * primitives, omit functions/symbols/undefined in objects, and use null in arrays.
  * Arrays read indices through length; every other object (including classes,
@@ -109,8 +118,9 @@ function binaryPlaceholder(value: unknown): string | undefined {
  * an object that is its own ancestor becomes [REDACTED:cycle]. Cycle detection
  * tracks the current ancestor path only, so a shared reference that is not an
  * ancestor of itself is copied each time, as JSON.stringify would write it.
- * Getters, toJSON and proxy failures replace only the affected value. No input
- * identity, prototype, accessor or callable is retained in the plain JSON output.
+ * Getters, toJSON and proxy failures replace only the affected value; only a
+ * failure of the root itself or an unrecoverable error escapes to the caller.
+ * No input identity, prototype, accessor or callable is retained in the plain JSON output.
  *
  * MAX_NODES bounds traversal only: the root and every property/index slot visited
  * count as one node. When it runs out, every open container keeps its type and
@@ -173,26 +183,16 @@ function redactJsonProjection(value: unknown): JsonValue | undefined {
     nodes++;
     const index = frame.cursor++;
     const key = frame.keys === null ? String(index) : frame.keys[index]!;
-    let outputKey: string | undefined;
+    let copied: JsonValue | undefined;
     try {
-      let copied: JsonValue | undefined;
-      try {
-        copied = seed(frame.source[key], key);
-      } catch {
-        copied = PLACEHOLDER("redaction-error");
-      }
-      if (copied === undefined && frame.keys !== null) continue;
-      outputKey = frame.keys === null ? key : uniqueKey(frame, redactString(key));
-      setOwn(frame.target, outputKey, copied === undefined ? null : copied);
+      copied = seed(frame.source[key], key);
     } catch {
-      // A failed key redaction/write cannot abort siblings or write a prototype.
-      try {
-        outputKey ??= frame.keys === null ? key : uniqueKey(frame, PLACEHOLDER("redaction-error"));
-        setOwn(frame.target, outputKey, PLACEHOLDER("redaction-error"));
-      } catch {
-        // Even a failed fallback write is isolated to this property.
-      }
+      // Replaces only this value; siblings are still walked.
+      copied = PLACEHOLDER("redaction-error");
     }
+    if (copied === undefined && frame.keys !== null) continue;
+    const outputKey = frame.keys === null ? key : uniqueKey(frame, redactKey(key));
+    setOwn(frame.target, outputKey, copied === undefined ? null : copied);
   }
   return root;
 }
@@ -230,15 +230,25 @@ export function redactSecretsStrict<T>(value: T): T {
   return walkStrict(value, 0) as T;
 }
 
-export function redactSecrets(value: unknown): JsonValue {
+/**
+ * Root contract: a string root returns the redacted string; `undefined`, null,
+ * booleans and numbers return unchanged; a BigInt returns its decimal string.
+ * Any other root (object, array, function, symbol) goes through the JSON walk and
+ * returns its projection as is: a container, a scalar when toJSON returned one, or
+ * `undefined` when JSON omits the value (functions, symbols). Scalars are never
+ * wrapped. Only a walk that throws fails closed: a string input returns the bare
+ * placeholder, anything else `{ error: placeholder }`; the input is never returned.
+ */
+export function redactSecrets(value: unknown): JsonValue | undefined {
   try {
-    const result = redactJsonProjection(value);
-    if (typeof value === "string") return result === undefined ? PLACEHOLDER("redaction-error") : result;
-    if (result !== null && typeof result === "object") return result;
-    return { error: result === undefined ? PLACEHOLDER("redaction-error") : result };
+    if (typeof value === "string") return redactString(value);
+    if (value === undefined || value === null || typeof value === "boolean" || typeof value === "number") {
+      return value;
+    }
+    if (typeof value === "bigint") return redactString(String(value));
+    return redactJsonProjection(value);
   } catch {
     // Last-resort failure must never return the original input.
-    if (typeof value === "string") return PLACEHOLDER("redaction-error");
-    return { error: PLACEHOLDER("redaction-error") };
+    return typeof value === "string" ? PLACEHOLDER("redaction-error") : { error: PLACEHOLDER("redaction-error") };
   }
 }
