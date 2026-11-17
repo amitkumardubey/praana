@@ -123,8 +123,8 @@ export function registerBuiltinHooks(
   registry.onPostToolCall(validate.post);
   registry.onPostToolCall(createRedactPostToolCallHandler());
   registry.onPostToolCall(circuit.post);
-  registry.onPostTurn(circuit.postTurn);
   registry.onPostToolCall(createWritePathPostToolCallHandler(writePath));
+  registry.onPostTurn(circuit.postTurn);
 }
 
 export function createBuiltinHookRegistry(
