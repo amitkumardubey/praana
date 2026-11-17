@@ -24,6 +24,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  APP_HOME_SYMLINK_SKIP_REASON,
   appHomePath,
   ensureAppHome,
   resolveDefaultAppLogDir,
@@ -327,6 +328,67 @@ describe("tightenAppHomePermissions", () => {
     expect(modeOf(target)).toBe(0o755);
   });
 
+  it.skipIf(isWindows)("reports a symlinked app home as skipped instead of silent", () => {
+    root = mkdtempSync(join(tmpdir(), "praana-perms-test-"));
+    process.env.PRAANA_HOME = root;
+    const target = join(root, "elsewhere");
+    mkdirSync(target, { recursive: true });
+    chmodSync(target, 0o755);
+    symlinkSync(target, appHomePath());
+    const reported: Array<{ path: string; message: string }> = [];
+
+    tightenAppHomePermissions({
+      onError: (path, err) => reported.push({ path, message: (err as Error).message }),
+    });
+
+    expect(reported).toEqual([
+      { path: appHomePath(), message: APP_HOME_SYMLINK_SKIP_REASON },
+    ]);
+    expect(APP_HOME_SYMLINK_SKIP_REASON).toBe("symlink skipped");
+    expect(modeOf(target)).toBe(0o755);
+  });
+
+  it.skipIf(isWindows)("reports symlinked sessions and logs directories as skipped", () => {
+    const { home } = makeHome(0o755, null);
+    const sessionsTarget = join(root!, "sessions-elsewhere");
+    const logsTarget = join(root!, "logs-elsewhere");
+    mkdirSync(sessionsTarget, { recursive: true });
+    mkdirSync(logsTarget, { recursive: true });
+    chmodSync(sessionsTarget, 0o755);
+    chmodSync(logsTarget, 0o755);
+    symlinkSync(sessionsTarget, resolveDefaultSessionLogDir());
+    symlinkSync(logsTarget, resolveDefaultAppLogDir());
+    const reported: Array<{ path: string; message: string }> = [];
+
+    tightenAppHomePermissions({
+      onError: (path, err) => reported.push({ path, message: (err as Error).message }),
+    });
+
+    // The app home itself is tightened; the two links are reported, not followed.
+    expect(reported).toEqual([
+      { path: resolveDefaultSessionLogDir(), message: APP_HOME_SYMLINK_SKIP_REASON },
+      { path: resolveDefaultAppLogDir(), message: APP_HOME_SYMLINK_SKIP_REASON },
+    ]);
+    expect(modeOf(home)).toBe(0o700);
+    expect(modeOf(sessionsTarget)).toBe(0o755);
+    expect(modeOf(logsTarget)).toBe(0o755);
+  });
+
+  it.skipIf(isWindows)("survives a reporter that throws on a skipped symlink", () => {
+    makeHome(0o755, null);
+    const target = join(root!, "elsewhere");
+    mkdirSync(target, { recursive: true });
+    symlinkSync(target, resolveDefaultSessionLogDir());
+
+    expect(() =>
+      tightenAppHomePermissions({
+        onError: () => {
+          throw new Error("logger not ready");
+        },
+      }),
+    ).not.toThrow();
+  });
+
   it.skipIf(isWindows)("skips a directory owned by another user", () => {
     const { home } = makeHome(0o755, 0o755);
     const chmodded: string[] = [];
@@ -339,6 +401,19 @@ describe("tightenAppHomePermissions", () => {
 
     expect(chmodded).toEqual([]);
     expect(modeOf(home)).toBe(0o755);
+  });
+
+  it.skipIf(isWindows)("skips a directory whose injected stat reports another owner", () => {
+    makeHome(0o755, null);
+    const chmodded: string[] = [];
+
+    tightenAppHomePermissions({
+      getuid: () => 1000,
+      lstat: () => ({ mode: 0o40755, uid: 4242, isSymbolicLink: () => false }),
+      chmod: (path) => chmodded.push(path),
+    });
+
+    expect(chmodded).toEqual([]);
   });
 
   it.skipIf(isWindows)("does nothing when the app home does not exist", () => {

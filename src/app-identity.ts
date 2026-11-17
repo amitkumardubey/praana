@@ -106,6 +106,22 @@ export interface AppHomePermissionFixes {
 }
 
 /**
+ * Reason reported through `onError` when a symlinked app-home directory is left
+ * alone: a fix-up never chmods through a link. Reported as the message of an
+ * `Error`, so a reporter that logs `(err as Error).message` shows the reason.
+ */
+export const APP_HOME_SYMLINK_SKIP_REASON = "symlink skipped";
+
+/** Report a skipped symlink through the best-effort `onError` seam. */
+function reportSymlinkSkipped(dir: string, deps: AppHomePermissionFixes): void {
+  try {
+    deps.onError?.(dir, new Error(APP_HOME_SYMLINK_SKIP_REASON));
+  } catch {
+    // Reporting is best effort too.
+  }
+}
+
+/**
  * Mode an existing app-home directory is tightened to: exactly
  * `APP_HOME_DIR_MODE`. Group and "other" access go, and so do setgid, setuid
  * and sticky. 0755, 0750, 0775, 2775 and 2770 all become 0700; a directory
@@ -120,8 +136,9 @@ export function tightenedDirMode(mode: number): number {
 /**
  * Tighten one existing directory to `APP_HOME_DIR_MODE` (see
  * `tightenedDirMode`). Skips a missing path, a symlink (never chmod through a
- * link) and a directory owned by another user. Best effort: a failure is
- * reported through `deps.onError` and never throws. No-op on Windows.
+ * link) and a directory owned by another user. A skip or failure is best
+ * effort: it is reported through `deps.onError` (a symlink as
+ * `APP_HOME_SYMLINK_SKIP_REASON`) and never throws. No-op on Windows.
  * Returns true when the mode was changed.
  */
 export function tightenDirPermissions(
@@ -140,7 +157,10 @@ export function tightenDirPermissions(
       if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return false;
       throw err;
     }
-    if (stat.isSymbolicLink()) return false;
+    if (stat.isSymbolicLink()) {
+      reportSymlinkSkipped(dir, deps);
+      return false;
+    }
     const uid = getuid();
     if (uid !== undefined && stat.uid !== uid) return false;
     const current = stat.mode & 0o7777;
@@ -174,14 +194,14 @@ function isSymlink(path: string, deps: AppHomePermissionFixes): boolean {
  * startup.
  */
 export function tightenAppHomePermissions(deps: AppHomePermissionFixes = {}): void {
+  const home = appHomePath();
   // A symlinked app home points somewhere PRAANA did not create: leave the
   // whole tree alone rather than chmod directories reached through the link.
-  if (isSymlink(appHomePath(), deps)) return;
-  for (const dir of [
-    appHomePath(),
-    resolveDefaultSessionLogDir(),
-    resolveDefaultAppLogDir(),
-  ]) {
+  if (isSymlink(home, deps)) {
+    reportSymlinkSkipped(home, deps);
+    return;
+  }
+  for (const dir of [home, resolveDefaultSessionLogDir(), resolveDefaultAppLogDir()]) {
     tightenDirPermissions(dir, deps);
   }
 }
