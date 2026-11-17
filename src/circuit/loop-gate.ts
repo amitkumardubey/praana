@@ -56,8 +56,8 @@ export function isLoopExempt(toolName: string, args: Record<string, unknown>): b
   return false;
 }
 
-export function circuitLoopError(toolName: string): string {
-  return `${CIRCUIT_LOOP_PREFIX} ${toolName} with the same arguments repeated or failed 3 times; required: different approach or ask the user.`;
+export function circuitLoopError(toolName: string, threshold = DEFAULT_LOOP_THRESHOLD): string {
+  return `${CIRCUIT_LOOP_PREFIX} ${toolName} called with identical arguments ${threshold} times in one turn; required: different approach or ask the user.`;
 }
 
 export function renderCircuitNotes(notes: string[]): string {
@@ -127,7 +127,7 @@ export class LoopGate {
     this.argHits.set(argsKey, next);
     if (next >= this.threshold) {
       this.rememberBlock(argsKey, toolName);
-      return { action: "block", error: circuitLoopError(toolName), isError: true };
+      return { action: "block", error: circuitLoopError(toolName, this.threshold), isError: true };
     }
     return;
   }
@@ -156,7 +156,7 @@ export class LoopGate {
   private rememberBlock(key: string, toolName: string): void {
     if (this.noted.has(key)) return;
     this.noted.add(key);
-    const text = circuitLoopError(toolName);
+    const text = circuitLoopError(toolName, this.threshold);
     this.noteList.push(text);
     this.onFirstBlock?.(text);
   }

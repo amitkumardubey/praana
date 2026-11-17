@@ -97,6 +97,17 @@ describe("LoopGate", () => {
     expect(renderCircuitNotes(gate.notes())).toContain("## Circuit Breakers");
   });
 
+  it("states the configured threshold in the block message and the note", () => {
+    const notes: string[] = [];
+    const gate = new LoopGate({ threshold: 4, onFirstBlock: (text) => notes.push(text) });
+    const args = { command: "rm -rf /tmp/x" };
+    for (let i = 0; i < 3; i++) expect(gate.observePre("shell", args)).toBeUndefined();
+    const blocked = gate.observePre("shell", args);
+    expect(blocked?.error).toContain("identical arguments 4 times in one turn");
+    expect(blocked?.error).not.toContain("3 times");
+    expect(notes[0]).toContain("4 times");
+  });
+
   it("resumes with empty counts but adopts circuit notes", () => {
     const args = { path: "a.ts", oldText: "a", newText: "b" };
     const events = [
