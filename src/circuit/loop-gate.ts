@@ -5,6 +5,9 @@ import { detectShellReads } from "../tools/shell-read-detect.js";
 
 export const CIRCUIT_LOOP_PREFIX = "Circuit breaker:";
 export const DEFAULT_LOOP_THRESHOLD = 3;
+// Consecutive failures on one target before a re-read advisory is attached.
+// Intentionally independent of the identical-call loop threshold.
+export const ERROR_ADVISORY_COUNT = 2;
 
 const READ_TOOLS = new Set<string>([
   "read_file",
@@ -150,7 +153,7 @@ export class LoopGate {
     }
     const count = (this.errorHits.get(key)?.count ?? 0) + 1;
     this.errorHits.set(key, { count, path: pathKey });
-    if (count >= 2) return true;
+    if (count >= ERROR_ADVISORY_COUNT) return true;
   }
 
   private rememberBlock(key: string, toolName: string): void {
