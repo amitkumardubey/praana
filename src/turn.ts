@@ -6,9 +6,9 @@ import {
   type StreamRequest,
 } from "./llm/index.js";
 import { DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./llm/stream-guard.js";
-import { appendFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
-import { join, resolve, isAbsolute } from "node:path";
+import { resolve, isAbsolute } from "node:path";
 import { resolveDefaultSessionLogDir } from "./app-identity.js";
+import { appendDebugScores, saveDebugPrompt } from "./debug-prompts.js";
 import { z, type ZodType } from "zod";
 import type { Session } from "./session.js";
 import type { StateObject, PraanaConfig } from "./types.js";
@@ -928,14 +928,7 @@ export async function runTurn(
       excludedScoredUnits: engineResult.excludedScoredUnits,
     });
     if (session.debug && engineResult.scoreRecords.length > 0) {
-      const scoresPath = join(session.promptDir, "scores.jsonl");
-      if (!existsSync(session.promptDir)) {
-        mkdirSync(session.promptDir, { recursive: true });
-      }
-      appendFileSync(
-        scoresPath,
-        engineResult.scoreRecords.map((r) => JSON.stringify(r)).join("\n") + "\n",
-      );
+      appendDebugScores(session.promptDir, engineResult.scoreRecords);
     }
   } else {
     let classicResult = compileClassicWithMetrics({
@@ -1005,10 +998,7 @@ export async function runTurn(
 
   if (session.debug) {
     const turnNum = session.getTurnCount() + 1;
-    const promptDir = session.promptDir;
-    if (!existsSync(promptDir)) mkdirSync(promptDir, { recursive: true });
-    const promptFile = join(promptDir, `turn-${String(turnNum).padStart(3, "0")}.md`);
-    writeFileSync(promptFile, compiledPrompt, "utf-8");
+    const promptFile = saveDebugPrompt(session.promptDir, turnNum, compiledPrompt);
     s.onDebug?.(`prompt saved → ${promptFile}`);
   }
 
