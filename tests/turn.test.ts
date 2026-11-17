@@ -1366,6 +1366,66 @@ describe("runTurn", () => {
     }
   });
 
+  it("stores an artifact line range that matches total_lines when the read ends in a newline", async () => {
+    const cacheDir = join(homedir(), ".cache");
+    mkdirSync(cacheDir, { recursive: true });
+    const cwd = mkdtempSync(join(cacheDir, "praana-engine-read-range-"));
+    const config = makeConfig({ context_engine: { ...makeConfig().context_engine, enabled: true } });
+    const engine = ceReal.ContextEngine.open(":memory:", "read-range-test", config.context_engine!);
+    const session = makeMockSession({ config, cwd, contextEngine: engine, scorecard: engine.scorecard });
+    const requests: ConversationMessage[][] = [];
+    const ingest = spyOn(engine, "ingestToolResult");
+    const compilerMock = compileEngineWithMetrics as ReturnType<typeof mock>;
+    const previousCompiler = compilerMock.getMockImplementation()!;
+    compilerMock.mockImplementation(ceReal.compileEngineWithMetrics);
+    const tools = createSystemTools({ cwd, skills: [], skillRuntime: null, getCurrentTurn: () => session.getTurnCount() });
+    (createAllTools as ReturnType<typeof mock>).mockImplementationOnce(() => ({ read_file: tools.read_file }));
+    writeFileSync(join(cwd, "two.txt"), "alpha\nbeta\n");
+    writeFileSync(join(cwd, "big.txt"), Array.from({ length: 5000 }, (_, i) => `row ${i + 1}`).join("\n") + "\n");
+    const reads = [
+      { id: "whole", args: { path: "two.txt" } },
+      { id: "last-page", args: { path: "big.txt", offset: 4001 } },
+    ];
+    let requested = 0;
+    (piStream as ReturnType<typeof mock>).mockImplementation((req: StreamRequest) => {
+      requests.push(structuredClone(req.messages));
+      return (async function* () {
+        if (requested < reads.length) {
+          const step = reads[requested++]!;
+          const toolUse = { id: step.id, name: "read_file", args: step.args };
+          yield { type: "tool_call_end", toolCall: toolUse };
+          yield { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [toolUse] } };
+        } else {
+          yield { type: "text_delta", delta: "done" };
+          yield { type: "done", reason: "stop", message: { role: "assistant", content: "done" } };
+        }
+      })();
+    });
+    try {
+      await runTurn(session, "read the files", undefined, { sink: {} });
+      // A whole read of a trailing-newline file splits into one segment more than it has lines.
+      const whole = JSON.parse(requests[1]!.filter((m) => m.role === "tool_result").at(-1)!.result);
+      expect(whole.total_lines).toBe(2);
+      const wholeArtifact = engine.getArtifact(ingest.mock.results[0]!.value.artifactId as string)!;
+      expect(wholeArtifact.rawText).toBe("alpha\nbeta\n");
+      expect(wholeArtifact.sourceLineStart).toBe(1);
+      expect(wholeArtifact.sourceLineEnd).toBe(whole.total_lines);
+
+      // The last page ends on the file's trailing newline too.
+      const lastPage = JSON.parse(requests[2]!.filter((m) => m.role === "tool_result").at(-1)!.result);
+      expect(lastPage.total_lines).toBe(5000);
+      expect(lastPage.content.endsWith("\n")).toBe(true);
+      const pageArtifact = engine.getArtifact(ingest.mock.results[1]!.value.artifactId as string)!;
+      expect(pageArtifact.sourceLineStart).toBe(4001);
+      expect(pageArtifact.sourceLineEnd).toBe(lastPage.total_lines);
+    } finally {
+      compilerMock.mockImplementation(previousCompiler);
+      ingest.mockRestore();
+      engine.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("presents a failed engine-mode read_file as the error, not as an artifact card", async () => {
     const cacheDir = join(homedir(), ".cache");
     mkdirSync(cacheDir, { recursive: true });
