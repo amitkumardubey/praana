@@ -18,7 +18,7 @@
   "oracle_sha256_by_file": {
     "src/circuit/loop-gate.ts": "584e500a71abda1189b88e6bc3b014ddaa7e88a30ae1af2dd19dad13c7fe1886",
     "src/hooks/block-result.ts": "20214cf0f1dd570185925a34020bebe3e258ab868ad918a9a1f5414b1f518373",
-    "src/hooks/handlers/circuit.ts": "f9881138c84889bbf684a54fa3197a125c434d2be2c86ef3e4193fa70c33dd9e",
+    "src/hooks/handlers/circuit.ts": "90772b0838f1d9611a1636d5f698d55d4f3ad2bc00dce262a1a022d356091c9c",
     "src/hooks/handlers/lsp.ts": "3d6b47544834069efb2541a3c8f851b4ed3d21f92fb32e14bc51101435438515",
     "src/hooks/handlers/plan-mode.ts": "0d4b852b8f0fd1fa8a944bb3b9cd114b56f80928fae097259abadc29f9f10262",
     "src/hooks/handlers/redact.ts": "7ad795068145447d318d9342db6d9db700f1d75cbed64585a6a0ad2096800e47",

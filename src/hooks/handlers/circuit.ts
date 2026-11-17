@@ -25,7 +25,7 @@ export function createCircuitHandlers(): {
       if (ctx.result && typeof ctx.result === "object" && !Array.isArray(ctx.result)) {
         return { result: { ...ctx.result, advisory } };
       }
-      return { result: { result: ctx.result, advisory } };
+      // Arrays and primitives keep their shape: no advisory rather than a wrapper.
     },
     postTurn: (ctx) => ctx.session.loopGate?.resetTurn(),
   };

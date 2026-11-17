@@ -80,6 +80,25 @@ describe("circuit pre_tool_call", () => {
     }
   });
 
+  it("adds the advisory only to string and plain-object results and leaves other shapes unchanged", async () => {
+    const registry = createBuiltinHookRegistry("/proj", { validate: { pathExists: () => true } });
+    const cases: Array<[unknown, (result: unknown) => void]> = [
+      ["boom", (r) => expect(r).toContain("Two or more failed attempts")],
+      [{ ok: false }, (r) => expect((r as { advisory?: string }).advisory).toContain("Two or more failed attempts")],
+      [[1, 2], (r) => expect(r).toEqual([1, 2])],
+      [42, (r) => expect(r).toBe(42)],
+    ];
+    for (const [result, check] of cases) {
+      const session = sessionWithGate("/proj");
+      for (let i = 0; i < 2; i++) {
+        const args = { path: "a.ts", oldText: String(i), newText: "x" };
+        const post = await registry.runPostToolCall({ toolName: "edit_file", args, session, isError: true, result });
+        if (i === 1) check(post.result);
+        else expect(post.result).toEqual(result);
+      }
+    }
+  });
+
   it("lets validate block a missing read before circuit", async () => {
     const registry = createBuiltinHookRegistry("/proj", {
       validate: { pathExists: () => false, listRepoFiles: () => [] },
