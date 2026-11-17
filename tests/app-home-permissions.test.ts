@@ -31,6 +31,12 @@ import {
   resolveDefaultSessionLogDir,
   tightenAppHomePermissions,
 } from "../src/app-identity.js";
+import {
+  collectAppHomeFixupReport,
+  logAppHomeFixupReports,
+  type AppHomeFixupReport,
+} from "../src/main.js";
+import type { PraanaLogger } from "../src/logger.js";
 import { setEmbedderConsent } from "../src/memory/embedder-consent.js";
 import { writeProviderConfig } from "../src/setup/config-writer.js";
 import { EventLog, ensureSessionDir, writeSessionMeta } from "../src/event-log.js";
@@ -467,6 +473,120 @@ describe("tightenAppHomePermissions", () => {
     ).not.toThrow();
     // The failure is best effort: the directory keeps its old mode.
     expect(modeOf(home)).toBe(0o755);
+  });
+});
+
+describe("early fix-up reports", () => {
+  const originalPraanaHome = process.env.PRAANA_HOME;
+  let root: string | null = null;
+
+  afterEach(() => {
+    if (originalPraanaHome !== undefined) {
+      process.env.PRAANA_HOME = originalPraanaHome;
+    } else {
+      delete process.env.PRAANA_HOME;
+    }
+    if (root) {
+      rmSync(root, { recursive: true, force: true });
+      root = null;
+    }
+  });
+
+  interface RecordedEntry {
+    level: string;
+    message: string;
+    details?: Record<string, unknown>;
+    domain?: string;
+  }
+
+  /** Stands in for the app logger and records every call at every level. */
+  function recordingLogger(): { entries: RecordedEntry[]; logger: PraanaLogger } {
+    const entries: RecordedEntry[] = [];
+    const record = (level: string) => (message: string, opts?: { details?: Record<string, unknown>; domain?: string }) => {
+      entries.push({ level, message, details: opts?.details, domain: opts?.domain });
+    };
+    const logger = {
+      info: record("info"),
+      debug: record("debug"),
+      warn: record("warn"),
+      error: record("error"),
+    };
+    return { entries, logger: logger as unknown as PraanaLogger };
+  }
+
+  it.skipIf(isWindows)("logs a report from the early fix-up at info level after log init", () => {
+    root = mkdtempSync(join(tmpdir(), "praana-perms-test-"));
+    process.env.PRAANA_HOME = root;
+    const target = join(root, "elsewhere");
+    mkdirSync(target, { recursive: true });
+    chmodSync(target, 0o755);
+    symlinkSync(target, appHomePath());
+
+    // What main() does before the log file exists: collect, do not log.
+    const reports: AppHomeFixupReport[] = [];
+    tightenAppHomePermissions({ onError: collectAppHomeFixupReport(reports) });
+    expect(reports).toEqual([
+      { path: appHomePath(), reason: APP_HOME_SYMLINK_SKIP_REASON },
+    ]);
+
+    // What main() does after `await initAppLogFile()`.
+    const { entries, logger } = recordingLogger();
+    logAppHomeFixupReports(reports, logger);
+
+    expect(entries).toEqual([
+      {
+        level: "info",
+        message: "failed to tighten app home permissions",
+        details: { path: appHomePath(), cause: APP_HOME_SYMLINK_SKIP_REASON },
+        domain: undefined,
+      },
+    ]);
+
+    // Drained, so a later flush cannot write the same report twice.
+    logAppHomeFixupReports(reports, logger);
+    expect(entries).toHaveLength(1);
+    expect(reports).toEqual([]);
+    expect(modeOf(target)).toBe(0o755);
+  });
+
+  it.skipIf(isWindows)("collects a failed chmod without logging it early", () => {
+    root = mkdtempSync(join(tmpdir(), "praana-perms-test-"));
+    process.env.PRAANA_HOME = root;
+    mkdirSync(appHomePath(), { recursive: true, mode: 0o755 });
+    chmodSync(appHomePath(), 0o755);
+    const logged: string[] = [];
+    const reports: AppHomeFixupReport[] = [];
+    const collect = collectAppHomeFixupReport(reports);
+
+    tightenAppHomePermissions({
+      chmod: () => {
+        throw new Error("EPERM: operation not permitted");
+      },
+      onError: (path, err) => {
+        logged.push(path);
+        collect(path, err);
+      },
+    });
+
+    expect(logged).toEqual([appHomePath()]);
+    expect(reports).toHaveLength(1);
+    expect(reports[0]!.path).toBe(appHomePath());
+    expect(reports[0]!.reason).toContain("EPERM");
+  });
+
+  it("writes the collected reports after opening the app log file in main()", () => {
+    const src = readFileSync(join(import.meta.dir, "../src/main.ts"), "utf-8");
+    const body = src.slice(src.indexOf("export async function main()"));
+    const initAt = body.indexOf("await initAppLogFile()");
+    const flushAt = body.indexOf("logAppHomeFixupReports(");
+
+    expect(initAt).toBeGreaterThan(-1);
+    expect(flushAt).toBeGreaterThan(initAt);
+    // Called once, and the fix-up hands its reports to the collector.
+    expect(body.split("logAppHomeFixupReports(").length - 1).toBe(1);
+    expect(body).toContain("collectAppHomeFixupReport(appHomeFixupReports)");
+    // The fix-up still runs before every early-exit branch.
+    expect(body.indexOf("tightenAppHomePermissions(")).toBeLessThan(initAt);
   });
 });
 

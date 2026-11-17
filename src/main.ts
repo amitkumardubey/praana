@@ -2,7 +2,12 @@ import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getMissingKeyMessage } from "./llm.js";
 import { loadConfig, getConfigWarnings } from "./config.js";
-import { getAppLogger, initAppLogFile, setAppLogger } from "./logger.js";
+import {
+  getAppLogger,
+  initAppLogFile,
+  setAppLogger,
+  type PraanaLogger,
+} from "./logger.js";
 import { parseCliArgs } from "./cli-args.js";
 import { printHelp, APP_VERSION, formatSessionEndEpilogue } from "./app-banner.js";
 import { AppController } from "./app-controller.js";
@@ -32,11 +37,44 @@ import { runHeadless } from "./headless-run.js";
 import { refreshUpdateCheck, refreshUpgradeCheck } from "./update/check.js";
 import { runUpgrade } from "./update/upgrade.js";
 
-/** Debug-level report for a failed app-home permission fix-up (best effort). */
-function logAppHomeFixupFailure(path: string, err: unknown): void {
-  getAppLogger().debug("failed to tighten app home permissions", {
-    details: { path, cause: (err as Error)?.message },
-  });
+/** One app-home permission fix-up report, held until the app log file is open. */
+export interface AppHomeFixupReport {
+  path: string;
+  reason: string;
+}
+
+/**
+ * `onError` sink for the fix-up that runs before the app log file exists.
+ *
+ * Logging it from inside the fix-up loses it: the logger still writes to stderr
+ * (whose level starts at `warn`) and has no file sink yet, so an info or debug
+ * report is discarded. Collect the reports here instead and write them once
+ * `initAppLogFile()` has opened the file (see `logAppHomeFixupReports`).
+ */
+export function collectAppHomeFixupReport(
+  reports: AppHomeFixupReport[],
+): (path: string, err: unknown) => void {
+  return (path, err) => {
+    reports.push({ path, reason: (err as Error)?.message ?? String(err) });
+  };
+}
+
+/**
+ * Write each collected fix-up report to the app log exactly once, at info level.
+ *
+ * Info reaches the file sink only — the stderr sink starts at `warn` — so a
+ * normal run stays quiet on the terminal while the report is in the log. The
+ * array is drained, so calling this twice cannot duplicate a line.
+ */
+export function logAppHomeFixupReports(
+  reports: AppHomeFixupReport[],
+  logger: PraanaLogger = getAppLogger(),
+): void {
+  for (const { path, reason } of reports.splice(0)) {
+    logger.info("failed to tighten app home permissions", {
+      details: { path, cause: reason },
+    });
+  }
 }
 
 export async function main() {
@@ -44,7 +82,12 @@ export async function main() {
   // Before any branch that can exit early (--models, --providers, doctor, ...):
   // an app home left 0755 by an older version must not stay world-readable, and
   // neither must a credentials file left 0644.
-  tightenAppHomePermissions({ onError: logAppHomeFixupFailure });
+  // The app log file is not open yet, so whatever the fix-up reports is held
+  // and written below, after `initAppLogFile()`. A command that exits before
+  // that (--help, --version, --providers, --models, ...) drops the reports;
+  // that is acceptable for a best-effort security report.
+  const appHomeFixupReports: AppHomeFixupReport[] = [];
+  tightenAppHomePermissions({ onError: collectAppHomeFixupReport(appHomeFixupReports) });
   ensureCredentialsFileMode();
   if (parsed.showHelp) {
     printHelp();
@@ -92,6 +135,8 @@ export async function main() {
   }
 
   await initAppLogFile();
+  // Now that the file sink exists, log the fix-up reports collected above.
+  logAppHomeFixupReports(appHomeFixupReports);
 
   // Handle setup command early (before config loading, needs a TTY)
   if (parsed.setupMode) {
