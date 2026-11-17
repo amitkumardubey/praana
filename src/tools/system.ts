@@ -423,6 +423,9 @@ export function buildCappedReadResult(
     if (capCut) parts.push(`call read_file with offset=${last + 1} for the next part`);
     result.truncated = true;
     result.note = parts.join("; ");
+  } else if (selected.length === 0 && startIndex > 0) {
+    // Not an error, but an empty result on its own reads like a bug to the model.
+    result.note = `offset ${opts.offset} is past the end of the file (total_lines ${totalLines})`;
   }
   return result;
 }

@@ -212,9 +212,35 @@ describe("read_file per-call cap (#811)", () => {
     expect(result.content).not.toContain("use the shell");
   });
 
-  it("returns empty content for an offset past the end", async () => {
+  it("explains an offset past the end of the file", async () => {
     writeFileSync(join(cwd, "short.txt"), "a\nb\nc\n");
     const result = await tools.read_file.execute({ path: "short.txt", offset: 5000 });
-    expect(result).toEqual({ ok: true, content: "", total_lines: 3 });
+    expect(result).toEqual({
+      ok: true,
+      content: "",
+      total_lines: 3,
+      note: "offset 5000 is past the end of the file (total_lines 3)",
+    });
+    expect("truncated" in result).toBe(false);
+  });
+
+  it("explains an offset past the end of a file that shrank", async () => {
+    writeFileSync(join(cwd, "shrink.txt"), Array.from({ length: 100 }, (_, i) => `line ${i + 1}`).join("\n") + "\n");
+    const first = (await tools.read_file.execute({ path: "shrink.txt", offset: 80 })) as any;
+    expect(first.content.startsWith("line 80\n")).toBe(true);
+
+    writeFileSync(join(cwd, "shrink.txt"), "line 1\nline 2\n");
+    const after = (await tools.read_file.execute({ path: "shrink.txt", offset: 80 })) as any;
+    expect(after.content).toBe("");
+    expect(after.total_lines).toBe(2);
+    expect(after.note).toBe("offset 80 is past the end of the file (total_lines 2)");
+    expect("truncated" in after).toBe(false);
+  });
+
+  it("gives an empty file no offset note with the default offset", async () => {
+    writeFileSync(join(cwd, "empty2.txt"), "");
+    const result = await tools.read_file.execute({ path: "empty2.txt" });
+    expect(result).toEqual({ ok: true, content: "", total_lines: 0 });
+    expect("note" in result).toBe(false);
   });
 });
