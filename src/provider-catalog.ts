@@ -1,6 +1,5 @@
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
-import { appHomePath } from "./app-identity.js";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { appHomePath, ensureAppHome } from "./app-identity.js";
 import {
   PROVIDER_REGISTRY,
   LIVE_CATALOG_PROVIDER_IDS,
@@ -133,8 +132,7 @@ function loadDiskCache(): ProviderCatalogCacheFile {
 
 function persistDiskCache(): void {
   const path = catalogCachePath();
-  const dir = dirname(path);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  ensureAppHome();
   writeFileSync(path, JSON.stringify(loadDiskCache()), "utf-8");
 }
 

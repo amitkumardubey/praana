@@ -17,6 +17,11 @@ import { ulid } from "ulid";
 import type { Event, EventActor, EventKind } from "./types.js";
 import { getAppLogger } from "./logger.js";
 import {
+  APP_HOME_DIR_MODE,
+  tightenDirPermissions,
+  type AppHomePermissionFixes,
+} from "./app-identity.js";
+import {
   AmbiguousSessionPrefixError,
   SessionNotFoundError,
 } from "./session-errors.js";
@@ -42,6 +47,37 @@ export interface EventSearchMatch {
 
 export const EVENT_LOG_FILENAME = "events.jsonl";
 export const LEGACY_EVENT_LOG_FILENAME = "events.log";
+
+/** Owner-only file mode for session files (transcripts, meta, checkpoints). */
+const SESSION_FILE_MODE = 0o600;
+
+/**
+ * Create the session directory owner-only. `recursive` applies `mode` only to
+ * directories it creates, so an existing directory is tightened to `0700` here
+ * with `tightenedDirMode`; symlinks, anything that is not a directory and
+ * directories owned by another user are skipped. A regular file at the path is
+ * rejected by `mkdirSync` (EEXIST) before any chmod; the shared guard in
+ * `tightenDirPermissions` refuses a non-directory too. A failure is logged at
+ * debug level and never breaks logging.
+ */
+export function ensureSessionDir(
+  sessionDir: string,
+  deps: AppHomePermissionFixes = {},
+): void {
+  mkdirSync(sessionDir, { recursive: true, mode: APP_HOME_DIR_MODE });
+  tightenDirPermissions(sessionDir, {
+    onError: (path, err) => {
+      // Info, not debug: the file sink starts at info, so a debug report of a
+      // skipped/failed tighten is dropped by a normal run and the shared
+      // session directory stays quiet. Info reaches the log without touching
+      // the terminal (the stderr sink starts at warn).
+      getAppLogger().info("failed to tighten session directory permissions", {
+        details: { path, cause: (err as Error)?.message },
+      });
+    },
+    ...deps,
+  });
+}
 
 export function getEventLogPath(sessionDir: string): string {
   return join(sessionDir, EVENT_LOG_FILENAME);
@@ -82,7 +118,7 @@ export function migrateLegacyEventLog(sessionDir: string): void {
     const jsonlContent = readFileSync(jsonlPath, "utf-8");
     const prefix = jsonlContent.endsWith("\n") ? "" : "\n";
     const suffix = legacyContent.endsWith("\n") ? legacyContent : legacyContent + "\n";
-    appendFileSync(jsonlPath, prefix + suffix);
+    appendFileSync(jsonlPath, prefix + suffix, { mode: SESSION_FILE_MODE });
   }
   unlinkSync(legacyPath);
 }
@@ -117,11 +153,11 @@ export class EventLog {
   constructor(sessionId: string, logDir: string, private options: EventLogOptions = {}) {
     this.sessionId = sessionId;
     const sessionDir = join(logDir, sessionId);
-    mkdirSync(sessionDir, { recursive: true });
+    ensureSessionDir(sessionDir);
     migrateLegacyEventLog(sessionDir);
     this.logPath = getEventLogPath(sessionDir);
     this.checkpointPath = join(sessionDir, "compression_checkpoint.json");
-    this.fd = openSync(this.logPath, "a");
+    this.fd = openSync(this.logPath, "a", SESSION_FILE_MODE);
     this.loadCompressionCheckpoint();
   }
 
@@ -365,7 +401,10 @@ export class EventLog {
       this.compressedIds.add(id);
     }
     const data = { compressed_ids: Array.from(this.compressedIds), timestamp: Date.now() };
-    writeFileSync(this.checkpointPath, JSON.stringify(data) + "\n", "utf-8");
+    writeFileSync(this.checkpointPath, JSON.stringify(data) + "\n", {
+      encoding: "utf-8",
+      mode: SESSION_FILE_MODE,
+    });
   }
 
   /** Read last n events, excluding compressed ones. */
@@ -396,8 +435,12 @@ import type { SessionMeta } from "./types.js";
 
 export function writeSessionMeta(logDir: string, meta: SessionMeta): void {
   const sessionDir = pathJoin(logDir, meta.session_id);
-  mkdirSync(sessionDir, { recursive: true });
-  writeFileSync(pathJoin(sessionDir, "meta.json"), JSON.stringify(meta, null, 2) + "\n");
+  ensureSessionDir(sessionDir);
+  writeFileSync(
+    pathJoin(sessionDir, "meta.json"),
+    JSON.stringify(meta, null, 2) + "\n",
+    { mode: SESSION_FILE_MODE },
+  );
 }
 
 export const RESET_BOUNDARY_TYPE = "reset_boundary";

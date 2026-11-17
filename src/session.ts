@@ -64,6 +64,7 @@ import { formatActiveModelLabel } from "./model-resolver.js";
 import {
   APP_HOME_DIR,
   APP_AGENT_ID,
+  APP_HOME_DIR_MODE,
   appHomePath,
   resolveAgainstCwd,
   resolveDefaultMemoryDbPath,
@@ -1355,7 +1356,7 @@ function initContextEngine(session: Session): void {
     if (measurementMode) {
       try {
         const dbPath = resolveContextDbPath(session.config, session.cwd);
-        mkdirSync(dirname(dbPath), { recursive: true });
+        mkdirSync(dirname(dbPath), { recursive: true, mode: APP_HOME_DIR_MODE });
         const db = openContextEngineDb(dbPath);
         session.scorecard = new ScorecardTracker(db, session.id, false);
         session.scorecard.restoreFromDb();
@@ -1372,7 +1373,7 @@ function initContextEngine(session: Session): void {
 
   try {
     const dbPath = resolveContextDbPath(session.config, session.cwd);
-    mkdirSync(dirname(dbPath), { recursive: true });
+    mkdirSync(dirname(dbPath), { recursive: true, mode: APP_HOME_DIR_MODE });
     session.contextEngine = ContextEngine.open(
       dbPath,
       session.id,

@@ -1,13 +1,11 @@
 import {
   existsSync,
-  mkdirSync,
   readFileSync,
   renameSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname } from "node:path";
-import { appHomePath } from "../app-identity.js";
+import { appHomePath, ensureAppHome } from "../app-identity.js";
 import { GITHUB_REPO_SLUG } from "./repo.js";
 import { isNewer, normalizeVersionLabel } from "./semver.js";
 
@@ -75,7 +73,7 @@ export function formatUpdateNotice(current: string, latest: string): string {
 }
 
 function atomicWriteJson(path: string, data: unknown): void {
-  mkdirSync(dirname(path), { recursive: true });
+  ensureAppHome();
   const tmp = `${path}.${process.pid}.tmp`;
   writeFileSync(tmp, JSON.stringify(data, null, 2) + "\n", "utf-8");
   try {

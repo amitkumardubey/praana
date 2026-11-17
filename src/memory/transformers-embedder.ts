@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { appHomePath } from "../app-identity.js";
+import { ensureAppHome } from "../app-identity.js";
 import { startSpinner, stopSpinner } from "../ui.js";
 import { confirmModelDownload } from "../ui/tui/download-consent.js";
 import { getEmbedderConsent } from "./embedder-consent.js";
@@ -130,8 +130,7 @@ export class TransformersEmbedder implements Embedder {
 
     const preset = resolveTransformersModel(opts.strategy, opts.model);
     try {
-      const cacheDir = appHomePath("models");
-      mkdirSync(cacheDir, { recursive: true });
+      const cacheDir = ensureAppHome("models");
       const modelDir = await ensureModelFiles(cacheDir, preset);
       return new TransformersEmbedder(native, modelDir, preset);
     } catch (err) {
