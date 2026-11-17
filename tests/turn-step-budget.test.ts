@@ -169,7 +169,7 @@ mock.module("../src/ui.js", () => ({
 import { flattenWrapUpHistory, WRAP_UP_TOOL_RESULT_CAP, runTurn } from "../src/turn.js";
 import { createAllTools } from "../src/tools/index.js";
 import { TurnAbortedError } from "../src/turn-control.js";
-import { loadConfig, getConfigWarnings } from "../src/config.js";
+import { DEFAULT_CONFIG, loadConfig, getConfigWarnings } from "../src/config.js";
 import { StateGraph } from "../src/state-graph.js";
 import { createBuiltinHookRegistry } from "../src/hooks/index.js";
 import { LoopGate } from "../src/circuit/loop-gate.js";
@@ -845,6 +845,40 @@ describe("per-turn step budget — interactive soft pause", () => {
     const before = streamRequestCalls().length;
     await runTurn(headless, "nan cap", undefined, { sink: {} });
     expect(streamRequestCalls().length - before).toBe(3);
+  });
+
+  it("falls back to DEFAULT_CONFIG.turn.max_steps for an invalid configured value", async () => {
+    const defaults = DEFAULT_CONFIG.turn;
+    const original = defaults.max_steps;
+    // A distinct value detects copied literals even when today's defaults match.
+    defaults.max_steps = 3;
+    try {
+      installLoopStream(8);
+      const session = makeMockSession({ headless: true, config: makeConfig({
+        turn: { ...defaults, max_steps: Number.NaN },
+      }) });
+      await runTurn(session, "invalid max steps", undefined, { sink: {} });
+      expect(shellExecuteCount()).toBe(DEFAULT_CONFIG.turn.max_steps);
+      expect(streamRequestCalls()).toHaveLength(DEFAULT_CONFIG.turn.max_steps + 1);
+    } finally { defaults.max_steps = original; }
+  });
+
+  it("takes invalid pause and hard ceiling fallbacks from DEFAULT_CONFIG.turn", async () => {
+    const defaults = DEFAULT_CONFIG.turn;
+    const original = { ...defaults };
+    defaults.pause_after_steps = 2;
+    defaults.hard_max_steps = 5;
+    try {
+      installLoopStream(10);
+      const session = makeMockSession({ config: makeConfig({
+        turn: { ...defaults, pause_after_steps: 1.5, hard_max_steps: -3 },
+      }) });
+      const sink = makePauseSink();
+      await runTurn(session, "invalid pause and ceiling", undefined, { sink });
+      expect(sink.pauseCalls).toEqual([defaults.pause_after_steps, defaults.pause_after_steps * 2]);
+      expect(streamRequestCalls()).toHaveLength(defaults.hard_max_steps + 1);
+      expect(shellExecuteCount()).toBe(defaults.hard_max_steps - 1);
+    } finally { Object.assign(defaults, original); }
   });
 
   it("hard ceiling forces the wrap-up without prompting", async () => {

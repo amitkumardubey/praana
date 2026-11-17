@@ -6,6 +6,7 @@ import {
   type StreamRequest,
 } from "./llm/index.js";
 import { DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./llm/stream-guard.js";
+import { DEFAULT_CONFIG } from "./config.js";
 import { appendFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { join, resolve, isAbsolute } from "node:path";
 import { resolveDefaultSessionLogDir } from "./app-identity.js";
@@ -1069,15 +1070,15 @@ export async function runTurn(
       timestamp: Date.now(),
     },
   ];
-  const maxSteps = clampTurnInt(session.config.turn?.max_steps, 100);
+  const maxSteps = clampTurnInt(session.config.turn?.max_steps, DEFAULT_CONFIG.turn.max_steps);
   // Pause/ceiling only when the sink can ask. Headless runs, and any sink
   // without `onStepPause` (subagents, tests, non-interactive UIs), use
   // `max_steps` as a hard cap: the last batch executes, then one wrap-up.
   // User-facing warnings for bad values live in validateConfig. Here a bad
   // value is only clamped so the loop bound stays a positive integer.
   const isHeadless = !!session.headless;
-  const pauseAfterSteps = clampTurnInt(session.config.turn?.pause_after_steps, 50);
-  const configuredHardMaxSteps = clampTurnInt(session.config.turn?.hard_max_steps, 300);
+  const pauseAfterSteps = clampTurnInt(session.config.turn?.pause_after_steps, DEFAULT_CONFIG.turn.pause_after_steps);
+  const configuredHardMaxSteps = clampTurnInt(session.config.turn?.hard_max_steps, DEFAULT_CONFIG.turn.hard_max_steps);
   // Keep the configured ceiling. When it is not above the pause interval the
   // ceiling is reached first, so the turn stops there and never asks.
   const hardMaxSteps = configuredHardMaxSteps;

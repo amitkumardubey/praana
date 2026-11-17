@@ -60,7 +60,7 @@ export function getLoadedConfigSources(): string[] {
   return _loadedSources;
 }
 
-const DEFAULT_CONFIG: PraanaConfig = {
+export const DEFAULT_CONFIG: PraanaConfig = {
   llm: {
     provider: "",   // empty → main.ts runs guided setup (env keys are not auto-selected)
     model: "",
