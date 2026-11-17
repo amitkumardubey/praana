@@ -302,7 +302,7 @@ export function buildAgentHints(counters: AgentHintCounters): string {
   const parts: string[] = [];
   if ((counters.churnInterventions ?? 0) > 0) {
     parts.push(
-      `- churn_interventions: ${counters.churnInterventions} — stop re-reading the same files; use one narrow retrieve_artifact(id, lineStart, lineEnd) or state a preliminary conclusion.`,
+      `- churn_interventions: ${counters.churnInterventions} — repeated access to the same files or artifacts detected.`,
     );
   }
   if (parts.length === 0) {
@@ -319,8 +319,7 @@ export interface FileReadIndexEntry {
 
 /**
  * Build a compact "Files Read This Session" section for the compiled prompt.
- * The index helps the agent discover already-read files and use retrieve_artifact(id)
- * instead of re-calling read_file. Issue #561.
+ * The index lists previously read files and their associated artifacts. Issue #561.
  *
  * `reads` must be ordered latest read first (as `listFileReads` returns it). The
  * order is kept as given: the turn number is the store turn of the artifact, which
@@ -346,7 +345,7 @@ export function buildFilesReadIndexSection(
   const lines = [
     "## Files Read This Session",
     "",
-    "Use retrieve_artifact(id) before re-reading a path:",
+    "Files read in this session:",
     "",
   ];
   for (const r of shown) {

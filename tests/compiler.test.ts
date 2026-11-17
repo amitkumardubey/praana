@@ -450,7 +450,8 @@ describe('Compiler', () => {
     expect(buildAgentHints({ repeatFileReads: 0, churnInterventions: 0 })).toBe('');
     const text = buildAgentHints({ repeatFileReads: 0, churnInterventions: 2 });
     expect(text).toContain('churn_interventions: 2');
-    expect(text).toContain('retrieve_artifact');
+    expect(text).not.toContain('retrieve_artifact');
+    expect(text).not.toContain('stop re-reading');
   });
 
   describe('buildFilesReadIndexSection', () => {
@@ -470,7 +471,8 @@ describe('Compiler', () => {
       );
 
       expect(section).toContain('## Files Read This Session');
-      expect(section).toContain('Use retrieve_artifact(id) before re-reading a path:');
+      expect(section).not.toContain('retrieve_artifact');
+      expect(section).not.toContain('before re-reading');
       expect(section).toContain('- src/auth.ts (turn 3, `art_abc123`)');
       expect(section).toContain('- docs/readme.md (turn 7, `art_def456`)');
       expect(section).toContain('- /outside/config.json (turn 5, `art_ghi789`)');

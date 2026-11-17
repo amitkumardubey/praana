@@ -520,15 +520,11 @@ export function buildScorecardNudge(
   if (!start || !end) return undefined;
   const churnDelta = end.churnInterventions - start.churnInterventions;
   if (churnDelta > 0) {
-    return `Tip: read/retrieve churn detected; use one narrow retrieve_artifact or conclude.`;
+    return `Tip: read/retrieve churn detected; files or artifacts were accessed repeatedly.`;
   }
-  const repeatReadsDelta = end.repeatFileReads - start.repeatFileReads;
   const noOpToolsDelta = end.noOpTools - start.noOpTools;
   const recallHitRate = turnRecallCalls > 0 ? turnRecallHits / turnRecallCalls : 1;
 
-  if (repeatReadsDelta > 0) {
-    return `Tip: you re-read files this turn; use search_transcript to recover prior output or search_session_log for other session events.`;
-  }
   if (noOpToolsDelta > 0) {
     return `Tip: a tool call made no changes; verify arguments before retrying.`;
   }

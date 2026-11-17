@@ -17,16 +17,17 @@ describe("buildScorecardNudge", () => {
       0,
     );
     expect(tip).toMatch(/churn detected/);
+    expect(tip).not.toContain("retrieve_artifact");
   });
 
-  it("tips on repeat reads when no churn fired this turn", () => {
+  it("does not nudge on repeat reads when no churn fired this turn", () => {
     const tip = buildScorecardNudge(
       zero,
       { repeatFileReads: 2, noOpTools: 0, churnInterventions: 0 },
       0,
       0,
     );
-    expect(tip).toMatch(/re-read files/);
+    expect(tip).toBeUndefined();
   });
 
   it("tips on no-op tools", () => {

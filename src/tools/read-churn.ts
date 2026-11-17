@@ -31,8 +31,7 @@ export function buildPathChurnHint(
 ): string {
   const ch = [...channels].sort().join(", ");
   return (
-    `Churn: ${displayPath} accessed ${count}× this session (${ch}). `
-    + "Prefer one narrow retrieve_artifact(id, lineStart, lineEnd) or state a preliminary conclusion."
+    `Churn: ${displayPath} accessed ${count}× this session (${ch}).`
   );
 }
 
