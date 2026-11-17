@@ -19,6 +19,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -201,6 +202,28 @@ describe("session directory and file modes", () => {
       ensureSessionDir(dir, { chmod });
       expect(chmodded, mode.toString(8)).toEqual([[dir, 0o700]]);
     }
+  });
+
+  it.skipIf(isWindows)("ensureSessionDir leaves a regular file at the session path unchanged", () => {
+    const filePath = join(
+      resolveDefaultSessionLogDir(),
+      `perm-test-file-${process.pid}-${Date.now()}`,
+    );
+    created.push(resolveDefaultSessionLogDir());
+    mkdirSync(resolveDefaultSessionLogDir(), { recursive: true, mode: 0o700 });
+    writeFileSync(filePath, "not a directory", "utf-8");
+    chmodSync(filePath, 0o644);
+    const chmodded: string[] = [];
+
+    // `mkdirSync` rejects the file before any chmod; the guard in
+    // `tightenDirPermissions` would also refuse it.
+    expect(() =>
+      ensureSessionDir(filePath, { chmod: (path) => chmodded.push(path) }),
+    ).toThrow();
+
+    expect(chmodded).toEqual([]);
+    expect(modeOf(filePath)).toBe(0o644);
+    expect(readFileSync(filePath, "utf-8")).toBe("not a directory");
   });
 
   it.skipIf(isWindows)("ensureSessionDir reports a chmod failure and does not throw", () => {
@@ -415,11 +438,61 @@ describe("tightenAppHomePermissions", () => {
 
     tightenAppHomePermissions({
       getuid: () => 1000,
-      lstat: () => ({ mode: 0o40755, uid: 4242, isSymbolicLink: () => false }),
+      lstat: () => ({
+        mode: 0o40755,
+        uid: 4242,
+        isSymbolicLink: () => false,
+        isDirectory: () => true,
+      }),
       chmod: (path) => chmodded.push(path),
     });
 
     expect(chmodded).toEqual([]);
+  });
+
+  it.skipIf(isWindows)("leaves a regular file where a directory belongs unchanged", () => {
+    root = mkdtempSync(join(tmpdir(), "praana-perms-test-"));
+    process.env.PRAANA_HOME = root;
+    const home = appHomePath();
+    mkdirSync(home, { recursive: true, mode: 0o700 });
+    chmodSync(home, 0o700);
+    const sessions = resolveDefaultSessionLogDir();
+    const logs = resolveDefaultAppLogDir();
+    writeFileSync(sessions, "not a directory", "utf-8");
+    writeFileSync(logs, "not a directory either", "utf-8");
+    chmodSync(sessions, 0o644);
+    chmodSync(logs, 0o644);
+    const chmodded: string[] = [];
+
+    tightenAppHomePermissions({ chmod: (path) => chmodded.push(path) });
+
+    // No chmod at all: 0700 on a file would add an owner execute bit.
+    expect(chmodded).toEqual([]);
+    expect(modeOf(sessions)).toBe(0o644);
+    expect(modeOf(logs)).toBe(0o644);
+    expect(readFileSync(sessions, "utf-8")).toBe("not a directory");
+    expect(modeOf(home)).toBe(0o700);
+  });
+
+  it.skipIf(isWindows)("skips a path whose injected stat is not a directory", () => {
+    makeHome(0o700, 0o700);
+    const home = appHomePath();
+    const chmodded: string[] = [];
+    const realUid = process.getuid!();
+
+    tightenAppHomePermissions({
+      getuid: () => realUid,
+      lstat: () => ({
+        mode: 0o100644,
+        uid: realUid,
+        isSymbolicLink: () => false,
+        isDirectory: () => false,
+      }),
+      chmod: (path) => chmodded.push(path),
+    });
+
+    expect(chmodded).toEqual([]);
+    expect(modeOf(home)).toBe(0o700);
   });
 
   it.skipIf(isWindows)("does nothing when the app home does not exist", () => {

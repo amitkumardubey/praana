@@ -98,7 +98,9 @@ export function resolveDefaultAppLogDir(): string {
 export interface AppHomePermissionFixes {
   chmod?: (path: string, mode: number) => void;
   /** Must not follow symlinks (default `lstatSync`). */
-  lstat?: (path: string) => Pick<Stats, "mode" | "uid" | "isSymbolicLink">;
+  lstat?: (
+    path: string,
+  ) => Pick<Stats, "mode" | "uid" | "isSymbolicLink" | "isDirectory">;
   /** Current user id; `undefined` where the platform has none. */
   getuid?: () => number | undefined;
   /** Called with the path and error when a fix-up fails; never throws out. */
@@ -136,10 +138,10 @@ export function tightenedDirMode(mode: number): number {
 /**
  * Tighten one existing directory to `APP_HOME_DIR_MODE` (see
  * `tightenedDirMode`). Skips a missing path, a symlink (never chmod through a
- * link) and a directory owned by another user. A skip or failure is best
- * effort: it is reported through `deps.onError` (a symlink as
- * `APP_HOME_SYMLINK_SKIP_REASON`) and never throws. No-op on Windows.
- * Returns true when the mode was changed.
+ * link), anything that is not a directory and a directory owned by another
+ * user. A skip or failure is best effort: it is reported through `deps.onError`
+ * (a symlink as `APP_HOME_SYMLINK_SKIP_REASON`) and never throws. No-op on
+ * Windows. Returns true when the mode was changed.
  */
 export function tightenDirPermissions(
   dir: string,
@@ -161,6 +163,9 @@ export function tightenDirPermissions(
       reportSymlinkSkipped(dir, deps);
       return false;
     }
+    // A regular file, socket or device at a directory path is left exactly as
+    // it is: chmodding it to 0700 would add an owner execute bit to a file.
+    if (!stat.isDirectory()) return false;
     const uid = getuid();
     if (uid !== undefined && stat.uid !== uid) return false;
     const current = stat.mode & 0o7777;

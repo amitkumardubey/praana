@@ -54,8 +54,11 @@ const SESSION_FILE_MODE = 0o600;
 /**
  * Create the session directory owner-only. `recursive` applies `mode` only to
  * directories it creates, so an existing directory is tightened to `0700` here
- * with `tightenedDirMode`; symlinks and directories owned by another user are
- * skipped. A failure is logged at debug level and never breaks logging.
+ * with `tightenedDirMode`; symlinks, anything that is not a directory and
+ * directories owned by another user are skipped. A regular file at the path is
+ * rejected by `mkdirSync` (EEXIST) before any chmod; the shared guard in
+ * `tightenDirPermissions` refuses a non-directory too. A failure is logged at
+ * debug level and never breaks logging.
  */
 export function ensureSessionDir(
   sessionDir: string,
