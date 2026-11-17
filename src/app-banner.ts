@@ -146,21 +146,6 @@ export function formatSessionEndEpilogue(input: SessionEndEpilogueInput): string
   return lines;
 }
 
-/** @deprecated Prefer formatSessionEndEpilogue — kept for any external callers. */
-export function formatSessionEndSummary(session: Session): string {
-  const summary = session.getSessionSummary();
-  return formatSessionEndEpilogue({
-    sessionId: session.id,
-    memory: session.memoryEnabled ? "noop" : "skipped",
-    turns: summary.turns,
-    stateObjects: summary.stateObjects,
-    rememberCalls: summary.memoriesStored,
-    recallUsed: 0,
-  })
-    .filter((l) => l.trim().length > 0)
-    .join(" · ");
-}
-
 /** Resume hint printed after the TUI exits (OpenCode-style epilogue). */
 export function formatSessionEpilogue(sessionId: string): string[] {
   return [
@@ -169,19 +154,6 @@ export function formatSessionEpilogue(sessionId: string): string[] {
     `  ${CLI_NAME} resume ${sessionId}`,
     "",
   ];
-}
-
-export function printSessionEndSummary(session: Session): void {
-  for (const line of formatSessionEndEpilogue({
-    sessionId: session.id,
-    memory: session.memoryEnabled ? "noop" : "skipped",
-    turns: session.getSessionSummary().turns,
-    stateObjects: session.getSessionSummary().stateObjects,
-    rememberCalls: session.getSessionSummary().memoriesStored,
-    recallUsed: 0,
-  })) {
-    console.log(line);
-  }
 }
 
 function usageLines(): string[] {
