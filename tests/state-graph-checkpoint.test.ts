@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, rmSync, writeFileSync, mkdtempSync } from "node:fs";
+import { mkdirSync, rmSync, statSync, writeFileSync, mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { StateGraph } from "../src/state-graph.js";
@@ -12,6 +12,7 @@ import {
   saveStateGraphCheckpoint,
 } from "../src/state-graph-checkpoint.js";
 import type { Event } from "../src/types.js";
+import { isWindows } from "./helpers/platform.js";
 
 const TEST_DIR = mkdtempSync(join(tmpdir(), "praana-state-graph-checkpoint-test-"));
 
@@ -91,8 +92,22 @@ describe("StateGraph checkpoint I/O", () => {
     expect(loadStateGraphCheckpoint(sessionDir)).toBeNull();
   });
 
-  it("deletes checkpoint file", () => {
+  it.skipIf(isWindows)("writes the checkpoint owner-only (0600)", () => {
     const sg = new StateGraph();
+    sg.create("note", { text: "private" });
+    const previous = process.umask(0o000);
+    try {
+      saveStateGraphCheckpoint(sessionDir, sg.exportCheckpoint("evt-1", 1));
+    } finally {
+      process.umask(previous);
+    }
+
+    // The whole state graph is in this file: no local user may read it.
+    expect(statSync(getStateGraphCheckpointPath(sessionDir)).mode & 0o777).toBe(0o600);
+    expect(loadStateGraphCheckpoint(sessionDir)?.objects).toHaveLength(1);
+  });
+
+  it("deletes checkpoint file", () => {    const sg = new StateGraph();
     saveStateGraphCheckpoint(sessionDir, sg.exportCheckpoint("x", 0));
     deleteStateGraphCheckpoint(sessionDir);
     expect(loadStateGraphCheckpoint(sessionDir)).toBeNull();
