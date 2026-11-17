@@ -539,7 +539,10 @@ export function createSystemTools(ctx: SystemToolContext) {
             contextWindowTokens: getContextWindowTokens?.(),
           });
 
-          onScorecardFileRead?.(absPath, mtimeMs, unchanged);
+          // A page of a capped read is not a repeat read: following the note into
+          // the next part must not look like re-reading the same content (#811).
+          const isRepeatRead = unchanged && (offset === undefined || offset === 1);
+          onScorecardFileRead?.(absPath, mtimeMs, isRepeatRead);
           return capped;
         } catch (err: any) {
           return { ok: false, error: err?.message ?? "Failed to read file" };

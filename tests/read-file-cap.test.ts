@@ -154,6 +154,30 @@ describe("read_file per-call cap (#811)", () => {
     expect(result.note).toContain("offset=2");
   });
 
+  it("does not count pages of a capped read as repeat reads", async () => {
+    const lines = Array.from({ length: 6000 }, (_, i) => `line ${i + 1}`);
+    writeFileSync(join(cwd, "paged.txt"), lines.join("\n") + "\n");
+    // Mirrors the session: the callback records the mtime the next read compares.
+    const mtimes = new Map<string, number>();
+    const repeats: Array<boolean | undefined> = [];
+    const paged = readTools({
+      getReadPathMtime: (absPath) => mtimes.get(absPath),
+      onScorecardFileRead: (absPath, mtimeMs, countAsRepeat) => {
+        repeats.push(countAsRepeat);
+        if (mtimeMs !== undefined) mtimes.set(absPath, mtimeMs);
+      },
+    });
+
+    await paged.read_file.execute({ path: "paged.txt", offset: 1 });
+    await paged.read_file.execute({ path: "paged.txt", offset: 2001 });
+    await paged.read_file.execute({ path: "paged.txt", offset: 4001 });
+    // Every read is reported, so the path still counts as "read" for the
+    // unread-edit validator, but only the second read at offset 1 is a repeat.
+    expect(repeats).toEqual([false, false, false]);
+    await paged.read_file.execute({ path: "paged.txt", offset: 1 });
+    expect(repeats).toEqual([false, false, false, true]);
+  });
+
   it("returns empty content for an offset past the end", async () => {
     writeFileSync(join(cwd, "short.txt"), "a\nb\nc\n");
     const result = await tools.read_file.execute({ path: "short.txt", offset: 5000 });
