@@ -27,7 +27,7 @@
     "src/hooks/handlers/verify.ts": "6e810f3669b286fc3ad3efb6953f8db39b761437e543b0571a84134a3e5dd66a",
     "src/hooks/handlers/write-path.ts": "3d5d53dfd3c5bf34c8fd5b707619041ab9547e24107a37f5b94f88b76eee528f",
     "src/hooks/index.ts": "47b3e3e34667a29e1b0f7e92cb98ae682124f912a2340ee69df9ab9798ebfa7e",
-    "src/hooks/registry.ts": "bd3e352df32d87e07dc6abafc78d20988417101ed99119f27afbc28b1fbdfd59",
+    "src/hooks/registry.ts": "69a07abae37e7b07c89aa82956fcb5066a7c5b7cbb4204f8e45e6a9860037c2b",
     "src/hooks/types.ts": "1da5126e36803d7e1c2abc496bd5b6208ec63632bef32182d6ab442fbad248c3",
     "src/plan-mode.ts": "b5bd3bf403a3fe3dbf382834525fdc7de1dba0b3f82f7d49e1cf3e989b975e8f",
     "src/redact/secrets.ts": "e13d9bdc1e949d8e6e8fb75fb6e64187f06a0011eeed3333e1a333dc921d8696",

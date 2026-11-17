@@ -136,6 +136,21 @@ describe("redact post_tool_call", () => {
     expect(await run({ result: { x: 1 } })).toEqual({ x: 1 });
   });
 
+  it("ignores truthy primitive handler patches without logging an error", async () => {
+    const warnings: string[] = [];
+    const registry = new HookRegistry();
+    for (const value of [true, "patch"]) {
+      registry.onPostToolCall(() => value as unknown as { result?: unknown; isError?: boolean });
+    }
+    const original = { ok: true };
+    const out = await registry.runPostToolCall({
+      toolName: "shell", args: {}, result: original, isError: true,
+      session: { ...session(), getLogger: () => ({ child: () => ({ warn: (message: string) => warnings.push(message) }) }) },
+    });
+    expect(out).toEqual({ result: original, isError: true });
+    expect(warnings).toEqual([]);
+  });
+
   it("keeps every field of a 120000-match result", async () => {
     const matches = Array.from({ length: 120_000 }, (_, i) => `m${i}`);
     const patch = await createRedactPostToolCallHandler()({
