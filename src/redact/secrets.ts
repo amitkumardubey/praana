@@ -6,7 +6,7 @@ import { types } from "node:util";
 import { redactUrlsInText } from "./url-query.js";
 
 const MAX_DEPTH = 8;
-const MAX_NODES = 100_000;
+const MAX_NODES = 1_000_000;
 const PLACEHOLDER = (kind: string) => `[REDACTED:${kind}]`;
 
 const DETECTORS: Array<{ kind: string; re: RegExp }> = [
@@ -63,7 +63,10 @@ type JsonValue = string | number | boolean | null | JsonContainer;
 type JsonContainer = { [key: string]: JsonValue } | JsonValue[];
 
 interface JsonFrame {
+  /** Object whose entries are read (the toJSON result when there was one). */
   readonly source: Record<string, unknown>;
+  /** Value before toJSON; tracked with `source` as an ancestor. */
+  readonly original: object;
   readonly target: JsonContainer;
   readonly keys: string[] | null;
   readonly length: number;
@@ -72,8 +75,15 @@ interface JsonFrame {
   cursor: number;
 }
 
+/**
+ * Append to a fresh copy. Arrays take pushes (entries are never skipped, so the
+ * index equals the push order); objects take plain assignment, except `__proto__`,
+ * which must be defined as an own property instead of setting the prototype.
+ */
 function setOwn(container: JsonContainer, key: string, value: JsonValue): void {
-  Object.defineProperty(container, key, { value, enumerable: true, writable: true, configurable: true });
+  if (Array.isArray(container)) container.push(value);
+  else if (key === "__proto__") Object.defineProperty(container, key, { value, enumerable: true, writable: true, configurable: true });
+  else container[key] = value;
 }
 
 function uniqueKey(frame: JsonFrame, base: string): string {
@@ -87,51 +97,52 @@ function uniqueKey(frame: JsonFrame, base: string): string {
 }
 
 /**
- * Error projection keys: `name` and `message` first, then own enumerable
- * properties. JSON.stringify writes `{}` for an Error because both fields are
- * non-enumerable; diagnostics matter more here, and both values are redacted as
- * strings like any other leaf. `stack` is never copied, even when enumerable.
+ * Error projection keys: `name` and `message`, then `cause` and `errors`
+ * (AggregateError) when present as own properties although they are
+ * non-enumerable, then the remaining own enumerable properties. JSON.stringify
+ * writes `{}` for an Error; diagnostics matter more here. Each value is walked and
+ * redacted like any other value. `stack` is never copied, even when enumerable.
  */
 function errorKeys(error: object): string[] {
-  const rest = Object.keys(error).filter((key) => key !== "name" && key !== "message" && key !== "stack");
-  return ["name", "message", ...rest];
+  const keys = ["name", "message"];
+  for (const key of ["cause", "errors"]) if (Object.hasOwn(error, key)) keys.push(key);
+  for (const key of Object.keys(error)) if (!keys.includes(key) && key !== "stack") keys.push(key);
+  return keys;
 }
 
 /**
- * Keys that cannot match any detector skip redactString. Derived from the
- * detectors above; keep in sync when one is added or changed:
- * - length: the shortest match is a URL userinfo (`http://a@b`, 10 characters);
- *   every other detector needs at least 20.
- * - content: each detector needs at least one of `=` or `:` (assignments, and
- *   `://` for URLs), `_` (`ghp_`, `github_pat_`), `-` (`glpat-`, `sk-`, PEM
- *   armor), or `AKIA` / `ASIA` (AWS key ids).
+ * The only guard around redactString, shared by keys, string values and string
+ * roots: a failing scan yields the placeholder, never the original text.
+ * Property reads, toJSON and enumeration failures are guarded per entry in the walk.
  */
-const MIN_DETECTABLE_LENGTH = 10;
-const DETECTOR_TRIGGER_RE = /[=:_-]|AKIA|ASIA/;
-
-function mayContainSecret(text: string): boolean {
-  return text.length >= MIN_DETECTABLE_LENGTH && DETECTOR_TRIGGER_RE.test(text);
-}
-
-/** A key whose redaction fails is replaced, never written as the original name. */
-function redactKey(key: string): string {
+function redactText(text: string): string {
   try {
-    return mayContainSecret(key) ? redactString(key) : key;
+    return redactString(text);
   } catch {
     return PLACEHOLDER("redaction-error");
   }
 }
 
+// Intrinsic byteLength getters, read once so later patching of prototypes is not trusted.
+const byteLengthOf = (prototype: object | undefined): ((this: unknown) => number) | undefined =>
+  prototype === undefined ? undefined : Object.getOwnPropertyDescriptor(prototype, "byteLength")?.get as ((this: unknown) => number) | undefined;
+const TYPED_ARRAY_BYTES = byteLengthOf(Object.getPrototypeOf(Uint8Array.prototype));
+const DATA_VIEW_BYTES = byteLengthOf(DataView.prototype);
+const ARRAY_BUFFER_BYTES = byteLengthOf(ArrayBuffer.prototype);
+const SHARED_BUFFER_BYTES = byteLengthOf(typeof SharedArrayBuffer === "undefined" ? undefined : SharedArrayBuffer.prototype);
+
 function binaryPlaceholder(value: unknown): string | undefined {
-  let prototype: object;
-  if (types.isTypedArray(value)) prototype = Object.getPrototypeOf(Uint8Array.prototype);
-  else if (types.isDataView(value)) prototype = DataView.prototype;
-  else if (types.isArrayBuffer(value)) prototype = ArrayBuffer.prototype;
-  else if (types.isSharedArrayBuffer(value)) prototype = SharedArrayBuffer.prototype;
+  let getter: ((this: unknown) => number) | undefined;
+  if (types.isTypedArray(value)) getter = TYPED_ARRAY_BYTES;
+  else if (types.isDataView(value)) getter = DATA_VIEW_BYTES;
+  else if (types.isArrayBuffer(value)) getter = ARRAY_BUFFER_BYTES;
+  else if (types.isSharedArrayBuffer(value)) getter = SHARED_BUFFER_BYTES;
   else return undefined;
-  // Intrinsic getters read the byte count, not an overridable instance property.
-  const getter = Object.getOwnPropertyDescriptor(prototype, "byteLength")!.get!;
-  return `[binary: ${getter.call(value)} bytes]`;
+  return `[binary: ${getter!.call(value)} bytes]`;
+}
+
+function finiteNumber(value: number): number | null {
+  return Number.isFinite(value) ? (value === 0 ? 0 : value) : null;
 }
 
 /**
@@ -141,25 +152,32 @@ function binaryPlaceholder(value: unknown): string | undefined {
  * Arrays read indices through length; every other object (including classes,
  * Maps/Sets and Errors) reads only own enumerable string keys, never entries or
  * hidden fields. Redact both string leaves and keys; suffix colliding keys in
- * traversal order. Write only own configurable data properties on fresh copies.
+ * traversal order. Write only own data properties on fresh copies.
  *
  * Deliberate JSON differences: binary values become byte-count strings BEFORE
  * toJSON (also if returned by it); BigInts become redacted decimal strings;
- * an object that is its own ancestor becomes [REDACTED:cycle]. Cycle detection
- * tracks the current ancestor path only, so a shared reference that is not an
- * ancestor of itself is copied each time, as JSON.stringify would write it.
- * Deliberate difference for native Errors: they project as { name, message } plus
- * own enumerable properties other than `stack` (JSON.stringify writes {}).
+ * a value that is its own ancestor becomes [REDACTED:cycle]. Cycle detection
+ * tracks the current ancestor path only, and both the value before toJSON and the
+ * object toJSON returned, so a shared reference that is not an ancestor of itself
+ * is copied each time, as JSON.stringify would write it, while a toJSON that
+ * returns a structure pointing back at its owner is cut at the first repeat.
+ * Native Errors project as { name, message } plus own `cause`, AggregateError
+ * `errors` and own enumerable properties, never `stack` (JSON.stringify writes {}).
  * Getters, toJSON and proxy failures replace only the affected value; only a
  * failure of the root itself or an unrecoverable error escapes to the caller.
  * No input identity, prototype, accessor or callable is retained in the plain JSON output.
  *
- * MAX_NODES bounds traversal only: the root and every property/index slot visited
- * count as one node. When it runs out, every open container keeps its type and
- * the entries already copied, and the remaining entries are cut (no entry is
- * invented and no container becomes a string). Strings are never dropped for
- * size: every string leaf and key is scanned in full by the linear redactString.
- * This bounds our traversal, not execution of user hooks or key enumeration.
+ * MAX_NODES bounds traversal only (exponential shared-reference DAGs, endless
+ * toJSON chains); the root and every property/index slot visited count as one node.
+ * When it runs out, each container still open keeps its type and the entries
+ * already copied and gets an explicit marker: an array a final element
+ * [REDACTED:node-budget], an object a `[REDACTED:node-budget]: true` key. Before
+ * stopping, an open object also copies its remaining scalar entries (strings
+ * redacted, numbers, booleans, null, BigInts) so shallow fields such as `ok` or
+ * `total` survive; nested containers not yet opened and the rest of an open
+ * array are dropped. Strings are never dropped for size: every string leaf and key
+ * is scanned in full by the linear redactString. This bounds our traversal, not
+ * execution of user hooks or key enumeration.
  */
 function redactJsonProjection(value: unknown): JsonValue | undefined {
   // Containers on the current path only: added when opened, removed when finished.
@@ -167,14 +185,22 @@ function redactJsonProjection(value: unknown): JsonValue | undefined {
   const frames: JsonFrame[] = [];
   let nodes = 1;
 
-  const seed = (child: unknown, key: string): JsonValue | undefined => {
+  const seed = (input: unknown, key: string): JsonValue | undefined => {
+    // Primitives other than BigInt have no toJSON, binary or box handling.
+    if (input === null) return null;
+    const type = typeof input;
+    if (type === "string") return redactText(input as string);
+    if (type === "number") return finiteNumber(input as number);
+    if (type === "boolean") return input as boolean;
+    if (type === "undefined" || type === "symbol") return undefined;
+    if (type !== "bigint" && ancestors.has(input as object)) return PLACEHOLDER("cycle");
+
+    let child = input;
     let binary = binaryPlaceholder(child);
     if (binary !== undefined) return binary;
-    if (child !== null && (typeof child === "object" || typeof child === "function" || typeof child === "bigint")) {
-      const toJSON = (child as { toJSON?: unknown }).toJSON;
-      // Use the intrinsic Call, never an input-owned toJSON.call/apply property.
-      if (typeof toJSON === "function") child = Function.prototype.call.call(toJSON, child, key);
-    }
+    const toJSON = (child as { toJSON?: unknown }).toJSON;
+    // Use the intrinsic Call, never an input-owned toJSON.call/apply property.
+    if (typeof toJSON === "function") child = Function.prototype.call.call(toJSON, child, key);
     binary = binaryPlaceholder(child);
     if (binary !== undefined) return binary;
     if (types.isNumberObject(child)) child = +(child as number);
@@ -182,12 +208,12 @@ function redactJsonProjection(value: unknown): JsonValue | undefined {
     else if (types.isBooleanObject(child)) child = Boolean.prototype.valueOf.call(child);
     else if (types.isBigIntObject(child)) child = BigInt.prototype.valueOf.call(child);
 
-    if (typeof child === "string") return redactString(child);
-    if (typeof child === "bigint") return redactString(String(child));
-    if (typeof child === "number") return Number.isFinite(child) ? (child === 0 ? 0 : child) : null;
+    if (typeof child === "string") return redactText(child);
+    if (typeof child === "bigint") return redactText(String(child));
+    if (typeof child === "number") return finiteNumber(child);
     if (typeof child === "boolean" || child === null) return child;
     if (typeof child !== "object") return undefined;
-    if (ancestors.has(child)) return PLACEHOLDER("cycle");
+    if (child !== input && ancestors.has(child)) return PLACEHOLDER("cycle");
 
     const isArray = Array.isArray(child);
     const source = child as Record<string, unknown>;
@@ -197,9 +223,37 @@ function redactJsonProjection(value: unknown): JsonValue | undefined {
       ? Math.min(Math.max(Math.floor(+(source.length as number)) || 0, 0), Number.MAX_SAFE_INTEGER)
       : keys!.length;
     const target: JsonContainer = isArray ? [] : {};
+    // `input` is an object or function here (BigInts never reach this point).
     ancestors.add(child);
-    frames.push({ source, target, keys, length, suffixes: null, cursor: 0 });
+    ancestors.add(input as object);
+    frames.push({ source, original: input as object, target, keys, length, suffixes: null, cursor: 0 });
     return target;
+  };
+
+  /** Budget exhausted: mark every container that still has entries and keep its scalar fields. */
+  const closeOpenFrames = (): void => {
+    for (let i = frames.length - 1; i >= 0; i--) {
+      const frame = frames[i]!;
+      if (frame.cursor >= frame.length) continue;
+      if (frame.keys === null) {
+        setOwn(frame.target, "", PLACEHOLDER("node-budget"));
+        continue;
+      }
+      for (; frame.cursor < frame.length; frame.cursor++) {
+        const key = frame.keys[frame.cursor]!;
+        let copied: JsonValue | undefined;
+        try {
+          const raw = frame.source[key];
+          const type = typeof raw;
+          const scalar = raw === null || type === "string" || type === "number" || type === "boolean" || type === "bigint";
+          copied = scalar ? seed(raw, key) : undefined;
+        } catch {
+          copied = PLACEHOLDER("redaction-error");
+        }
+        if (copied !== undefined) setOwn(frame.target, uniqueKey(frame, redactText(key)), copied);
+      }
+      setOwn(frame.target, uniqueKey(frame, PLACEHOLDER("node-budget")), true);
+    }
   };
 
   const root = seed(value, "");
@@ -208,10 +262,13 @@ function redactJsonProjection(value: unknown): JsonValue | undefined {
     if (frame.cursor >= frame.length) {
       frames.pop();
       ancestors.delete(frame.source);
+      ancestors.delete(frame.original);
       continue;
     }
-    // Out of budget: every open container keeps what it has and the rest is cut.
-    if (nodes >= MAX_NODES) break;
+    if (nodes >= MAX_NODES) {
+      closeOpenFrames();
+      break;
+    }
     nodes++;
     const index = frame.cursor++;
     const key = frame.keys === null ? String(index) : frame.keys[index]!;
@@ -223,7 +280,7 @@ function redactJsonProjection(value: unknown): JsonValue | undefined {
       copied = PLACEHOLDER("redaction-error");
     }
     if (copied === undefined && frame.keys !== null) continue;
-    const outputKey = frame.keys === null ? key : uniqueKey(frame, redactKey(key));
+    const outputKey = frame.keys === null ? key : uniqueKey(frame, redactText(key));
     setOwn(frame.target, outputKey, copied === undefined ? null : copied);
   }
   return root;
@@ -266,19 +323,22 @@ export function redactSecretsStrict<T>(value: T): T {
  * Root contract: a string root returns the redacted string; `undefined`, null,
  * booleans and numbers return unchanged; a BigInt returns its decimal string.
  * Any other root (object, array, function, symbol) goes through the JSON walk and
- * returns its projection as is: a container, a scalar when toJSON returned one, or
- * `undefined` when JSON omits the value (functions, symbols). Scalars are never
- * wrapped. Only a walk that throws fails closed: a string input returns the bare
- * placeholder, anything else `{ error: placeholder }`; the input is never returned.
+ * returns its projection: a container, or a scalar when toJSON returned one. A
+ * projection JSON would omit (a function, a symbol, toJSON returning undefined)
+ * returns null, never `undefined`: callers such as the post-tool-call hook treat
+ * `undefined` as "keep the original", which would let the raw object through.
+ * Scalars are never wrapped. Only a walk that throws fails closed: a string input
+ * returns the bare placeholder, anything else `{ error: placeholder }`; the input
+ * is never returned.
  */
 export function redactSecrets(value: unknown): JsonValue | undefined {
   try {
-    if (typeof value === "string") return redactString(value);
+    if (typeof value === "string") return redactText(value);
     if (value === undefined || value === null || typeof value === "boolean" || typeof value === "number") {
       return value;
     }
-    if (typeof value === "bigint") return redactString(String(value));
-    return redactJsonProjection(value);
+    if (typeof value === "bigint") return redactText(String(value));
+    return redactJsonProjection(value) ?? null;
   } catch {
     // Last-resort failure must never return the original input.
     return typeof value === "string" ? PLACEHOLDER("redaction-error") : { error: PLACEHOLDER("redaction-error") };

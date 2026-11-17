@@ -74,6 +74,30 @@ describe("redact post_tool_call", () => {
     });
   });
 
+  it("never lets the original through when the JSON projection is omitted", async () => {
+    const secretive = { secret: "AKIAIOSFODNN7EXAMPLE", toJSON() { return undefined; } };
+    const patch = await createRedactPostToolCallHandler()({
+      toolName: "shell", args: {}, result: secretive, isError: false, session: session(),
+    });
+    expect(patch?.result).toBeNull();
+    const registry = createBuiltinHookRegistry("/proj", { validate: { pathExists: () => true, listRepoFiles: () => [] } });
+    const out = await registry.runPostToolCall({
+      toolName: "shell", args: {}, result: secretive, isError: false, session: session(),
+    });
+    expect(out.result).toBeNull();
+    expect(JSON.stringify(out)).not.toContain("AKIAIOSFODNN7EXAMPLE");
+  });
+
+  it("keeps every field of a 120000-match result", async () => {
+    const matches = Array.from({ length: 120_000 }, (_, i) => `m${i}`);
+    const patch = await createRedactPostToolCallHandler()({
+      toolName: "search_code", args: {}, result: { matches, ok: true, total: 120_000 }, isError: false, session: session(),
+    });
+    const result = patch?.result as { matches: string[]; ok: boolean; total: number };
+    expect(result.matches).toHaveLength(120_000);
+    expect([result.ok, result.total]).toEqual([true, 120_000]);
+  });
+
   it("runs after enrich so suggestions are scanned", async () => {
     const registry = createBuiltinHookRegistry("/proj", {
       validate: { pathExists: () => false, listRepoFiles: () => [] },

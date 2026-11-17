@@ -181,7 +181,7 @@ describe("redactSecrets", () => {
     }
   });
 
-  it("projects Errors as name and message plus own enumerable properties, never the stack", () => {
+  it("projects Errors as name and message plus cause, errors and own enumerable properties, never the stack", () => {
     const named = "[REDACTED:aws-access-key]";
     expect(redactSecrets(new Error(`boom ${SECRETS[1]}`))).toEqual({ name: "Error", message: `boom ${named}` });
     expect(redactSecrets({ ok: false, error: new Error(`boom ${SECRETS[1]}`) })).toEqual({
@@ -192,19 +192,42 @@ describe("redactSecrets", () => {
     expect(redactSecrets(withCode)).toEqual({
       name: "Custom", message: "ANTHROPIC_API_KEY=[REDACTED:key-assignment]", code: named,
     });
-    // An enumerable stack or message is neither copied (stack) nor duplicated (message).
+    // An enumerable stack is never copied and an enumerable message is not duplicated.
     Object.defineProperty(withCode, "stack", { value: SECRETS[1], enumerable: true });
     Object.defineProperty(withCode, "message", { value: SECRETS[1], enumerable: true });
     const out = redactSecrets(withCode);
     expect(Object.keys(out as object)).toEqual(["name", "message", "code"]);
     expect(out).toEqual({ name: "Custom", message: named, code: named });
     expectNoSecret(JSON.stringify(out));
-    // `cause` is not an own enumerable property, so it is not copied.
-    expect(redactSecrets(new Error("x", { cause: SECRETS[1] }))).toEqual({ name: "Error", message: "x" });
     const hostile = Object.defineProperty(new Error("x"), "message", { get() { throw new Error("no"); } });
     expect(redactSecrets({ hostile, sibling: SECRETS[1] })).toEqual({
       hostile: { name: "Error", message: "[REDACTED:redaction-error]" }, sibling: named,
     });
+  });
+
+  it("walks an Error cause and AggregateError errors, redacted, and still skips the stack", () => {
+    const named = "[REDACTED:aws-access-key]";
+    expect(redactSecrets(new Error("x", { cause: SECRETS[1] }))).toEqual({ name: "Error", message: "x", cause: named });
+    const nested = new Error("outer", { cause: new Error(`inner ${SECRETS[1]}`, { cause: { token: SECRETS[1] } }) });
+    expect(redactSecrets(nested)).toEqual({
+      name: "Error", message: "outer",
+      cause: { name: "Error", message: `inner ${named}`, cause: { token: named } },
+    });
+    const aggregate = new AggregateError([new Error(SECRETS[1]), SECRETS[1], new TypeError("t")], `many ${SECRETS[1]}`);
+    const out = redactSecrets({ aggregate });
+    expect(out).toEqual({
+      aggregate: {
+        name: "AggregateError", message: `many ${named}`,
+        errors: [{ name: "Error", message: named }, named, { name: "TypeError", message: "t" }],
+      },
+    });
+    expectNoSecret(JSON.stringify(out));
+    expect(JSON.stringify(out)).not.toContain("stack");
+    const selfCause = new Error("loop");
+    Object.defineProperty(selfCause, "cause", { value: selfCause });
+    expect(redactSecrets(selfCause)).toEqual({ name: "Error", message: "loop", cause: "[REDACTED:cycle]" });
+    // Own enumerable cause is not duplicated.
+    expect(Object.keys(redactSecrets(Object.assign(new Error("e"), { cause: 1 })) as object)).toEqual(["name", "message", "cause"]);
   });
 
   it("suppresses binary bytes before toJSON, without decoding or trusting byteLength", () => {
@@ -312,10 +335,26 @@ describe("redactSecrets", () => {
     expect(redactSecrets(SECRETS[1]!)).toBe("[REDACTED:aws-access-key]");
     expect(redactSecrets(Object(7))).toBe(7);
     expect(redactSecrets(new (class { toJSON() { return SECRETS[1]; } })())).toBe("[REDACTED:aws-access-key]");
-    // JSON omits these values, so the projection of the root is undefined.
-    expect(redactSecrets(Symbol(SECRETS[1]))).toBeUndefined();
-    expect(redactSecrets(() => SECRETS[1])).toBeUndefined();
-    expect(redactSecrets({ toJSON() { return undefined; } })).toBeUndefined();
+    // JSON omits these values; the root returns null so a caller never keeps the original.
+    expect(redactSecrets(Symbol(SECRETS[1]))).toBeNull();
+    expect(redactSecrets(() => SECRETS[1])).toBeNull();
+    const secretive = { secret: SECRETS[1], toJSON() { return undefined; } };
+    expect(redactSecrets(secretive)).toBeNull();
+    // Nested occurrences keep JSON semantics.
+    expect(redactSecrets({ a: secretive, b: [secretive] })).toEqual({ b: [null] });
+  });
+
+  it("cuts a toJSON that points back at its owner at the first repeat", () => {
+    const owner: { toJSON(): unknown } = { toJSON() { return { child: owner, secret: SECRETS[1] }; } };
+    const out = redactSecrets({ owner });
+    expect(out).toEqual({ owner: { child: "[REDACTED:cycle]", secret: "[REDACTED:aws-access-key]" } });
+    expect(() => JSON.stringify(out)).not.toThrow();
+    expect(redactSecrets(owner)).toEqual({ child: "[REDACTED:cycle]", secret: "[REDACTED:aws-access-key]" });
+    // The same owner twice side by side is not a cycle.
+    expect(redactSecrets({ a: owner, b: owner })).toEqual({
+      a: { child: "[REDACTED:cycle]", secret: "[REDACTED:aws-access-key]" },
+      b: { child: "[REDACTED:cycle]", secret: "[REDACTED:aws-access-key]" },
+    });
   });
 
   it("isolates throwing getters and enumeration failures", () => {
@@ -520,54 +559,77 @@ describe("redactSecrets", () => {
     expect(redactSecrets(123n)).toBe("123");
   });
 
-  it("bounds a 100000-level chain without overflowing the stack", () => {
+  it("bounds a chain far deeper than the node budget without overflowing the stack", () => {
     let value: unknown = "AKIAIOSFODNN7EXAMPLE";
-    for (let i = 0; i < 100_000; i++) value = { n: value };
+    for (let i = 0; i < 1_100_000; i++) value = { n: value };
     let out: unknown;
     expect(() => {
       out = redactSecrets(value);
     }).not.toThrow();
-    // The chain is cut by the node budget: the deepest copied object keeps its type.
-    expect(typeof descend(out, 99_000)).toBe("object");
-    expect(descend(out, 100_000)).toBeUndefined();
+    // Walk down to the cut: the deepest copied object keeps its type and carries the marker.
+    let current = out as Record<string, unknown>;
+    let depth = 0;
+    while (typeof current.n === "object") { current = current.n as Record<string, unknown>; depth++; }
+    expect(depth).toBeGreaterThan(900_000);
+    expect(current).toEqual({ "[REDACTED:node-budget]": true });
+  }, 30_000);
+
+  it("copies a 120000-entry result in full, with its scalar siblings", () => {
+    const matches = Array.from({ length: 120_000 }, (_, i) => (i === 119_999 ? SECRETS[1] : `m${i}`));
+    const out = redactSecrets({ matches, ok: true, total: 120_000, note: "n" }) as Record<string, unknown>;
+    expect(Object.keys(out)).toEqual(["matches", "ok", "total", "note"]);
+    const copied = out.matches as unknown[];
+    expect(copied).toHaveLength(120_000);
+    expect(copied[0]).toBe("m0");
+    expect(copied[119_999]).toBe("[REDACTED:aws-access-key]");
+    expect(out.ok).toBe(true);
+    expect(out.total).toBe(120_000);
+    expect(JSON.stringify(out)).not.toContain("node-budget");
   });
 
-  it("keeps container types and copied entries when the node budget runs out", () => {
-    const wide: Record<string, unknown> = { early: "AKIAIOSFODNN7EXAMPLE" };
-    for (let i = 0; i < 100_050; i++) wide[`k${i}`] = { i };
-    wide.tail = "plain-text-past-budget";
-    const out = redactSecrets(nestObjects(wide, 10));
-    const json = JSON.stringify(out) ?? "";
-    expectNoSecret(json);
-    const cut = descend(out, 10) as Record<string, unknown>;
-    expect(Array.isArray(cut)).toBe(false);
-    expect(typeof cut).toBe("object");
-    expect(cut.early).toBe("[REDACTED:aws-access-key]");
-    expect(cut.k0).toEqual({ i: 0 });
-    expect(Object.keys(cut).length).toBeGreaterThan(1_000);
-    expect(Object.keys(cut).length).toBeLessThan(100_000);
-    expect("tail" in cut).toBe(false);
-    expect(json).not.toContain("plain-text-past-budget");
-    expect(json).not.toContain("depth-limit");
-  });
-
-  it("keeps an array larger than the node budget as an array with a cut tail", () => {
-    const list = Array.from({ length: 150_000 }, (_, i) => (i === 140_000 ? SECRETS[1] : i));
-    const out = redactSecrets({ head: SECRETS[1], list, tail: "after" }) as { head: string; list: unknown; tail?: string };
-    expect(out.head).toBe("[REDACTED:aws-access-key]");
-    expect(Array.isArray(out.list)).toBe(true);
-    const copied = out.list as unknown[];
-    expect(copied.length).toBeGreaterThan(1_000);
-    expect(copied.length).toBeLessThan(150_000);
-    expect(copied.slice(0, 3)).toEqual([0, 1, 2]);
-    expect(out.tail).toBeUndefined();
+  it("marks every open container when the node budget runs out and keeps their scalar fields", () => {
+    const list = Array.from({ length: 1_100_000 }, (_, i) => i);
+    const out = redactSecrets({
+      outer: { list, inner: { secretA: SECRETS[1], after: "kept" }, flag: false, text: `x ${SECRETS[1]}`, dropped: { a: 1 } },
+      ok: true, total: 5, truncated: true, tail: { gone: 1 }, nul: null, big: 7n, key: SECRETS[1],
+    }) as Record<string, any>;
+    expect(out.ok).toBe(true);
+    expect(out.total).toBe(5);
+    expect(out.truncated).toBe(true);
+    expect(out.nul).toBeNull();
+    expect(out.big).toBe("7");
+    expect(out.key).toBe("[REDACTED:aws-access-key]");
+    expect(out["[REDACTED:node-budget]"]).toBe(true);
+    expect("tail" in out).toBe(false);
+    expect(Array.isArray(out.outer.list)).toBe(true);
+    expect(out.outer.list.at(-1)).toBe("[REDACTED:node-budget]");
+    expect(out.outer.list[0]).toBe(0);
+    expect(out.outer.list.length).toBeGreaterThan(900_000);
+    // Scalars after the container that ran out are kept; containers never opened are not.
+    expect(out.outer.flag).toBe(false);
+    expect(out.outer.text).toBe("x [REDACTED:aws-access-key]");
+    expect("dropped" in out.outer).toBe(false);
+    expect(out.outer["[REDACTED:node-budget]"]).toBe(true);
     expectNoSecret(JSON.stringify(out));
-    expect(redactSecrets(list)).toBeInstanceOf(Array);
-  });
+  }, 30_000);
+
+  it("bounds an exponential shared-reference structure", () => {
+    let node: unknown = { secret: SECRETS[1] };
+    for (let i = 0; i < 60; i++) node = { a: node, b: node, flag: true };
+    const start = performance.now();
+    const out = redactSecrets(node);
+    expect(performance.now() - start).toBeLessThan(5_000);
+    const json = JSON.stringify(out);
+    expectNoSecret(json);
+    expect(json).toContain("[REDACTED:node-budget]");
+    expect((out as Record<string, unknown>).flag).toBe(true);
+  }, 30_000);
 
   it("bounds wide primitive objects and sparse arrays by the node budget", () => {
     const wide: Record<string, unknown> = {};
     for (let i = 0; i < 100_001; i++) wide[`k${i}`] = SECRETS[1];
+    // Fully copied under the budget.
+    expect(Object.keys(redactSecrets(wide) as object)).toHaveLength(100_001);
     let reads = 0;
     const sparse = new Proxy(new Array(2 ** 32 - 1), {
       get(target, key, receiver) {
@@ -575,17 +637,14 @@ describe("redactSecrets", () => {
         return Reflect.get(target, key, receiver);
       },
     });
-    const out = redactSecrets({ sibling: SECRETS[1], sparse, wide }) as Record<string, unknown>;
+    const out = redactSecrets({ sibling: SECRETS[1], sparse }) as Record<string, unknown>;
     expectNoSecret(JSON.stringify(out));
     expect(out.sibling).toBe("[REDACTED:aws-access-key]");
     expect(Array.isArray(out.sparse)).toBe(true);
-    expect(reads).toBeLessThanOrEqual(100_000);
+    expect((out.sparse as unknown[]).at(-1)).toBe("[REDACTED:node-budget]");
+    expect(reads).toBeLessThanOrEqual(1_000_000);
     expect(reads).toBeGreaterThan(0);
-    const wideOut = redactSecrets(wide) as Record<string, unknown>;
-    expect(Array.isArray(wideOut)).toBe(false);
-    expect(Object.keys(wideOut).length).toBeLessThan(100_001);
-    expectNoSecret(JSON.stringify(wideOut));
-  });
+  }, 30_000);
 
   it("scans property names in full instead of dropping them for size", () => {
     const filler = "x".repeat(5 * 1024 * 1024);
@@ -631,16 +690,19 @@ describe("redactSecrets", () => {
         throw new Error("redaction failed");
       };
       expect(redactSecrets("AKIAIOSFODNN7EXAMPLE")).toBe("[REDACTED:redaction-error]");
-      // A key the prefilter skips is never scanned; a long one that fails is replaced.
-      expect(redactSecrets({ text: "AKIAIOSFODNN7EXAMPLE" })).toEqual({ text: "[REDACTED:redaction-error]" });
-      expect(redactSecrets({ "log_text_key_long": 1 })).toEqual({ "[REDACTED:redaction-error]": 1 });
+      // Keys and values share one guard: a failing scan gives the placeholder for either.
+      expect(redactSecrets({ text: "AKIAIOSFODNN7EXAMPLE" })).toEqual({
+        "[REDACTED:redaction-error]": "[REDACTED:redaction-error]",
+      });
+      expect(redactSecrets(["a"])).toEqual(["[REDACTED:redaction-error]"]);
+      expect(redactSecrets(7n)).toBe("[REDACTED:redaction-error]");
     } finally {
       RegExp.prototype[Symbol.replace] = original;
     }
     expect(redactSecrets("AKIAIOSFODNN7EXAMPLE")).toBe("[REDACTED:aws-access-key]");
   });
 
-  it("redacts every secret-looking key, whatever the key prefilter skips", () => {
+  it("redacts every secret-looking key exactly as a string value", () => {
     const keyOf = (key: string): string => Object.keys(redactSecrets({ [key]: 0 }) as object)[0]!;
     const secrets = [
       "AKIAIOSFODNN7EXAMPLE", `ghp_${"a".repeat(36)}`, `github_pat_${"b".repeat(22)}`, `glpat-${"c".repeat(20)}`,
@@ -653,9 +715,9 @@ describe("redactSecrets", () => {
       expect(keyOf(secret)).not.toBe(secret);
       expect(keyOf(`id ${secret} end`)).toBe(redactSecrets(`id ${secret} end`) as string);
     }
-    // Short or special-character-free keys are untouched.
+    // Plain keys are unchanged.
     for (const key of ["stdout", "exit_code", "description", "a-b", "AKIA", "KEY=1"]) expect(keyOf(key)).toBe(key);
-    // Fragment fuzz, including truncated secrets at every length near the thresholds.
+    // Fragment fuzz, including truncated secrets: a key is scanned exactly like a string value.
     let state = 0x6b3;
     const next = () => (state = (Math.imul(state, 1664525) + 1013904223) >>> 0) >>> 8;
     const pieces = [...secrets, "x", " ", "_", "-", ":", "=", "AKIA", "ASIA", "KEY", "key", "http", "://", "@", "?", "/", "token", "A1b2C3d4E5f6G7h8I9j0"];
