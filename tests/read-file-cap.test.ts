@@ -178,6 +178,40 @@ describe("read_file per-call cap (#811)", () => {
     expect(repeats).toEqual([false, false, false, true]);
   });
 
+  it("does not cut or report a long line past the cap", async () => {
+    const lines = Array.from({ length: MAX_READ_LINES }, (_, i) => `line ${i + 1}`);
+    lines.push("z".repeat(MAX_LINE_CHARS * 2));
+    writeFileSync(join(cwd, "late-long.txt"), lines.join("\n") + "\n");
+
+    const result = (await tools.read_file.execute({ path: "late-long.txt" })) as any;
+    expect(result.total_lines).toBe(MAX_READ_LINES + 1);
+    expect(result.truncated).toBe(true);
+    expect(result.content.split("\n")).toHaveLength(MAX_READ_LINES);
+    expect(result.content).not.toContain("line truncated");
+    expect(result.note).not.toContain("cut at");
+    expect(result.note).toContain("offset=2001");
+  });
+
+  it("cuts a long line without splitting a surrogate pair", async () => {
+    // Index MAX_LINE_CHARS - 1 lands on the high half of an emoji's pair.
+    writeFileSync(join(cwd, "emoji.txt"), `${'a'}${'\u{1F600}'.repeat(MAX_LINE_CHARS)}\n`);
+    const result = (await tools.read_file.execute({ path: "emoji.txt" })) as any;
+
+    const loneSurrogate = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?:^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+    expect(loneSurrogate.test(result.content)).toBe(false);
+    expect(result.content).toContain("… [line truncated,");
+    expect(result.note).toContain("1 line cut at 2000 characters");
+  });
+
+  it("points at the shell for the rest of a cut line", async () => {
+    writeFileSync(join(cwd, "long.txt"), `${'q'.repeat(MAX_LINE_CHARS + 10)}\n`);
+    const result = (await tools.read_file.execute({ path: "long.txt" })) as any;
+    expect(result.truncated).toBe(true);
+    expect(result.note).toContain("not available through read_file");
+    expect(result.note).toContain("use the shell to read the rest of a cut line");
+    expect(result.content).not.toContain("use the shell");
+  });
+
   it("returns empty content for an offset past the end", async () => {
     writeFileSync(join(cwd, "short.txt"), "a\nb\nc\n");
     const result = await tools.read_file.execute({ path: "short.txt", offset: 5000 });

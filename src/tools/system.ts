@@ -336,6 +336,19 @@ export interface CappedReadResult {
 }
 
 /**
+ * Cut a line longer than MAX_LINE_CHARS and mark it.
+ *
+ * A UTF-16 surrogate pair must not be split, so when the last kept code unit is
+ * a high surrogate (the first half of a pair such as an emoji) it is dropped.
+ */
+function cutLongLine(line: string): string {
+  let end = MAX_LINE_CHARS;
+  const last = line.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+  return `${line.slice(0, end)} … [line truncated, ${line.length} chars]`;
+}
+
+/**
  * Build the `read_file` result for `content`, capped per call (#811).
  *
  * Line model: `content.split("\n")` is the paging space that `offset`/`limit`
@@ -356,37 +369,37 @@ export function buildCappedReadResult(
   const totalLines = fileLines.length;
   const startIndex = Math.max(0, (opts.offset ?? 1) - 1);
 
-  // An explicit `limit` is applied first and then capped like any other read.
-  let selected = fileLines.slice(startIndex);
-  if (opts.limit !== undefined) selected = selected.slice(0, opts.limit);
-  const afterLimitCount = selected.length;
-
-  // Cut long lines before estimating, so the token cap measures what is returned.
-  let longLinesCut = 0;
-  if (selected.some((line) => line.length > MAX_LINE_CHARS)) {
-    selected = selected.map((line) => {
-      if (line.length <= MAX_LINE_CHARS) return line;
-      longLinesCut++;
-      return `${line.slice(0, MAX_LINE_CHARS)} … [line truncated, ${line.length} chars]`;
-    });
-  }
+  // An explicit `limit` bounds the read. The per-call cap below is applied while
+  // lines are considered, so a line past the cap is never cut, measured or
+  // counted — a file whose long line lies past the cap must not claim it cut one.
+  const available = Math.max(
+    0,
+    opts.limit !== undefined
+      ? Math.min(opts.limit, fileLines.length - startIndex)
+      : fileLines.length - startIndex,
+  );
 
   // The per-call cap: the smaller of MAX_READ_LINES and a quarter of the model's
   // context window in estimated tokens. Always keep at least one line, even when
   // that single line alone exceeds the token limit.
   const contextWindowTokens = opts.contextWindowTokens ?? FALLBACK_CONTEXT_WINDOW_TOKENS;
   const tokenLimit = Math.floor(contextWindowTokens * READ_TOKEN_WINDOW_RATIO);
-  let taken = 0;
+  const selected: string[] = [];
+  let longLinesCut = 0;
   let tokens = 0;
-  for (const line of selected) {
-    if (taken >= MAX_READ_LINES) break;
-    const lineTokens = estimateTokens(line) + (taken > 0 ? 1 : 0); // 1 ≈ separator newline
-    if (taken > 0 && tokens + lineTokens > tokenLimit) break;
+  for (let index = startIndex; index < fileLines.length && selected.length < available; index++) {
+    if (selected.length >= MAX_READ_LINES) break;
+    const rawLine = fileLines[index]!;
+    // Cut before estimating, so the token cap measures what is returned.
+    const isLong = rawLine.length > MAX_LINE_CHARS;
+    const line = isLong ? cutLongLine(rawLine) : rawLine;
+    const lineTokens = estimateTokens(line) + (selected.length > 0 ? 1 : 0); // 1 ≈ separator newline
+    if (selected.length > 0 && tokens + lineTokens > tokenLimit) break;
     tokens += lineTokens;
-    taken++;
+    selected.push(line);
+    if (isLong) longLinesCut++;
   }
-  if (taken < selected.length) selected = selected.slice(0, taken);
-  const capCut = taken < afterLimitCount;
+  const capCut = selected.length < available;
 
   const reachedEnd = startIndex + selected.length >= fileLines.length;
   let outContent = selected.join("\n");
@@ -403,7 +416,8 @@ export function buildCappedReadResult(
     const parts = [`Returned lines ${first}-${last} of ${totalLines}`];
     if (longLinesCut > 0) {
       parts.push(
-        `${longLinesCut} line${longLinesCut === 1 ? "" : "s"} cut at ${MAX_LINE_CHARS} characters`,
+        `${longLinesCut} line${longLinesCut === 1 ? "" : "s"} cut at ${MAX_LINE_CHARS} characters; ` +
+          "the rest of a cut line is not available through read_file, use the shell to read the rest of a cut line",
       );
     }
     if (capCut) parts.push(`call read_file with offset=${last + 1} for the next part`);
