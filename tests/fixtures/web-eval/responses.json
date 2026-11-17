@@ -1,0 +1,9 @@
+{
+  "tavily": {"query":"fixture docs", "answer":null,"images":[],"results":[{"url":"https://example.org/docs","title":"Fixture docs","content":"Real documentation","score":0.9,"raw_content":null}],"response_time":0.3,"usage":{"credits":1},"request_id":"fixture"},
+  "brave": {"type":"search","query":{"original":"fixture docs"},"web":{"results":[{"url":"https://example.org/docs","title":"Fixture docs","description":"Real documentation","extra_snippets":["More documentation"]}]}},
+  "exa": {"requestId":"fixture","results":[{"id":"https://example.org/docs","url":"https://example.org/docs","title":"Fixture docs","highlights":["Real documentation"],"highlightScores":[0.9]}],"searchType":"auto","costDollars":{"total":0.005}},
+  "firecrawlSearch": {"success":true,"data":{"web":[{"url":"https://example.org/docs","title":"Fixture docs","description":"Real documentation","position":1}]},"id":"fixture","creditsUsed":2},
+  "firecrawlScrape": {"success":true,"data":{"markdown":"# Fixture docs\nReal documentation","metadata":{"title":"Fixture docs","sourceURL":"https://example.org/docs","statusCode":200}}},
+  "initialize": {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2025-03-26","capabilities":{"tools":{}},"serverInfo":{"name":"fixture","version":"1"}}},
+  "exaMcp": {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"Title: Fixture docs\nURL: https://example.org/docs\nPublished: N/A\nAuthor: N/A\nHighlights:\nReal documentation"}]}}
+}

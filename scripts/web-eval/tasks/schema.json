@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "anyOf": [
+    {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "minLength": 1
+          },
+          "authoritative_url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "expected_domains": {
+            "minItems": 1,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "pattern": "^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\\.)+[a-z]{2,63}$"
+            }
+          },
+          "answer_snippets": {
+            "minItems": 1,
+            "maxItems": 3,
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "niche": {
+            "type": "string",
+            "enum": [
+              "docs",
+              "error",
+              "release",
+              "version-change"
+            ]
+          },
+          "verified_at": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          }
+        },
+        "required": [
+          "query",
+          "authoritative_url",
+          "expected_domains",
+          "answer_snippets",
+          "niche",
+          "verified_at"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri"
+          },
+          "probe": {
+            "type": "string",
+            "minLength": 1
+          },
+          "tier": {
+            "type": "integer",
+            "enum": [1, 2, 3]
+          },
+          "observed_status": {
+            "type": "integer",
+            "minimum": 100,
+            "maximum": 599
+          },
+          "verified_at": {
+            "type": "string",
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          }
+        },
+        "required": [
+          "url",
+          "probe",
+          "tier",
+          "verified_at"
+        ],
+        "allOf": [
+          {
+            "if": {
+              "required": ["tier"],
+              "properties": {
+                "tier": {
+                  "const": 3
+                }
+              }
+            },
+            "then": {
+              "required": ["observed_status"]
+            },
+            "else": {
+              "not": {
+                "required": ["observed_status"]
+              }
+            }
+          }
+        ],
+        "additionalProperties": false
+      }
+    }
+  ]
+}

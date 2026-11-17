@@ -1,0 +1,5 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "rootDir": "../.." },
+  "include": ["./**/*.ts", "../../tests/web-eval-runners.test.ts", "../../tests/web-eval-search.test.ts", "../../tests/web-eval-scoring.test.ts", "../../tests/web-eval-cli.test.ts"]
+}

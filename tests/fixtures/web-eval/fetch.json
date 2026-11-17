@@ -1,0 +1,5 @@
+[
+  {"url":"https://example.org/docs","probe":"Real documentation","tier":1,"verified_at":"2026-01-01"},
+  {"url":"https://example.org/dynamic","probe":"Dynamic documentation","tier":2,"verified_at":"2026-01-01"},
+  {"url":"https://example.org/protected","probe":"Just a moment...","tier":3,"observed_status":403,"verified_at":"2026-01-01"}
+]
