@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
+import { daysSinceLocalDate, formatLocalDate } from "../src/local-date.js";
 
 describe("local calendar date", () => {
   it("uses the local calendar date in both compiler modes", () => {
@@ -49,5 +50,19 @@ describe("local calendar date", () => {
     });
     expect(result.status).toBe(0);
     expect(JSON.parse(result.stdout)).toEqual([createdDate, updatedDate]);
+  });
+});
+
+describe("daysSinceLocalDate", () => {
+  it("counts whole local calendar days from the stamp to now", () => {
+    const now = new Date(2026, 10, 18, 0, 30); // 00:30 local on 2026-11-18
+    expect(daysSinceLocalDate("2026-11-18", now)).toBe(0);
+    expect(daysSinceLocalDate("2026-11-17", now)).toBe(1);
+    expect(daysSinceLocalDate("2026-08-20", now)).toBe(90);
+  });
+
+  it("does not count a stamp written minutes ago as a day old, whatever the UTC date", () => {
+    const now = new Date(2026, 10, 17, 20, 0); // evening local
+    expect(daysSinceLocalDate(formatLocalDate(now), now)).toBe(0);
   });
 });

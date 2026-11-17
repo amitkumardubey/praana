@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { redactSecretsStrict } from "../redact/secrets.js";
 import { getAppLogger } from "../logger.js";
-import { formatLocalDate } from "../local-date.js";
+import { daysSinceLocalDate, formatLocalDate } from "../local-date.js";
 import { parseMemory, searchTokens, serializeMemory, validName, validateMemory, validateQueryPolicy, type Memory, type MemoryInput } from "./format.js";
 import { globalMemoryDirectory, memoryDirectories, projectKey, type MemoryScope } from "./paths.js";
 import { buildMemoryIndex as renderMemoryIndex, type MemoryIndex } from "./index.js";
@@ -434,7 +434,7 @@ export function createFileMemoryStore(options: StoreOptions) {
         const { scope } = data;
         skipped += data.skipped;
         for (const { body: _body, ...memory } of data.memories) {
-          const age = Math.max(0, Math.floor((now().getTime() - Date.parse(memory.updated)) / 86400000));
+          const age = Math.max(0, daysSinceLocalDate(memory.updated, now()));
           result.push({ ...memory, scope, age, stale: age > 90 });
         }
       }

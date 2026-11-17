@@ -383,7 +383,7 @@ Both are stored in `workflow_patterns(task_type, tool_sequence_json, artifact_ty
 
 At compile time, `renderWorkflowContext()` queries patterns matching the current `taskType`, selects the top-N by `hit_count`, and renders a compact **Workflow Context** section injected into the prompt just before the session checkpoint. This gives the engine a prior over which tools and artifact types are likely to appear â€” without adding it to the scored pool. Patterns for a different task type are never included, so a coding session's workflow history does not bleed into a debugging session.
 
-The rendered section also surfaces a **typical lean tool sequence** from the highest-hit pattern that includes at least one mutating tool (e.g. `edit_file`, `write_file`, `shell`). Read-heavy patterns that contain `read_file` but no mutating tools are treated as exploratory thrashing and are not promoted; when such patterns are present, an **avoid** note reminds the agent to use `retrieve_artifact` after the first read and to batch edits. The whole section is capped at roughly 200 tokens; if the initial render exceeds the budget, the avoid note and then the sequence hint are dropped before the core tool/artifact summary.
+The rendered section also surfaces a **typical lean tool sequence** from the highest-hit pattern that includes at least one mutating tool (e.g. `edit_file`, `write_file`, `shell`). Read-heavy patterns that contain `read_file` but no mutating tools are treated as exploratory thrashing and are not promoted; when such patterns are present, an **avoid** note reminds the agent to avoid read-heavy exploratory loops and to batch edits. The whole section is capped at roughly 200 tokens; if the initial render exceeds the budget, the avoid note and then the sequence hint are dropped before the core tool/artifact summary.
 
 ## Telemetry Scorecard
 
@@ -416,7 +416,7 @@ One row per session in the context-engine SQLite DB. No text content is stored â
 
 ### Repeat-read interceptor (issue #545)
 
-`read_file` always returns the requested contents from disk, including a repeat read of an unchanged file (issue #799 removed the artifact-card interceptor). The scorecard still counts the repeat: the read index records the path and its mtime, is rebuilt on resume, and is invalidated on any write/edit. In engine mode the compiled prompt includes a **"Files Read This Session"** index (`path â†’ artifact_id`) so the agent can optionally use `retrieve_artifact(id)` instead of re-reading.
+`read_file` always returns the requested contents from disk, including a repeat read of an unchanged file (issue #799 removed the artifact-card interceptor). The scorecard still counts the repeat: the read index records the path and its mtime for the running session (it is not restored on resume, so the first re-read after a resume is not counted) and is invalidated on any write/edit. In engine mode the compiled prompt includes a **"Files Read This Session"** index (`path â†’ artifact_id`) so the agent can optionally use `retrieve_artifact(id)` instead of re-reading.
 
 ### Resume hardening (issues #523, #546)
 
@@ -427,7 +427,7 @@ One row per session in the context-engine SQLite DB. No text content is stored â
 
 Beyond the `/scorecard` table, the telemetry loop feeds back into the live session:
 - **Turn-footer nudges** surface when no-op tool calls recur, recall hit-rate is low, or read/retrieve churn fires.
-- **Engine-mode agent hints** are injected into the system frame when churn fires or recall-used % is low, steering the agent toward narrow retrieval and explicit correction capture.
+- **Engine-mode agent hints** are injected into the system frame when churn fires or recall-used % is low, noting the repeated access (the hint states the fact; it gives no instruction).
 
 ### End-of-session epilogue (issue #519)
 
