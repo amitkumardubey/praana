@@ -35,7 +35,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { appHomePath } from "./app-identity.js";
+import { appHomePath, APP_HOME_DIR_MODE } from "./app-identity.js";
 import {
   acquireAsync,
   acquireSync,
@@ -418,7 +418,7 @@ function persistCredentials(creds: CredentialsFile): void {
   }
   const credPath = credentialsFilePath();
   const dir = dirname(credPath);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: APP_HOME_DIR_MODE });
 
   // Atomic write: temp file with restrictive mode, then rename.
   const tmpPath = join(dir, `.credentials.${process.pid}.${Date.now()}.tmp`);

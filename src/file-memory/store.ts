@@ -3,6 +3,7 @@ import * as nodeFs from "node:fs/promises";
 import { randomBytes } from "node:crypto";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { redactSecretsStrict } from "../redact/secrets.js";
+import { APP_HOME_DIR_MODE } from "../app-identity.js";
 import { getAppLogger } from "../logger.js";
 import { parseMemory, searchTokens, serializeMemory, validName, validateMemory, validateQueryPolicy, type Memory, type MemoryInput } from "./format.js";
 import { globalMemoryDirectory, memoryDirectories, projectKey, type MemoryScope } from "./paths.js";
@@ -166,7 +167,7 @@ export function createFileMemoryStore(options: StoreOptions) {
       // realpath missed, but lstat still sees a dangling link: never create its target.
       if (entry?.isSymbolicLink()) throw new Error(`Dangling .praana symlink: ${base}`);
       if (!create) return null;
-      await fs.mkdir(base, { mode: 0o700, recursive: true });
+      await fs.mkdir(base, { mode: APP_HOME_DIR_MODE, recursive: true });
       root = await fs.realpath(base);
     }
     if (!(await fs.stat(root)).isDirectory()) throw new Error("Unsafe .praana root");
@@ -178,7 +179,7 @@ export function createFileMemoryStore(options: StoreOptions) {
       try { stat = await fs.lstat(current); } catch (error) {
         if (!missing(error)) throw error;
         if (!create) return null;
-        try { await fs.mkdir(current, { mode: 0o700 }); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e; }
+        try { await fs.mkdir(current, { mode: APP_HOME_DIR_MODE }); } catch (e) { if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e; }
         stat = await fs.lstat(current);
       }
       if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error(`Unsafe memory directory: ${current}`);
