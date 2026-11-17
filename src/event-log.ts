@@ -53,10 +53,9 @@ const SESSION_FILE_MODE = 0o600;
 
 /**
  * Create the session directory owner-only. `recursive` applies `mode` only to
- * directories it creates, so an existing directory is tightened here with
- * `tightenedDirMode` (0755 -> 0700; a group-writable or setgid directory keeps
- * its group bits; symlinks and directories owned by another user are skipped). A failure is logged at debug
- * level and never breaks logging.
+ * directories it creates, so an existing directory is tightened to `0700` here
+ * with `tightenedDirMode`; symlinks and directories owned by another user are
+ * skipped. A failure is logged at debug level and never breaks logging.
  */
 export function ensureSessionDir(
   sessionDir: string,

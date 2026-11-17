@@ -105,27 +105,23 @@ export interface AppHomePermissionFixes {
   onError?: (path: string, err: unknown) => void;
 }
 
-/** Group-write or setgid marks a directory as deliberately group-shared. */
-const GROUP_SHARED_BITS = 0o2020;
-
 /**
- * Mode an existing directory is tightened to: "other" bits are always removed;
- * group bits are removed too unless the directory is deliberately group-shared
- * (group-write or setgid set), where only "other" goes. Setgid/sticky bits are
- * kept. 0755 -> 0700, 0750 -> 0700, 0775 -> 0770, 2775 -> 2770, 2770 and 0700
- * unchanged.
+ * Mode an existing app-home directory is tightened to: exactly
+ * `APP_HOME_DIR_MODE`. Group and "other" access go, and so do setgid, setuid
+ * and sticky. 0755, 0750, 0775, 2775 and 2770 all become 0700; a directory
+ * that already has no bit outside the owner's rwx is left as it is.
  */
 export function tightenedDirMode(mode: number): number {
   const current = mode & 0o7777;
-  const drop = (current & GROUP_SHARED_BITS) !== 0 ? 0o007 : 0o077;
-  return current & ~drop;
+  // `~0o700` covers group rwx, other rwx, setuid, setgid and sticky.
+  return (current & ~0o700) === 0 ? current : APP_HOME_DIR_MODE;
 }
 
 /**
- * Tighten one existing directory (see `tightenedDirMode`): a deliberately
- * group-shared directory keeps its group access and setgid bit. Skips a missing path, a symlink (never
- * chmod through a link) and a directory owned by another user. Best effort:
- * a failure is reported through `deps.onError` and never throws. No-op on Windows.
+ * Tighten one existing directory to `APP_HOME_DIR_MODE` (see
+ * `tightenedDirMode`). Skips a missing path, a symlink (never chmod through a
+ * link) and a directory owned by another user. Best effort: a failure is
+ * reported through `deps.onError` and never throws. No-op on Windows.
  * Returns true when the mode was changed.
  */
 export function tightenDirPermissions(
@@ -171,11 +167,11 @@ function isSymlink(path: string, deps: AppHomePermissionFixes): boolean {
 }
 
 /**
- * Best-effort startup fix-up: remove world access from an existing app home,
- * sessions root and app logs directory. Directories created before the `0700`
- * enforcement keep the default umask (`0755`), which lets any local user read
- * session transcripts. Only paths inside the app home are touched; it never
- * fails startup.
+ * Best-effort startup fix-up: make an existing app home, sessions root and app
+ * logs directory `0700`. Directories created before the `0700` enforcement
+ * keep the default umask (`0755`), which lets any local user read session
+ * transcripts. Only paths inside the app home are touched; it never fails
+ * startup.
  */
 export function tightenAppHomePermissions(deps: AppHomePermissionFixes = {}): void {
   // A symlinked app home points somewhere PRAANA did not create: leave the
