@@ -716,6 +716,20 @@ describe("redactSecrets", () => {
     expect(out).toEqual({ error: "[REDACTED:redaction-error]" });
   });
 
+  it("reports a root projection failure by name without its message", () => {
+    const lines: string[] = [];
+    const previous = getAppLogger();
+    setAppLogger(new PraanaLogger({ domain: "app", debug: true, writeLine: (line) => lines.push(line) }));
+    try {
+      const root = new Proxy({}, { ownKeys() { throw new TypeError("password hunter2"); } });
+      expect(redactSecrets(root)).toEqual({ error: "[REDACTED:redaction-error]" });
+    } finally {
+      setAppLogger(previous);
+    }
+    expect(lines.join("\n")).toContain('"error":"TypeError"');
+    expect(lines.join("\n")).not.toContain("hunter2");
+  });
+
   it("returns the bare placeholder when a string input fails", () => {
     const original = RegExp.prototype[Symbol.replace];
     try {

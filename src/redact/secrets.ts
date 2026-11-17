@@ -122,9 +122,13 @@ function createFailureReporter(): (error: unknown) => void {
   return (error) => {
     if (reported) return;
     reported = true;
-    getAppLogger().child("tool").debug("Secret redaction replaced a value", {
-      details: { error: error instanceof Error ? error.name : "non-error" },
-    });
+    try {
+      getAppLogger().child("tool").debug("Secret redaction replaced a value", {
+        details: { error: error instanceof Error ? error.name : "non-error" },
+      });
+    } catch {
+      // Reporting must never prevent fail-closed redaction.
+    }
   };
 }
 
@@ -198,13 +202,12 @@ function finiteNumber(value: number): number | null {
  * is scanned in full by the linear redactString, and each distinct key once per walk.
  * This bounds our traversal, not execution of user hooks or key enumeration.
  */
-function redactJsonProjection(value: unknown): JsonValue | undefined {
+function redactJsonProjection(value: unknown, report: (error: unknown) => void): JsonValue | undefined {
   // Containers on the current path only: added when opened, removed when finished.
   const ancestors = new WeakSet<object>();
   const frames: JsonFrame[] = [];
   const keyCache = new Map<string, string>();
   const valueCache = new Map<string, string>();
-  const report = createFailureReporter();
   let nodes = 1;
 
   /** The one guard around redactString for keys and string values: failure gives the placeholder. */
@@ -395,11 +398,13 @@ export function redactionFailureFor(value: unknown): JsonValue {
  * Only a walk that throws fails closed (see redactionFailureFor).
  */
 export function redactSecrets(value: unknown): JsonValue | undefined {
+  const report = createFailureReporter();
   try {
     if (value === undefined) return undefined;
-    return redactJsonProjection(value) ?? null;
-  } catch {
+    return redactJsonProjection(value, report) ?? null;
+  } catch (error) {
     // Last-resort failure must never return the original input.
+    report(error);
     return redactionFailureFor(value);
   }
 }
