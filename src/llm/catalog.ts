@@ -113,24 +113,31 @@ export const CURATED_MODELS: Record<string, ModelCatalogEntry[]> = {
     },
   ],
   google: [
+    // No `reasoning` flag: the Google driver sends no thinkingConfig yet, so an
+    // effort level would be shown but never applied.
+    {
+      id: "gemini-4-hydrogen",
+      name: "Gemini 4 Hydrogen",
+      provider: "google",
+      contextWindow: 1_048_576,
+    },
+    {
+      id: "gemini-4-argon",
+      name: "Gemini 4 Argon",
+      provider: "google",
+      contextWindow: 1_048_576,
+    },
+    {
+      id: "gemini-4-carbon",
+      name: "Gemini 4 Carbon",
+      provider: "google",
+      contextWindow: 1_048_576,
+    },
     {
       id: "gemini-2.0-flash",
       name: "Gemini 2.0 Flash",
       provider: "google",
       contextWindow: 1_048_576,
-    },
-    {
-      id: "gemini-2.0-pro-exp-02-05",
-      name: "Gemini 2.0 Pro Experimental",
-      provider: "google",
-      contextWindow: 2_097_152,
-    },
-    {
-      id: "gemini-2.0-flash-thinking-exp-01-21",
-      name: "Gemini 2.0 Flash Thinking",
-      provider: "google",
-      contextWindow: 1_048_576,
-      reasoning: true,
     },
   ],
   groq: [

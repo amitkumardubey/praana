@@ -17,7 +17,7 @@
 #   openrouter   — OpenRouter (default). Works with 200+ models from any provider.
 #   openai       — OpenAI API (gpt-4o, o3, etc.)
 #   anthropic    — Anthropic API (claude-sonnet-4, claude-3.5, etc.)
-#   google       — Google Gemini API (gemini-2.5-flash, gemini-2.5-pro)
+#   google       — Google Gemini API (gemini-4-hydrogen, gemini-4-argon)
 #   vertex       — Gemini on Vertex AI (explicit model/project/location; ADC or token)
 #   deepseek     — DeepSeek API (deepseek-v4-pro, deepseek-chat)
 #   groq         — Groq API (fast inference on open models)

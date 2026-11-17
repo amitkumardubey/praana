@@ -359,6 +359,13 @@ describe("setup wizard", () => {
       expect(pickDefaultModel("test", models)).toBe("model-a");
     });
 
+    it("defaults google and vertex to gemini-4-hydrogen", () => {
+      expect(DEFAULT_MODELS.google).toBe("gemini-4-hydrogen");
+      expect(DEFAULT_MODELS.vertex).toBe("gemini-4-hydrogen");
+      expect(pickDefaultModel("google")).toBe("gemini-4-hydrogen");
+      expect(pickDefaultModel("vertex")).toBe("gemini-4-hydrogen");
+    });
+
     it("falls back to catalog when no live models and no DEFAULT_MODELS entry", () => {
       // openrouter has no DEFAULT_MODELS entry (removed — was stale).
       // pickDefaultModel should fall through to pickFirstCatalogModel,
