@@ -64,28 +64,9 @@ export interface SystemToolContext {
   onScorecardFileRead?: (absPath: string, mtimeMs?: number, countAsRepeat?: boolean) => void;
   onScorecardSkillLoad?: (skillId: string, bodyTokens: number) => void;
   getCurrentTurn: () => number;
-  hasReadPath?: (absPath: string) => boolean;
   /** mtime from last successful read; used to detect external edits. */
   getReadPathMtime?: (absPath: string) => number | undefined;
   clearReadPath?: (absPath: string) => void;
-  /** Legacy path-only lookup (deprecated, prefer findFileReadArtifactByRange). */
-  findFileReadArtifact?: (
-    absPath: string,
-  ) => {
-    id: string;
-    createdTurn: number;
-    card: string;
-  } | null;
-  /** Find an artifact for a specific read_file line range. */
-  findFileReadArtifactByRange?: (
-    absPath: string,
-    offset?: number,
-    limit?: number,
-  ) => {
-    id: string;
-    createdTurn: number;
-    card: string;
-  } | null;
 }
 
 export interface ShellRunOptions {

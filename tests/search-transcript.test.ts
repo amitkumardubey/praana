@@ -1017,7 +1017,7 @@ describe("search_transcript tool (PR3)", () => {
     const description = searchTranscriptModule.createSearchTranscriptTool({ eventLog: log }).search_transcript.description;
     const texts = [
       buildClassicSystemFrame("/project", "session", []),
-      buildSystemFrame("/project", "session", [], undefined, null, true),
+      buildSystemFrame("/project", "session", []),
       ...[true, false].map((classicMode) => describeTools({ classicMode, contextEngineEnabled: !classicMode })
         .find((line) => line.startsWith("search_transcript("))!),
       `search_transcript: ${description}`,

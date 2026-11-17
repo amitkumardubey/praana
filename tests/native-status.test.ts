@@ -90,25 +90,25 @@ describe("nativeStatusToString", () => {
 
 describe("buildSystemFrame native addon", () => {
   it("omits Native Addon section when available", () => {
-    const frame = buildSystemFrame("/proj", "sess-1", [], undefined, null, false, undefined, { kind: "available", version: "0.3.1" });
+    const frame = buildSystemFrame("/proj", "sess-1", [], undefined, null, undefined, { kind: "available", version: "0.3.1" });
     expect(frame).not.toContain("## Native Addon");
   });
 
   it("injects Native Addon section when unavailable", () => {
-    const frame = buildSystemFrame("/proj", "sess-1", [], undefined, null, false, undefined, { kind: "unavailable", reason: "Cannot find module" });
+    const frame = buildSystemFrame("/proj", "sess-1", [], undefined, null, undefined, { kind: "unavailable", reason: "Cannot find module" });
     expect(frame).toContain("## Native Addon");
     expect(frame).toContain("unavailable: Cannot find module");
     expect(frame).toContain("Prefer search_code");
   });
 
   it("injects Native Addon section when disabled", () => {
-    const frame = buildSystemFrame("/proj", "sess-1", [], undefined, null, false, undefined, { kind: "disabled", reason: "native.enabled=false" });
+    const frame = buildSystemFrame("/proj", "sess-1", [], undefined, null, undefined, { kind: "disabled", reason: "native.enabled=false" });
     expect(frame).toContain("## Native Addon");
     expect(frame).toContain("disabled via config");
   });
 
   it("omits Native Addon section when null", () => {
-    const frame = buildSystemFrame("/proj", "sess-1", [], undefined, null, false, undefined, null);
+    const frame = buildSystemFrame("/proj", "sess-1", [], undefined, null, undefined, null);
     expect(frame).not.toContain("## Native Addon");
   });
 });

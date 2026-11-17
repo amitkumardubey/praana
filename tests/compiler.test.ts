@@ -387,14 +387,14 @@ describe('Compiler', () => {
 
   it('injects resume scope note when provided', () => {
     const note = 'Confirm scope before continuing.';
-    const frame = buildSystemFrame('/test', 'test-1', [], undefined, null, false, note);
+    const frame = buildSystemFrame('/test', 'test-1', [], undefined, null, note);
 
     expect(frame).toContain('## Resume Scope');
     expect(frame).toContain(note);
   });
 
   it('omits resume scope note when not provided', () => {
-    const frame = buildSystemFrame('/test', 'test-1', [], undefined, null, false);
+    const frame = buildSystemFrame('/test', 'test-1', []);
 
     expect(frame).not.toContain('## Resume Scope');
   });
@@ -410,7 +410,7 @@ describe('Compiler', () => {
   });
 
   it('engine system frame shows the date without a time of day', () => {
-    const frame = buildSystemFrame('/test', 'test-1', [], undefined, null, true);
+    const frame = buildSystemFrame('/test', 'test-1', []);
     const line = frame.split('\n').find((l) => l.startsWith('Current '));
 
     expect(line).toMatch(/^Current date: \d{4}-\d{2}-\d{2} \(.+\)$/);
@@ -433,22 +433,14 @@ describe('Compiler', () => {
     });
 
     expect(prompt).not.toContain('## Artifact-First Reads');
-    expect(buildSystemFrame('/test', 'test-1', [], undefined, null, true)).not.toContain(
+    expect(buildSystemFrame('/test', 'test-1', [])).not.toContain(
       '## Artifact-First Reads',
     );
-    expect(buildSystemFrame('/test', 'test-1', [], undefined, null, false)).not.toContain(
-      '## Artifact-First Reads',
-    );
-  });
-
-  it('does not build a repeat-read hint', () => {
-    expect(buildAgentHints({ repeatFileReads: 0 })).toBe('');
-    expect(buildAgentHints({ repeatFileReads: 50 })).toBe('');
   });
 
   it('builds agent hints for churn interventions', () => {
-    expect(buildAgentHints({ repeatFileReads: 0, churnInterventions: 0 })).toBe('');
-    const text = buildAgentHints({ repeatFileReads: 0, churnInterventions: 2 });
+    expect(buildAgentHints({ churnInterventions: 0 })).toBe('');
+    const text = buildAgentHints({ churnInterventions: 2 });
     expect(text).toContain('churn_interventions: 2');
     expect(text).not.toContain('retrieve_artifact');
     expect(text).not.toContain('stop re-reading');

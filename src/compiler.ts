@@ -84,7 +84,6 @@ export function compile(input: CompileInput): string {
     input.toolSchemas,
     stateSummary,
     input.agentsContext,
-    false,
     input.resumeNote,
     input.nativeStatus,
     input.memoryEnabled,
@@ -159,7 +158,6 @@ export function compileWithMetrics(input: CompileInput): { prompt: string; metri
     input.toolSchemas,
     stateSummary,
     agentsContext,
-    false,
     input.resumeNote,
     input.nativeStatus,
     input.memoryEnabled,
@@ -293,8 +291,6 @@ export function buildSharedAgentPolicy(recallEnabled = false): string[] {
 }
 
 export interface AgentHintCounters {
-  /** Retained for the scorecard signal; repeat reads no longer produce a prompt hint. */
-  repeatFileReads: number;
   churnInterventions?: number;
 }
 
@@ -375,8 +371,6 @@ export function buildSystemFrame(
   toolSchemas: string[],
   stateSummary?: string,
   agentsContext?: string | null,
-  /** Retained for call-site compatibility; engine mode adds no frame section. */
-  _engineMode = false,
   resumeNote?: string,
   nativeStatus?: NativeAddonStatus | null,
   memoryEnabled = false,

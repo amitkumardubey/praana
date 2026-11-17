@@ -22,7 +22,6 @@ import {
   estimateTokens,
 } from "./context-engine/index.js";
 import { EmbeddingCache } from "./context-engine/embedding-cache.js";
-import { buildArtifactCard } from "./context-engine/summarize.js";
 import { buildSkillMetadataCatalog } from "./skills/index.js";
 import { createAllTools, describeTools } from "./tools/index.js";
 import { type ToolDefinition as RuntimeToolDefinition } from "./tools/tool-def.js";
@@ -775,41 +774,12 @@ export async function runTurn(
     headless: session.headless,
     riskAllow: session.config.risk?.allow,
     webHostRemembered: (host) => session.webFetchHostRemembered(host),
-    hasReadPath: (absPath) => session.scorecard.hasReadPath(absPath),
     getReadPathMtime: (absPath) => session.scorecard.getReadPathMtime(absPath),
     clearReadPath: (absPath) => {
       session.scorecard.clearReadPath(absPath);
       session.contextEngine?.clearFileReadAllRanges(absPath);
     },
     lspManager: session.lspManager,
-    findFileReadArtifact: (absPath) => {
-      const art = session.contextEngine?.findFileReadArtifact(absPath) ?? null;
-      if (!art) return null;
-      return {
-        id: art.id,
-        createdTurn: art.createdTurn,
-        card: buildArtifactCard(
-          art.id,
-          art.sourceTool,
-          art.command,
-          art.rawTokens,
-        ),
-      };
-    },
-    findFileReadArtifactByRange: (absPath, offset, limit) => {
-      const art = session.contextEngine?.findFileReadArtifactByRange(absPath, offset, limit) ?? null;
-      if (!art) return null;
-      return {
-        id: art.id,
-        createdTurn: art.createdTurn,
-        card: buildArtifactCard(
-          art.id,
-          art.sourceTool,
-          art.command,
-          art.rawTokens,
-        ),
-      };
-    },
   });
 
   const modelName = modelOverride ?? session.config.llm.model;
@@ -895,7 +865,6 @@ export async function runTurn(
       embeddingCache: session.embeddingCache,
       workflowPatterns,
       agentHints: buildAgentHints({
-        repeatFileReads: session.scorecard.getCounters().repeatFileReads,
         churnInterventions: session.scorecard.getCounters().churnInterventions,
       }),
       circuitNotes: session.circuitNotes?.() ?? [],

@@ -46,23 +46,8 @@ export interface ToolRegistryContext {
   shellLiveStream?: boolean;
   skills: SkillRecord[];
   skillRuntime: SkillRuntime | null;
-  hasReadPath?: (absPath: string) => boolean;
   getReadPathMtime?: (absPath: string) => number | undefined;
   clearReadPath?: (absPath: string) => void;
-  findFileReadArtifact?: (absPath: string) => {
-    id: string;
-    createdTurn: number;
-    card: string;
-  } | null;
-  findFileReadArtifactByRange?: (
-    absPath: string,
-    offset?: number,
-    limit?: number,
-  ) => {
-    id: string;
-    createdTurn: number;
-    card: string;
-  } | null;
   lspManager?: LspManager | null;
   webConfig?: WebToolsConfig;
   headless?: boolean;
@@ -112,11 +97,8 @@ export function createAllTools(ctx: ToolRegistryContext) {
     onScorecardFileRead: ctx.onScorecardFileRead,
     onScorecardSkillLoad: ctx.onScorecardSkillLoad,
     getCurrentTurn: ctx.getCurrentTurn ?? (() => 0),
-    hasReadPath: ctx.hasReadPath,
     getReadPathMtime: ctx.getReadPathMtime,
     clearReadPath: ctx.clearReadPath,
-    findFileReadArtifact: ctx.findFileReadArtifact,
-    findFileReadArtifactByRange: ctx.findFileReadArtifactByRange,
   });
   const searchCodeTools = createSearchCodeTool({
     cwd: ctx.cwd,

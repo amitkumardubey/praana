@@ -713,7 +713,6 @@ function buildCompilePassPrecomputed(
     input.toolSchemas,
     stateSummary,
     agentsContext,
-    true,
     input.resumeNote,
     input.nativeStatus,
     input.memoryEnabled,
