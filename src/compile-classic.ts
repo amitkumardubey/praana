@@ -1,6 +1,6 @@
 import type { Event } from "./types.js";
 import type { CompileMetrics } from "./compiler.js";
-import { buildCrossSessionMemory } from "./compiler.js";
+import { buildCrossSessionMemory, formatLocalDate } from "./compiler.js";
 import { estimateTokens as estTokens } from "./token-estimate.js";
 import { APP_VERSION } from "./app-banner.js";
 import type { NativeAddonStatus } from "./native/index.js";
@@ -46,7 +46,7 @@ export function buildClassicSystemFrame(
     `You are PRAANA ${APP_VERSION}, a coding agent with adaptive context and dated file memories.`,
     `Working directory: ${cwd}`,
     `Session ID: ${sessionId}`,
-    `Current date: ${new Date().toISOString().slice(0, 10)} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`,
+    `Current date: ${formatLocalDate()} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`,
   ];
 
   if (agentsContext?.trim()) {

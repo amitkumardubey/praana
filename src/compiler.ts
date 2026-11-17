@@ -363,6 +363,13 @@ export function buildFilesReadIndexSection(
   return lines.join("\n");
 }
 
+export function formatLocalDate(date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
 export function buildSystemFrame(
   cwd: string,
   sessionId: string,
@@ -382,7 +389,7 @@ export function buildSystemFrame(
     `You are PRAANA ${APP_VERSION}, a coding agent with adaptive context and dated file memories.`,
     `Working directory: ${cwd}`,
     `Session ID: ${sessionId}`,
-    `Current date: ${new Date().toISOString().slice(0, 10)} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`,
+    `Current date: ${formatLocalDate()} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`,
   ];
 
   if (agentsContext && agentsContext.trim()) {
