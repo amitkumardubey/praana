@@ -203,8 +203,6 @@ export type EmbedderStrategy =
 
 export interface MemoryConfig {
   enabled: boolean;
-  /** disabled | ollama | openrouter | openai */
-  summarizer: string;
   db_path?: string;
   embedder?: EmbedderStrategy;
   /** Hugging Face model id, e.g. Xenova/all-MiniLM-L6-v2 */
@@ -212,8 +210,6 @@ export interface MemoryConfig {
   ollama_url?: string;
   /** Embedding model (e.g. nomic-embed-text) */
   ollama_model?: string;
-  /** Chat model for session-end learnings (e.g. qwen3.5:4b). Falls back to first non-embed model from `ollama list`. */
-  ollama_summarizer_model?: string;
 }
 
 export interface CompilerConfig {
@@ -251,26 +247,10 @@ export interface TiersConfig {
 export interface SessionConfig {
   log_dir: string;
   /**
-   * Max ms to wait for the session-end summarizer LLM call before backgrounding it.
-   * Used by `AppController.shutdown()`. Default: 2000.
-   */
-  shutdown_memory_timeout_ms?: number;
-  /**
    * Turns of inactivity before an active task is considered stale on resume.
    * Default: 5.
    */
   stale_task_turn_threshold?: number;
-}
-
-export interface ConsolidationConfig {
-  /** Enable/disable the background consolidation processor. */
-  enabled: boolean;
-  /** LLM model for consolidation (defaults to memory.summarizer). */
-  model?: string;
-  /** Number of confirmations needed to promote to Layer 2. Default: 3. */
-  promotion_threshold: number;
-  /** Delay in seconds after session end before running consolidation. Default: 30. */
-  run_delay_seconds: number;
 }
 
 export interface SandboxConfig {
@@ -474,7 +454,6 @@ export interface PraanaConfig {
   compiler: CompilerConfig;
   tiers: TiersConfig;
   session: SessionConfig;
-  consolidation: ConsolidationConfig;
   shell: SandboxConfig;
   edit: EditConfig;
   /** Optional; defaults to { allow: [] } when omitted. */

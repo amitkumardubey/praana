@@ -109,14 +109,6 @@ export class TelemetryRecorder {
 // ScorecardTracker — per-session telemetry counter (issue #488)
 // ============================================================
 
-export type MemoryAveragesProvider = (
-  memoryDbPath: string,
-) => { validityAvg: number; usefulnessAvg: number };
-
-export interface ScorecardTrackerOptions {
-  memoryAverages?: MemoryAveragesProvider;
-}
-
 export interface ScorecardCounters {
   artifactRetrieveCalls: number;
   artifactCardsProduced: number;
@@ -149,13 +141,6 @@ export interface ScorecardCounters {
   circuitBudgetWrapups: number;
 }
 
-export interface ScorecardMemorySnapshot {
-  validityAvgStart: number;
-  validityAvgEnd: number;
-  usefulnessAvgStart: number;
-  usefulnessAvgEnd: number;
-}
-
 interface ScorecardDbRow {
   session_id: string;
   context_engine_on: number;
@@ -170,10 +155,6 @@ interface ScorecardDbRow {
   compaction_triggers: number;
   recall_calls: number;
   recall_used_count: number;
-  validity_avg_start: number;
-  validity_avg_end: number;
-  usefulness_avg_start: number;
-  usefulness_avg_end: number;
   skills_loaded: number;
   skills_used: number;
   skill_underload_events: number;
@@ -238,18 +219,11 @@ export class ScorecardTracker {
     circuitLoopBlocks: 0,
     circuitBudgetWrapups: 0,
   };
-  private validityAvgStart = 0;
-  private usefulnessAvgStart = 0;
-  private validityAvgEnd = 0;
-  private usefulnessAvgEnd = 0;
   private recallUsedCount = 0;
   private readPathDigests = new Set<string>();
   /** Session-local mtimes for freshness checks (not persisted; resume skips mtime compare). */
   private readPathMtimes = new Map<string, number>();
   private skillsEverLoaded = new Set<string>();
-  private startSnapshotCaptured = false;
-  /** Memory DB path used to refresh mid-session end-averages. */
-  private memoryDbPath?: string;
   /** Session-local per-path access state (not persisted — like readPathMtimes). */
   private fileAccess = new Map<
     string,
@@ -262,7 +236,6 @@ export class ScorecardTracker {
     private readonly db: Database | null,
     private readonly sessionId: string,
     private readonly engineOn: boolean,
-    private readonly options: ScorecardTrackerOptions = {},
   ) {}
 
   isActive(): boolean {
@@ -424,32 +397,12 @@ export class ScorecardTracker {
     this.skillsEverLoaded = new Set(snapshot.skillIds);
   }
 
-  getMemorySnapshot(): ScorecardMemorySnapshot {
-    return {
-      validityAvgStart: this.validityAvgStart,
-      validityAvgEnd: this.validityAvgEnd,
-      usefulnessAvgStart: this.usefulnessAvgStart,
-      usefulnessAvgEnd: this.usefulnessAvgEnd,
-    };
-  }
-
   /** Close the scorecard DB (measurement-only mode; engine mode closes via ContextEngine). */
   close(): void {
     try {
       this.db?.close();
     } catch {
       // ignore double-close
-    }
-  }
-
-  private getMemoryAverages(memoryDbPath?: string): { validityAvg: number; usefulnessAvg: number } {
-    if (!memoryDbPath || !this.options.memoryAverages) {
-      return { validityAvg: 0, usefulnessAvg: 0 };
-    }
-    try {
-      return this.options.memoryAverages(memoryDbPath);
-    } catch {
-      return { validityAvg: 0, usefulnessAvg: 0 };
     }
   }
 
@@ -485,56 +438,22 @@ export class ScorecardTracker {
       circuitBudgetWrapups: row.circuit_budget_wrapups ?? 0,
     };
     this.recallUsedCount = row.recall_used_count ?? 0;
-    // A retired memory backend must not revive historical confidence signals on resume.
-    this.validityAvgStart = this.options.memoryAverages ? row.validity_avg_start ?? 0 : 0;
-    this.usefulnessAvgStart = this.options.memoryAverages ? row.usefulness_avg_start ?? 0 : 0;
-    this.validityAvgEnd = this.options.memoryAverages ? row.validity_avg_end ?? 0 : 0;
-    this.usefulnessAvgEnd = this.options.memoryAverages ? row.usefulness_avg_end ?? 0 : 0;
     this.readPathDigests = new Set(decodeCsv(row.read_path_digests));
     this.skillsEverLoaded = new Set(decodeCsv(row.skills_ever_loaded));
-    this.startSnapshotCaptured =
-      this.validityAvgStart > 0 || this.usefulnessAvgStart > 0;
     return true;
   }
 
-  /** Persist current counters without final memory end-state (called each turn). */
+  /** Persist current counters (called each turn). */
   persistProgress(): void {
-    this.refreshMemoryEndAverages();
     this.writeScorecardRow({ final: false });
   }
 
-  /** Refresh end-averages from the live memory DB so mid-session /scorecard is accurate. */
-  private refreshMemoryEndAverages(): void {
-    if (!this.db) return;
-    const avgs = this.getMemoryAverages(this.memoryDbPath);
-    this.validityAvgEnd = avgs.validityAvg;
-    this.usefulnessAvgEnd = avgs.usefulnessAvg;
-  }
-
   /**
-   * Call at new session start — snaps memory averages.
-   * Skipped when a start snapshot was restored from a resumed scorecard row.
+   * Call at session end — writes the final scorecard row.
    */
-  async recordMemoryStart(memoryDbPath?: string): Promise<void> {
-    if (!this.db || this.startSnapshotCaptured) return;
-    this.memoryDbPath = memoryDbPath;
-    const avgs = this.getMemoryAverages(memoryDbPath);
-    this.validityAvgStart = avgs.validityAvg;
-    this.usefulnessAvgStart = avgs.usefulnessAvg;
-    this.startSnapshotCaptured = true;
-  }
-
-  /**
-   * Call at session end — snapshots memory end-state and writes the scorecard row.
-   */
-  async flush(memoryDbPath?: string, recallUsedCount = 0): Promise<void> {
+  async flush(recallUsedCount = 0): Promise<void> {
     if (!this.db) return;
 
-    if (memoryDbPath) {
-      const endAvgs = this.getMemoryAverages(memoryDbPath);
-      this.validityAvgEnd = endAvgs.validityAvg;
-      this.usefulnessAvgEnd = endAvgs.usefulnessAvg;
-    }
     this.setRecallUsedCount(recallUsedCount);
     this.writeScorecardRow({ final: true });
   }
@@ -554,8 +473,6 @@ export class ScorecardTracker {
         decision_contradictions, turn_event_searches, total_turns,
         pressure_events, compaction_triggers,
         recall_calls, recall_used_count,
-        validity_avg_start, validity_avg_end,
-        usefulness_avg_start, usefulness_avg_end,
         skills_loaded, skills_used, skill_underload_events,
         skill_reload_count, skill_tokens_consumed, skill_load_events,
         read_path_digests, skills_ever_loaded,
@@ -567,8 +484,6 @@ export class ScorecardTracker {
         $decisionContradictions, $turnEventSearches, $totalTurns,
         $pressureEvents, $compactionTriggers,
         $recallCalls, $recallUsedCount,
-        $validityAvgStart, $validityAvgEnd,
-        $usefulnessAvgStart, $usefulnessAvgEnd,
         $skillsLoaded, $skillsUsed, $skillUnderloadEvents,
         $skillReloadCount, $skillTokensConsumed, $skillLoadEvents,
         $readPathDigests, $skillsEverLoaded,
@@ -589,10 +504,6 @@ export class ScorecardTracker {
       $compactionTriggers: this.counters.compactionTriggers,
       $recallCalls: this.counters.recallCalls,
       $recallUsedCount: this.recallUsedCount,
-      $validityAvgStart: this.validityAvgStart,
-      $validityAvgEnd: this.validityAvgEnd,
-      $usefulnessAvgStart: this.usefulnessAvgStart,
-      $usefulnessAvgEnd: this.usefulnessAvgEnd,
       $skillsLoaded: this.counters.skillsLoaded,
       $skillsUsed: this.counters.skillsUsed,
       $skillUnderloadEvents: this.counters.skillUnderloadEvents,
@@ -632,13 +543,12 @@ export function scorecardHasData(counters: ScorecardCounters): boolean {
 export interface FormatScorecardLinesInput {
   counters: ScorecardCounters;
   recallUsed?: number;
-  memory?: ScorecardMemorySnapshot;
   engineOn?: boolean;
 }
 
 /** Render scorecard lines for /stats and /scorecard. */
 export function formatScorecardLines(input: FormatScorecardLinesInput): string[] {
-  const { counters, memory, engineOn } = input;
+  const { counters, engineOn } = input;
   const recallUsed = input.recallUsed ?? counters.recallUsedCount;
   const lines = [
     "Scorecard (this session):",
@@ -655,24 +565,6 @@ export function formatScorecardLines(input: FormatScorecardLinesInput): string[]
   lines.push(
     `  Memory     recalls: ${counters.recallCalls}  used: ${recallUsed}${recallUsagePct}`,
   );
-
-  if (memory && (memory.validityAvgStart > 0 || memory.usefulnessAvgStart > 0)) {
-    const unchanged =
-      memory.validityAvgStart === memory.validityAvgEnd &&
-      memory.usefulnessAvgStart === memory.usefulnessAvgEnd;
-    if (unchanged) {
-      lines.push(
-        `  Memory     validity: ${memory.validityAvgStart.toFixed(2)} (current)    usefulness: ${memory.usefulnessAvgStart.toFixed(2)} (current)`,
-      );
-    } else {
-      const validityDelta = memory.validityAvgEnd - memory.validityAvgStart;
-      const usefulnessDelta = memory.usefulnessAvgEnd - memory.usefulnessAvgStart;
-      lines.push(
-        `  Memory     validity: ${memory.validityAvgStart.toFixed(2)} → ${memory.validityAvgEnd.toFixed(2)} (${validityDelta >= 0 ? "+" : ""}${validityDelta.toFixed(2)})`,
-        `  Memory     usefulness: ${memory.usefulnessAvgStart.toFixed(2)} → ${memory.usefulnessAvgEnd.toFixed(2)} (${usefulnessDelta >= 0 ? "+" : ""}${usefulnessDelta.toFixed(2)})`,
-      );
-    }
-  }
 
   if (counters.skillLoadEvents > 0 || counters.skillsLoaded > 0) {
     lines.push(

@@ -6,6 +6,16 @@
  * returned ok = true.
  */
 
+/** One entry of a session transcript, as consumed by session-end bookkeeping. */
+export interface SessionEvent {
+  type: "user_message" | "agent_message" | "tool_use" | "tool_result";
+  timestamp: number;
+  content?: string;
+  tool_name?: string;
+  args?: Record<string, unknown>;
+  result?: unknown;
+}
+
 /** Session-end outcomes that can count as a success signal. */
 export type SessionOutcomeReason = "clean" | "normal" | "aborted" | "error";
 

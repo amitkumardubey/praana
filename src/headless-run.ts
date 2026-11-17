@@ -147,9 +147,7 @@ export async function runHeadless(
       process.stdout.write("\n");
     }
     usage = tryWriteUsage(session, opts.usagePath);
-    const endStatus = await session.end("clean", session.getTranscriptEvents(), {
-      memoryTimeoutMs: 50,
-    });
+    const endStatus = await session.end("clean", session.getTranscriptEvents());
     return {
       sessionId: session.id,
       response,
@@ -159,9 +157,7 @@ export async function runHeadless(
   } catch (err) {
     usage = tryWriteUsage(session, opts.usagePath);
     try {
-      await session.end("error", session.getTranscriptEvents(), {
-        memoryTimeoutMs: 50,
-      });
+      await session.end("error", session.getTranscriptEvents());
     } catch {
       // Shutdown best-effort; rethrow the original turn error.
     }

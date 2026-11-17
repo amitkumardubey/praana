@@ -82,7 +82,7 @@ mock.module("../src/session.js", () => ({
 
 const baseConfig: PraanaConfig = {
   llm: { provider: "openrouter", model: "test/model" },
-  memory: { enabled: false, summarizer: "disabled", db_path: ":memory:" },
+  memory: { enabled: false, db_path: ":memory:" },
   compiler: {
     token_budget: 100_000,
     recent_turns: 10,
@@ -102,7 +102,6 @@ const baseParsed: CliArgs = {
   showHelp: false,
   force: false,
   initMode: false,
-  memoryDedupeMode: false,
 };
 
 /** Minimal session stub for the tests that assert on what the controller binds. */
@@ -257,7 +256,7 @@ describe("AppController", () => {
     expect(result.lines.length).toBeGreaterThan(0);
   });
 
-  it("shutdown() returns the memory status from session.end() and passes a default 2s timeout", async () => {
+  it("shutdown() returns the memory status from session.end()", async () => {
     const controller = new AppController({
       cwd: "/tmp",
       config: baseConfig,
@@ -266,40 +265,16 @@ describe("AppController", () => {
     await controller.start();
     const end = controller.session.end as ReturnType<typeof mock>;
     end.mockResolvedValueOnce({
-      memory: "background",
+      memory: "noop",
       turns: 0,
       stateObjects: 0,
       rememberCalls: 0,
       recallUsed: 0,
-      learningsStored: 0,
     });
 
     const status = await controller.shutdown();
-    expect(status.memory).toBe("background");
-    expect(end).toHaveBeenCalledWith("clean", [], { memoryTimeoutMs: 2_000 });
-  });
-
-  it("shutdown() honours config.session.shutdown_memory_timeout_ms when set", async () => {
-    const controller = new AppController({
-      cwd: "/tmp",
-      config: { ...baseConfig, session: { ...baseConfig.session, shutdown_memory_timeout_ms: 500 } },
-      parsed: baseParsed,
-    });
-    await controller.start();
-    const end = controller.session.end as ReturnType<typeof mock>;
-    end.mockResolvedValueOnce({
-      memory: "completed",
-      turns: 1,
-      stateObjects: 0,
-      rememberCalls: 0,
-      recallUsed: 0,
-      learningsStored: 2,
-    });
-
-    const status = await controller.shutdown();
-    expect(status.memory).toBe("completed");
-    expect(status.learningsStored).toBe(2);
-    expect(end).toHaveBeenCalledWith("clean", [], { memoryTimeoutMs: 500 });
+    expect(status.memory).toBe("noop");
+    expect(end).toHaveBeenCalledWith("clean", []);
   });
 
   it("shutdown('aborted') passes 'aborted' to session.end(), shutdown() passes 'clean'", async () => {
@@ -317,10 +292,9 @@ describe("AppController", () => {
       stateObjects: 0,
       rememberCalls: 0,
       recallUsed: 0,
-      learningsStored: 0,
     });
     await aborted.shutdown("aborted");
-    expect(abortedEnd).toHaveBeenCalledWith("aborted", [], { memoryTimeoutMs: 2_000 });
+    expect(abortedEnd).toHaveBeenCalledWith("aborted", []);
 
     // Normal shutdown stays "clean".
     const normal = new AppController({
@@ -336,10 +310,9 @@ describe("AppController", () => {
       stateObjects: 0,
       rememberCalls: 0,
       recallUsed: 0,
-      learningsStored: 0,
     });
     await normal.shutdown();
-    expect(normalEnd).toHaveBeenCalledWith("clean", [], { memoryTimeoutMs: 2_000 });
+    expect(normalEnd).toHaveBeenCalledWith("clean", []);
   });
 
   it("startNewSession() ends the current session quickly, reloads config, and creates a fresh one", async () => {
@@ -350,7 +323,7 @@ describe("AppController", () => {
     });
     await controller.start();
 
-    const end = mock(async () => ({ memory: "background" as const }));
+    const end = mock(async () => ({ memory: "noop" as const }));
     const transcript = [{ kind: "user_message" as const }];
     controller.session = {
       ...controller.session,
@@ -418,7 +391,7 @@ describe("AppController", () => {
 
     const info = await controller.startNewSession();
 
-    expect(end).toHaveBeenCalledWith("clean", transcript, { memoryTimeoutMs: 50 });
+    expect(end).toHaveBeenCalledWith("clean", transcript);
     // Config was reloaded from the temp file.
     expect(controller.config.llm.model).toBe("reloaded/model");
     expect(controller.session.id).toBe("sess-new");
@@ -439,7 +412,7 @@ describe("AppController", () => {
     controller.session = {
       ...controller.session,
       id: "sess-old",
-      end: mock(async () => ({ memory: "background" as const })),
+      end: mock(async () => ({ memory: "noop" as const })),
       getTranscriptEvents: () => [],
     } as typeof controller.session;
 
@@ -494,16 +467,15 @@ describe("AppController", () => {
     await controller.start();
     const end = controller.session.end as ReturnType<typeof mock>;
     end.mockResolvedValue({
-      memory: "completed",
+      memory: "skipped",
       turns: 0,
       stateObjects: 0,
       rememberCalls: 0,
       recallUsed: 0,
-      learningsStored: 0,
     });
 
     const first = await controller.shutdown();
-    expect(first.memory).toBe("completed");
+    expect(first.memory).toBe("skipped");
     const second = await controller.shutdown();
     expect(second).toEqual({
       memory: "noop",
@@ -511,7 +483,6 @@ describe("AppController", () => {
       stateObjects: 0,
       rememberCalls: 0,
       recallUsed: 0,
-      learningsStored: 0,
     });
     expect(end).toHaveBeenCalledTimes(1);
   });
@@ -567,7 +538,6 @@ describe("AppController", () => {
       stateObjects: 0,
       rememberCalls: 0,
       recallUsed: 0,
-      learningsStored: 0,
     });
   });
 

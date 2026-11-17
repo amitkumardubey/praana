@@ -132,7 +132,6 @@ test("Session.resume reopens events.jsonl with the exact signature available for
   const config = loadConfig();
   config.session.log_dir = cwd;
   config.memory.enabled = false;
-  config.memory.summarizer = "disabled";
   config.context_engine!.enabled = false;
   config.native = { ...config.native!, enabled: false };
   config.skills.enabled = false;

@@ -7,14 +7,14 @@
  * mirroring memory's recall pattern so user-origin skills are also ranked.
  */
 
-import { openDatabase } from "../sqlite.js";
+import { applyConcurrencyPragmas, BUSY_TIMEOUT_MS, openDatabase } from "../sqlite.js";
 import {
   ensureSkillStatsTable,
   getSkillUsefulness,
   updateSkillUsefulness,
   bumpSkillStats,
   bumpSkillCooccurrence,
-} from "../memory/db.js";
+} from "./skill-stats-db.js";
 import { getAppLogger } from "../logger.js";
 import type { SkillEffect } from "./types.js";
 
@@ -34,6 +34,8 @@ export class SkillStatsStore {
     try {
       const db = openDatabase(this.dbPath, { readonly: true, create: false });
       try {
+        // The context engine writes this file concurrently; wait instead of failing with SQLITE_BUSY.
+        db.run(`PRAGMA busy_timeout = ${BUSY_TIMEOUT_MS}`);
         // No ensureSkillStatsTable here — it's a CREATE (write) and this handle is
         // readonly. If the table is absent (first session), getSkillUsefulness
         // throws "no such table" which the outer catch handles gracefully.
@@ -68,6 +70,7 @@ export class SkillStatsStore {
     try {
       const db = openDatabase(this.dbPath);
       try {
+        applyConcurrencyPragmas(db);
         ensureSkillStatsTable(db);
         const now = Date.now();
         for (const effect of effects) {

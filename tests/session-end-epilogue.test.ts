@@ -8,12 +8,11 @@ import {
 function base(overrides: Partial<SessionEndEpilogueInput> = {}): SessionEndEpilogueInput {
   return {
     sessionId: "01KXBQF4FBQ7KDPDB9SX9XMFYP",
-    memory: "completed",
+    memory: "noop",
     turns: 3,
     stateObjects: 2,
     rememberCalls: 0,
     recallUsed: 0,
-    learningsStored: 0,
     ...overrides,
   };
 }
@@ -35,42 +34,23 @@ describe("formatSessionEndEpilogue", () => {
     expect(RESUME_ID_PREFIX_LEN).toBe(12);
   });
 
-  it("omits zero outcome counts and shows memory saved when completed", () => {
+  it("omits zero outcome counts", () => {
     const text = formatSessionEndEpilogue(base()).join("\n");
     expect(text).toContain("session saved · 3 turns · 2 state objects");
-    expect(text).toContain("memory saved");
+    expect(text).toContain("file memory");
     expect(text).not.toContain("remembered");
-    expect(text).not.toContain("reinforced");
+    expect(text).not.toContain("recalled");
     expect(text).not.toContain("learned");
   });
 
-  it("includes deliberate writes and recalls but no learned count", () => {
-    const text = formatSessionEndEpilogue(
-      base({ rememberCalls: 1, recallUsed: 2, learningsStored: 4 }),
-    ).join("\n");
-    expect(text).toContain("memory saved · remembered 1 · recalled 2");
-    expect(text).not.toContain("learned");
+  it("includes deliberate writes and recalls", () => {
+    const text = formatSessionEndEpilogue(base({ rememberCalls: 1, recallUsed: 2 })).join("\n");
+    expect(text).toContain("file memory · remembered 1 · recalled 2");
   });
 
-  it("says saving in background and omits learnings when memory is background", () => {
-    const text = formatSessionEndEpilogue(
-      base({ memory: "background", learningsStored: 9, recallUsed: 1 }),
-    ).join("\n");
-    expect(text).toContain("saving in background");
-    expect(text).not.toContain("learned");
-    expect(text).toContain("recalled 1");
-  });
-
-  it("distinguishes file memory noop from memory off and failure", () => {
-    expect(formatSessionEndEpilogue(base({ memory: "skipped" })).join("\n")).toContain(
-      "memory off",
-    );
-    expect(formatSessionEndEpilogue(base({ memory: "noop" })).join("\n")).toContain(
-      "file memory",
-    );
-    expect(formatSessionEndEpilogue(base({ memory: "failed" })).join("\n")).toContain(
-      "memory failed",
-    );
+  it("distinguishes file memory from memory off", () => {
+    expect(formatSessionEndEpilogue(base({ memory: "skipped" })).join("\n")).toContain("memory off");
+    expect(formatSessionEndEpilogue(base({ memory: "noop" })).join("\n")).toContain("file memory");
   });
 
   it("handles zero turns without claiming taught content", () => {

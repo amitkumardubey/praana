@@ -93,20 +93,13 @@ model = "deepseek/deepseek-v4-flash:free"
 #   opencode → OPENCODE_API_KEY (from https://opencode.ai/auth)
 
 [memory]
-# Enable/disable Cognitive Memory (SQLite-backed cross-session persistence)
+# Enable/disable file memory (cross-session memories stored as files under ~/.praana)
 enabled = true
 
-# Session-end learning extraction (runs on /exit):
-#   disabled    — no LLM call; no cross-session learnings saved
-#   ollama      — local Ollama chat API (no API key; see ollama_* below)
-#   openrouter  — OpenRouter (OPENROUTER_API_KEY)
-#   openai      — OpenAI API (OPENAI_API_KEY)
-summarizer = "openrouter"
-
-# Path to the SQLite memory database (~ is expanded to $HOME)
+# Path to the SQLite database used by the context engine (~ is expanded to $HOME)
 db_path = "~/.praana/memory.db"
 
-# --- Embeddings (semantic /recall) ---
+# --- Embeddings (semantic context scoring in engine mode) ---
 #   auto                 — transformers (default; model downloads on first run)
 #   transformers         — Xenova/all-MiniLM-L6-v2 (384-dim, ~80MB download)
 #   transformers-nomic   — Xenova/nomic-embed-text-v1 (768-dim, higher quality)
@@ -116,29 +109,11 @@ embedder = "auto"
 # Optional override (must match a known Xenova ONNX model)
 # transformers_model = "Xenova/all-MiniLM-L6-v2"
 
-# Ollama daemon URL (embeddings + summarizer when summarizer = "ollama")
+# Ollama daemon URL (used when embedder = "ollama")
 ollama_url = "http://localhost:11434"
 
 # Embedding model — must be installed: `ollama pull nomic-embed-text`
 ollama_model = "nomic-embed-text"
-
-# Chat model for summarizer = "ollama" (session-end learnings).
-# Must be a chat model from `ollama list`, not an embedding model.
-# Ways to set it (pick one):
-#   1. ollama_summarizer_model below (recommended)
-#   2. PRAANA_SUMMARIZER_MODEL env var (e.g. export PRAANA_SUMMARIZER_MODEL=qwen3.5:4b)
-#   3. Leave unset — auto-picks the first non-embedding model from `ollama list`
-# ollama_summarizer_model = "qwen3.5:4b"
-
-# --- Example: fully local memory (no OpenRouter for summarizer) ---
-# summarizer = "ollama"
-# embedder = "ollama"
-# ollama_url = "http://localhost:11434"
-# ollama_model = "nomic-embed-text"
-# ollama_summarizer_model = "qwen3.5:4b"
-
-# Summarizer model override for openrouter/openai (ignored when summarizer = "ollama"):
-#   export PRAANA_SUMMARIZER_MODEL=google/gemini-2.5-flash
 
 [compiler]
 # Total estimated token budget for the compiled prompt

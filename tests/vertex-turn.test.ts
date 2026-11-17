@@ -56,7 +56,6 @@ for (const engine of [false, true]) {
     expect(config.providers).toBeUndefined();
     config.session.log_dir = join(root, "sessions");
     config.memory.enabled = false;
-    config.memory.summarizer = "disabled";
     config.context_engine!.enabled = engine;
     config.context_engine!.measurement_mode = false;
     config.context_engine!.llm_digest = false;

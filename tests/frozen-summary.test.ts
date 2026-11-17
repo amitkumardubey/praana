@@ -14,6 +14,12 @@ import { loadConfig } from "../src/config.js";
 import { CanonicalWriter, readFullSessionCanonicalRecords } from "../src/canonical-transcript.js";
 import { findReplayStartIndex, loadStateGraphCheckpoint } from "../src/state-graph-checkpoint.js";
 import { createMemoryTools } from "../src/tools/memory.js";
+import { createFileMemoryStore } from "../src/file-memory/store.js";
+
+function emptyFileMemory() {
+  const home = mkdtempSync(join(tmpdir(), "praana-compact-memory-"));
+  return { home, store: createFileMemoryStore({ home, cwd: home }) };
+}
 import type { Event } from "../src/types.js";
 import type { CompactionCommit } from "../src/frozen-summary.js";
 import { estimateTokens } from "../src/token-estimate.js";
@@ -655,19 +661,20 @@ test("getLastEvent returns null for an internal-only log but raw anchors remain 
   expect(log.getLastEvent({ includeInternal: true })?.event_id).toBe("commit-1");
 });
 
-test("retired memory compaction preserves history in a commit-filled log", async () => {
+test("compaction writes no file memory and preserves history in a commit-filled log", async () => {
   const { log } = openLog();
   const config = loadConfig();
   config.compiler = { ...config.compiler, auto_compact_at: 0.75, auto_compact_clear_at: 0.55, compact_chunk_fraction: 0.5, reserved_output_tokens: 0 };
   const compressed = spyOn(log, "markEventsAsCompressed");
-  const compressTurns = mock(async () => 2);
-  const session = { config, eventLog: log, memoryEnabled: true, memoryStore: { compressTurns }, isCompactionArmed: () => false, setCompactionArmed() {}, getContextWindowTokens: () => 10000, debug: false } as unknown as Session;
+  const { home, store } = emptyFileMemory();
+  const session = { config, eventLog: log, memoryEnabled: true, fileMemory: store, isCompactionArmed: () => false, setCompactionArmed() {}, getContextWindowTokens: () => 10000, debug: false } as unknown as Session;
   commitNoise(log, 20);
   for (let i = 0; i < 6; i++) visible(log, `legacy-${i}`, i % 2 ? "agent_message" : "user_message", { text: `message ${i}` });
   const result = await maybeAutoCompactClassic(session, 8000, "test/model");
   expect(result).toMatchObject({ compacted: false, eventsCompacted: 0, factsStored: 0 });
   expect(compressed).not.toHaveBeenCalled();
-  expect(compressTurns).not.toHaveBeenCalled();
+  expect((await store.list()).entries).toEqual([]);
+  rmSync(home, { recursive: true, force: true });
   expect(log.readAll()).toHaveLength(6);
 });
 
@@ -708,7 +715,6 @@ test("checkpoint anchors resolve a hidden commit id and resume replays the follo
   const config = loadConfig();
   config.session.log_dir = root;
   config.memory.enabled = false;
-  config.memory.summarizer = "disabled";
   config.context_engine!.enabled = false;
   config.native = { ...config.native!, enabled: false };
   config.skills.enabled = false;

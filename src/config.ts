@@ -69,7 +69,6 @@ export const DEFAULT_CONFIG: PraanaConfig = {
   },
   memory: {
     enabled: true,
-    summarizer: "",  // auto-detected from provider at load time
     db_path: `~/${APP_HOME_DIR}/memory.db`,
     embedder: "auto",
     ollama_url: "http://localhost:11434",
@@ -97,11 +96,6 @@ export const DEFAULT_CONFIG: PraanaConfig = {
   session: {
     log_dir: `~/${APP_HOME_DIR}/sessions`,
     stale_task_turn_threshold: 5,
-  },
-  consolidation: {
-    enabled: true,
-    promotion_threshold: 3,
-    run_delay_seconds: 30,
   },
   shell: {
     enabled: false,
@@ -363,8 +357,6 @@ export function loadConfig(configPath?: string): PraanaConfig {
   // Env keys are a credential fallback for an already-chosen provider, not a
   // provider chooser. Leave [llm].provider empty when unset so main.ts runs
   // the guided setup wizard.
-  const userExplicitlySetSummarizer = !!(userConfig as any)?.memory?.summarizer;
-
   const modelOverride = envOverride("PRAANA_MODEL");
   if (modelOverride) merged.llm.model = modelOverride;
 
@@ -390,7 +382,7 @@ export function loadConfig(configPath?: string): PraanaConfig {
     merged.memory.db_path = resolveDefaultMemoryDbPath();
   }
 
-  const validated = validateConfig(merged, { userExplicitlySetSummarizer });
+  const validated = validateConfig(merged);
   // Inject user-declared providers into the module-level registry so
   // getProviderConfig / isProviderAvailable / provider-catalog see them.
   setUserProviders(validated.providers);
@@ -484,35 +476,12 @@ function validateWebTools(raw: WebToolsConfig | undefined): WebToolsConfig {
   return out;
 }
 
-function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummarizer?: boolean }): PraanaConfig {
+function validateConfig(config: PraanaConfig): PraanaConfig {
   const out: PraanaConfig = deepMerge(config, {});
 
   // Validate provider name (but allow empty — indicates no key detected)
   if (out.llm.provider && !out.llm.provider.trim()) {
     out.llm.provider = "";
-  }
-
-  // Summarizer fallback: auto-select from provider if not explicitly set
-  if (!opts?.userExplicitlySetSummarizer && (!out.memory.summarizer || !out.memory.summarizer.trim())) {
-    if (out.llm.provider) {
-      // Map provider names to summarizer-compatible names
-      const summarizerMap: Record<string, string> = {
-        openrouter: "openrouter",
-        openai: "openai",
-        anthropic: "openai",  // anthropic doesn't have a summarizer, use openai-compatible
-        ollama: "ollama",
-        deepseek: "openrouter",  // use openrouter for deepseek summarizer
-        groq: "openrouter",
-        google: "openrouter",
-        mistral: "openrouter",
-        xai: "openrouter",
-        fireworks: "openrouter",
-        together: "openrouter",
-        opencode: "openai",
-        umans: "openrouter",
-      };
-      out.memory.summarizer = summarizerMap[out.llm.provider] ?? "disabled";
-    }
   }
 
   const validEmbedders = new Set([
@@ -527,13 +496,6 @@ function validateConfig(config: PraanaConfig, opts?: { userExplicitlySetSummariz
   }
   if (!out.memory.embedder) {
     out.memory.embedder = DEFAULT_CONFIG.memory.embedder;
-  }
-
-  const validSummarizers = new Set(["disabled", "ollama", "openrouter", "openai"]);
-  const summarizer = out.memory.summarizer?.toLowerCase();
-  if (summarizer && !validSummarizers.has(summarizer)) {
-    configWarn(`Invalid memory.summarizer '${out.memory.summarizer}', using 'disabled'`);
-    out.memory.summarizer = "disabled";
   }
 
   if (!Number.isFinite(out.compiler.token_budget) || out.compiler.token_budget <= 1000) {

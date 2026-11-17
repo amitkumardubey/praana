@@ -108,13 +108,11 @@ export const RESUME_ID_PREFIX_LEN = 12;
 
 export type SessionEndEpilogueInput = {
   sessionId: string;
-  memory: "completed" | "background" | "skipped" | "failed" | "noop";
+  memory: "skipped" | "noop";
   turns: number;
   stateObjects: number;
   rememberCalls: number;
   recallUsed: number;
-  /** Summarizer learnings stored in-process; omit/0 when background or unknown. */
-  learningsStored: number;
 };
 
 /**
@@ -134,17 +132,7 @@ export function formatSessionEndEpilogue(input: SessionEndEpilogueInput): string
   ];
 
   const memoryParts: string[] = [];
-  if (input.memory === "completed") {
-    memoryParts.push("memory saved");
-  } else if (input.memory === "background") {
-    memoryParts.push("saving in background…");
-  } else if (input.memory === "failed") {
-    memoryParts.push("memory failed");
-  } else if (input.memory === "noop") {
-    memoryParts.push("file memory");
-  } else {
-    memoryParts.push("memory off");
-  }
+  memoryParts.push(input.memory === "noop" ? "file memory" : "memory off");
 
   if (input.rememberCalls > 0) {
     memoryParts.push(`remembered ${input.rememberCalls}`);
@@ -158,22 +146,6 @@ export function formatSessionEndEpilogue(input: SessionEndEpilogueInput): string
   return lines;
 }
 
-/** @deprecated Prefer formatSessionEndEpilogue — kept for any external callers. */
-export function formatSessionEndSummary(session: Session): string {
-  const summary = session.getSessionSummary();
-  return formatSessionEndEpilogue({
-    sessionId: session.id,
-    memory: session.memoryEnabled ? "noop" : "skipped",
-    turns: summary.turns,
-    stateObjects: summary.stateObjects,
-    rememberCalls: summary.memoriesStored,
-    recallUsed: 0,
-    learningsStored: 0,
-  })
-    .filter((l) => l.trim().length > 0)
-    .join(" · ");
-}
-
 /** Resume hint printed after the TUI exits (OpenCode-style epilogue). */
 export function formatSessionEpilogue(sessionId: string): string[] {
   return [
@@ -182,20 +154,6 @@ export function formatSessionEpilogue(sessionId: string): string[] {
     `  ${CLI_NAME} resume ${sessionId}`,
     "",
   ];
-}
-
-export function printSessionEndSummary(session: Session): void {
-  for (const line of formatSessionEndEpilogue({
-    sessionId: session.id,
-    memory: session.memoryEnabled ? "noop" : "skipped",
-    turns: session.getSessionSummary().turns,
-    stateObjects: session.getSessionSummary().stateObjects,
-    rememberCalls: session.getSessionSummary().memoriesStored,
-    recallUsed: 0,
-    learningsStored: 0,
-  })) {
-    console.log(line);
-  }
 }
 
 function usageLines(): string[] {
@@ -208,7 +166,6 @@ function usageLines(): string[] {
     `  ${CLI_NAME} providers [--all]   List configured providers (--all includes unconfigured)`,
     `  ${CLI_NAME} resume [session]   Resume last session here, or a specific session`,
     `  ${CLI_NAME} run "<instruction>" [--max-steps N]  Headless one-shot (no TTY)`,
-    `  ${CLI_NAME} memory dedupe       Merge near-duplicate cognitive memories`,
     `  ${CLI_NAME} --debug             Start with debug mode enabled`,
     `  ${CLI_NAME} --incognito         Start with memory writes blocked`,
     `  ${CLI_NAME} -I                  Short alias for --incognito`,
