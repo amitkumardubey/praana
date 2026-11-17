@@ -175,6 +175,15 @@ confirm = false
 # Directory where session event logs are stored
 log_dir = "~/.praana/sessions"
 
+[turn]
+# Hard cap on steps per user message when the session is headless (praana run,
+# Harbor, CI) or the UI sink cannot pause. --max-steps N overrides it for one run.
+max_steps = 100
+# Interactive pause: ask to continue every N steps (onStepPause sinks only).
+pause_after_steps = 50
+# Absolute ceiling for interactive sessions; stops without asking.
+hard_max_steps = 300
+
 [search_code]
 # search_code and find_files use @praana/natives (gitignore-aware walk + grep).
 # scan_timeout_ms is unused (kept for config compatibility).
@@ -266,11 +275,6 @@ w_relevance = 0.3
 compact_at = 0.70
 # Emergency: drop all turn digests, keep checkpoint + verbatim last 2 turns
 emergency_at = 0.85
-
-[tools]
-# Second and later read of an unchanged file returns the artifact card (false)
-# or hard-fails (true).
-block_repeat_reads = false
 
 [tools.web]
 # Fetch a public http(s) URL. On by default. Private and local addresses are

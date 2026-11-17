@@ -36,6 +36,7 @@ describe("read-churn helpers", () => {
     expect(hint).toContain("4");
     expect(hint).toContain("read_file");
     expect(hint).toContain("shell");
+    expect(hint).not.toContain("retrieve_artifact");
     expect(buildRetrieveChurnHint("art_abc", 3)).toContain("art_abc");
   });
 

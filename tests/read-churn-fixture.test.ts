@@ -38,7 +38,6 @@ describe("read-churn acceptance fixture (#571)", () => {
       skillScorecard: scorecard,
       getCurrentTurn: () => 1,
       onScorecardFileRead: (p, m, c) => scorecard.trackReadPath(p, m, c),
-      hasReadPath: (p) => scorecard.hasReadPath(p),
       getReadPathMtime: (p) => scorecard.getReadPathMtime(p),
       clearReadPath: (p) => scorecard.clearReadPath(p),
     });

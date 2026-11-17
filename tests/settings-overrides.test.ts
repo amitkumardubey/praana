@@ -10,7 +10,6 @@ describe("settings config_overrides ingestion", () => {
 
     const expectedPaths = [
       "edit.confirm",
-      "tools.block_repeat_reads",
       "lsp.enabled",
       "lsp.diagnostics",
       "lsp.format_on_edit",
@@ -41,7 +40,6 @@ describe("settings config_overrides ingestion", () => {
 
     const validInput: Record<string, unknown> = {
       "edit.confirm": true,
-      "tools.block_repeat_reads": true,
       "lsp.enabled": true,
       "lsp.diagnostics": false,
       "lsp.format_on_edit": true,
@@ -67,9 +65,6 @@ describe("settings config_overrides ingestion", () => {
       ok: true,
       value: {
         edit: { confirm: true },
-        tools: {
-          block_repeat_reads: true,
-        },
         lsp: { enabled: true, diagnostics: false, format_on_edit: true },
         verify: { enabled: true, syntax: false, typecheck: true, tests: false },
         turn: { pause_after_steps: 100 },
@@ -89,7 +84,6 @@ describe("settings config_overrides ingestion", () => {
     const { parseConfigOverrides } = await api();
     const badInputs: Record<string, unknown> = {
       "edit.confirm": "true",
-      "tools.block_repeat_reads": 1,
       "lsp.enabled": null,
       "verify.enabled": { nested: true },
       "turn.pause_after_steps": 0,

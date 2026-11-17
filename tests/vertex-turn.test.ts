@@ -109,9 +109,9 @@ for (const engine of [false, true]) {
     expect(llmUrls[0]).toContain("/projects/fake-quota-project/locations/global/publishers/google/models/gemini-future-test:streamGenerateContent?alt=sse");
     expect(requests[1].contents.at(-1).parts).toHaveLength(2);
     const toolResults = JSON.stringify(requests[1].contents.at(-1));
-    expect(toolResults).toContain(engine ? "a.txt" : "file-a-contents");
-    expect(toolResults).toContain(engine ? "b.txt" : "file-b-contents");
-    if (engine) expect(toolResults).toContain("[artifact:");
+    expect(toolResults).toContain("file-a-contents");
+    expect(toolResults).toContain("file-b-contents");
+    expect(toolResults).not.toContain("[artifact:");
 
     // Preserve the pre-existing user-declared route, including its ignored dummy base_url.
     process.env.GCP_ACCESS_TOKEN = fake("static-access");

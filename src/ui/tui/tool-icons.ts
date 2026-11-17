@@ -4,7 +4,6 @@
 import { summarizeArgs } from "../../tool-summary.js";
 import type { MemoryBannerStats } from "../../ui-events.js";
 import { DISTILLER_FOOTER_MIN_SAVINGS } from "../../context-display.js";
-import { REPEAT_FILE_READS_THRESHOLD } from "../../compiler.js";
 import {
   formatModelStatusLabel,
   formatSessionTokenBreakdown,
@@ -399,8 +398,6 @@ export interface TurnFooterInput {
   distillerSavingsTurn?: number;
   /** Active model label for this session (e.g. "opencode/big-pickle"). */
   model?: string;
-  /** Session repeat_file_reads; shown when > threshold. */
-  repeatFileReads?: number;
   /** Session churn_interventions (issue #571); shown when > 0. */
   churnInterventions?: number;
 }
@@ -428,11 +425,6 @@ export function formatTurnFooterDigest(input: TurnFooterInput): string {
     input.distillerSavingsTurn >= DISTILLER_FOOTER_MIN_SAVINGS
   ) {
     parts.push(`−${formatTokenCount(input.distillerSavingsTurn)} distilled`);
-  }
-
-  const repeatReads = input.repeatFileReads ?? input.stats?.repeatFileReads ?? 0;
-  if (repeatReads > REPEAT_FILE_READS_THRESHOLD) {
-    parts.push(`repeat_reads:${repeatReads}`);
   }
 
   const churn = input.churnInterventions ?? input.stats?.churnInterventions ?? 0;

@@ -60,7 +60,7 @@ export function getLoadedConfigSources(): string[] {
   return _loadedSources;
 }
 
-const DEFAULT_CONFIG: PraanaConfig = {
+export const DEFAULT_CONFIG: PraanaConfig = {
   llm: {
     provider: "",   // empty → main.ts runs guided setup (env keys are not auto-selected)
     model: "",
@@ -113,7 +113,6 @@ const DEFAULT_CONFIG: PraanaConfig = {
     max_wall_ms: 0,
   },
   tools: {
-    block_repeat_reads: false,
     web: { ...DEFAULT_WEB_CONFIG },
   },
   native: {
@@ -180,7 +179,7 @@ const DEFAULT_CONFIG: PraanaConfig = {
     enabled: true,
   },
   turn: {
-    max_steps: 25,
+    max_steps: 100,
     pause_after_steps: 50,
     hard_max_steps: 300,
   },
@@ -718,10 +717,7 @@ function validateConfig(config: PraanaConfig): PraanaConfig {
 
   // Tools config validation
   if (!out.tools) {
-    out.tools = { block_repeat_reads: false, web: { ...DEFAULT_WEB_CONFIG } };
-  } else if (typeof out.tools.block_repeat_reads !== "boolean") {
-    configWarn("tools.block_repeat_reads must be boolean, defaulting to false");
-    out.tools = { ...out.tools, block_repeat_reads: false, web: validateWebTools(out.tools.web) };
+    out.tools = { web: { ...DEFAULT_WEB_CONFIG } };
   } else {
     out.tools = { ...out.tools, web: validateWebTools(out.tools.web) };
   }

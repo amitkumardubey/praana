@@ -134,6 +134,7 @@ export function indexSessionTranscript(
       const key = JSON.stringify([ev.payload.tool, ev.payload.toolCallId]);
       const entry = artifactResults.get(key);
       const result = ev.payload.result;
+      // Legacy event logs can contain interceptor cards, not source contents.
       const skippedDisk = result !== null && typeof result === "object" &&
         (result as { skipped_disk?: unknown }).skipped_disk === true;
       if (entry?.unrecoveredStub && result !== undefined && !skippedDisk) {

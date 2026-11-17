@@ -1,4 +1,4 @@
-import { compile, compileWithMetrics, buildSystemFrame, buildAgentHints, buildFilesReadIndexSection, REPEAT_FILE_READS_THRESHOLD } from '../src/compiler.js';
+import { compile, compileWithMetrics, buildSystemFrame, buildAgentHints, buildFilesReadIndexSection } from '../src/compiler.js';
 import type { StateObject, Event } from '../src/types.js';
 
 describe('Compiler', () => {
@@ -247,8 +247,8 @@ describe('Compiler', () => {
     expect(prompt).toContain('search_session_log');
   });
 
-  it('should include Tool Safety RULE in system frame', () => {
-    const prompt = compile({
+  const compileOnce = () =>
+    compile({
       stateGraph: {
         list: () => [],
         getActive: () => [],
@@ -262,10 +262,19 @@ describe('Compiler', () => {
       tokenBudget: 4000,
     });
 
-    expect(prompt).toContain('## Tool Safety');
-    expect(prompt).toContain('RULE: Never call write_file, edit_file');
-    expect(prompt).toContain('shell commands with file write side-effects');
-    expect(prompt).toContain('If unsure, ask first.');
+  it('does not include the per-turn write gate', () => {
+    const prompt = compileOnce();
+
+    expect(prompt).not.toContain('## Tool Safety');
+    expect(prompt).not.toContain('THIS turn');
+    expect(prompt).not.toContain('RULE: Never call write_file, edit_file');
+  });
+
+  it('does not include a correction capture ritual', () => {
+    const prompt = compileOnce();
+
+    expect(prompt).not.toContain('## Correction Capture');
+    expect(prompt).not.toContain('retract_task');
   });
 
   it('does not inject a Plan-Before-Execute rule', () => {
@@ -378,39 +387,37 @@ describe('Compiler', () => {
 
   it('injects resume scope note when provided', () => {
     const note = 'Confirm scope before continuing.';
-    const frame = buildSystemFrame('/test', 'test-1', [], undefined, null, false, note);
+    const frame = buildSystemFrame('/test', 'test-1', [], undefined, null, note);
 
     expect(frame).toContain('## Resume Scope');
     expect(frame).toContain(note);
   });
 
   it('omits resume scope note when not provided', () => {
-    const frame = buildSystemFrame('/test', 'test-1', [], undefined, null, false);
+    const frame = buildSystemFrame('/test', 'test-1', []);
 
     expect(frame).not.toContain('## Resume Scope');
   });
 
-  it('includes correction capture rule in the shared agent policy', () => {
-    const prompt = compile({
-      stateGraph: {
-        list: () => [],
-        getActive: () => [],
-        getPeripheral: () => [],
-      } as any,
-      memoryDigest: null,
-      recentEvents: [],
-      toolSchemas: [],
-      cwd: '/test',
-      sessionId: 'test-1',
-      tokenBudget: 4000,
-    });
+  it('shows the current date without a time of day', () => {
+    const prompt = compileOnce();
+    const line = prompt.split('\n').find((l) => l.startsWith('Current '));
 
-    expect(prompt).toContain('## Correction Capture');
-    expect(prompt).toContain('retract_task');
-    expect(prompt).toContain('add_note');
+    expect(line).toBeDefined();
+    expect(line).toMatch(/^Current date: \d{4}-\d{2}-\d{2} \(.+\)$/);
+    expect(line).not.toMatch(/\d{2}:\d{2}/);
+    expect(prompt).not.toContain('Current time:');
   });
 
-  it('does not include artifact-first reads in legacy compiler mode', () => {
+  it('engine system frame shows the date without a time of day', () => {
+    const frame = buildSystemFrame('/test', 'test-1', []);
+    const line = frame.split('\n').find((l) => l.startsWith('Current '));
+
+    expect(line).toMatch(/^Current date: \d{4}-\d{2}-\d{2} \(.+\)$/);
+    expect(frame).not.toContain('Current time:');
+  });
+
+  it('never injects the removed artifact-first reads policy', () => {
     const prompt = compile({
       stateGraph: {
         list: () => [],
@@ -426,37 +433,17 @@ describe('Compiler', () => {
     });
 
     expect(prompt).not.toContain('## Artifact-First Reads');
-    expect(prompt).not.toContain('retrieve_artifact');
-  });
-
-  it('includes artifact-first reads in engine-mode system frame', () => {
-    const frame = buildSystemFrame('/test', 'test-1', [], undefined, null, true);
-
-    expect(frame).toContain('## Artifact-First Reads');
-    expect(frame).toContain('retrieve_artifact');
-    expect(frame).toContain('search_turn_events');
-  });
-
-  it('excludes artifact-first reads in non-engine system frame', () => {
-    const frame = buildSystemFrame('/test', 'test-1', [], undefined, null, false);
-
-    expect(frame).not.toContain('## Artifact-First Reads');
-  });
-
-  it('builds agent hints only when repeat_file_reads crosses threshold', () => {
-    expect(buildAgentHints({ repeatFileReads: 0 })).toBe('');
-    expect(buildAgentHints({ repeatFileReads: REPEAT_FILE_READS_THRESHOLD })).toBe('');
-    const hint = buildAgentHints({ repeatFileReads: REPEAT_FILE_READS_THRESHOLD + 1 });
-    expect(hint).toContain('## Agent Hints');
-    expect(hint).toContain(`repeat_file_reads: ${REPEAT_FILE_READS_THRESHOLD + 1}`);
-    expect(hint).toContain('retrieve_artifact');
+    expect(buildSystemFrame('/test', 'test-1', [])).not.toContain(
+      '## Artifact-First Reads',
+    );
   });
 
   it('builds agent hints for churn interventions', () => {
-    expect(buildAgentHints({ repeatFileReads: 0, churnInterventions: 0 })).toBe('');
-    const text = buildAgentHints({ repeatFileReads: 0, churnInterventions: 2 });
+    expect(buildAgentHints({ churnInterventions: 0 })).toBe('');
+    const text = buildAgentHints({ churnInterventions: 2 });
     expect(text).toContain('churn_interventions: 2');
-    expect(text).toContain('retrieve_artifact');
+    expect(text).not.toContain('retrieve_artifact');
+    expect(text).not.toContain('stop re-reading');
   });
 
   describe('buildFilesReadIndexSection', () => {
@@ -476,7 +463,8 @@ describe('Compiler', () => {
       );
 
       expect(section).toContain('## Files Read This Session');
-      expect(section).toContain('Use retrieve_artifact(id) before re-reading a path:');
+      expect(section).not.toContain('retrieve_artifact');
+      expect(section).not.toContain('before re-reading');
       expect(section).toContain('- src/auth.ts (turn 3, `art_abc123`)');
       expect(section).toContain('- docs/readme.md (turn 7, `art_def456`)');
       expect(section).toContain('- /outside/config.json (turn 5, `art_ghi789`)');

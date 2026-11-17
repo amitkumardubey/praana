@@ -383,7 +383,7 @@ Both are stored in `workflow_patterns(task_type, tool_sequence_json, artifact_ty
 
 At compile time, `renderWorkflowContext()` queries patterns matching the current `taskType`, selects the top-N by `hit_count`, and renders a compact **Workflow Context** section injected into the prompt just before the session checkpoint. This gives the engine a prior over which tools and artifact types are likely to appear — without adding it to the scored pool. Patterns for a different task type are never included, so a coding session's workflow history does not bleed into a debugging session.
 
-The rendered section also surfaces a **typical lean tool sequence** from the highest-hit pattern that includes at least one mutating tool (e.g. `edit_file`, `write_file`, `shell`). Read-heavy patterns that contain `read_file` but no mutating tools are treated as exploratory thrashing and are not promoted; when such patterns are present, an **avoid** note reminds the agent to use `retrieve_artifact` after the first read and to batch edits. The whole section is capped at roughly 200 tokens; if the initial render exceeds the budget, the avoid note and then the sequence hint are dropped before the core tool/artifact summary.
+The rendered section also surfaces a **typical lean tool sequence** from the highest-hit pattern that includes at least one mutating tool (e.g. `edit_file`, `write_file`, `shell`). Read-heavy patterns that contain `read_file` but no mutating tools are treated as exploratory thrashing and are not promoted; when such patterns are present, an **avoid** note reminds the agent to avoid read-heavy exploratory loops and to batch edits. The whole section is capped at roughly 200 tokens; if the initial render exceeds the budget, the avoid note and then the sequence hint are dropped before the core tool/artifact summary.
 
 ## Telemetry Scorecard
 
@@ -414,9 +414,9 @@ One row per session in the context-engine SQLite DB. No text content is stored �
 - Plan mode persists via a `system_note` event replayed by `Session.resume`.
 - Always-on **risk confirm** (#580) runs after validate and before write-path: TTY `[y/N]` for `rm`, `git reset`, force-push, `git clean -f`, `gh issue close` / `gh pr merge`, package installs, and writes outside cwd. Headless fail-closes those classes unless listed in `[risk].allow`. Concurrent confirms are serialized so stdin does not interleave.
 
-### Repeat-read interceptor (issue #545)
+### Repeat reads (issues #545, #799)
 
-`read_file` (and `read_and_summarize`) calls are intercepted within a session. A second read of an unchanged file returns the existing artifact card and skips the disk read. Behaviour is configurable via `[tools] block_repeat_reads` (default `false` = warn; `true` = hard-block). The read index is rebuilt on resume and invalidated on any write/edit, so post-edit reads stay allowed; re-reads are also permitted when the file's disk mtime changes. In engine mode the compiled prompt includes a **"Files Read This Session"** index (`path → artifact_id`) so the agent can use `retrieve_artifact(id)` instead of re-reading. When the scorecard counts more than `REPEAT_FILE_READS_THRESHOLD` repeat reads, the count surfaces in the turn footer as a nudge.
+`read_file` always returns the requested contents from disk, including a repeat read of an unchanged file (issue #799 removed the artifact-card interceptor). The scorecard still counts the repeat: the read index records the path and its mtime for the running session (it is not restored on resume, so the first re-read after a resume is not counted) and is invalidated on any write/edit. In engine mode the compiled prompt includes a **"Files Read This Session"** index (`path → artifact_id`) so the agent can optionally use `retrieve_artifact(id)` instead of re-reading.
 
 ### Resume hardening (issues #523, #546)
 
@@ -426,8 +426,8 @@ One row per session in the context-engine SQLite DB. No text content is stored �
 ### Scorecard nudges and agent hints (issues #549, #550)
 
 Beyond the `/scorecard` table, the telemetry loop feeds back into the live session:
-- **Turn-footer nudges** surface when repeat reads pile up, no-op tool calls recur, recall hit-rate is low, or read/retrieve churn fires.
-- **Engine-mode agent hints** are injected into the system frame when the repeat-read count crosses `REPEAT_FILE_READS_THRESHOLD` or recall-used % is low, steering the agent toward artifact-first reads and explicit correction capture. The threshold is a single exported constant shared by the engine hint and the TUI footer nudge.
+- **Turn-footer nudges** surface when no-op tool calls recur, recall hit-rate is low, or read/retrieve churn fires.
+- **Engine-mode agent hints** are injected into the system frame when churn fires or recall-used % is low, noting the repeated access (the hint states the fact; it gives no instruction).
 
 ### End-of-session epilogue (issue #519)
 
@@ -435,7 +435,7 @@ Beyond the `/scorecard` table, the telemetry loop feeds back into the live sessi
 
 ### Shared agent policy (issue #228)
 
-Engine and classic modes share one mode-neutral agent policy injected into the system frame: instruction precedence, treating tool output as untrusted data, evidence-first assertions, tool-safety guidance, and concise tool-use norms. Independent tool calls in one assistant response execute **concurrently**; parallel mutating tools targeting the same path are rejected by write-path guards. The prose tool-schema list was removed from the system prompt — the structured tool definitions passed to the provider remain the authoritative interface. Adaptive Context instructions stay engine-only.
+Engine and classic modes share one mode-neutral agent policy injected into the system frame: instruction precedence, treating tool output as untrusted data, evidence-first assertions, and concise tool-use norms. Independent tool calls in one assistant response execute **concurrently**; parallel mutating tools targeting the same path are rejected by write-path guards. The prose tool-schema list was removed from the system prompt — the structured tool definitions passed to the provider remain the authoritative interface. Adaptive Context instructions stay engine-only.
 
 ### Concurrent tool execution (issue #260)
 
@@ -515,8 +515,6 @@ compact_at = 0.70
 emergency_at = 0.85
 
 [tools]
-block_repeat_reads = false   # warn and return artifact card (default); true = hard-block repeat read_file of unchanged files
-
 [tools.web]
 enabled = true                # web_fetch; allow_domains / deny_domains (deny wins); private nets always blocked
 

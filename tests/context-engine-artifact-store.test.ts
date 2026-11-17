@@ -174,8 +174,6 @@ describe("context-engine artifact store", () => {
     }
     try {
       reopened = ArtifactStore.open(dbPath, "sess-1", TEST_CONFIG);
-      expect(reopened.findFileReadArtifact("/tmp/foo.txt#1#100")?.id).toBe(first.artifactId);
-      expect(reopened.findFileReadArtifactByRange("/tmp/foo.txt", 1, 100)?.id).toBe(first.artifactId);
       expect(reopened.listFileReads()[0]?.artifactId).toBe(first.artifactId);
     } finally {
       reopened?.close();
@@ -202,7 +200,7 @@ describe("context-engine artifact store", () => {
     }
     const s2 = ArtifactStore.open(dbPath, "sess-1", TEST_CONFIG);
     try {
-      const latest = s2.findFileReadArtifactByRange("/tmp/foo.txt", 1, 100);
+      const latest = s2.getArtifact(s2.listFileReads()[0]!.artifactId);
       expect(latest?.rawText).toBe(a);
       expect(latest?.id).not.toBe(bId);
     } finally {

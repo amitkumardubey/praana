@@ -497,7 +497,7 @@ describe("search_transcript tool (PR3)", () => {
     expect(entry.unrecoveredStub).toBe(false);
   });
 
-  test("keeps recovered source output ahead of later cards for the same artifact", async () => {
+  test("keeps recovered source output ahead of legacy interceptor cards in historical logs", async () => {
     const { log } = openLog();
     const card = buildArtifactCard("art_abcdef123456", "read_file", "needle.txt", 1000);
     for (const id of ["source", "repeat"]) {
@@ -748,7 +748,7 @@ describe("search_transcript tool (PR3)", () => {
   });
 
   test("only recovers paired source results within the same reset epoch", async () => {
-    for (const scenario of ["wrong-tool", "wrong-call", "repeat-read", "reset"] as const) {
+    for (const scenario of ["wrong-tool", "wrong-call", "legacy-repeat-read", "reset"] as const) {
       const { log } = openLog();
       const card = buildArtifactCard("art_abcdef123456", "read_file", "inspect", 1000);
       addCanonical(log, "card", {
@@ -764,7 +764,7 @@ describe("search_transcript tool (PR3)", () => {
         payload: {
           toolCallId: scenario === "wrong-call" ? "other" : "call",
           tool: scenario === "wrong-tool" ? "shell" : "read_file",
-          result: scenario === "repeat-read"
+          result: scenario === "legacy-repeat-read"
             ? {
               ok: true, content: card, artifact_id: "art_abcdef123456", original_turn: 1,
               warning: 'Already read turn 1 — use retrieve_artifact("art_abcdef123456") or search_turn_events',
@@ -1017,7 +1017,7 @@ describe("search_transcript tool (PR3)", () => {
     const description = searchTranscriptModule.createSearchTranscriptTool({ eventLog: log }).search_transcript.description;
     const texts = [
       buildClassicSystemFrame("/project", "session", []),
-      buildSystemFrame("/project", "session", [], undefined, null, true),
+      buildSystemFrame("/project", "session", []),
       ...[true, false].map((classicMode) => describeTools({ classicMode, contextEngineEnabled: !classicMode })
         .find((line) => line.startsWith("search_transcript("))!),
       `search_transcript: ${description}`,

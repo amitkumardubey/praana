@@ -155,7 +155,7 @@ describe("formatTurnFooterDigest", () => {
     expect(line).toContain("9.4s");
   });
 
-  it("includes repeat_reads when count exceeds threshold", () => {
+  it("no longer shows repeat_reads in the footer", () => {
     const line = formatTurnFooterDigest({
       durationMs: 1000,
       ambient: "inline",
@@ -163,20 +163,16 @@ describe("formatTurnFooterDigest", () => {
       writeCount: 0,
       ctxBeforePct: 10,
       ctxAfterPct: 12,
-      repeatFileReads: 6,
-    });
-    expect(line).toContain("repeat_reads:6");
-  });
-
-  it("omits repeat_reads at or below threshold", () => {
-    const line = formatTurnFooterDigest({
-      durationMs: 1000,
-      ambient: "inline",
-      editCount: 0,
-      writeCount: 0,
-      ctxBeforePct: 10,
-      ctxAfterPct: 12,
-      repeatFileReads: 5,
+      stats: {
+        promptTokens: 0,
+        outputTokens: 0,
+        digestLen: 0,
+        recallCalls: 0,
+        recallHits: 0,
+        autoHydrated: 0,
+        activeState: 0,
+        totalState: 0,
+      },
     });
     expect(line).not.toContain("repeat_reads");
   });

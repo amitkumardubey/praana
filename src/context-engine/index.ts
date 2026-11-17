@@ -224,9 +224,9 @@ export class ContextEngine {
     return this.extraction.captureStateSnapshot(stateGraph);
   }
 
-  ingestToolResult(input: IngestToolResultInput): IngestToolResultOutput {
+  ingestToolResult(input: IngestToolResultInput, cardPresented = true): IngestToolResultOutput {
     const result = this.store.ingestToolResult(input);
-    if (!result.inlined) {
+    if (!result.inlined && cardPresented) {
       this.scorecard.inc("artifactCardsProduced");
     }
     return result;
@@ -234,22 +234,6 @@ export class ContextEngine {
 
   touchAccess(id: string, currentTurn: number): void {
     this.store.touchAccess(id, currentTurn);
-  }
-
-  findFileReadArtifact(absPath: string): ContextArtifact | null {
-    return this.store.findFileReadArtifact(absPath);
-  }
-
-  findFileReadArtifactByRange(
-    absPath: string,
-    offset?: number,
-    limit?: number,
-  ): ContextArtifact | null {
-    return this.store.findFileReadArtifactByRange(absPath, offset, limit);
-  }
-
-  clearFileRead(absPath: string): void {
-    this.store.clearFileRead(absPath);
   }
 
   clearFileReadAllRanges(absPath: string): void {

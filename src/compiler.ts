@@ -5,6 +5,7 @@ import { getAppLogger } from "./logger.js";
 import { APP_VERSION } from "./app-banner.js";
 import type { NativeAddonStatus } from "./native/index.js";
 import { MEMORY_POLICY } from "./file-memory/index.js";
+import { formatLocalDate } from "./local-date.js";
 
 export interface CompileInput {
   stateGraph: StateGraph;
@@ -84,7 +85,6 @@ export function compile(input: CompileInput): string {
     input.toolSchemas,
     stateSummary,
     input.agentsContext,
-    false,
     input.resumeNote,
     input.nativeStatus,
     input.memoryEnabled,
@@ -159,7 +159,6 @@ export function compileWithMetrics(input: CompileInput): { prompt: string; metri
     input.toolSchemas,
     stateSummary,
     agentsContext,
-    false,
     input.resumeNote,
     input.nativeStatus,
     input.memoryEnabled,
@@ -275,10 +274,6 @@ export function buildSharedAgentPolicy(recallEnabled = false): string[] {
     "3. If evidence is missing or stale, call search_transcript, search_session_log or re-read the source.",
     "4. Only assert after you have explicit evidence from this repository context.",
     "",
-    "## Tool Safety",
-    "",
-    "RULE: Never call write_file, edit_file, or use shell commands with file write side-effects (e.g. `echo > file`, `sed -i`, `tee`) unless the user's message in THIS turn explicitly requests changes. Describing what you would change does not count. If unsure, ask first.",
-    "",
     "## Tool Use",
     "",
     "Use the provided tools when they are needed to complete the current request. Inspect relevant source before making code claims or changes, and respond concisely.",
@@ -293,45 +288,18 @@ export function buildSharedAgentPolicy(recallEnabled = false): string[] {
     recallEnabled
       ? "Use search_session_log for other session events; recall searches cross-session file memories, not the transcript."
       : "Use search_session_log for other session events.",
-    "",
-    "## Correction Capture",
-    "",
-    "On any user correction of scope, facts, or issue number: call add_note and retract_task (if applicable) in the same turn before any other tool calls. Capturing the correction immediately prevents the stale assumption from persisting into the next turn.",
-  ];
-}
-
-export function buildArtifactFirstReadsPolicy(): string[] {
-  return [
-    "## Artifact-First Reads",
-    "",
-    "Before calling read_file on a path already read this session, check the Active State notes and Recent Turns for an existing artifact card. Prefer retrieve_artifact or search_transcript to recover the prior content; search_turn_events finds turn summaries. Only call read_file again if the file may have changed on disk or the prior read is incomplete.",
   ];
 }
 
 export interface AgentHintCounters {
-  repeatFileReads: number;
   churnInterventions?: number;
 }
 
-/**
- * Shared threshold for the repeat_file_reads scorecard signal.
- * Drives both the engine-mode agent hint (buildAgentHints) and the TUI footer nudge,
- * so the prompt and the footer fire in lockstep. Issue #550.
- */
-export const REPEAT_FILE_READS_THRESHOLD = 5;
-
-const AGENT_HINT_REPEAT_READS_THRESHOLD = REPEAT_FILE_READS_THRESHOLD;
-
 export function buildAgentHints(counters: AgentHintCounters): string {
   const parts: string[] = [];
-  if (counters.repeatFileReads > AGENT_HINT_REPEAT_READS_THRESHOLD) {
-    parts.push(
-      `- repeat_file_reads: ${counters.repeatFileReads} — before re-reading a path, use retrieve_artifact or search_turn_events.`,
-    );
-  }
   if ((counters.churnInterventions ?? 0) > 0) {
     parts.push(
-      `- churn_interventions: ${counters.churnInterventions} — stop re-reading the same files; use one narrow retrieve_artifact(id, lineStart, lineEnd) or state a preliminary conclusion.`,
+      `- churn_interventions: ${counters.churnInterventions} — repeated access to the same files or artifacts detected.`,
     );
   }
   if (parts.length === 0) {
@@ -348,8 +316,7 @@ export interface FileReadIndexEntry {
 
 /**
  * Build a compact "Files Read This Session" section for the compiled prompt.
- * The index helps the agent discover already-read files and use retrieve_artifact(id)
- * instead of re-calling read_file. Issue #561.
+ * The index lists previously read files and their associated artifacts. Issue #561.
  *
  * `reads` must be ordered latest read first (as `listFileReads` returns it). The
  * order is kept as given: the turn number is the store turn of the artifact, which
@@ -375,7 +342,7 @@ export function buildFilesReadIndexSection(
   const lines = [
     "## Files Read This Session",
     "",
-    "Use retrieve_artifact(id) before re-reading a path:",
+    "Files read in this session:",
     "",
   ];
   for (const r of shown) {
@@ -398,7 +365,6 @@ export function buildSystemFrame(
   toolSchemas: string[],
   stateSummary?: string,
   agentsContext?: string | null,
-  engineMode = false,
   resumeNote?: string,
   nativeStatus?: NativeAddonStatus | null,
   memoryEnabled = false,
@@ -410,7 +376,7 @@ export function buildSystemFrame(
     `You are PRAANA ${APP_VERSION}, a coding agent with adaptive context and dated file memories.`,
     `Working directory: ${cwd}`,
     `Session ID: ${sessionId}`,
-    `Current time: ${new Date().toISOString()} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`,
+    `Current date: ${formatLocalDate()} (${Intl.DateTimeFormat().resolvedOptions().timeZone})`,
   ];
 
   if (agentsContext && agentsContext.trim()) {
@@ -441,10 +407,6 @@ export function buildSystemFrame(
   lines.push("", ...buildSharedAgentPolicy(memoryEnabled));
 
   if (memoryEnabled && !incognito) lines.push("", "## File Memory", "", MEMORY_POLICY);
-
-  if (engineMode) {
-    lines.push("", ...buildArtifactFirstReadsPolicy());
-  }
 
   lines.push(
     "",

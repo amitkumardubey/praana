@@ -6,6 +6,7 @@ import {
   type StreamRequest,
 } from "./llm/index.js";
 import { DEFAULT_STREAM_IDLE_TIMEOUT_MS } from "./llm/stream-guard.js";
+import { DEFAULT_CONFIG } from "./config.js";
 import { resolve, isAbsolute } from "node:path";
 import { resolveDefaultSessionLogDir } from "./app-identity.js";
 import { appendDebugScores, saveDebugPrompt } from "./debug-prompts.js";
@@ -22,7 +23,6 @@ import {
   estimateTokens,
 } from "./context-engine/index.js";
 import { EmbeddingCache } from "./context-engine/embedding-cache.js";
-import { buildArtifactCard } from "./context-engine/summarize.js";
 import { buildSkillMetadataCatalog } from "./skills/index.js";
 import { createAllTools, describeTools } from "./tools/index.js";
 import { type ToolDefinition as RuntimeToolDefinition } from "./tools/tool-def.js";
@@ -494,7 +494,6 @@ function countNoOpTools(toolName: string, result: unknown): number {
 }
 
 export interface ScorecardNudgeSnapshot {
-  repeatFileReads: number;
   noOpTools: number;
   churnInterventions: number;
 }
@@ -505,7 +504,6 @@ function snapshotScorecardNudge(
 ): ScorecardNudgeSnapshot {
   const c = session.scorecard?.getCounters?.();
   return {
-    repeatFileReads: c?.repeatFileReads ?? 0,
     noOpTools,
     churnInterventions: c?.churnInterventions ?? 0,
   };
@@ -520,15 +518,11 @@ export function buildScorecardNudge(
   if (!start || !end) return undefined;
   const churnDelta = end.churnInterventions - start.churnInterventions;
   if (churnDelta > 0) {
-    return `Tip: read/retrieve churn detected; use one narrow retrieve_artifact or conclude.`;
+    return `Tip: read/retrieve churn detected; files or artifacts were accessed repeatedly.`;
   }
-  const repeatReadsDelta = end.repeatFileReads - start.repeatFileReads;
   const noOpToolsDelta = end.noOpTools - start.noOpTools;
   const recallHitRate = turnRecallCalls > 0 ? turnRecallHits / turnRecallCalls : 1;
 
-  if (repeatReadsDelta > 0) {
-    return `Tip: you re-read files this turn; use search_transcript to recover prior output or search_session_log for other session events.`;
-  }
   if (noOpToolsDelta > 0) {
     return `Tip: a tool call made no changes; verify arguments before retrying.`;
   }
@@ -775,46 +769,16 @@ export async function runTurn(
     shellLiveStream: s.shellLiveStream ?? true,
     skills: session.skills ?? [],
     skillRuntime: session.skillRuntime,
-    blockRepeatReads: session.config.tools?.block_repeat_reads ?? false,
     webConfig: session.config.tools?.web,
     headless: session.headless,
     riskAllow: session.config.risk?.allow,
     webHostRemembered: (host) => session.webFetchHostRemembered(host),
-    hasReadPath: (absPath) => session.scorecard.hasReadPath(absPath),
     getReadPathMtime: (absPath) => session.scorecard.getReadPathMtime(absPath),
     clearReadPath: (absPath) => {
       session.scorecard.clearReadPath(absPath);
       session.contextEngine?.clearFileReadAllRanges(absPath);
     },
     lspManager: session.lspManager,
-    findFileReadArtifact: (absPath) => {
-      const art = session.contextEngine?.findFileReadArtifact(absPath) ?? null;
-      if (!art) return null;
-      return {
-        id: art.id,
-        createdTurn: art.createdTurn,
-        card: buildArtifactCard(
-          art.id,
-          art.sourceTool,
-          art.command,
-          art.rawTokens,
-        ),
-      };
-    },
-    findFileReadArtifactByRange: (absPath, offset, limit) => {
-      const art = session.contextEngine?.findFileReadArtifactByRange(absPath, offset, limit) ?? null;
-      if (!art) return null;
-      return {
-        id: art.id,
-        createdTurn: art.createdTurn,
-        card: buildArtifactCard(
-          art.id,
-          art.sourceTool,
-          art.command,
-          art.rawTokens,
-        ),
-      };
-    },
   });
 
   const modelName = modelOverride ?? session.config.llm.model;
@@ -900,7 +864,6 @@ export async function runTurn(
       embeddingCache: session.embeddingCache,
       workflowPatterns,
       agentHints: buildAgentHints({
-        repeatFileReads: session.scorecard.getCounters().repeatFileReads,
         churnInterventions: session.scorecard.getCounters().churnInterventions,
       }),
       circuitNotes: session.circuitNotes?.() ?? [],
@@ -1097,15 +1060,15 @@ export async function runTurn(
       timestamp: Date.now(),
     },
   ];
-  const maxSteps = clampTurnInt(session.config.turn?.max_steps, 25);
+  const maxSteps = clampTurnInt(session.config.turn?.max_steps, DEFAULT_CONFIG.turn.max_steps);
   // Pause/ceiling only when the sink can ask. Headless runs, and any sink
   // without `onStepPause` (subagents, tests, non-interactive UIs), use
   // `max_steps` as a hard cap: the last batch executes, then one wrap-up.
   // User-facing warnings for bad values live in validateConfig. Here a bad
   // value is only clamped so the loop bound stays a positive integer.
   const isHeadless = !!session.headless;
-  const pauseAfterSteps = clampTurnInt(session.config.turn?.pause_after_steps, 50);
-  const configuredHardMaxSteps = clampTurnInt(session.config.turn?.hard_max_steps, 300);
+  const pauseAfterSteps = clampTurnInt(session.config.turn?.pause_after_steps, DEFAULT_CONFIG.turn.pause_after_steps);
+  const configuredHardMaxSteps = clampTurnInt(session.config.turn?.hard_max_steps, DEFAULT_CONFIG.turn.hard_max_steps);
   // Keep the configured ceiling. When it is not above the pause interval the
   // ceiling is reached first, so the turn stops there and never asks.
   const hardMaxSteps = configuredHardMaxSteps;
@@ -1759,16 +1722,6 @@ export async function runTurn(
 
         let promptResultText = toolResultRawText(result);
         let artifactId: string | undefined;
-        const skippedDisk =
-          result &&
-          typeof result === "object" &&
-          (result as { skipped_disk?: unknown }).skipped_disk === true;
-        const resultArtifactId =
-          result &&
-          typeof result === "object" &&
-          typeof (result as { artifact_id?: unknown }).artifact_id === "string"
-            ? ((result as { artifact_id: string }).artifact_id)
-            : undefined;
         const isRetrievalResult =
           tc.toolName === "retrieve_artifact" &&
           !isError &&
@@ -1780,16 +1733,10 @@ export async function runTurn(
           ? (result as { id: string }).id
           : undefined;
 
-        if (session.contextEngine && (skippedDisk || isRetrievalResult)) {
-          // Repeat-read interceptor and artifact retrievals: never re-ingest their
-          // payloads as new source artifacts; just surface the referenced artifact.
-          // Touch access only for the repeat-read path — retrieve_artifact already
-          // touches internally via ArtifactStore.retrieve(), so an extra touch here
-          // would double-increment access_count (skewing promotion and eviction).
-          artifactId = resultArtifactId ?? retrievalArtifactId;
-          if (artifactId && skippedDisk) {
-            session.contextEngine.touchAccess(artifactId, session.getTurnCount());
-          }
+        if (session.contextEngine && isRetrievalResult) {
+          // Never re-ingest retrievals as source artifacts. ArtifactStore.retrieve()
+          // already touches access; touching here would double-count retrievals.
+          artifactId = retrievalArtifactId;
           promptResultText =
             typeof (result as { content?: unknown }).content === "string"
               ? (result as { content: string }).content
@@ -1834,6 +1781,8 @@ export async function runTurn(
             requestEnd = limit !== undefined ? sourceLineStart + limit - 1 : 0;
             requestUnbounded = limit === undefined;
           }
+          // A failed read ({ ok: false, error }) must reach the model as the error, not as a card.
+          const showReadContents = tc.toolName === "read_file";
           const ingested = session.contextEngine.ingestToolResult({
             sourceTool: tc.toolName,
             command,
@@ -1844,8 +1793,10 @@ export async function runTurn(
             requestStart,
             requestEnd,
             requestUnbounded,
-          });
-          promptResultText = ingested.promptText;
+          }, !showReadContents);
+          // Keep the lossless artifact for later turns, but present the requested
+          // contents (after hooks) in this turn just as classic mode does.
+          promptResultText = showReadContents ? toolResultRawText(result) : ingested.promptText;
           artifactId = ingested.artifactId;
           const toolTokens = estimateDisplayTokens(promptResultText);
           const savings = computeDistillerSavings(
@@ -2239,8 +2190,6 @@ export interface MemoryBannerStats {
   autoHydrated: number;
   promptTokens: number;
   outputTokens: number;
-  /** Session-scoped scorecard repeat_file_reads (for footer nudge). */
-  repeatFileReads?: number;
   /** Session-scoped churn interventions (issue #571, for footer nudge). */
   churnInterventions?: number;
   /** Per-turn tip when scorecard signals fire this turn (issue #549 / #571). */
@@ -2299,7 +2248,6 @@ export function computeMemoryStats(
     autoHydrated,
     promptTokens: promptTokens ?? 0,
     outputTokens: outputTokens ?? 0,
-    repeatFileReads: session.scorecard?.getCounters?.().repeatFileReads ?? 0,
     churnInterventions: session.scorecard?.getCounters?.().churnInterventions ?? 0,
   };
 }

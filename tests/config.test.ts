@@ -228,9 +228,9 @@ describe("config loading", () => {
     )).toBe(true);
   });
 
-  it("defaults block_repeat_reads to false", () => {
+  it("no longer includes the removed tools.block_repeat_reads key", () => {
     const config = loadConfig(join(root, "missing.toml"));
-    expect(config.tools.block_repeat_reads).toBe(false);
+    expect((config.tools as Record<string, unknown>).block_repeat_reads).toBeUndefined();
   });
 
   it("does not auto-select a provider from environment when [llm] provider is unset", () => {
@@ -248,11 +248,12 @@ describe("config loading", () => {
     }
   });
 
-  it("allows block_repeat_reads to be explicitly set to false", () => {
-    const configPath = join(root, "soft.toml");
-    writeFileSync(configPath, "[tools]\nblock_repeat_reads = false\n", "utf-8");
-    const config = loadConfig(configPath);
-    expect(config.tools.block_repeat_reads).toBe(false);
+  it("loads a config that still sets the removed block_repeat_reads key without warning", () => {
+    const configPath = join(root, "legacy-tools.toml");
+    writeFileSync(configPath, "[tools]\nblock_repeat_reads = true\n", "utf-8");
+    getConfigWarnings();
+    loadConfig(configPath);
+    expect(getConfigWarnings().some((w) => w.includes("block_repeat_reads"))).toBe(false);
   });
 
   it("warnings reflect the most recent loadConfig() call", () => {
