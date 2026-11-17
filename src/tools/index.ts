@@ -91,10 +91,6 @@ export function createAllTools(ctx: ToolRegistryContext) {
 
   const knowledgeTools = createKnowledgeTools({
     eventLog: ctx.eventLog,
-    memoryStore: null,
-    memoryEnabled: false,
-    incognito: ctx.incognito,
-    includeLegacyMemoryTools: false,
     contextEngine: ctx.contextEngine,
     skillScorecard: ctx.scorecard,
     getCurrentTurn: ctx.getCurrentTurn ?? (() => 0),
@@ -161,7 +157,7 @@ export function createAllTools(ctx: ToolRegistryContext) {
   return {
     ...memoryTools,
     ...knowledgeTools,
-    ...(ctx.memoryEnabled && ctx.fileMemory ? createFileMemoryTools(ctx.fileMemory) : {}),
+    ...(ctx.memoryEnabled && ctx.fileMemory ? createFileMemoryTools(ctx.fileMemory, { onRecall: () => ctx.scorecard?.inc("recallCalls") }) : {}),
     ...searchTranscriptTools,
     ...systemTools,
     ...searchCodeTools,

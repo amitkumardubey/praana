@@ -1,6 +1,6 @@
 import type { Event } from "./types.js";
 import type { Session } from "./session.js";
-import type { SessionEvent } from "./memory/types.js";
+import type { SessionEvent } from "./session-outcome.js";
 import { computeContextPressureRatio } from "./context-pressure.js";
 
 export interface ClassicCompactionResult {

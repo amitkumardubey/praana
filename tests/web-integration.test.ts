@@ -267,9 +267,6 @@ describe("web_fetch against a local server", () => {
 
       const tools = createKnowledgeTools({
         eventLog: { append() {} } as unknown as EventLog,
-        memoryStore: null,
-        memoryEnabled: false,
-        incognito: false,
         contextEngine: engine,
         getCurrentTurn: () => 2,
       });

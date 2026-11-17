@@ -17,7 +17,6 @@ async function start(enabled = true) {
   process.env.PRAANA_HOME = home;
   const config = structuredClone(loadConfig());
   config.memory.enabled = enabled;
-  config.memory.summarizer = "disabled";
   config.native.enabled = false;
   config.context_engine.enabled = false;
   config.context_engine.measurement_mode = false;
@@ -28,11 +27,10 @@ async function start(enabled = true) {
   return session;
 }
 
-it("accepts memoryTimeoutMs but has no session-end memory work", async () => {
+it("has no session-end memory work", async () => {
   const session = await start();
-  const status = await session.end("clean", [], { memoryTimeoutMs: 30 });
+  const status = await session.end("clean", []);
   expect(status.memory).toBe("noop");
-  expect(status.learningsStored).toBe(0);
   expect(status.turns).toBe(0);
 });
 it("skips memory when fully disabled and ending twice remains safe", async () => {

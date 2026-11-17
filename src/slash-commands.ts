@@ -579,7 +579,6 @@ export async function executeSlashCommand(
             ...formatScorecardLines({
               counters,
               recallUsed: session.getRecallUsedCount(),
-              memory: session.scorecard.getMemorySnapshot(),
               engineOn: session.getScorecardEngineOn(),
             }),
           );
@@ -605,7 +604,6 @@ export async function executeSlashCommand(
         ...formatScorecardLines({
           counters,
           recallUsed: session.getRecallUsedCount(),
-          memory: session.scorecard.getMemorySnapshot(),
           engineOn: session.getScorecardEngineOn(),
         }),
         "",

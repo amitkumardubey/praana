@@ -55,6 +55,6 @@ describe("embedder consent", () => {
 
   it("does not require interactive consent when stderr is not a TTY", () => {
     Object.defineProperty(process.stderr, "isTTY", { value: false, configurable: true });
-    expect(needsInteractiveEmbedderConsent({ enabled: true, summarizer: "disabled", embedder: "auto" })).toBe(false);
+    expect(needsInteractiveEmbedderConsent({ enabled: true, embedder: "auto" })).toBe(false);
   });
 });

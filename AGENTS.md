@@ -48,9 +48,9 @@ praana --config /path/to/praana.config.toml
 
 Config deep-merge, later overrides earlier: `~/.praana/praana.config.json` → `~/.praana/config.toml` → `./praana.config.json` → `./praana.config.toml`. Only `[shell] allowed_paths` / `[risk] allow` arrays append-merge; other arrays replace.
 
-Config tables: `llm`, `memory`, `compiler`, `tiers`, `session`, `consolidation`, `shell`, `edit`, `risk`, `circuit`, `tools`, `native`, `lsp`, `verify`, `skills`, `ui`, `context_engine`, `project_detection`, `turn`; optional `[providers]` / `[search_code]` tables are validated but have no defaults. Keys and defaults: docs/reference.md and `praana.config.example.toml`.
+Config tables: `llm`, `memory`, `compiler`, `tiers`, `session`, `shell`, `edit`, `risk`, `circuit`, `tools`, `native`, `lsp`, `verify`, `skills`, `ui`, `context_engine`, `project_detection`, `turn`; optional `[providers]` / `[search_code]` tables are validated but have no defaults. Keys and defaults: docs/reference.md and `praana.config.example.toml`.
 
-Key env vars: provider API keys (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …); Bedrock via AWS creds or `AWS_BEARER_TOKEN_BEDROCK` / stored key, region `llm.region` → `AWS_REGION` → `AWS_DEFAULT_REGION` → `us-east-1`; `PRAANA_MODEL`, `PRAANA_SUMMARIZER_MODEL`, `PRAANA_NO_UPDATE_CHECK=1`. Debug mode (`--debug` / `/debug`) saves compiled prompts under `~/.praana/sessions/<session_id>/prompts/` (plus `scores.jsonl` in engine mode).
+Key env vars: provider API keys (`OPENROUTER_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …); Bedrock via AWS creds or `AWS_BEARER_TOKEN_BEDROCK` / stored key, region `llm.region` → `AWS_REGION` → `AWS_DEFAULT_REGION` → `us-east-1`; `PRAANA_MODEL`, `PRAANA_NO_UPDATE_CHECK=1`. Debug mode (`--debug` / `/debug`) saves compiled prompts under `~/.praana/sessions/<session_id>/prompts/` (plus `scores.jsonl` in engine mode).
 
 ## Slash Commands
 
@@ -116,7 +116,7 @@ src/
   native/ — lazy loader for `@praana/natives` (npm package or sidecar)
   lsp/ — JSON-RPC LSP client + manager (opt-in `[lsp]`)
   setup/ interactive-setup.ts — wizard; update/ — version check, install-kind, upgrade
-  memory/ — legacy Cognitive Memory (SQLite, embedders, summariser)
+  memory/ — embedder backends (transformers, Ollama), download consent; no memory store
   file-memory/ — File Memory store, format, index, recall, tools
   context-engine/ — compiler, scoring, checkpoint, distillers, telemetry
   skills/ — skill discovery, load tracking, usefulness stats
@@ -130,7 +130,7 @@ src/
 ## Behaviours agents must know
 
 - `loadAgentsContext()` merges `~/.praana/AGENTS.md`, `<git root>/AGENTS.md`, `<cwd>/AGENTS.md` (if cwd ≠ root), then `CLAUDE.md` only if no project-root `AGENTS.md`; cut at 16,000 chars.
-- **Hook pipeline (always-on):** pre-tool-call = plan-mode → validate (missing paths, unread `edit_file`, shell cwd/PATH) → risk confirm (destructive/outward classes; TTY `[y/N]`, headless deny unless in `[risk].allow`) → circuit loop gate (3rd identical mutating tool+args, or 3rd attempt after two errors on the same path/command; reads/tests never gated) → write-path acquire. Post-tool-call = LSP post-edit → verify (opt-in `[verify]`) → enrich → redact → circuit error-count → write-path release.
+- **Hook pipeline (always-on):** pre-tool-call = plan-mode → validate (missing paths, unread `edit_file`, shell cwd/PATH) → risk confirm (destructive/outward classes; TTY `[y/N]`, headless deny unless in `[risk].allow`) → circuit loop gate (blocks the 3rd identical mutating tool+args within a turn; repeated failures on the same file or command add a re-read advisory to the result instead of blocking; counts reset each turn; reads/tests never gated) → write-path acquire. Post-tool-call = LSP post-edit → verify (opt-in `[verify]`) → enrich → redact → circuit error-count → write-path release.
 - Concurrent mutating writes to the same path fail fast — serialize dependent mutations.
 - `/plan on` blocks `write_file` / `edit_file` / `batch_*` / `git_commit` / LSP edit tools / branch-creating shell until an approval word (`go`/`execute`/`proceed`/`continue`) or `/plan execute`; user-armed only, and approval words are ignored before deferrals like `continue reading` / `execute a search`.
 - Repeat-read interceptor: a second read of an unchanged file returns the artifact card (configurable `[tools] block_repeat_reads`); in engine mode use `retrieve_artifact(id)` instead of re-reading.
@@ -146,6 +146,6 @@ src/
 - Event log writes `fsyncSync` every event (durability over throughput); legacy `events.log` is renamed/merged into `events.jsonl` on open.
 - After code reviews or multi-issue analysis, call `add_note` immediately — otherwise findings disappear when recent turns truncate.
 - **bun:sqlite `:memory:` gotcha:** `new Database(":memory:")` creates a real on-disk file named `:memory:`; always go through `openDatabase()` (`src/sqlite.ts`).
-- **Concurrent DB access:** `openMemoryDb()` / `openContextEngineDb()` set WAL + `busy_timeout` via `applyConcurrencyPragmas()` (`src/sqlite.ts`); without them parallel sessions fail with `SQLITE_BUSY`.
+- **Concurrent DB access:** `openContextEngineDb()` sets WAL + `busy_timeout` via `applyConcurrencyPragmas()` (`src/sqlite.ts`); without them parallel sessions fail with `SQLITE_BUSY`.
 - Shell timeouts kill the process group (SIGTERM→SIGKILL) so orphaned children cannot hang the session; do not replace with `Bun.spawn`/`Bun.Terminal` unless process-tree cancellation is equivalent.
 

@@ -36,10 +36,7 @@ import {
 import { DEFAULT_WEB_CONFIG, decideWebHost, normalizeHost } from "./tools/web/policy.js";
 import { SessionNotFoundError } from "./session-errors.js";
 export { SessionNotFoundError } from "./session-errors.js";
-import {
-  isSessionGood,
-  type SessionEvent,
-} from "./memory/index.js";
+import { isSessionGood, type SessionEvent } from "./session-outcome.js";
 import { createEmbedder, resolveEmbeddingBackend } from "./memory/embedder-factory.js";
 import type { Embedder } from "./memory/types.js";
 import { createFileMemoryStore } from "./file-memory/store.js";
@@ -105,29 +102,16 @@ export function visibleCheckpointAfterBoundary(
   return checkpoint;
 }
 
-/**
- * M4 artifact promotion guard: a distilled summary is only promotable to
- * Cognitive Memory when it is non-empty human-readable prose — not a stub
- * (no matching distiller → empty summary) and not a JSON blob.
- * Exported for tests.
- */
-export function isPromotableArtifactSummary(summary: string): boolean {
-  const trimmed = summary.trimStart();
-  if (!trimmed) return false;
-  return !trimmed.startsWith("{") && !trimmed.startsWith("[");
-}
-
 /** Shutdown outcome; deliberate file memory writes need no session-end flush. */
 export type SessionEndStatus = {
-  memory: "completed" | "background" | "skipped" | "failed" | "noop";
+  /** "noop" when file memory is on (nothing to flush at session end), "skipped" when it is off. */
+  memory: "skipped" | "noop";
   turns: number;
   stateObjects: number;
   /** Mid-session `remember` tool successes. */
   rememberCalls: number;
   /** Successful file recall calls (query or by-name). */
   recallUsed: number;
-  /** Compatibility field; automatic memory extraction is disabled, so always 0. */
-  learningsStored: number;
 };
 
 export class Session {
@@ -1188,7 +1172,6 @@ export class Session {
   async end(
     reason: "clean" | "aborted" | "error",
     events?: SessionEvent[],
-    _opts?: { memoryTimeoutMs?: number }
   ): Promise<SessionEndStatus> {
     const summary = this.getSessionSummary();
     const emptyStatus = (memory: SessionEndStatus["memory"]): SessionEndStatus => ({
@@ -1197,7 +1180,6 @@ export class Session {
       stateObjects: summary.stateObjects,
       rememberCalls: summary.memoriesStored,
       recallUsed: 0,
-      learningsStored: 0,
     });
 
     if (this.ended) return emptyStatus("skipped");
@@ -1283,7 +1265,7 @@ export class Session {
     // Flush scorecard while the context DB is still open (shares connection with ContextEngine).
     try {
       this.syncScorecardFromRuntime();
-      await this.scorecard.flush(undefined, recallUsedCount);
+      await this.scorecard.flush(recallUsedCount);
     } catch (err) {
       this.getLogger().child("context_engine").warn("Scorecard flush failed", {
         cause: err as Error,
@@ -1311,7 +1293,6 @@ export class Session {
       stateObjects: summary.stateObjects,
       rememberCalls: summary.memoriesStored,
       recallUsed: recallUsedCount,
-      learningsStored: 0,
     };
   }
 
@@ -1350,8 +1331,9 @@ export class Session {
     }
   }
 
+  /** Only engine-mode semantic scoring uses the embedder; file memory recall is keyword-based. */
   private async initEmbedder(): Promise<void> {
-    if (!this.config.memory.enabled) return;
+    if (this.contextEngine === null || !this.isContextEngineEnabled()) return;
     try {
       this.embedder = await createEmbedder(this.config.memory, { logger: this.getLogger() });
       this.embeddingBackend = resolveEmbeddingBackend(this.config.memory, this.embedder);
@@ -1369,8 +1351,6 @@ export class Session {
 function initContextEngine(session: Session): void {
   const engineConfig = resolveContextEngineConfig(session.config);
   const measurementMode = engineConfig.measurement_mode;
-  const scorecardOptions = {};
-
   if (!session.isContextEngineEnabled()) {
     // Measurement mode: open a minimal context DB just for the scorecard
     if (measurementMode) {
@@ -1378,7 +1358,7 @@ function initContextEngine(session: Session): void {
         const dbPath = resolveContextDbPath(session.config, session.cwd);
         mkdirSync(dirname(dbPath), { recursive: true, mode: APP_HOME_DIR_MODE });
         const db = openContextEngineDb(dbPath);
-        session.scorecard = new ScorecardTracker(db, session.id, false, scorecardOptions);
+        session.scorecard = new ScorecardTracker(db, session.id, false);
         session.scorecard.restoreFromDb();
         session.getLogger().child("context_engine").notice("measurement mode enabled (scorecard only)");
       } catch (err) {
@@ -1398,7 +1378,6 @@ function initContextEngine(session: Session): void {
       dbPath,
       session.id,
       engineConfig,
-      scorecardOptions,
       findLastResetBoundaryTurn(session.eventLog.readAll()),
     );
     session.scorecard = session.contextEngine.scorecard;

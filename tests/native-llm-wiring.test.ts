@@ -14,7 +14,6 @@ import {
   type StreamRequest,
 } from "../src/llm/index.js";
 import { setApiKey, resetCredentialStoreForTests } from "../src/credentials.js";
-import { summarizerModelForProvider } from "../src/memory/summarizer-factory.js";
 import { resetBedrockConfigRegionForTests, setBedrockConfigRegion } from "../src/bedrock/region.js";
 import { PraanaLogger, setAppLogger } from "../src/logger.js";
 import { resetUserProvidersForTests } from "../src/provider-registry.js";
@@ -123,13 +122,6 @@ describe("native LLM wiring", () => {
     } finally {
       globalThis.fetch = originalFetch;
     }
-  });
-
-  it("summarizer defaults use provider-native model ids", () => {
-    expect(summarizerModelForProvider("openrouter")).toBe("anthropic/claude-3-5-haiku");
-    expect(summarizerModelForProvider("google")).toBe("gemini-2.0-flash");
-    expect(summarizerModelForProvider("groq")).toBe("llama-3.3-70b-versatile");
-    expect(summarizerModelForProvider("deepseek")).toBe("deepseek-chat");
   });
 
   it("stored Bedrock API key resolves as bearerToken", () => {

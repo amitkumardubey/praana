@@ -19,7 +19,6 @@ function setup() {
   const config = loadConfig();
   config.session.log_dir = root;
   config.memory.enabled = false;
-  config.memory.summarizer = "disabled";
   config.context_engine!.enabled = false;
   config.native = { ...config.native!, enabled: false };
   config.skills.enabled = false;

@@ -32,12 +32,12 @@ function importClosure(): Map<string, string[]> {
 
 test("import scanning includes type-only memory, checkpoint, re-export and self edges", () => {
   expect(relativeImports([
-    'import type {} from "./memory/store.js";',
+    'import type {} from "./memory/embeddings.js";',
     'export type { X } from "./file-memory/store.js";',
     'import type {} from "./checkpoint.js";',
     'import type {} from "./compaction.js";',
-  ].join("\n"))).toEqual(["./memory/store.js", "./file-memory/store.js", "./checkpoint.js", "./compaction.js"]);
-  for (const file of ["memory/store.ts", "file-memory/store.ts", "nested/file-memory/store.ts", "checkpoint.ts"]) expect(forbidden(file)).toBe(true);
+  ].join("\n"))).toEqual(["./memory/embeddings.js", "./file-memory/store.js", "./checkpoint.js", "./compaction.js"]);
+  for (const file of ["memory/embeddings.ts", "file-memory/store.ts", "nested/file-memory/store.ts", "checkpoint.ts"]) expect(forbidden(file)).toBe(true);
   expect(forbidden("frozen-summary.ts")).toBe(false);
 });
 

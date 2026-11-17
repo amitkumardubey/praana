@@ -481,7 +481,7 @@ describe("Google function declarations for the full default tool registry", () =
     const tools = createAllTools({
       eventLog: {} as unknown as EventLog,
       stateGraph: {} as unknown as StateGraph,
-      memoryStore: null,
+      fileMemory: null,
       memoryEnabled: true,
       incognito: false,
       contextEngine: {} as never,

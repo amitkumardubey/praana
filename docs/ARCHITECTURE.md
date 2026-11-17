@@ -93,7 +93,7 @@ src/
     memory.ts    — Adaptive Context state-graph tools (tasks, decisions, constraints, notes)
   git-context.ts — shared getGitContext / findGitRoot / findGitBranch helpers
   file-memory/   — Markdown file store, scoped paths, index, recall and tools
-  memory/        — Legacy SQLite memory modules; SQLite remains in use by context-engine and skill stats
+  memory/        — Embedder backends (transformers, Ollama) and download consent; SQLite memory.db remains in use by context-engine and skill stats
   skills/
     index.ts          — SkillRuntime: discovery, load tracking, telemetry (engine mode); buildSkillMetadataCatalog with usefulness-ranked ordering
     skill-stats-store.ts — Cross-session skill effectiveness: loadUsefulness (dual-scope), flush (boost/decay), co-occurrence recording
@@ -361,7 +361,7 @@ Shared helpers live in `src/git-context.ts`. Structured git tools (`#432` + `#58
 
 ## Skill Effectiveness Feedback Loop
 
-**Source:** `src/skills/skill-stats-store.ts`, `src/memory/db.ts`
+**Source:** `src/skills/skill-stats-store.ts`, `src/skills/skill-stats-db.ts`
 
 At session start, `SkillStatsStore.loadUsefulness()` performs a dual-scope read from `memory.db`'s `skill_stats(skill_id, scope, usefulness, load_count, used_count, last_loaded_at)` table — global skills first, project overrides on collision — and returns a `Map<string, number>` used to sort the skill catalog by descending usefulness. At session end (engine mode only), `flush()` updates each skill's score:
 
@@ -439,7 +439,7 @@ Engine and classic modes share one mode-neutral agent policy injected into the s
 
 ### Concurrent tool execution (issue #260)
 
-After the LLM streams tool calls, `turn.ts` runs `pre_tool_call` hooks then executes the pending batch concurrently. Builtin hooks: plan-mode, then always-on validate (#577: missing paths, unread `edit_file`, shell cwd/PATH), then risk confirm (#580), then the circuit loop gate (#578), then write-path acquire. Mutating tools in plan mode are denied; confirm-tier actions prompt (TTY) or fail closed (headless); the 3rd identical mutating call (or 3rd attempt after two path/command errors) is blocked; reads and test commands are never loop-gated; same-path concurrent writes fail fast. After execute, `post_tool_call` runs LSP post-edit, optional `[verify]`, error enrich, secret redaction (#579), circuit error-count, then write-path release. Headless `[circuit] max_tokens` / `max_wall_ms` skip the pending batch and run one no-tool wrap-up. Tool results and a copy of tool-call args are redacted for the prompt, `events.jsonl`, and the TUI; `execute` still receives original args. Independent reads, searches, and recall calls are safe to batch.
+After the LLM streams tool calls, `turn.ts` runs `pre_tool_call` hooks then executes the pending batch concurrently. Builtin hooks: plan-mode, then always-on validate (#577: missing paths, unread `edit_file`, shell cwd/PATH), then risk confirm (#580), then the circuit loop gate (#578), then write-path acquire. Mutating tools in plan mode are denied; confirm-tier actions prompt (TTY) or fail closed (headless); the 3rd identical mutating call within a turn is blocked, while repeated failures on the same path or command add a re-read advisory to the result instead of blocking (counts reset each turn); reads and test commands are never loop-gated; same-path concurrent writes fail fast. After execute, `post_tool_call` runs LSP post-edit, optional `[verify]`, error enrich, secret redaction (#579), circuit error-count, then write-path release. Headless `[circuit] max_tokens` / `max_wall_ms` skip the pending batch and run one no-tool wrap-up. Tool results and a copy of tool-call args are redacted for the prompt, `events.jsonl`, and the TUI; `execute` still receives original args. Independent reads, searches, and recall calls are safe to batch.
 
 ### Onboarding, credentials, and settings
 
@@ -579,4 +579,4 @@ Slash commands are handled by `src/slash-commands.ts`:
 - `/plan <on|off|execute>` — toggles plan mode (blocks mutating tools until approved)
 - `/help` — prints slash commands documentation
 
-CLI: `praana --incognito`, `praana --debug`, `praana --config <path>`, `praana resume [<session_id>]` (no id / 12-char prefix supported), `praana run "<instruction>"`, `praana setup` (also `praana init`), `praana upgrade` (alias `praana update`), `praana doctor`, `praana providers`, `praana models`, `praana --version`, and `praana memory dedupe`. Harbor adapter: `harbor_eval/`. See `src/app-banner.ts` and `src/cli-args.ts` for the full list.
+CLI: `praana --incognito`, `praana --debug`, `praana --config <path>`, `praana resume [<session_id>]` (no id / 12-char prefix supported), `praana run "<instruction>"`, `praana setup` (also `praana init`), `praana upgrade` (alias `praana update`), `praana doctor`, `praana providers`, `praana models`, and `praana --version`. Harbor adapter: `harbor_eval/`. See `src/app-banner.ts` and `src/cli-args.ts` for the full list.

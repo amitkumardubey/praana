@@ -14,12 +14,12 @@ import { runInteractiveSetup } from "./interactive-setup.js";
 import { tryAutoSelectProvider } from "./setup/logic.js";
 import { writeProviderConfig } from "./setup/config-writer.js";
 import { ensureCredentialsFileMode } from "./credentials.js";
-import { isFirstRun, markInitialized, tightenAppHomePermissions, APP_NAME } from "./app-identity.js";
-import { runMemoryDedupe } from "./memory-dedupe-cli.js";
+import { isFirstRun, markInitialized, tightenAppHomePermissions, APP_NAME, CLI_NAME } from "./app-identity.js";
 import { formatProviderListForDisplay } from "./provider-registry.js";
 import { handleDoctor } from "./doctor.js";
 import { isInteractiveTerminal } from "./terminal.js";
 import { needsInteractiveEmbedderConsent } from "./memory/embedder-consent.js";
+import { isContextEngineEnabled } from "./context-engine/index.js";
 import {
   formatModelsCliOutput,
   listModelsForCli,
@@ -52,6 +52,13 @@ export async function main() {
   if (parsed.versionMode) {
     console.log(`${APP_NAME} ${APP_VERSION}`);
     process.exit(0);
+  }
+
+  if (parsed.memoryCommandMode) {
+    console.error(
+      `${CLI_NAME} memory was removed. Memories are plain files under ~/.praana/memory and ~/.praana/projects/<key>/memory; use /memory inside a session.`,
+    );
+    process.exit(2);
   }
 
   if (parsed.providersMode) {
@@ -128,20 +135,6 @@ export async function main() {
     console.error("Configuration warnings:");
     for (const w of warnings) console.error(`  ⚠ ${w}`);
     console.error("");
-  }
-
-  if (parsed.memoryDedupeMode) {
-    try {
-      await runMemoryDedupe(cwd, config);
-      process.exit(0);
-    } catch (err) {
-      getAppLogger().error("Memory dedupe failed", {
-        code: "MEMORY_DEDUPE_FAILED",
-        cause: err as Error,
-      });
-      console.error((err as Error).message);
-      process.exit(1);
-    }
   }
 
   const isInteractive = isInteractiveTerminal();
@@ -300,7 +293,6 @@ export async function main() {
           stateObjects: status.stateObjects,
           rememberCalls: status.rememberCalls,
           recallUsed: status.recallUsed,
-          learningsStored: status.learningsStored,
         })) {
           console.log(line);
         }
@@ -339,7 +331,7 @@ export async function main() {
       await runTui(controller, undefined, { needsOnboarding: true });
       return;
     }
-    if (needsInteractiveEmbedderConsent(config.memory)) {
+    if (isContextEngineEnabled(config) && needsInteractiveEmbedderConsent(config.memory)) {
       await runTui(controller, undefined, { needsEmbedderConsent: true });
       return;
     }

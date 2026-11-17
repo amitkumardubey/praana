@@ -6,7 +6,7 @@ import { SkillRuntime, buildSkillMetadataCatalog } from "../src/skills/index.js"
 import { SkillStatsStore } from "../src/skills/skill-stats-store.js";
 import { isSessionGood } from "../src/session-outcome.js";
 import { openDatabase } from "../src/sqlite.js";
-import { ensureSkillStatsTable, getSkillUsefulness } from "../src/memory/db.js";
+import { ensureSkillStatsTable, getSkillUsefulness } from "../src/skills/skill-stats-db.js";
 import type { SkillsRuntimeConfig, SkillRecord } from "../src/skills/types.js";
 
 let tmpBase: string;
