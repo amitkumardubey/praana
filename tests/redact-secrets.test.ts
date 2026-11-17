@@ -90,7 +90,7 @@ describe("redactSecretsStrict", () => {
       let value: unknown = "AKIAIOSFODNN7EXAMPLE";
       for (let i = 0; i < depth; i++) value = { nested: value };
       expect(() => redactSecretsStrict(value)).toThrow("depth");
-      // Non-strict mode now fails closed there instead of returning the subtree.
+      // Non-strict mode has no depth limit; it still redacts the deep value.
       expectNoSecret(JSON.stringify(redactSecrets(value)) ?? "");
     }
   });
