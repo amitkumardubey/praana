@@ -243,6 +243,10 @@ describe("read_file per-call cap (#811)", () => {
     expect(result.truncated).toBe(true);
     expect(result.note).toContain("not available through read_file");
     expect(result.note).toContain("use the shell to read the rest of a cut line");
+    // The cut text cannot be used as an edit anchor: edit_file matches exactly.
+    expect(result.note).toContain("a cut line cannot be targeted by edit_file");
+    expect(result.note).toContain("never copy cut text into oldText");
+    expect(result.note).not.toContain("\n");
     expect(result.content).not.toContain("use the shell");
   });
 

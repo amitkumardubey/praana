@@ -426,7 +426,8 @@ export function buildCappedReadResult(
     if (longLinesCut > 0) {
       parts.push(
         `${longLinesCut} line${longLinesCut === 1 ? "" : "s"} cut at ${MAX_LINE_CHARS} characters; ` +
-          "the rest of a cut line is not available through read_file, use the shell to read the rest of a cut line",
+          "the rest of a cut line is not available through read_file, use the shell to read the rest of a cut line, " +
+          "and a cut line cannot be targeted by edit_file, so never copy cut text into oldText",
       );
     }
     if (capCut) parts.push(`call read_file with offset=${last + 1} for the next part`);
