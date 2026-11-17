@@ -1308,6 +1308,47 @@ describe("runTurn", () => {
     });
   }
 
+  it("presents a failed engine-mode read_file as the error, not as an artifact card", async () => {
+    const cacheDir = join(homedir(), ".cache");
+    mkdirSync(cacheDir, { recursive: true });
+    const cwd = mkdtempSync(join(cacheDir, "praana-engine-read-missing-"));
+    const config = makeConfig({ context_engine: { ...makeConfig().context_engine, enabled: true } });
+    const engine = ceReal.ContextEngine.open(":memory:", "read-missing-test", config.context_engine!);
+    const session = makeMockSession({ config, cwd, contextEngine: engine, scorecard: engine.scorecard });
+    const requests: ConversationMessage[][] = [];
+    const compilerMock = compileEngineWithMetrics as ReturnType<typeof mock>;
+    const previousCompiler = compilerMock.getMockImplementation()!;
+    compilerMock.mockImplementation(ceReal.compileEngineWithMetrics);
+    const tools = createSystemTools({ cwd, skills: [], skillRuntime: null, getCurrentTurn: () => session.getTurnCount() });
+    (createAllTools as ReturnType<typeof mock>).mockImplementationOnce(() => ({ read_file: tools.read_file }));
+    let reads = 0;
+    (piStream as ReturnType<typeof mock>).mockImplementation((req: StreamRequest) => {
+      requests.push(structuredClone(req.messages));
+      return (async function* () {
+        if (reads === 0) {
+          reads++;
+          const toolUse = { id: "read-missing", name: "read_file", args: { path: "missing.txt" } };
+          yield { type: "tool_call_end", toolCall: toolUse };
+          yield { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [toolUse] } };
+        } else {
+          yield { type: "text_delta", delta: "done" };
+          yield { type: "done", reason: "stop", message: { role: "assistant", content: "done" } };
+        }
+      })();
+    });
+    try {
+      await runTurn(session, "read the file", undefined, { sink: {} });
+      expect(requests).toHaveLength(2);
+      const text = requests[1]!.filter((m) => m.role === "tool_result").at(-1)!.result;
+      expect(text).not.toContain("[artifact:");
+      expect(JSON.parse(text).ok).toBe(false);
+    } finally {
+      compilerMock.mockImplementation(previousCompiler);
+      engine.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
   it("does not re-ingest retrieve_artifact results as source artifacts", async () => {
     const touchAccess = mock(() => {});
     const ingestToolResult = mock(() => ({

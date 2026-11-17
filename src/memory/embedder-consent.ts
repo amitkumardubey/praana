@@ -1,6 +1,6 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { appHomePath } from "../app-identity.js";
+import { appHomePath, ensureAppHome } from "../app-identity.js";
 import type { MemoryConfig } from "../types.js";
 import { resolveTransformersModel } from "./transformers-models.js";
 
@@ -24,7 +24,7 @@ export function getEmbedderConsent(): EmbedderConsent | null {
 }
 
 export function setEmbedderConsent(value: EmbedderConsent): void {
-  mkdirSync(appHomePath(), { recursive: true });
+  ensureAppHome();
   writeFileSync(consentPath(), `${value}\n`, "utf-8");
 }
 

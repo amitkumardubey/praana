@@ -34,7 +34,7 @@ import {
   writeSync,
 } from "node:fs";
 import { basename, dirname, join } from "node:path";
-import { appHomePath } from "../app-identity.js";
+import { appHomePath, APP_HOME_DIR_MODE } from "../app-identity.js";
 import {
   acquireSync,
   CredentialLockTimeoutError,
@@ -132,7 +132,7 @@ export function createSettingsFs(
 ): SettingsFs {
   const base: SettingsFs = {
     openExclusive(path: string, mode: number): number {
-      mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+      mkdirSync(dirname(path), { recursive: true, mode: APP_HOME_DIR_MODE });
       return openSync(
         path,
         constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | (constants.O_NOFOLLOW ?? 0),

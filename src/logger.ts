@@ -10,8 +10,9 @@ import { homedir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import {
   APP_HOME_DIR,
+  APP_HOME_DIR_MODE,
   APP_NAME,
-  appHomePath,
+  resolveDefaultAppLogDir,
 } from "./app-identity.js";
 import pino, { type Logger as PinoLogger, type DestinationStream } from "pino";
 import pretty from "pino-pretty";
@@ -92,7 +93,7 @@ function expandHome(p: string): string {
 }
 
 export function getAppLogDir(): string {
-  return appHomePath("logs");
+  return resolveDefaultAppLogDir();
 }
 
 /** Base path for pino-roll (extension added by rotator). */
@@ -117,7 +118,8 @@ export function getSessionSystemLogPath(sessionLogDir: string, sessionId: string
 function ensureParentDir(filePath: string): void {
   const dir = dirname(filePath);
   if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
+    // Logs live under the app home; keep every directory we create owner-only.
+    mkdirSync(dir, { recursive: true, mode: APP_HOME_DIR_MODE });
   }
 }
 

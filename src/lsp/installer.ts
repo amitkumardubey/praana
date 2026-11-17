@@ -8,7 +8,7 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
-import { appHomePath } from "../app-identity.js";
+import { APP_HOME_DIR_MODE, appHomePath } from "../app-identity.js";
 import { commandOnPath } from "../verify/spawn.js";
 import type { LspConfig } from "../types.js";
 import {
@@ -71,7 +71,7 @@ async function defaultInstallNpmPackages(
   if (!spec.npmPackages?.length) return null;
 
   try {
-    mkdirSync(cacheDir, { recursive: true });
+    mkdirSync(cacheDir, { recursive: true, mode: APP_HOME_DIR_MODE });
     const pkgJsonPath = join(cacheDir, "package.json");
     if (!existsSync(pkgJsonPath)) {
       writeFileSync(

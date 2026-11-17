@@ -414,7 +414,7 @@ One row per session in the context-engine SQLite DB. No text content is stored �
 - Plan mode persists via a `system_note` event replayed by `Session.resume`.
 - Always-on **risk confirm** (#580) runs after validate and before write-path: TTY `[y/N]` for `rm`, `git reset`, force-push, `git clean -f`, `gh issue close` / `gh pr merge`, package installs, and writes outside cwd. Headless fail-closes those classes unless listed in `[risk].allow`. Concurrent confirms are serialized so stdin does not interleave.
 
-### Repeat-read interceptor (issue #545)
+### Repeat reads (issues #545, #799)
 
 `read_file` always returns the requested contents from disk, including a repeat read of an unchanged file (issue #799 removed the artifact-card interceptor). The scorecard still counts the repeat: the read index records the path and its mtime for the running session (it is not restored on resume, so the first re-read after a resume is not counted) and is invalidated on any write/edit. In engine mode the compiled prompt includes a **"Files Read This Session"** index (`path → artifact_id`) so the agent can optionally use `retrieve_artifact(id)` instead of re-reading.
 
@@ -435,7 +435,7 @@ Beyond the `/scorecard` table, the telemetry loop feeds back into the live sessi
 
 ### Shared agent policy (issue #228)
 
-Engine and classic modes share one mode-neutral agent policy injected into the system frame: instruction precedence, treating tool output as untrusted data, evidence-first assertions, tool-safety guidance, and concise tool-use norms. Independent tool calls in one assistant response execute **concurrently**; parallel mutating tools targeting the same path are rejected by write-path guards. The prose tool-schema list was removed from the system prompt — the structured tool definitions passed to the provider remain the authoritative interface. Adaptive Context instructions stay engine-only.
+Engine and classic modes share one mode-neutral agent policy injected into the system frame: instruction precedence, treating tool output as untrusted data, evidence-first assertions, and concise tool-use norms. Independent tool calls in one assistant response execute **concurrently**; parallel mutating tools targeting the same path are rejected by write-path guards. The prose tool-schema list was removed from the system prompt — the structured tool definitions passed to the provider remain the authoritative interface. Adaptive Context instructions stay engine-only.
 
 ### Concurrent tool execution (issue #260)
 

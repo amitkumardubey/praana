@@ -14,6 +14,7 @@
 import { chmodSync, closeSync, mkdirSync, openSync, readSync, statSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
 import { Database } from "bun:sqlite";
+import { APP_HOME_DIR_MODE } from "./app-identity.js";
 
 const MAX_SYNC_WAIT_MS = 2_000;
 const MAX_ASYNC_WAIT_MS = 30_000;
@@ -311,7 +312,7 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
  * On failure the connection is closed.
  */
 function beginImmediate(path: string, busyMs: number): Database {
-  mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
+  mkdirSync(dirname(path), { recursive: true, mode: APP_HOME_DIR_MODE });
   const db = new Database(path, { create: true });
   try {
     try { chmodSync(path, 0o600); } catch { /* best-effort; Windows may reject the mode */ }

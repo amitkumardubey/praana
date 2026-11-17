@@ -1,6 +1,6 @@
-import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
+import { writeFileSync, readFileSync, existsSync } from "node:fs";
 import { DEFAULT_MODELS, pickFirstCatalogModel } from "../llm.js";
-import { appHomePath } from "../app-identity.js";
+import { appHomePath, ensureAppHome } from "../app-identity.js";
 import type { WriteConfigResult, CustomProviderConfig } from "./types.js";
 
 export function resolveDefaultModel(provider: string): string {
@@ -82,7 +82,7 @@ export function writeProviderConfig(
     opts?.customProvider,
   );
   try {
-    mkdirSync(appHomePath(), { recursive: true });
+    ensureAppHome();
     writeFileSync(configPath, content, "utf-8");
     return {
       written: true,

@@ -3,7 +3,7 @@ import { join } from "node:path";
 import * as readline from "node:readline";
 import { formatProviderListForDisplay } from "./provider-registry.js";
 import { getAppLogger } from "./logger.js";
-import { APP_HOME_DIR, appHomePath } from "./app-identity.js";
+import { APP_HOME_DIR, APP_HOME_DIR_MODE, appHomePath, ensureAppHome } from "./app-identity.js";
 import { askQuestion, isInteractiveTerminal } from "./terminal.js";
 
 export interface InitOptions {
@@ -127,7 +127,12 @@ export async function handleInit(opts: InitOptions): Promise<InitResult> {
   }
 
   try {
-    mkdirSync(appHomeDir, { recursive: true });
+    if (opts.homeDir) {
+      // Injected home (tests, alternate roots): same owner-only mode.
+      mkdirSync(appHomeDir, { recursive: true, mode: APP_HOME_DIR_MODE });
+    } else {
+      ensureAppHome();
+    }
     const existed = existsSync(configPath);
     writeFileSync(configPath, content, "utf-8");
 

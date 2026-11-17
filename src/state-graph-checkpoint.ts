@@ -35,6 +35,8 @@ import type { StateObject } from "./types.js";
 
 export const STATE_GRAPH_CHECKPOINT_FILENAME = "state_graph_checkpoint.json";
 const STATE_GRAPH_CHECKPOINT_TMP = "state_graph_checkpoint.json.tmp";
+/** Owner read/write only: the checkpoint holds every state object in the session. */
+const STATE_GRAPH_CHECKPOINT_FILE_MODE = 0o600;
 
 export function getStateGraphCheckpointPath(sessionDir: string): string {
   return join(sessionDir, STATE_GRAPH_CHECKPOINT_FILENAME);
@@ -74,7 +76,9 @@ export function saveStateGraphCheckpoint(
   // Write + fsync the tmp file before renaming so the kernel flush is guaranteed.
   // Without fsync, a crash between writeSync and rename can atomically install a
   // buffered (potentially empty/partial) file. Same pattern as events.jsonl.
-  const fd = openSync(tmpPath, "w");
+  // The checkpoint carries the whole state graph, so it is created owner-only
+  // (0600) like the session transcript; `mode` applies on create only.
+  const fd = openSync(tmpPath, "w", STATE_GRAPH_CHECKPOINT_FILE_MODE);
   try {
     writeSync(fd, JSON.stringify(data) + "\n");
     fsyncSync(fd);

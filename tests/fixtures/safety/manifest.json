@@ -33,8 +33,8 @@
     "src/redact/secrets.ts": "b754a944de44a0c79b38e84551a133255630fbc598b477083c870a0d470442b4",
     "src/risk/classes.ts": "6062455a425b9b15322147efee6593a3ea6f7b8acac48a36a967424a0bbd8fb2",
     "src/risk/classify.ts": "f1a937d49099d6f60aa06d9fe8174c06a2efba0259da45babf931a6b4b9143df",
-    "src/session.ts": "42e72458da17428ca28d848a16745ad6db7ff1053384ab51ab09e386b6705a93",
-    "src/turn.ts": "a59fcceb7c6fbf84f62709aa16d5f8a0baaa996dcbccbe9bf9ef92e22fb4ec5a",
+    "src/session.ts": "cd6092f00e99afc096621651f6df4da703d96ae401e2df3fa486affdcb00dd7e",
+    "src/turn.ts": "8a6ca94e8b96028c662a751164c7bdda070845333a98c1cc89e655a87a81f60e",
     "src/validate/fuzzy-path.ts": "66a5631c604c792e0b36faf4abcdef3d6e85ca4fb865f6d5a31af3f9772ac3d4",
     "src/validate/shell-check.ts": "450a27ec9c73c07082eb46912e3ccf70327358df7cb840654e181d49bc508e43"
   }
