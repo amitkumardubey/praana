@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { createBuiltinHookRegistry } from "../src/hooks/index.js";
+import { HookRegistry } from "../src/hooks/registry.js";
 import { createRedactPostToolCallHandler } from "../src/hooks/handlers/redact.js";
 import type { HookSessionLike } from "../src/hooks/types.js";
 
@@ -86,6 +87,41 @@ describe("redact post_tool_call", () => {
     });
     expect(out.result).toBeNull();
     expect(JSON.stringify(out)).not.toContain("AKIAIOSFODNN7EXAMPLE");
+  });
+
+  it("replaces the result with the placeholder when redaction itself throws, never the original", async () => {
+    const throwing = () => { throw new Error("redactor broke"); };
+    const original = { ok: true, stdout: "AKIAIOSFODNN7EXAMPLE" };
+    const registry = new HookRegistry();
+    registry.onPostToolCall(createRedactPostToolCallHandler(throwing));
+    const out = await registry.runPostToolCall({
+      toolName: "shell", args: {}, result: original, isError: false, session: session(),
+    });
+    expect(out.result).toEqual({ error: "[REDACTED:redaction-error]" });
+    expect(JSON.stringify(out)).not.toContain("AKIAIOSFODNN7EXAMPLE");
+    const text = await registry.runPostToolCall({
+      toolName: "shell", args: {}, result: "AKIAIOSFODNN7EXAMPLE", isError: false, session: session(),
+    });
+    expect(text.result).toBe("[REDACTED:redaction-error]");
+    // A context whose result cannot even be read is replaced too.
+    const hostile = { toolName: "shell", args: {}, isError: false, session: session(), get result(): unknown { throw new Error("no"); } };
+    expect(await createRedactPostToolCallHandler()(hostile)).toEqual({ result: { error: "[REDACTED:redaction-error]" } });
+  });
+
+  it("applies a patch that has a result key, even null, and keeps the original for a patch without one", async () => {
+    const original = { ok: true };
+    const run = async (patch: { result?: unknown; isError?: boolean } | void) => {
+      const registry = new HookRegistry();
+      registry.onPostToolCall(() => patch);
+      return (await registry.runPostToolCall({
+        toolName: "shell", args: {}, result: original, isError: false, session: session(),
+      })).result;
+    };
+    expect(await run({})).toBe(original);
+    expect(await run({ isError: true })).toBe(original);
+    expect(await run()).toBe(original);
+    expect(await run({ result: null })).toBeNull();
+    expect(await run({ result: { x: 1 } })).toEqual({ x: 1 });
   });
 
   it("keeps every field of a 120000-match result", async () => {

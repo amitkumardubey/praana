@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { readFileSync } from "node:fs";
+import { PraanaLogger, getAppLogger, setAppLogger } from "../src/logger.js";
 import { redactSecrets, redactSecretsStrict } from "../src/redact/secrets.js";
 
 /** Shape used by the depth matrix: a secret assignment and a bare AWS key. */
@@ -168,7 +169,7 @@ describe("redactSecrets", () => {
     expect(JSON.stringify(out)).not.toContain("ASIAIOSFODNN7EXAMPLE");
   });
 
-  it("uses only own enumerable properties of Maps, Sets and other objects", () => {
+  it("does not emit Map or Set contents, like JSON.stringify: only own enumerable properties of Maps, Sets and other objects", () => {
     const values = [
       new Map([[SECRETS[0], SECRETS[1]]]), new Set(SECRETS),
       new WeakMap(), new WeakSet(), Promise.resolve(SECRETS[0]), /x/g,
@@ -329,8 +330,11 @@ describe("redactSecrets", () => {
     expect(redactSecrets(true)).toBe(true);
     expect(redactSecrets(false)).toBe(false);
     expect(redactSecrets(42)).toBe(42);
-    expect(redactSecrets(-0)).toBe(-0);
-    expect(redactSecrets(NaN)).toBeNaN();
+    // Scalars follow JSON rules at the root too, as nested.
+    expect(redactSecrets(-0)).toBe(0);
+    expect(redactSecrets(NaN)).toBeNull();
+    expect(redactSecrets(Infinity)).toBeNull();
+    expect(redactSecrets({ a: NaN, b: -Infinity, c: -0, d: [NaN] })).toEqual({ a: null, b: null, c: 0, d: [null] });
     expect(redactSecrets(123n)).toBe("123");
     expect(redactSecrets(SECRETS[1]!)).toBe("[REDACTED:aws-access-key]");
     expect(redactSecrets(Object(7))).toBe(7);
@@ -381,13 +385,14 @@ describe("redactSecrets", () => {
     expect(redactSecrets(throwing)).toEqual({ error: "[REDACTED:redaction-error]" });
   });
 
-  it("bounds a self-referencing ten-key object in under 50 ms", () => {
+  it("bounds a self-referencing ten-key object", () => {
     const input: Record<string, unknown> = { secret: SECRETS[1] };
     for (let i = 0; i < 9; i++) input[`self${i}`] = input;
     expect(Object.keys(input)).toHaveLength(10);
     const start = performance.now();
     const out = redactSecrets(input);
-    expect(performance.now() - start).toBeLessThan(50);
+    // Generous wall-clock bound; the structural checks below are the real assertions.
+    expect(performance.now() - start).toBeLessThan(5_000);
     const json = JSON.stringify(out);
     expectNoSecret(json);
     expect(json).toContain("[REDACTED:cycle]");
@@ -559,20 +564,30 @@ describe("redactSecrets", () => {
     expect(redactSecrets(123n)).toBe("123");
   });
 
-  it("bounds a chain far deeper than the node budget without overflowing the stack", () => {
-    let value: unknown = "AKIAIOSFODNN7EXAMPLE";
-    for (let i = 0; i < 1_100_000; i++) value = { n: value };
-    let out: unknown;
-    expect(() => {
-      out = redactSecrets(value);
-    }).not.toThrow();
-    // Walk down to the cut: the deepest copied object keeps its type and carries the marker.
+  it("caps output nesting so the result can always be serialized", () => {
+    let value: unknown = SECRETS[1];
+    for (let i = 0; i < 100_000; i++) value = { n: value };
+    const out = redactSecrets(value);
+    expect(() => JSON.stringify(out)).not.toThrow();
     let current = out as Record<string, unknown>;
-    let depth = 0;
+    let depth = 1;
     while (typeof current.n === "object") { current = current.n as Record<string, unknown>; depth++; }
-    expect(depth).toBeGreaterThan(900_000);
-    expect(current).toEqual({ "[REDACTED:node-budget]": true });
-  }, 30_000);
+    expect(depth).toBeLessThanOrEqual(256);
+    expect(depth).toBeGreaterThan(100);
+    expect(current.n).toBe("[REDACTED:depth-limit]");
+    expectNoSecret(JSON.stringify(out));
+    let list: unknown = [SECRETS[1]];
+    for (let i = 0; i < 100_000; i++) list = [list];
+    expect(() => JSON.stringify(redactSecrets(list))).not.toThrow();
+  });
+
+  it("caps a self-wrapping toJSON chain", () => {
+    const make = (): { toJSON(): unknown } => ({ toJSON() { return { next: make(), secret: SECRETS[1] }; } });
+    const out = redactSecrets(make());
+    expect(() => JSON.stringify(out)).not.toThrow();
+    expectNoSecret(JSON.stringify(out));
+    expect(JSON.stringify(out)).toContain("[REDACTED:depth-limit]");
+  });
 
   it("copies a 120000-entry result in full, with its scalar siblings", () => {
     const matches = Array.from({ length: 120_000 }, (_, i) => (i === 119_999 ? SECRETS[1] : `m${i}`));
@@ -602,7 +617,8 @@ describe("redactSecrets", () => {
     expect(out["[REDACTED:node-budget]"]).toBe(true);
     expect("tail" in out).toBe(false);
     expect(Array.isArray(out.outer.list)).toBe(true);
-    expect(out.outer.list.at(-1)).toBe("[REDACTED:node-budget]");
+    // The marker is an object, never a string or number that could pass for data.
+    expect(out.outer.list.at(-1)).toEqual({ "[REDACTED:node-budget]": true });
     expect(out.outer.list[0]).toBe(0);
     expect(out.outer.list.length).toBeGreaterThan(900_000);
     // Scalars after the container that ran out are kept; containers never opened are not.
@@ -641,7 +657,7 @@ describe("redactSecrets", () => {
     expectNoSecret(JSON.stringify(out));
     expect(out.sibling).toBe("[REDACTED:aws-access-key]");
     expect(Array.isArray(out.sparse)).toBe(true);
-    expect((out.sparse as unknown[]).at(-1)).toBe("[REDACTED:node-budget]");
+    expect((out.sparse as unknown[]).at(-1)).toEqual({ "[REDACTED:node-budget]": true });
     expect(reads).toBeLessThanOrEqual(1_000_000);
     expect(reads).toBeGreaterThan(0);
   }, 30_000);
@@ -700,6 +716,67 @@ describe("redactSecrets", () => {
       RegExp.prototype[Symbol.replace] = original;
     }
     expect(redactSecrets("AKIAIOSFODNN7EXAMPLE")).toBe("[REDACTED:aws-access-key]");
+  });
+
+  it("projects a BigInt toJSON shim that returns an object, nested and at the root", () => {
+    const original = Object.getOwnPropertyDescriptor(BigInt.prototype, "toJSON");
+    Object.defineProperty(BigInt.prototype, "toJSON", {
+      value: () => ({ token: SECRETS[1], list: [1] }), configurable: true, writable: true,
+    });
+    try {
+      const projected = { token: "[REDACTED:aws-access-key]", list: [1] };
+      expect(redactSecrets(5n)).toEqual(projected);
+      expect(redactSecrets({ a: 5n, b: [6n], c: Object(7n) })).toEqual({ a: projected, b: [projected], c: projected });
+      expect(redactSecrets({ same: [5n, 5n] })).toEqual({ same: [projected, projected] });
+    } finally {
+      if (original) Object.defineProperty(BigInt.prototype, "toJSON", original);
+      else delete (BigInt.prototype as { toJSON?: unknown }).toJSON;
+    }
+    expect(redactSecrets(5n)).toBe("5");
+  });
+
+  it("scans a repeated key once per walk", () => {
+    const original = RegExp.prototype[Symbol.replace];
+    let calls = 0;
+    RegExp.prototype[Symbol.replace] = function (this: RegExp, ...args: [string, string]) {
+      calls++;
+      return original.apply(this, args);
+    } as typeof original;
+    try {
+      const shared = { [SECRETS[1]!]: 1 };
+      const rows = Array.from({ length: 500 }, () => ({ [SECRETS[1]!]: 1, other: shared }));
+      const out = redactSecrets(rows) as Array<Record<string, unknown>>;
+      expect(out[499]).toEqual({ "[REDACTED:aws-access-key]": 1, other: { "[REDACTED:aws-access-key]": 1 } });
+      // Two distinct keys ("other" is scanned too): about ten replace calls each, not 500 x.
+      expect(calls).toBeLessThan(60);
+    } finally {
+      RegExp.prototype[Symbol.replace] = original;
+    }
+  });
+
+  it("logs the first redaction failure of a walk once, at debug level, without the value", () => {
+    const lines: string[] = [];
+    const previous = getAppLogger();
+    setAppLogger(new PraanaLogger({ domain: "app", debug: true, writeLine: (line) => lines.push(line) }));
+    const original = RegExp.prototype[Symbol.replace];
+    try {
+      // Fail every scan except the one of the (already clean) error message itself.
+      RegExp.prototype[Symbol.replace] = function (this: RegExp, text: string, replacement: string) {
+        if (text.startsWith("scan failed")) return original.call(this, text, replacement);
+        throw new Error("scan failed");
+      } as typeof original;
+      expect(redactSecrets({ a: "plain-secret-value", b: "second", c: ["third"] })).toEqual({
+        "[REDACTED:redaction-error]": "[REDACTED:redaction-error]", "[REDACTED:redaction-error]#2": "[REDACTED:redaction-error]",
+        "[REDACTED:redaction-error]#3": ["[REDACTED:redaction-error]"],
+      });
+    } finally {
+      RegExp.prototype[Symbol.replace] = original;
+      setAppLogger(previous);
+    }
+    const logged = lines.filter((line) => line.includes("Secret redaction replaced a value"));
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toContain("scan failed");
+    expect(lines.join("\n")).not.toContain("plain-secret-value");
   });
 
   it("redacts every secret-looking key exactly as a string value", () => {

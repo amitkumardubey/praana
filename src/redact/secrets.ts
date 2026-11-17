@@ -3,10 +3,13 @@
  */
 
 import { types } from "node:util";
+import { getAppLogger } from "../logger.js";
 import { redactUrlsInText } from "./url-query.js";
 
 const MAX_DEPTH = 8;
 const MAX_NODES = 1_000_000;
+/** Deepest container written to the output, so JSON.stringify of a result cannot overflow the stack. */
+const MAX_OUTPUT_DEPTH = 256;
 const PLACEHOLDER = (kind: string) => `[REDACTED:${kind}]`;
 
 const DETECTORS: Array<{ kind: string; re: RegExp }> = [
@@ -65,8 +68,8 @@ type JsonContainer = { [key: string]: JsonValue } | JsonValue[];
 interface JsonFrame {
   /** Object whose entries are read (the toJSON result when there was one). */
   readonly source: Record<string, unknown>;
-  /** Value before toJSON; tracked with `source` as an ancestor. */
-  readonly original: object;
+  /** Object or function before toJSON, tracked with `source` as an ancestor (null for a BigInt). */
+  readonly original: object | null;
   readonly target: JsonContainer;
   readonly keys: string[] | null;
   readonly length: number;
@@ -111,16 +114,23 @@ function errorKeys(error: object): string[] {
 }
 
 /**
- * The only guard around redactString, shared by keys, string values and string
- * roots: a failing scan yields the placeholder, never the original text.
- * Property reads, toJSON and enumeration failures are guarded per entry in the walk.
+ * Failure report for a walk: a debug log line carrying the error message (never
+ * the value), written at most once per walk so repeated placeholders can be
+ * diagnosed without flooding the log. The message is redacted before logging.
  */
-function redactText(text: string): string {
-  try {
-    return redactString(text);
-  } catch {
-    return PLACEHOLDER("redaction-error");
-  }
+function createFailureReporter(): (error: unknown) => void {
+  let reported = false;
+  return (error) => {
+    if (reported) return;
+    reported = true;
+    let message: string;
+    try {
+      message = redactString((error instanceof Error ? error.message : String(error)).slice(0, 500));
+    } catch {
+      message = PLACEHOLDER("redaction-error");
+    }
+    getAppLogger().child("tool").debug("Secret redaction replaced a value", { details: { error: message } });
+  };
 }
 
 // Intrinsic byteLength getters, read once so later patching of prototypes is not trusted.
@@ -146,7 +156,7 @@ function finiteNumber(value: number): number | null {
 }
 
 /**
- * Non-strict redaction walks the JSON projection of an object root in one iterative stack. Call
+ * Non-strict redaction walks the JSON projection of the root in one iterative stack. Call
  * toJSON once per value with its original JSON key (root: ""); then unbox JSON
  * primitives, omit functions/symbols/undefined in objects, and use null in arrays.
  * Arrays read indices through length; every other object (including classes,
@@ -154,8 +164,13 @@ function finiteNumber(value: number): number | null {
  * hidden fields. Redact both string leaves and keys; suffix colliding keys in
  * traversal order. Write only own data properties on fresh copies.
  *
- * Deliberate JSON differences: binary values become byte-count strings BEFORE
- * toJSON (also if returned by it); BigInts become redacted decimal strings;
+ * Map and Set contents are not emitted: like JSON.stringify, a Map or Set projects
+ * as `{}` plus its own enumerable properties, so no secret inside one can leak.
+ *
+ * Scalars follow JSON everywhere, root included: NaN and the infinities become
+ * null, -0 becomes 0, BigInts become redacted decimal strings (or their toJSON).
+ * Other deliberate JSON differences: binary values become byte-count strings BEFORE
+ * toJSON (also if returned by it);
  * a value that is its own ancestor becomes [REDACTED:cycle]. Cycle detection
  * tracks the current ancestor path only, and both the value before toJSON and the
  * object toJSON returned, so a shared reference that is not an ancestor of itself
@@ -163,27 +178,52 @@ function finiteNumber(value: number): number | null {
  * returns a structure pointing back at its owner is cut at the first repeat.
  * Native Errors project as { name, message } plus own `cause`, AggregateError
  * `errors` and own enumerable properties, never `stack` (JSON.stringify writes {}).
- * Getters, toJSON and proxy failures replace only the affected value; only a
+ * Getters, toJSON and proxy failures replace only the affected value (the first
+ * such failure of a walk is logged at debug level, message only); only a
  * failure of the root itself or an unrecoverable error escapes to the caller.
  * No input identity, prototype, accessor or callable is retained in the plain JSON output.
+ *
+ * Output containers nest at most MAX_OUTPUT_DEPTH deep; a deeper container becomes
+ * [REDACTED:depth-limit] so the result can always be serialized.
  *
  * MAX_NODES bounds traversal only (exponential shared-reference DAGs, endless
  * toJSON chains); the root and every property/index slot visited count as one node.
  * When it runs out, each container still open keeps its type and the entries
  * already copied and gets an explicit marker: an array a final element
- * [REDACTED:node-budget], an object a `[REDACTED:node-budget]: true` key. Before
+ * `{ "[REDACTED:node-budget]": true }`, an object that same key. Before
  * stopping, an open object also copies its remaining scalar entries (strings
  * redacted, numbers, booleans, null, BigInts) so shallow fields such as `ok` or
  * `total` survive; nested containers not yet opened and the rest of an open
  * array are dropped. Strings are never dropped for size: every string leaf and key
- * is scanned in full by the linear redactString. This bounds our traversal, not
- * execution of user hooks or key enumeration.
+ * is scanned in full by the linear redactString, and each distinct key once per walk.
+ * This bounds our traversal, not execution of user hooks or key enumeration.
  */
 function redactJsonProjection(value: unknown): JsonValue | undefined {
   // Containers on the current path only: added when opened, removed when finished.
   const ancestors = new WeakSet<object>();
   const frames: JsonFrame[] = [];
+  const keyCache = new Map<string, string>();
+  const report = createFailureReporter();
   let nodes = 1;
+
+  /** The one guard around redactString for keys and string values: failure gives the placeholder. */
+  const redactText = (text: string): string => {
+    try {
+      return redactString(text);
+    } catch (error) {
+      report(error);
+      return PLACEHOLDER("redaction-error");
+    }
+  };
+
+  const redactKey = (key: string): string => {
+    let redacted = keyCache.get(key);
+    if (redacted === undefined) {
+      redacted = redactText(key);
+      keyCache.set(key, redacted);
+    }
+    return redacted;
+  };
 
   const seed = (input: unknown, key: string): JsonValue | undefined => {
     // Primitives other than BigInt have no toJSON, binary or box handling.
@@ -214,6 +254,7 @@ function redactJsonProjection(value: unknown): JsonValue | undefined {
     if (typeof child === "boolean" || child === null) return child;
     if (typeof child !== "object") return undefined;
     if (child !== input && ancestors.has(child)) return PLACEHOLDER("cycle");
+    if (frames.length >= MAX_OUTPUT_DEPTH) return PLACEHOLDER("depth-limit");
 
     const isArray = Array.isArray(child);
     const source = child as Record<string, unknown>;
@@ -223,10 +264,11 @@ function redactJsonProjection(value: unknown): JsonValue | undefined {
       ? Math.min(Math.max(Math.floor(+(source.length as number)) || 0, 0), Number.MAX_SAFE_INTEGER)
       : keys!.length;
     const target: JsonContainer = isArray ? [] : {};
-    // `input` is an object or function here (BigInts never reach this point).
+    // A BigInt input has no identity to track; only objects and functions do.
+    const original = typeof input === "object" || typeof input === "function" ? (input as object) : null;
     ancestors.add(child);
-    ancestors.add(input as object);
-    frames.push({ source, original: input as object, target, keys, length, suffixes: null, cursor: 0 });
+    if (original !== null) ancestors.add(original);
+    frames.push({ source, original, target, keys, length, suffixes: null, cursor: 0 });
     return target;
   };
 
@@ -236,7 +278,8 @@ function redactJsonProjection(value: unknown): JsonValue | undefined {
       const frame = frames[i]!;
       if (frame.cursor >= frame.length) continue;
       if (frame.keys === null) {
-        setOwn(frame.target, "", PLACEHOLDER("node-budget"));
+        // Out-of-band marker: an object, so it cannot be mistaken for an array element of data.
+        setOwn(frame.target, "", { [PLACEHOLDER("node-budget")]: true });
         continue;
       }
       for (; frame.cursor < frame.length; frame.cursor++) {
@@ -247,10 +290,11 @@ function redactJsonProjection(value: unknown): JsonValue | undefined {
           const type = typeof raw;
           const scalar = raw === null || type === "string" || type === "number" || type === "boolean" || type === "bigint";
           copied = scalar ? seed(raw, key) : undefined;
-        } catch {
+        } catch (error) {
+          report(error);
           copied = PLACEHOLDER("redaction-error");
         }
-        if (copied !== undefined) setOwn(frame.target, uniqueKey(frame, redactText(key)), copied);
+        if (copied !== undefined) setOwn(frame.target, uniqueKey(frame, redactKey(key)), copied);
       }
       setOwn(frame.target, uniqueKey(frame, PLACEHOLDER("node-budget")), true);
     }
@@ -262,7 +306,7 @@ function redactJsonProjection(value: unknown): JsonValue | undefined {
     if (frame.cursor >= frame.length) {
       frames.pop();
       ancestors.delete(frame.source);
-      ancestors.delete(frame.original);
+      if (frame.original !== null) ancestors.delete(frame.original);
       continue;
     }
     if (nodes >= MAX_NODES) {
@@ -275,12 +319,13 @@ function redactJsonProjection(value: unknown): JsonValue | undefined {
     let copied: JsonValue | undefined;
     try {
       copied = seed(frame.source[key], key);
-    } catch {
+    } catch (error) {
       // Replaces only this value; siblings are still walked.
+      report(error);
       copied = PLACEHOLDER("redaction-error");
     }
     if (copied === undefined && frame.keys !== null) continue;
-    const outputKey = frame.keys === null ? key : uniqueKey(frame, redactText(key));
+    const outputKey = frame.keys === null ? key : uniqueKey(frame, redactKey(key));
     setOwn(frame.target, outputKey, copied === undefined ? null : copied);
   }
   return root;
@@ -320,27 +365,28 @@ export function redactSecretsStrict<T>(value: T): T {
 }
 
 /**
- * Root contract: a string root returns the redacted string; `undefined`, null,
- * booleans and numbers return unchanged; a BigInt returns its decimal string.
- * Any other root (object, array, function, symbol) goes through the JSON walk and
- * returns its projection: a container, or a scalar when toJSON returned one. A
- * projection JSON would omit (a function, a symbol, toJSON returning undefined)
- * returns null, never `undefined`: callers such as the post-tool-call hook treat
- * `undefined` as "keep the original", which would let the raw object through.
- * Scalars are never wrapped. Only a walk that throws fails closed: a string input
- * returns the bare placeholder, anything else `{ error: placeholder }`; the input
- * is never returned.
+ * What a failed redaction returns in place of `value`: the bare placeholder for a
+ * string, `{ error: placeholder }` for anything else. Never the input.
+ */
+export function redactionFailureFor(value: unknown): JsonValue {
+  return typeof value === "string" ? PLACEHOLDER("redaction-error") : { error: PLACEHOLDER("redaction-error") };
+}
+
+/**
+ * Root contract: the root goes through the same walk and scalar rules as nested
+ * values (a string is redacted, NaN/Infinity become null, -0 becomes 0, a BigInt
+ * its decimal string or toJSON). Only `undefined` returns `undefined`. A projection
+ * JSON would omit (a function, a symbol, toJSON returning undefined) returns null,
+ * never `undefined`: the post-tool-call hook applies a patch by key, but other
+ * callers may treat `undefined` as "keep the original". Scalars are never wrapped.
+ * Only a walk that throws fails closed (see redactionFailureFor).
  */
 export function redactSecrets(value: unknown): JsonValue | undefined {
   try {
-    if (typeof value === "string") return redactText(value);
-    if (value === undefined || value === null || typeof value === "boolean" || typeof value === "number") {
-      return value;
-    }
-    if (typeof value === "bigint") return redactText(String(value));
+    if (value === undefined) return undefined;
     return redactJsonProjection(value) ?? null;
   } catch {
     // Last-resort failure must never return the original input.
-    return typeof value === "string" ? PLACEHOLDER("redaction-error") : { error: PLACEHOLDER("redaction-error") };
+    return redactionFailureFor(value);
   }
 }
