@@ -752,6 +752,23 @@ describe("redactSecrets", () => {
     expect(redactSecrets(5n)).toBe("5");
   });
 
+  it("scans a repeated large string value once per walk", () => {
+    const raw = `${"x".repeat(1024)} ${SECRETS[1]}`;
+    const expected = `${"x".repeat(1024)} [REDACTED:aws-access-key]`;
+    const original = RegExp.prototype[Symbol.replace];
+    let scans = 0;
+    RegExp.prototype[Symbol.replace] = function (this: RegExp, ...args: [string, string]) {
+      if (args[0] === raw) scans++;
+      return original.apply(this, args);
+    } as typeof original;
+    try {
+      expect(redactSecrets(Array(100).fill(raw))).toEqual(Array(100).fill(expected));
+      expect(scans).toBe(1);
+    } finally {
+      RegExp.prototype[Symbol.replace] = original;
+    }
+  });
+
   it("scans a repeated key once per walk", () => {
     const original = RegExp.prototype[Symbol.replace];
     let calls = 0;

@@ -203,6 +203,7 @@ function redactJsonProjection(value: unknown): JsonValue | undefined {
   const ancestors = new WeakSet<object>();
   const frames: JsonFrame[] = [];
   const keyCache = new Map<string, string>();
+  const valueCache = new Map<string, string>();
   const report = createFailureReporter();
   let nodes = 1;
 
@@ -214,6 +215,16 @@ function redactJsonProjection(value: unknown): JsonValue | undefined {
       report(error);
       return PLACEHOLDER("redaction-error");
     }
+  };
+
+  const redactValue = (text: string): string => {
+    if (text.length < 1024) return redactText(text);
+    let redacted = valueCache.get(text);
+    if (redacted === undefined) {
+      redacted = redactText(text);
+      valueCache.set(text, redacted);
+    }
+    return redacted;
   };
 
   const redactKey = (key: string): string => {
@@ -229,7 +240,7 @@ function redactJsonProjection(value: unknown): JsonValue | undefined {
     // Primitives other than BigInt have no toJSON, binary or box handling.
     if (input === null) return null;
     const type = typeof input;
-    if (type === "string") return redactText(input as string);
+    if (type === "string") return redactValue(input as string);
     if (type === "number") return finiteNumber(input as number);
     if (type === "boolean") return input as boolean;
     if (type === "undefined" || type === "symbol") return undefined;
@@ -249,7 +260,7 @@ function redactJsonProjection(value: unknown): JsonValue | undefined {
     else if (types.isBigIntObject(child)) child = BigInt.prototype.valueOf.call(child);
 
     if (isJsonScalar(child)) {
-      if (typeof child === "string") return redactText(child);
+      if (typeof child === "string") return redactValue(child);
       if (typeof child === "bigint") return redactText(String(child));
       if (typeof child === "number") return finiteNumber(child);
       return child;
