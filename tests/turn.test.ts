@@ -159,7 +159,7 @@ const piStream = mockStream;
 import { compileClassicWithMetrics } from "../src/compile-classic.js";
 import { compileEngineWithMetrics } from "../src/context-engine/index.js";
 import { createAllTools, describeTools } from "../src/tools/index.js";
-import { createProvider, resolveModel, inferReasoningModel, getReasoningEffort } from "../src/llm.js";
+import { createProvider, resolveModel, getReasoningEffort } from "../src/llm.js";
 
 import {
   runTurn,
@@ -170,7 +170,6 @@ import {
 } from "../src/turn.js";
 import * as turnModule from "../src/turn.js";
 import { StateGraph } from "../src/state-graph.js";
-import { EventLog } from "../src/event-log.js";
 import { createBuiltinHookRegistry } from "../src/hooks/index.js";
 import { LoopGate } from "../src/circuit/loop-gate.js";
 import type { PraanaConfig, Event } from "../src/types.js";
@@ -546,6 +545,7 @@ describe("computeMemoryStats", () => {
     expect(stats.recallCalls).toBe(0);
     expect(stats.recallHits).toBe(0);
     expect(stats.autoHydrated).toBe(3);
+    expect(stats).not.toHaveProperty("repeatFileReads");
   });
 
   it("counts recall calls and hits from event log", () => {
@@ -1353,117 +1353,27 @@ describe("runTurn", () => {
       },
     }));
 
-    const toolCallGenerator = (async function* () {
-      yield {
-        type: "toolcall_end",
-        toolCall: {
-          id: "call-1",
-          name: "retrieve_artifact",
-          arguments: { id: "art_abc123def456" },
-        },
-      };
-      yield {
-        type: "done",
-        reason: "toolUse",
-        message: {
-          role: "assistant",
-          content: [
-            {
-              type: "toolUse",
-              toolUse: {
-                id: "call-1",
-                name: "retrieve_artifact",
-                arguments: { id: "art_abc123def456" },
-              },
-            },
-          ],
-        },
-      };
-    })();
-    (piStream as ReturnType<typeof mock>).mockReturnValue(toolCallGenerator as any);
-
-    await runTurn(session, "retrieve the artifact");
+    const toolCall = { id: "call-1", name: "retrieve_artifact", args: { id: "art_abc123def456" } };
+    (piStream as ReturnType<typeof mock>)
+      .mockReturnValueOnce((async function* () {
+        yield { type: "tool_call_end", toolCall };
+        yield { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [toolCall] } };
+      })())
+      .mockReturnValueOnce((async function* () {
+        yield { type: "text_delta", delta: "done" };
+        yield { type: "done", reason: "stop", message: { role: "assistant", content: "done" } };
+      })());
+    const onToolResult = mock();
+    const recorder = spyOn(TurnRecorder.prototype, "recordToolCall");
+    try {
+      await runTurn(session, "retrieve the artifact", undefined, { sink: { onToolResult } });
+      expect(onToolResult).toHaveBeenCalledWith("call-1", "retrieve_artifact", "original artifact content", false);
+      expect(recorder.mock.calls[0]![0].artifactId).toBe("art_abc123def456");
+    } finally { recorder.mockRestore(); }
 
     // retrieve_artifact already touches access internally via ArtifactStore.retrieve();
     // the turn-level path must not double-increment access_count.
     expect(touchAccess).not.toHaveBeenCalled();
-    expect(ingestToolResult).not.toHaveBeenCalled();
-  });
-
-  it("touches access for repeat-read (skippedDisk) results", async () => {
-    const touchAccess = mock(() => {});
-    const ingestToolResult = mock(() => ({
-      promptText: "should not be called",
-      inlined: true,
-    }));
-
-    const session = makeMockSession({
-      config: makeConfig({
-        context_engine: {
-          ...makeConfig().context_engine,
-          enabled: true,
-        },
-      }),
-      contextEngine: {
-        ingestToolResult,
-        touchAccess,
-        ledger: { list: mock(() => []) },
-        getRecentActivity: mock(() => []),
-        getSessionCheckpoint: mock(() => null),
-        recordCompileTelemetry: mock(),
-        captureStateSnapshot: mock(),
-        listAllWorkflowPatterns: mock(() => []),
-        store: { listFileReads: mock(() => []) },
-      },
-    });
-
-    (createAllTools as ReturnType<typeof mock>).mockImplementationOnce(() => ({
-      read_file: {
-        description: "Read a file",
-        parameters: z.object({ path: z.string() }),
-        execute: mock().mockResolvedValue({
-          ok: true,
-          content: "[artifact card]",
-          artifact_id: "art_repeat123",
-          skipped_disk: true,
-        }),
-      },
-    }));
-
-    const toolCallGenerator = (async function* () {
-      yield {
-        type: "toolcall_end",
-        toolCall: {
-          id: "call-1",
-          name: "read_file",
-          arguments: { path: "src/foo.ts" },
-        },
-      };
-      yield {
-        type: "done",
-        reason: "toolUse",
-        message: {
-          role: "assistant",
-          content: [
-            {
-              type: "toolUse",
-              toolUse: {
-                id: "call-1",
-                name: "read_file",
-                arguments: { path: "src/foo.ts" },
-              },
-            },
-          ],
-        },
-      };
-    })();
-    (piStream as ReturnType<typeof mock>).mockReturnValue(toolCallGenerator as any);
-
-    await runTurn(session, "read src/foo.ts again");
-
-    // The repeat-read interceptor result does not self-touch, so the turn-level
-    // path must touch access to update last_accessed_turn / access_count.
-    expect(touchAccess).toHaveBeenCalledWith("art_repeat123", expect.any(Number));
     expect(ingestToolResult).not.toHaveBeenCalled();
   });
 
@@ -1576,164 +1486,6 @@ describe("runTurn", () => {
     });
 
     expect(onToolCallsStart).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not re-ingest skipped_disk read_file results without artifact_id", async () => {
-    const hint = "Already read this session — use retrieve_artifact or search_turn_events";
-    const firstStep = (async function* () {
-      yield {
-        type: "toolcall_end",
-        toolCall: { id: "call-1", name: "read_file", arguments: { path: "a.txt" } },
-      };
-      yield {
-        type: "done",
-        reason: "toolUse",
-        message: {
-          role: "assistant",
-          content: [
-            { type: "toolUse", toolUse: { id: "call-1", name: "read_file", arguments: { path: "a.txt" } } },
-          ],
-        },
-      };
-    })();
-    const secondStep = (async function* () {
-      yield { type: "text_delta", delta: "ok" };
-      yield {
-        type: "done",
-        reason: "stop",
-        message: {
-          role: "assistant",
-          content: [{ type: "text", text: "ok" }],
-        },
-      };
-    })();
-    (piStream as ReturnType<typeof mock>)
-      .mockReturnValueOnce(firstStep as any)
-      .mockReturnValueOnce(secondStep as any);
-
-    const ingestToolResult = mock(() => ({
-      promptText: "SHOULD_NOT_INGEST",
-      artifactId: "art-bad",
-      inlined: false,
-    }));
-    const touchAccess = mock();
-    const session = makeMockSession({
-      config: makeConfig({
-        context_engine: {
-          ...makeConfig().context_engine,
-          enabled: true,
-        },
-      }),
-      contextEngine: {
-        ledger: { list: mock(() => []) },
-        getRecentActivity: mock(() => []),
-        getSessionCheckpoint: mock(() => null),
-        recordCompileTelemetry: mock(),
-        captureStateSnapshot: mock(),
-        listAllWorkflowPatterns: mock(() => []),
-        ingestToolResult,
-        touchAccess,
-        extractAndPersistTurn: mock(() => null),
-        reconcileCheckpoint: mock(),
-        runEviction: mock(() => 0),
-        flushDeferredDistillation: mock(async () => 0),
-        store: { listFileReads: mock(() => []) },
-      },
-    });
-
-    (createAllTools as ReturnType<typeof mock>).mockReturnValueOnce({
-      read_file: {
-        description: "Read a file",
-        parameters: z.object({ path: z.string() }),
-        execute: mock().mockResolvedValue({
-          ok: true,
-          content: hint,
-          warning: hint,
-          skipped_disk: true,
-        }),
-      },
-    } as any);
-
-    await runTurn(session, "read again");
-
-    expect(ingestToolResult).not.toHaveBeenCalled();
-    expect(touchAccess).not.toHaveBeenCalled();
-  });
-
-  it("touches artifact access on skipped_disk when artifact_id is present", async () => {
-    const firstStep = (async function* () {
-      yield {
-        type: "toolcall_end",
-        toolCall: { id: "call-1", name: "read_file", arguments: { path: "a.txt" } },
-      };
-      yield {
-        type: "done",
-        reason: "toolUse",
-        message: {
-          role: "assistant",
-          content: [
-            { type: "toolUse", toolUse: { id: "call-1", name: "read_file", arguments: { path: "a.txt" } } },
-          ],
-        },
-      };
-    })();
-    const secondStep = (async function* () {
-      yield { type: "text_delta", delta: "ok" };
-      yield {
-        type: "done",
-        reason: "stop",
-        message: {
-          role: "assistant",
-          content: [{ type: "text", text: "ok" }],
-        },
-      };
-    })();
-    (piStream as ReturnType<typeof mock>)
-      .mockReturnValueOnce(firstStep as any)
-      .mockReturnValueOnce(secondStep as any);
-
-    const touchAccess = mock();
-    const session = makeMockSession({
-      config: makeConfig({
-        context_engine: {
-          ...makeConfig().context_engine,
-          enabled: true,
-        },
-      }),
-      contextEngine: {
-        ledger: { list: mock(() => []) },
-        getRecentActivity: mock(() => []),
-        getSessionCheckpoint: mock(() => null),
-        recordCompileTelemetry: mock(),
-        captureStateSnapshot: mock(),
-        listAllWorkflowPatterns: mock(() => []),
-        ingestToolResult: mock(),
-        touchAccess,
-        extractAndPersistTurn: mock(() => null),
-        reconcileCheckpoint: mock(),
-        runEviction: mock(() => 0),
-        flushDeferredDistillation: mock(async () => 0),
-        store: { listFileReads: mock(() => []) },
-      },
-    });
-
-    (createAllTools as ReturnType<typeof mock>).mockReturnValueOnce({
-      read_file: {
-        description: "Read a file",
-        parameters: z.object({ path: z.string() }),
-        execute: mock().mockResolvedValue({
-          ok: true,
-          content: "[artifact: art-1]",
-          warning: "Already read",
-          skipped_disk: true,
-          artifact_id: "art-1",
-        }),
-      },
-    } as any);
-
-    await runTurn(session, "read again");
-
-    expect(touchAccess).toHaveBeenCalledWith("art-1", 0);
   });
 
   it("does not reinforce old memories when a later tool succeeds in the same turn", async () => {

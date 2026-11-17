@@ -7,7 +7,6 @@ import type { DistillerRegistry, DistillDeferredResult, DistillResult } from "./
 import {
   evictStaleArtifacts,
   findArtifactByHash,
-  findFileReadArtifactByCommand,
   getArtifactById,
   insertArtifact,
   markArtifactRead,
@@ -501,27 +500,6 @@ export class ArtifactStore {
       }));
   }
 
-  /** Look up a prior read_file artifact by absolute path (session-scoped). */
-  findFileReadArtifact(absPath: string): ContextArtifact | null {
-    const id = this.fileReadIndex.get(absPath);
-    if (id) {
-      const cached = this.getArtifact(id);
-      if (cached) return cached;
-    }
-    // Index miss or stale id — fall back to DB (e.g. resume before rebuild, or eviction).
-    const fromDb = findFileReadArtifactByCommand(this.db, this.sessionId, absPath);
-    if (fromDb) {
-      this.fileReadIndex.set(absPath, fromDb.id);
-      return fromDb;
-    }
-    return null;
-  }
-
-  /** Drop path from the file-read index after a write/edit invalidates it. */
-  clearFileRead(absPath: string): void {
-    this.fileReadIndex.delete(absPath);
-  }
-
   getSessionId(): string {
     return this.sessionId;
   }
@@ -599,24 +577,6 @@ export class ArtifactStore {
   /** Compute request key for a read_file operation (path + line range). */
   private requestKey(absPath: string, start: number, end: number): string {
     return `${absPath}#${start}#${end}`;
-  }
-
-  /** Find an artifact for a specific read_file range; null if no matching range. */
-  findFileReadArtifactByRange(
-    absPath: string,
-    offset?: number,
-    limit?: number,
-  ): ContextArtifact | null {
-    const start = offset ?? 1;
-    const unbounded = limit === undefined;
-    const end = unbounded ? 0 : start + limit - 1;
-    const key = this.requestKey(absPath, start, end);
-    const id = this.fileReadIndex.get(key);
-    if (id) {
-      const art = this.getArtifact(id);
-      if (art) return art;
-    }
-    return null;
   }
 
   /** Clear all range keys for a path (used after write operations). */

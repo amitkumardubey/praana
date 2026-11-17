@@ -493,7 +493,6 @@ function countNoOpTools(toolName: string, result: unknown): number {
 }
 
 export interface ScorecardNudgeSnapshot {
-  repeatFileReads: number;
   noOpTools: number;
   churnInterventions: number;
 }
@@ -504,7 +503,6 @@ function snapshotScorecardNudge(
 ): ScorecardNudgeSnapshot {
   const c = session.scorecard?.getCounters?.();
   return {
-    repeatFileReads: c?.repeatFileReads ?? 0,
     noOpTools,
     churnInterventions: c?.churnInterventions ?? 0,
   };
@@ -1733,16 +1731,6 @@ export async function runTurn(
 
         let promptResultText = toolResultRawText(result);
         let artifactId: string | undefined;
-        const skippedDisk =
-          result &&
-          typeof result === "object" &&
-          (result as { skipped_disk?: unknown }).skipped_disk === true;
-        const resultArtifactId =
-          result &&
-          typeof result === "object" &&
-          typeof (result as { artifact_id?: unknown }).artifact_id === "string"
-            ? ((result as { artifact_id: string }).artifact_id)
-            : undefined;
         const isRetrievalResult =
           tc.toolName === "retrieve_artifact" &&
           !isError &&
@@ -1754,16 +1742,10 @@ export async function runTurn(
           ? (result as { id: string }).id
           : undefined;
 
-        if (session.contextEngine && (skippedDisk || isRetrievalResult)) {
-          // Repeat-read interceptor and artifact retrievals: never re-ingest their
-          // payloads as new source artifacts; just surface the referenced artifact.
-          // Touch access only for the repeat-read path — retrieve_artifact already
-          // touches internally via ArtifactStore.retrieve(), so an extra touch here
-          // would double-increment access_count (skewing promotion and eviction).
-          artifactId = resultArtifactId ?? retrievalArtifactId;
-          if (artifactId && skippedDisk) {
-            session.contextEngine.touchAccess(artifactId, session.getTurnCount());
-          }
+        if (session.contextEngine && isRetrievalResult) {
+          // Never re-ingest retrievals as source artifacts. ArtifactStore.retrieve()
+          // already touches access; touching here would double-count retrievals.
+          artifactId = retrievalArtifactId;
           promptResultText =
             typeof (result as { content?: unknown }).content === "string"
               ? (result as { content: string }).content
@@ -2216,8 +2198,6 @@ export interface MemoryBannerStats {
   autoHydrated: number;
   promptTokens: number;
   outputTokens: number;
-  /** Session-scoped scorecard repeat_file_reads (for footer nudge). */
-  repeatFileReads?: number;
   /** Session-scoped churn interventions (issue #571, for footer nudge). */
   churnInterventions?: number;
   /** Per-turn tip when scorecard signals fire this turn (issue #549 / #571). */
@@ -2276,7 +2256,6 @@ export function computeMemoryStats(
     autoHydrated,
     promptTokens: promptTokens ?? 0,
     outputTokens: outputTokens ?? 0,
-    repeatFileReads: session.scorecard?.getCounters?.().repeatFileReads ?? 0,
     churnInterventions: session.scorecard?.getCounters?.().churnInterventions ?? 0,
   };
 }

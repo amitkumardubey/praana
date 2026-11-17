@@ -172,7 +172,6 @@ describe("formatTurnFooterDigest", () => {
         autoHydrated: 0,
         activeState: 0,
         totalState: 0,
-        repeatFileReads: 6,
       },
     });
     expect(line).not.toContain("repeat_reads");

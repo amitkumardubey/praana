@@ -514,7 +514,8 @@ describe("renderWorkflowContext", () => {
     const rendered = renderWorkflowContext(patterns, "testing");
     expect(rendered).toContain("edit_file");
     expect(rendered).not.toContain("search_code");
-    expect(rendered).toContain("Avoid:");
+    expect(rendered).toContain("- Avoid: read-heavy exploratory loops; prefer batch_edit for multi-file changes.");
+    expect(rendered).not.toContain("use retrieve_artifact after first read");
   });
 
   it("returns empty when only read-heavy patterns exist", () => {

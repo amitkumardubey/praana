@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSystemTools } from "../src/tools/system.js";
@@ -50,7 +50,6 @@ describe("read_file repeat reads (#799)", () => {
       skills: [],
       skillRuntime: null,
       getCurrentTurn: () => 3,
-      hasReadPath: (absPath) => scorecard.hasReadPath(absPath),
       getReadPathMtime: (absPath) => scorecard.getReadPathMtime(absPath),
       onScorecardFileRead: (absPath, mtimeMs, countAsRepeat) =>
         scorecard.trackReadPath(absPath, mtimeMs, countAsRepeat),
@@ -74,9 +73,7 @@ describe("read_file repeat reads (#799)", () => {
     const second = await tools.read_file.execute({ path: "big.txt" });
     expect(second.ok).toBe(true);
     expect((second as { content?: string }).content).toBe(big);
-    expect((second as { skipped_disk?: boolean }).skipped_disk).toBeUndefined();
     expect((second as { warning?: string }).warning).toBeUndefined();
-    expect((second as { artifact_id?: string }).artifact_id).toBeUndefined();
     // Telemetry still counts the repeat.
     expect(scorecard.getCounters().repeatFileReads).toBe(1);
   });
@@ -131,9 +128,10 @@ describe("read_file repeat reads (#799)", () => {
     const first = await tools.read_file.execute({ path: "mtime.txt" });
     expect((first as { content?: string }).content).toBe("v1");
 
-    // External edit (not via write_file) — bump mtime
-    await Bun.sleep(20);
+    // External edit (not via write_file) — deterministically bump mtime.
+    const nextMtime = new Date(statSync(abs).mtimeMs + 2000);
     writeFileSync(abs, "v2-external");
+    utimesSync(abs, nextMtime, nextMtime);
 
     const second = await tools.read_file.execute({ path: "mtime.txt" });
     expect(second.ok).toBe(true);

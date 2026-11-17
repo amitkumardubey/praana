@@ -209,7 +209,7 @@ function renderLeanSequence(pattern: WorkflowPattern, maxTools = MAX_TOOLS_SHOWN
 }
 
 function renderAvoidNote(): string {
-  return "- Avoid: read-heavy exploratory loops; use retrieve_artifact after first read and prefer batch_edit for multi-file changes.";
+  return "- Avoid: read-heavy exploratory loops; prefer batch_edit for multi-file changes.";
 }
 
 export function renderWorkflowContext(
