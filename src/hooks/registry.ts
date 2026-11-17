@@ -105,7 +105,8 @@ export class HookRegistry {
     for (const handler of this.postToolCall) {
       try {
         const patch = await handler({ ...ctx, result, isError });
-        if (patch?.result !== undefined) result = patch.result;
+        // A patch with a `result` key replaces the result, including an explicit null.
+        if (typeof patch === "object" && patch !== null && "result" in patch) result = patch.result;
         if (typeof patch?.isError === "boolean") isError = patch.isError;
       } catch (err) {
         logHookError(ctx.session, "post_tool_call", err);
