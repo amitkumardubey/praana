@@ -1071,7 +1071,7 @@ export async function runTurn(
       timestamp: Date.now(),
     },
   ];
-  const maxSteps = clampTurnInt(session.config.turn?.max_steps, 25);
+  const maxSteps = clampTurnInt(session.config.turn?.max_steps, 100);
   // Pause/ceiling only when the sink can ask. Headless runs, and any sink
   // without `onStepPause` (subagents, tests, non-interactive UIs), use
   // `max_steps` as a hard cap: the last batch executes, then one wrap-up.

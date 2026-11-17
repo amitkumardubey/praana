@@ -1631,6 +1631,17 @@ describe("per-turn step budget — headless hard cap", () => {
     expect(shellExecuteCount()).toBe(0);
   });
 
+  it("falls back to 100 steps for an invalid max_steps", async () => {
+    installLoopStream(101);
+    const session = makeMockSession({
+      headless: true,
+      config: makeConfig({ turn: { max_steps: Number.NaN, pause_after_steps: 50, hard_max_steps: 300 } }),
+    });
+    await runTurn(session, "invalid max steps");
+    expect(shellExecuteCount()).toBe(100);
+    expect(streamRequestCalls()).toHaveLength(101);
+  });
+
   it("headless max_steps cap performs a wrap-up and never prompts", async () => {
     installLoopStream(6);
     const session = makeMockSession({
