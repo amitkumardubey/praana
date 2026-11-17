@@ -22,11 +22,16 @@ export function createRedactPostToolCallHandler(
       result = ctx.result;
       return { result: redact(result) };
     } catch (error) {
-      getAppLogger().child("tool").debug("Redact hook failed; result replaced", {
-        // Name only: a hostile error message could carry the value.
-        details: { error: error instanceof Error ? error.name : "non-error" },
-      });
-      return { result: redactionFailureFor(result) };
+      const placeholder = redactionFailureFor(result);
+      try {
+        getAppLogger().child("tool").debug("Redact hook failed; result replaced", {
+          // Name only: a hostile error message could carry the value.
+          details: { error: error instanceof Error ? error.name : "non-error" },
+        });
+      } catch {
+        // Logging must not prevent the fail-closed patch.
+      }
+      return { result: placeholder };
     }
   };
 }

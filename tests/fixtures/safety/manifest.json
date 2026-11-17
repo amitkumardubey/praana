@@ -21,7 +21,7 @@
     "src/hooks/handlers/circuit.ts": "90772b0838f1d9611a1636d5f698d55d4f3ad2bc00dce262a1a022d356091c9c",
     "src/hooks/handlers/lsp.ts": "3d6b47544834069efb2541a3c8f851b4ed3d21f92fb32e14bc51101435438515",
     "src/hooks/handlers/plan-mode.ts": "0d4b852b8f0fd1fa8a944bb3b9cd114b56f80928fae097259abadc29f9f10262",
-    "src/hooks/handlers/redact.ts": "d2c3bea842d98313f130114ce6d9754937868a1a3aac1d858f586f30a3b33565",
+    "src/hooks/handlers/redact.ts": "5471f66c3b059417178b86ccb7cfceb487f6c1446279595d6e063ddb70f191f8",
     "src/hooks/handlers/risk.ts": "90daeb308815ae9027fc8e7f74e274409aa4f98ab9c223d6a26bd1f66b395b4c",
     "src/hooks/handlers/validate.ts": "179bbb1491c0eedd1154576bb18aca1d4a84a6cfefd95121a482f390e6979c0d",
     "src/hooks/handlers/verify.ts": "6e810f3669b286fc3ad3efb6953f8db39b761437e543b0571a84134a3e5dd66a",

@@ -1,4 +1,5 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
+import { getAppLogger } from "../src/logger.js";
 import { createBuiltinHookRegistry } from "../src/hooks/index.js";
 import { HookRegistry } from "../src/hooks/registry.js";
 import { createRedactPostToolCallHandler } from "../src/hooks/handlers/redact.js";
@@ -106,6 +107,17 @@ describe("redact post_tool_call", () => {
     // A context whose result cannot even be read is replaced too.
     const hostile = { toolName: "shell", args: {}, isError: false, session: session(), get result(): unknown { throw new Error("no"); } };
     expect(await createRedactPostToolCallHandler()(hostile)).toEqual({ result: { error: "[REDACTED:redaction-error]" } });
+  });
+
+  it("returns the placeholder even when logging the redaction failure throws", async () => {
+    const logger = spyOn(getAppLogger(), "child").mockImplementation(() => { throw new Error("logger failed"); });
+    try {
+      const post = createRedactPostToolCallHandler(() => { throw new Error("redactor failed"); });
+      expect(await post({ toolName: "shell", args: {}, result: "secret", isError: false, session: session() }))
+        .toEqual({ result: "[REDACTED:redaction-error]" });
+    } finally {
+      logger.mockRestore();
+    }
   });
 
   it("applies a patch that has a result key, even null, and keeps the original for a patch without one", async () => {
