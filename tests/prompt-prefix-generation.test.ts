@@ -194,6 +194,26 @@ describe("prefix generation validation", () => {
     expectError([prefixEvent({ ...validPayload(), format_version: "prompt-v2" })], "unsupported_version", 0);
   });
 
+  test("an unknown format version wins over a changed field set", () => {
+    expectError([prefixEvent({ ...validPayload(), format_version: "prompt-v2", extra_field: 1 })], "unsupported_version", 0);
+    const { snapshot: _removed, ...renamed } = { ...validPayload(), format_version: "prompt-v2", snapshot_text: "x" };
+    expectError([prefixEvent(renamed)], "unsupported_version", 0);
+  });
+
+  test("returned tools are a copy, not the event cache", () => {
+    const log = openLog(tempRoot());
+    writePrefixGeneration(log, input());
+    const first = readCurrentPrefixGeneration(raw(log));
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    first.generation!.tools.tools[0]!.description = "mutated";
+    (first.generation!.tools.tools[0]!.parameters as Record<string, unknown>).injected = true;
+    const second = readCurrentPrefixGeneration(raw(log));
+    expect(second.ok && JSON.stringify(second.generation!.tools)).toBe(JSON.stringify(input().tools));
+    const event = raw(log).find((e) => e.kind === PREFIX_GENERATION_KIND)!;
+    expect(JSON.stringify(event.payload.tool_generation)).toBe(JSON.stringify(input().tools));
+  });
+
   test("rejects non-monotonic generations", () => {
     expectError([prefixEvent(validPayload(2))], "non_monotonic_generation", 0);
     expectError([prefixEvent(validPayload(1), "a"), prefixEvent(validPayload(3), "b")], "non_monotonic_generation", 1);

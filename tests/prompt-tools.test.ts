@@ -91,3 +91,33 @@ describe("buildToolGeneration", () => {
     expect(a.id).toBe(b.id);
   });
 });
+
+describe("buildToolGeneration with external schemas", () => {
+  test("keeps an own __proto__ key as data and does not touch prototypes", () => {
+    const parsed = JSON.parse('{"type":"object","__proto__":{"polluted":true},"properties":{}}');
+    const gen = buildToolGeneration([{ ...read, parameters: parsed }]);
+    const params = gen.tools[0]!.parameters;
+    expect(Object.keys(params)).toContain("__proto__");
+    expect(JSON.stringify(params)).toContain('"__proto__":{"polluted":true}');
+    expect(Object.getPrototypeOf(params)).toBe(Object.prototype);
+    expect((params as Record<string, unknown>).polluted).toBeUndefined();
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+    const without = buildToolGeneration([{ ...read, parameters: { type: "object", properties: {} } }]);
+    expect(gen.id).not.toBe(without.id);
+  });
+
+  test("rejects non-plain objects instead of flattening them", () => {
+    for (const bad of [new Date(0), new Map(), new Set(), /x/, new (class Foo { a = 1; })()]) {
+      expect(() => buildToolGeneration([{ ...read, parameters: { nested: bad } }])).toThrow(/JSON data/);
+      expect(() => buildToolGeneration([read], { bad })).toThrow(/JSON data/);
+    }
+  });
+
+  test("requires plain-object parameters, capability choices and string fields", () => {
+    expect(() => buildToolGeneration([{ ...read, parameters: [] as never }])).toThrow(/plain object/);
+    expect(() => buildToolGeneration([{ ...read, parameters: null as never }])).toThrow(/plain object/);
+    expect(() => buildToolGeneration([{ ...read, parameters: new Map() as never }])).toThrow(/plain object/);
+    expect(() => buildToolGeneration([read], [] as never)).toThrow(/plain object/);
+    expect(() => buildToolGeneration([{ ...read, description: 1 as never }])).toThrow(/strings/);
+  });
+});

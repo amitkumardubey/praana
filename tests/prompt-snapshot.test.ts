@@ -133,6 +133,7 @@ describe("trimToStrictTokenBudget", () => {
     expect(trimToStrictTokenBudget("x".repeat(500), 1, note)).toEqual({ text: "", truncated: true });
     expect(trimToStrictTokenBudget("x", 0, note)).toEqual({ text: "", truncated: true });
     expect(trimToStrictTokenBudget("x", -3, note)).toEqual({ text: "", truncated: true });
+    expect(trimToStrictTokenBudget("x".repeat(500), Number.NaN, note)).toEqual({ text: "", truncated: true });
   });
 });
 

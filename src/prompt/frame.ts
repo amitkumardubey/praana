@@ -20,6 +20,9 @@ export function buildStableSystemFrame(input: StableSystemFrameInput): string {
     // for Unicode too without changing the legacy helper's output.
     const chars = Array.from(text!);
     while (estTokens(chars.join("")) > input.projectRulesTokenBudget) chars.pop();
+    // The legacy character slice can split a surrogate pair; drop the orphaned half.
+    const last = chars.at(-1);
+    if (last !== undefined && last.length === 1 && /[\ud800-\udfff]/.test(last)) chars.pop();
     if (chars.length) sections.push("## Project Context\n\n" + chars.join(""));
   }
   return sections.join("\n\n");

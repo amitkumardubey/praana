@@ -111,7 +111,8 @@ export function trimToStrictTokenBudget(
   truncationNote: string,
 ): { text: string; truncated: boolean } {
   if (!text) return { text: "", truncated: false };
-  if (maxTokens <= 0) return { text: "", truncated: true };
+  // Written so that NaN also emits nothing.
+  if (!(maxTokens > 0)) return { text: "", truncated: true };
   if (estTokens(text) <= maxTokens) return { text, truncated: false };
 
   const marker = `... (${truncationNote})`;

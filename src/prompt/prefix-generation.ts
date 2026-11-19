@@ -134,14 +134,18 @@ export function readCurrentPrefixGeneration(events: readonly Event[]): PrefixGen
     if (event.kind !== PREFIX_GENERATION_KIND) continue;
 
     const payload: unknown = event.payload;
-    if (!isPlainObject(payload) || !hasExactKeys(payload, PAYLOAD_KEYS)) {
-      return fail("invalid_payload", index, "prefix generation payload has missing or unexpected fields");
+    if (!isPlainObject(payload)) {
+      return fail("invalid_payload", index, "prefix generation payload must be an object");
     }
     if (typeof payload.format_version !== "string") {
       return fail("invalid_payload", index, "format_version must be a string");
     }
+    // Checked before the field set: a newer format may add or rename fields.
     if (payload.format_version !== PREFIX_FORMAT_VERSION) {
       return fail("unsupported_version", index, `unsupported prefix format ${JSON.stringify(payload.format_version)}`);
+    }
+    if (!hasExactKeys(payload, PAYLOAD_KEYS)) {
+      return fail("invalid_payload", index, "prefix generation payload has missing or unexpected fields");
     }
     const generation = payload.prefix_generation;
     if (typeof generation !== "number" || !Number.isSafeInteger(generation) || generation < 1) {
@@ -179,7 +183,8 @@ export function readCurrentPrefixGeneration(events: readonly Event[]): PrefixGen
       resetEpoch: payload.reset_epoch,
       frame: payload.frame,
       snapshot: payload.snapshot,
-      tools,
+      // The rebuilt copy, not the parsed payload, which the event cache owns.
+      tools: rebuilt,
       carried: false,
     };
   }

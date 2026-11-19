@@ -59,4 +59,16 @@ describe("moved legacy policy helpers", () => {
     expect(estimateTokens(trimmed.text)).toBeGreaterThan(1);
     expect(trimAgentsContext(null, 1)).toEqual({ text: null, truncated: false });
   });
+
+  test("never leaves half of a surrogate pair when the legacy slice splits one", () => {
+    const rules = "# a" + "𝒜".repeat(200);
+    let legacySplit = false;
+    for (let budget = 1; budget <= 60; budget++) {
+      if (!(trimAgentsContext(rules, budget).text ?? "").isWellFormed()) legacySplit = true;
+      const frame = buildStableSystemFrame({ ...input, projectRules: rules, projectRulesTokenBudget: budget });
+      expect(frame.isWellFormed()).toBe(true);
+    }
+    // Guards the test itself: the legacy helper really does split a pair for some budget.
+    expect(legacySplit).toBe(true);
+  });
 });
