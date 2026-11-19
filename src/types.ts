@@ -54,6 +54,7 @@ export type EventKind =
   | "context_action"
   | "canonical_message"
   | "compaction_commit"
+  | "prefix_generation"
   | "ui_transcript"
   | "system_note";
 

@@ -4,13 +4,12 @@ import type {
 } from "../compiler.js";
 import {
   buildActiveState,
-  buildCrossSessionMemory,
   buildPeripheralStubs,
   buildSystemFrame,
   buildStateSummary,
-  trimAgentsContext,
-  trimSectionToTokenBudget,
 } from "../compiler.js";
+import { trimAgentsContext, trimSectionToTokenBudget } from "../prompt/frame.js";
+import { buildCrossSessionMemory } from "../prompt/snapshot.js";
 import {
   estimateCheckpointEffectiveTokens,
   renderCheckpoint,

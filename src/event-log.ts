@@ -31,7 +31,7 @@ export interface EventReadOptions {
   includeInternal?: boolean;
 }
 
-const INTERNAL_EVENT_KINDS: ReadonlySet<EventKind> = new Set(["canonical_message", "compaction_commit"]);
+const INTERNAL_EVENT_KINDS: ReadonlySet<EventKind> = new Set(["canonical_message", "compaction_commit", "prefix_generation"]);
 
 export interface EventSearchOptions {
   kinds?: EventKind[];

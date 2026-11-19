@@ -127,6 +127,18 @@ function readResponsesUsage(
 export class OpenAIResponsesDriver implements LlmDriver {
   readonly protocol = "openai-responses";
 
+  /**
+   * `max_output_tokens` is sent only for non-Codex providers with a configured
+   * cap. The Codex route (`openai-codex`) never sends one, so it is null.
+   */
+  effectiveMaxTokens(req: StreamRequest): number | null {
+    return req.provider !== "openai-codex" ? (req.maxTokens ?? null) : null;
+  }
+
+  effectiveMaxTokensUpperBound(req: StreamRequest): number | null {
+    return this.effectiveMaxTokens(req);
+  }
+
   async *stream(req: StreamRequest, auth: ResolvedAuth): AsyncIterable<StreamEvent> {
     const defaultBase =
       req.provider === "openai-codex"
