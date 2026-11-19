@@ -19,6 +19,7 @@ import {
 import {
   buildArtifactCard,
   estimateTokens,
+  formatLongLinesCutWarning,
 } from "./summarize.js";
 import type { ContextEngineConfig } from "../types.js";
 import type {
@@ -27,6 +28,7 @@ import type {
   IngestToolResultInput,
   IngestToolResultOutput,
   RetrieveArtifactOptions,
+  RetrieveArtifactResult,
 } from "./types.js";
 
 /** Oldest read first: read_order, then created_turn, then id (legacy rows have read_order 0). */
@@ -91,6 +93,112 @@ interface PendingBackfill {
   contentType: ContentType;
   inputTokens: number;
   turn: number;
+}
+
+function sliceLosslessReadLines(
+  artifact: ContextArtifact,
+  options: RetrieveArtifactOptions,
+): { ok: true; content: string } | { ok: false; error: string } {
+  const fileStart = artifact.sourceLineStart!;
+  const fileEnd = artifact.sourceLineEnd!;
+  if (
+    artifact.sourceTotalLines !== undefined &&
+    (artifact.sourceTotalLines === 0 || fileStart > artifact.sourceTotalLines)
+  ) {
+    return {
+      ok: false,
+      error: `Requested lines fall outside empty read_file artifact (total_lines ${artifact.sourceTotalLines}).`,
+    };
+  }
+  const reqStart = options.lineStart ?? 1;
+  const reqEnd = options.lineEnd ?? fileEnd;
+  if (reqStart < fileStart || reqEnd > fileEnd || reqStart > reqEnd) {
+    return {
+      ok: false,
+      error: `Requested lines ${reqStart}-${reqEnd} fall outside stored range ${fileStart}-${fileEnd}. Re-read the file to extend the range.`,
+    };
+  }
+  const relStart = reqStart - fileStart + 1;
+  const relEnd = reqEnd - fileStart + 1;
+  return { ok: true, content: sliceByLines(artifact.rawText, relStart, relEnd) };
+}
+
+function formatReadFileRetrievalNote(opts: {
+  lineStart: number;
+  lineEnd: number;
+  fileStart: number;
+  fileEnd: number;
+  totalLines: number;
+  capped: boolean;
+  longLinesCut: number;
+  filtered: boolean;
+}): string | undefined {
+  const { lineStart, lineEnd, fileStart, fileEnd, totalLines, capped, longLinesCut, filtered } = opts;
+  const sliced = lineStart !== fileStart || lineEnd !== fileEnd;
+  const parts: string[] = [];
+  if (filtered) {
+    parts.push(
+      sliced
+        ? `Filtered content from lines ${lineStart}-${lineEnd} (artifact holds lines ${fileStart}-${fileEnd} of ${totalLines})`
+        : `Filtered content from artifact holding lines ${fileStart}-${fileEnd} of ${totalLines}`,
+    );
+  } else if (sliced) {
+    parts.push(`Returned lines ${lineStart}-${lineEnd} (artifact holds lines ${fileStart}-${fileEnd} of ${totalLines})`);
+  } else if (capped || longLinesCut > 0 || fileStart > 1 || fileEnd < totalLines) {
+    parts.push(`Returned lines ${fileStart}-${fileEnd} of ${totalLines}`);
+  }
+  if (longLinesCut > 0) parts.push(formatLongLinesCutWarning(longLinesCut));
+  if (capped) parts.push(`call read_file with offset=${fileEnd + 1} for the next part`);
+  return parts.length > 0 ? parts.join("; ") : undefined;
+}
+
+function buildReadFileRetrievalResult(
+  artifact: ContextArtifact,
+  content: string,
+  options?: RetrieveArtifactOptions,
+): RetrieveArtifactResult {
+  const totalLines = artifact.sourceTotalLines!;
+  const fileStart = artifact.sourceLineStart ?? 1;
+  const fileEnd = artifact.sourceLineEnd ?? fileStart;
+  if (totalLines === 0) {
+    return { ok: true, content, total_lines: 0, line_start: 0, line_end: 0 };
+  }
+  if (fileStart > totalLines) {
+    return {
+      ok: true,
+      content,
+      total_lines: totalLines,
+      line_start: fileStart,
+      line_end: fileStart - 1,
+      note: `offset ${fileStart} is past the end of the file (total_lines ${totalLines})`,
+    };
+  }
+  const lineStart = options?.lineStart ?? fileStart;
+  const lineEnd = options?.lineEnd ?? fileEnd;
+  const capped = Boolean(artifact.sourceCapped) && fileEnd < totalLines;
+  const longLinesCut = artifact.sourceLongLinesCut ?? 0;
+  const filtered = Boolean(options?.grep || options?.jsonPath);
+  const note = formatReadFileRetrievalNote({
+    lineStart,
+    lineEnd,
+    fileStart,
+    fileEnd,
+    totalLines,
+    capped,
+    longLinesCut,
+    filtered,
+  });
+  const res: RetrieveArtifactResult = {
+    ok: true,
+    content,
+    total_lines: totalLines,
+    line_start: lineStart,
+    line_end: lineEnd,
+  };
+  if (capped || longLinesCut > 0) res.truncated = true;
+  if (capped) res.next_offset = fileEnd + 1;
+  if (note) res.note = note;
+  return res;
 }
 
 export class ArtifactStore {
@@ -229,6 +337,9 @@ export class ArtifactStore {
     const sourceLineEnd: number | undefined = isReadFile
       ? (input.sourceLineEnd ?? (sourceLineStart! + Math.max(0, sourceLineCount - 1)))
       : undefined;
+    const sourceTotalLines: number | undefined = isReadFile ? input.sourceTotalLines : undefined;
+    const sourceCapped: boolean | undefined = isReadFile ? input.sourceCapped : undefined;
+    const sourceLongLinesCut: number | undefined = isReadFile ? input.sourceLongLinesCut : undefined;
 
     const hash = sha256(input.rawText);
 
@@ -244,15 +355,27 @@ export class ArtifactStore {
       if (existingId) {
         const existing = getArtifactById(this.db, existingId);
         if (existing && existing.sha256 === hash) {
+          const range = {
+            sourceLineStart: sourceLineStart ?? existing.sourceLineStart,
+            sourceLineEnd: sourceLineEnd ?? existing.sourceLineEnd,
+            sourceTotalLines: sourceTotalLines ?? existing.sourceTotalLines,
+            sourceCapped: sourceCapped ?? existing.sourceCapped,
+            sourceLongLinesCut: sourceLongLinesCut ?? existing.sourceLongLinesCut,
+          };
+          const promptText = buildArtifactCard(
+            existing.id,
+            existing.sourceTool,
+            existing.command,
+            existing.rawTokens,
+            range,
+          );
           touchArtifactAccess(this.db, existing.id, input.createdTurn);
-          markArtifactRead(this.db, this.sessionId, existing.id);
+          markArtifactRead(this.db, this.sessionId, existing.id, {
+            ...range,
+            promptTokens: estimateTokens(promptText),
+          });
           return {
-            promptText: buildArtifactCard(
-              existing.id,
-              existing.sourceTool,
-              existing.command,
-              existing.rawTokens,
-            ),
+            promptText,
             artifactId: existing.id,
             inlined: false,
           };
@@ -272,16 +395,28 @@ export class ArtifactStore {
         : artifactIdFromHash(this.sessionId, hash);
       const existing = getArtifactById(this.db, candidateId);
       if (existing && existing.sessionId === this.sessionId && existing.sha256 === hash) {
+        const range = {
+          sourceLineStart: sourceLineStart ?? existing.sourceLineStart,
+          sourceLineEnd: sourceLineEnd ?? existing.sourceLineEnd,
+          sourceTotalLines: sourceTotalLines ?? existing.sourceTotalLines,
+          sourceCapped: sourceCapped ?? existing.sourceCapped,
+          sourceLongLinesCut: sourceLongLinesCut ?? existing.sourceLongLinesCut,
+        };
+        const promptText = buildArtifactCard(
+          existing.id,
+          existing.sourceTool,
+          existing.command,
+          existing.rawTokens,
+          range,
+        );
         touchArtifactAccess(this.db, existing.id, input.createdTurn);
-        markArtifactRead(this.db, this.sessionId, existing.id);
+        markArtifactRead(this.db, this.sessionId, existing.id, {
+          ...range,
+          promptTokens: estimateTokens(promptText),
+        });
         if (input.command) this.fileReadIndex.set(this.requestKey(input.command, reqStart, reqEnd), existing.id);
         return {
-          promptText: buildArtifactCard(
-            existing.id,
-            existing.sourceTool,
-            existing.command,
-            existing.rawTokens,
-          ),
+          promptText,
           artifactId: existing.id,
           inlined: false,
         };
@@ -380,6 +515,9 @@ export class ArtifactStore {
       fidelity: isReadFile ? "lossless" : "summarizable",
       sourceLineStart,
       sourceLineEnd,
+      sourceTotalLines,
+      sourceCapped,
+      sourceLongLinesCut,
       promptTokens: 0,
       retentionReason: isReadFile ? "session-source" : "ttl",
     };
@@ -398,6 +536,15 @@ export class ArtifactStore {
       artifact.sourceTool,
       artifact.command,
       artifact.rawTokens,
+      isReadFile
+        ? {
+            sourceLineStart,
+            sourceLineEnd,
+            sourceTotalLines,
+            sourceCapped,
+            sourceLongLinesCut,
+          }
+        : undefined,
     );
     artifact.promptTokens = estimateTokens(card);
 
@@ -424,7 +571,7 @@ export class ArtifactStore {
     id: string,
     currentTurn: number,
     options?: RetrieveArtifactOptions,
-  ): { ok: true; content: string } | { ok: false; error: string } {
+  ): RetrieveArtifactResult {
     const artifact = getArtifactById(this.db, id);
     if (!artifact) {
       return { ok: false, error: `Artifact ${id} not found` };
@@ -439,24 +586,14 @@ export class ArtifactStore {
     try {
       // For lossless source artifacts with stored line range, map file-relative
       // line requests to content-relative indices.
-      if (artifact.sourceLineStart !== undefined && artifact.sourceLineEnd !== undefined) {
-        const fileStart = artifact.sourceLineStart;
-        const fileEnd = artifact.sourceLineEnd;
-        if (options?.lineStart !== undefined || options?.lineEnd !== undefined) {
-          const reqStart = options.lineStart ?? 1;
-          const reqEnd = options.lineEnd ?? fileEnd;
-          if (reqStart < fileStart || reqEnd > fileEnd || reqStart > reqEnd) {
-            return {
-              ok: false,
-              error: `Requested lines ${reqStart}-${reqEnd} fall outside stored range ${fileStart}-${fileEnd}. Re-read the file to extend the range.`,
-            };
-          }
-          const relStart = reqStart - fileStart + 1;
-          const relEnd = reqEnd - fileStart + 1;
-          content = sliceByLines(content, relStart, relEnd);
+      if (options?.lineStart !== undefined || options?.lineEnd !== undefined) {
+        if (artifact.sourceLineStart !== undefined && artifact.sourceLineEnd !== undefined) {
+          const sliced = sliceLosslessReadLines(artifact, options);
+          if (!sliced.ok) return sliced;
+          content = sliced.content;
+        } else {
+          content = sliceByLines(content, options.lineStart, options.lineEnd);
         }
-      } else if (options?.lineStart !== undefined || options?.lineEnd !== undefined) {
-        content = sliceByLines(content, options.lineStart, options.lineEnd);
       }
       // jsonPath requires full content or post-slice content; apply after line slicing.
       // Note: jsonPath on file reads should use retrieve_artifact with lineStart/end first,
@@ -476,6 +613,10 @@ export class ArtifactStore {
       };
     }
 
+    if (artifact.sourceTool === "read_file" && artifact.sourceTotalLines !== undefined) {
+      return buildReadFileRetrievalResult(artifact, content, options);
+    }
+
     return { ok: true, content };
   }
 
@@ -486,7 +627,16 @@ export class ArtifactStore {
   }
 
   /** Enumerate read_file artifacts for this session, most recent first. */
-  listFileReads(): { absPath: string; artifactId: string; createdTurn: number }[] {
+  listFileReads(): {
+    absPath: string;
+    artifactId: string;
+    createdTurn: number;
+    sourceLineStart?: number;
+    sourceLineEnd?: number;
+    sourceTotalLines?: number;
+    sourceCapped?: boolean;
+    sourceLongLinesCut?: number;
+  }[] {
     // Latest read first. Order by read sequence, not created_turn: a reused older
     // artifact (content A -> B -> A) is the latest read although it was created first.
     return sortByReadOrder(listSessionArtifacts(this.db, this.sessionId))
@@ -496,6 +646,13 @@ export class ArtifactStore {
         absPath: art.command!,
         artifactId: art.id,
         createdTurn: art.createdTurn,
+        ...(art.sourceLineStart !== undefined ? { sourceLineStart: art.sourceLineStart } : {}),
+        ...(art.sourceLineEnd !== undefined ? { sourceLineEnd: art.sourceLineEnd } : {}),
+        ...(art.sourceTotalLines !== undefined ? { sourceTotalLines: art.sourceTotalLines } : {}),
+        ...(art.sourceCapped ? { sourceCapped: true } : {}),
+        ...(art.sourceLongLinesCut && art.sourceLongLinesCut > 0
+          ? { sourceLongLinesCut: art.sourceLongLinesCut }
+          : {}),
       }));
   }
 

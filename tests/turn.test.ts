@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { createSystemTools } from "../src/tools/system.js";
+import { createKnowledgeTools } from "../src/tools/knowledge.js";
 import { TurnRecorder } from "../src/context-engine/turn-recorder.js";
 import { estimateTokens } from "../src/token-estimate.js";
 import { AnthropicDriver } from "../src/llm/drivers/anthropic.js";
@@ -342,6 +343,7 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
     getOutputTokens() { return this._outputTokens; },
     ensureModelContextWindow: mock(async () => 128_000),
     getContextWindowTokens: mock(() => 128_000),
+    trackScorecardFileRead: mock(),
     getEffectiveProvider() {
       return this.config.llm.provider;
     },
@@ -1295,6 +1297,11 @@ describe("runTurn", () => {
         for (const id of ids) expect(nextPrompt).toContain(`[artifact: ${id}]`);
         for (const content of scenario.contents) expect(nextPrompt).not.toContain(content.split("\n")[0]!);
         expect(nextPrompt).not.toContain("requested second");
+        if (scenario.name === "ranged read") {
+          expect(nextPrompt).toContain("lines 2-3 of 4)");
+          expect(nextPrompt).not.toContain("truncated");
+          expect(nextPrompt).not.toContain("offset=4");
+        }
 
         engine.ingestToolResult({ sourceTool: "shell", rawText: "output\n".repeat(1000), createdTurn: 2 });
         expect(engine.scorecard.getCounters().artifactCardsProduced).toBe(1);
@@ -1307,6 +1314,421 @@ describe("runTurn", () => {
       }
     });
   }
+
+  it("caps an engine-mode read_file and keeps the stored artifact content exact", async () => {
+    const cacheDir = join(homedir(), ".cache");
+    mkdirSync(cacheDir, { recursive: true });
+    const cwd = mkdtempSync(join(cacheDir, "praana-engine-read-cap-"));
+    const config = makeConfig({ context_engine: { ...makeConfig().context_engine, enabled: true } });
+    const engine = ceReal.ContextEngine.open(":memory:", "read-cap-test", config.context_engine!);
+    const session = makeMockSession({ config, cwd, contextEngine: engine, scorecard: engine.scorecard });
+    const requests: ConversationMessage[][] = [];
+    const prompts: string[] = [];
+    const shown: string[] = [];
+    const ingest = spyOn(engine, "ingestToolResult");
+    const compilerMock = compileEngineWithMetrics as ReturnType<typeof mock>;
+    const previousCompiler = compilerMock.getMockImplementation()!;
+    compilerMock.mockImplementation(ceReal.compileEngineWithMetrics);
+    const createToolsMock = createAllTools as ReturnType<typeof mock>;
+    const previousCreateAllTools = createToolsMock.getMockImplementation()!;
+    const knowledge = createKnowledgeTools({
+      eventLog: session.eventLog,
+      contextEngine: engine,
+      skillScorecard: engine.scorecard,
+      getCurrentTurn: () => session.getTurnCount(),
+    });
+    createToolsMock.mockImplementation((ctx) => ({
+      read_file: createSystemTools(ctx).read_file,
+      retrieve_artifact: knowledge.retrieve_artifact,
+    }));
+    const lines = Array.from({ length: 3000 }, (_, i) => `row ${i + 1}`);
+    writeFileSync(join(cwd, "big.txt"), lines.join("\n") + "\n");
+    let step = 0;
+    let cappedArtifactId = "";
+    (piStream as ReturnType<typeof mock>).mockImplementation((req: StreamRequest) => {
+      requests.push(structuredClone(req.messages));
+      prompts.push(req.systemPrompt ?? "");
+      return (async function* () {
+        const current = step++;
+        if (current === 0) {
+          const toolUse = { id: "read-cap", name: "read_file", args: { path: "big.txt" } };
+          yield { type: "tool_call_end", toolCall: toolUse };
+          yield { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [toolUse] } };
+        } else if (current === 2) {
+          const toolUse = { id: "retrieve-cap", name: "retrieve_artifact", args: { id: cappedArtifactId } };
+          yield { type: "tool_call_end", toolCall: toolUse };
+          yield { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [toolUse] } };
+        } else if (current === 7) {
+          const toolUse = { id: "read-page2", name: "read_file", args: { path: "big.txt", offset: 2001 } };
+          yield { type: "tool_call_end", toolCall: toolUse };
+          yield { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [toolUse] } };
+        } else {
+          yield { type: "text_delta", delta: "done" };
+          yield { type: "done", reason: "stop", message: { role: "assistant", content: "done" } };
+        }
+      })();
+    });
+    try {
+      await runTurn(session, "read the big file", undefined, {
+        sink: { onToolResult: (_id, _name, text) => shown.push(text) },
+      });
+      const text = requests[1]!.filter((m) => m.role === "tool_result").at(-1)!.result;
+      const payload = JSON.parse(text);
+      // The model sees the capped part plus how to read the rest.
+      expect(payload.truncated).toBe(true);
+      expect(payload.total_lines).toBe(3000);
+      expect(payload.note).toContain("offset=2001");
+      expect(payload.content.split("\n")).toHaveLength(2000);
+      expect(payload.content.split("\n").at(-1)).toBe("row 2000");
+      expect(shown[0]).toBe(text);
+      // `content` stays pure file lines, so the lossless artifact keeps an exact range.
+      const artifactId = ingest.mock.results[0]!.value.artifactId as string;
+      cappedArtifactId = artifactId;
+      const artifact = engine.getArtifact(artifactId)!;
+      expect(artifact.rawText).toBe(payload.content);
+      expect(artifact.sourceLineStart).toBe(1);
+      expect(artifact.sourceLineEnd).toBe(2000);
+      expect(artifact.sourceTotalLines).toBe(3000);
+      expect(artifact.requestUnbounded).toBe(false);
+
+      // Next turn: verbatim turn reference, files-read index, and retrieve_artifact
+      // all carry the returned range, total_lines, and the next offset (#811).
+      await runTurn(session, "inspect the stored artifact", undefined, { sink: {} });
+      const turn2Prompt = prompts[2]!;
+      expect(turn2Prompt).toContain(
+        `- big.txt (turn 0, \`${artifactId}\`, lines 1-2000 of 3000; truncated; call read_file with offset=2001 for the next part)`,
+      );
+      expect(turn2Prompt).toContain(
+        `Result: [artifact: ${artifactId}] (lines 1-2000 of 3000; truncated; call read_file with offset=2001 for the next part)`,
+      );
+      const retrieveMsg = JSON.parse(
+        requests[3]!.filter((m) => m.role === "tool_result").at(-1)!.result,
+      );
+      expect(retrieveMsg.content).toBe(payload.content);
+      expect(retrieveMsg.total_lines).toBe(3000);
+      expect(retrieveMsg.line_start).toBe(1);
+      expect(retrieveMsg.line_end).toBe(2000);
+      expect(retrieveMsg.truncated).toBe(true);
+      expect(retrieveMsg.next_offset).toBe(2001);
+      expect(retrieveMsg.note).toContain("Returned lines 1-2000 of 3000");
+      expect(retrieveMsg.note).toContain("offset=2001");
+
+      // Once the read ages into the scored section (age >= 3), its artifact card
+      // also carries the range, total_lines, and next offset.
+      await runTurn(session, "turn 3", undefined, { sink: {} });
+      await runTurn(session, "turn 4", undefined, { sink: {} });
+      await runTurn(session, "turn 5", undefined, { sink: {} });
+      const scoredPrompt = prompts.at(-1)!;
+      expect(scoredPrompt).toContain(
+        `[artifact: ${artifactId} | read_file: big.txt | lines 1-2000 of 3000; truncated; call read_file with offset=2001 for the next part |`,
+      );
+
+      // Paging to the second part replaces the files-read entry with the new page's range.
+      await runTurn(session, "read the second page", undefined, { sink: {} });
+      const page2ArtifactId = ingest.mock.results[1]!.value.artifactId as string;
+      await runTurn(session, "after page 2", undefined, { sink: {} });
+      const afterPage2Prompt = prompts.at(-1)!;
+      expect(afterPage2Prompt).toContain(
+        `- big.txt (turn 5, \`${page2ArtifactId}\`, lines 2001-3000 of 3000)`,
+      );
+      expect(afterPage2Prompt).toContain(
+        `Result: [artifact: ${page2ArtifactId}] (lines 2001-3000 of 3000)`,
+      );
+    } finally {
+      createToolsMock.mockImplementation(previousCreateAllTools);
+      compilerMock.mockImplementation(previousCompiler);
+      ingest.mockRestore();
+      engine.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("wires the model context window from runTurn into read_file's token cap", async () => {
+    const cacheDir = join(homedir(), ".cache");
+    mkdirSync(cacheDir, { recursive: true });
+    const cwd = mkdtempSync(join(cacheDir, "praana-engine-read-window-"));
+    const config = makeConfig({ context_engine: { ...makeConfig().context_engine, enabled: true } });
+    const engine = ceReal.ContextEngine.open(":memory:", "read-window-test", config.context_engine!);
+    const session = makeMockSession({
+      config,
+      cwd,
+      contextEngine: engine,
+      scorecard: engine.scorecard,
+      // 4,000-token window -> 1,000-token per-call cap (47 lines of 80 chars).
+      ensureModelContextWindow: mock(async () => 4000),
+    });
+    const requests: ConversationMessage[][] = [];
+    const compilerMock = compileEngineWithMetrics as ReturnType<typeof mock>;
+    const previousCompiler = compilerMock.getMockImplementation()!;
+    compilerMock.mockImplementation(ceReal.compileEngineWithMetrics);
+    // Forward the ToolRegistryContext built inside runTurn so getContextWindowTokens is exercised.
+    (createAllTools as ReturnType<typeof mock>).mockImplementationOnce((ctx) => ({
+      read_file: createSystemTools(ctx).read_file,
+    }));
+    // 200 lines is well under MAX_READ_LINES (2,000), so only the window cap can cut it.
+    writeFileSync(
+      join(cwd, "windowed.txt"),
+      Array.from({ length: 200 }, () => "x".repeat(80)).join("\n") + "\n",
+    );
+    let reads = 0;
+    (piStream as ReturnType<typeof mock>).mockImplementation((req: StreamRequest) => {
+      requests.push(structuredClone(req.messages));
+      return (async function* () {
+        if (reads++ === 0) {
+          const toolUse = { id: "read-win", name: "read_file", args: { path: "windowed.txt" } };
+          yield { type: "tool_call_end", toolCall: toolUse };
+          yield { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [toolUse] } };
+        } else {
+          yield { type: "text_delta", delta: "done" };
+          yield { type: "done", reason: "stop", message: { role: "assistant", content: "done" } };
+        }
+      })();
+    });
+    try {
+      await runTurn(session, "read windowed.txt", undefined, { sink: {} });
+      const payload = JSON.parse(
+        requests[1]!.filter((m) => m.role === "tool_result").at(-1)!.result,
+      );
+      expect(payload.truncated).toBe(true);
+      expect(payload.returned_lines).toBe(47);
+      expect(payload.total_lines).toBe(200);
+      expect(payload.note).toContain("Returned lines 1-47 of 200");
+      expect(payload.note).toContain("offset=48");
+      const [entry] = engine.store.listFileReads();
+      expect(entry?.sourceLineStart).toBe(1);
+      expect(entry?.sourceLineEnd).toBe(47);
+      expect(entry?.sourceTotalLines).toBe(200);
+      expect(entry?.sourceCapped).toBe(true);
+    } finally {
+      compilerMock.mockImplementation(previousCompiler);
+      engine.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("carries the cut-line edit warning onto later-turn cards and retrieve_artifact when the slice reaches EOF", async () => {
+    const cacheDir = join(homedir(), ".cache");
+    mkdirSync(cacheDir, { recursive: true });
+    const cwd = mkdtempSync(join(cacheDir, "praana-engine-read-cutline-"));
+    const config = makeConfig({ context_engine: { ...makeConfig().context_engine, enabled: true } });
+    const engine = ceReal.ContextEngine.open(":memory:", "read-cutline-test", config.context_engine!);
+    const session = makeMockSession({ config, cwd, contextEngine: engine, scorecard: engine.scorecard });
+    const requests: ConversationMessage[][] = [];
+    const prompts: string[] = [];
+    const ingest = spyOn(engine, "ingestToolResult");
+    const compilerMock = compileEngineWithMetrics as ReturnType<typeof mock>;
+    const previousCompiler = compilerMock.getMockImplementation()!;
+    compilerMock.mockImplementation(ceReal.compileEngineWithMetrics);
+    const createToolsMock = createAllTools as ReturnType<typeof mock>;
+    const previousCreateAllTools = createToolsMock.getMockImplementation()!;
+    const knowledge = createKnowledgeTools({
+      eventLog: session.eventLog,
+      contextEngine: engine,
+      skillScorecard: engine.scorecard,
+      getCurrentTurn: () => session.getTurnCount(),
+    });
+    createToolsMock.mockImplementation((ctx) => ({
+      read_file: createSystemTools(ctx).read_file,
+      retrieve_artifact: knowledge.retrieve_artifact,
+    }));
+    writeFileSync(join(cwd, "minified.js"), `${"q".repeat(5000)}\n`);
+    let step = 0;
+    let cutArtifactId = "";
+    (piStream as ReturnType<typeof mock>).mockImplementation((req: StreamRequest) => {
+      requests.push(structuredClone(req.messages));
+      prompts.push(req.systemPrompt ?? "");
+      return (async function* () {
+        const current = step++;
+        if (current === 0) {
+          const toolUse = { id: "read-min", name: "read_file", args: { path: "minified.js" } };
+          yield { type: "tool_call_end", toolCall: toolUse };
+          yield { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [toolUse] } };
+        } else if (current === 2) {
+          const toolUse = { id: "retrieve-min", name: "retrieve_artifact", args: { id: cutArtifactId } };
+          yield { type: "tool_call_end", toolCall: toolUse };
+          yield { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [toolUse] } };
+        } else {
+          yield { type: "text_delta", delta: "done" };
+          yield { type: "done", reason: "stop", message: { role: "assistant", content: "done" } };
+        }
+      })();
+    });
+    try {
+      await runTurn(session, "read minified.js", undefined, { sink: {} });
+      cutArtifactId = ingest.mock.results[0]!.value.artifactId as string;
+      const art = engine.getArtifact(cutArtifactId)!;
+      expect(art.sourceLineStart).toBe(1);
+      expect(art.sourceLineEnd).toBe(1);
+      expect(art.sourceTotalLines).toBe(1);
+      expect(art.sourceCapped).toBe(false);
+      expect(art.sourceLongLinesCut).toBe(1);
+
+      await runTurn(session, "inspect minified.js", undefined, { sink: {} });
+      const turn2Prompt = prompts[2]!;
+      expect(turn2Prompt).toContain(
+        `- minified.js (turn 0, \`${cutArtifactId}\`, lines 1-1 of 1; truncated; 1 line cut at 2000 characters; the rest of a cut line is not available through read_file, use the shell to read the rest of a cut line, and a cut line cannot be targeted by edit_file, so never copy cut text into oldText)`,
+      );
+      expect(turn2Prompt).toContain(
+        `Result: [artifact: ${cutArtifactId}] (lines 1-1 of 1; truncated; 1 line cut at 2000 characters; the rest of a cut line is not available through read_file, use the shell to read the rest of a cut line, and a cut line cannot be targeted by edit_file, so never copy cut text into oldText)`,
+      );
+      const retrieveMsg = JSON.parse(
+        requests[3]!.filter((m) => m.role === "tool_result").at(-1)!.result,
+      );
+      expect(retrieveMsg.truncated).toBe(true);
+      expect(retrieveMsg.next_offset).toBeUndefined();
+      expect(retrieveMsg.note).toContain("1 line cut at 2000 characters");
+      expect(retrieveMsg.note).toContain("never copy cut text into oldText");
+
+      await runTurn(session, "turn 3", undefined, { sink: {} });
+      await runTurn(session, "turn 4", undefined, { sink: {} });
+      await runTurn(session, "turn 5", undefined, { sink: {} });
+      const scoredPrompt = prompts.at(-1)!;
+      expect(scoredPrompt).toContain(
+        `[artifact: ${cutArtifactId} | read_file: minified.js | lines 1-1 of 1; truncated; 1 line cut at 2000 characters; the rest of a cut line is not available through read_file, use the shell to read the rest of a cut line, and a cut line cannot be targeted by edit_file, so never copy cut text into oldText |`,
+      );
+    } finally {
+      createToolsMock.mockImplementation(previousCreateAllTools);
+      compilerMock.mockImplementation(previousCompiler);
+      ingest.mockRestore();
+      engine.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("stores an artifact line range that matches total_lines when the read ends in a newline", async () => {
+    const cacheDir = join(homedir(), ".cache");
+    mkdirSync(cacheDir, { recursive: true });
+    const cwd = mkdtempSync(join(cacheDir, "praana-engine-read-range-"));
+    const config = makeConfig({ context_engine: { ...makeConfig().context_engine, enabled: true } });
+    const engine = ceReal.ContextEngine.open(":memory:", "read-range-test", config.context_engine!);
+    const session = makeMockSession({ config, cwd, contextEngine: engine, scorecard: engine.scorecard });
+    const requests: ConversationMessage[][] = [];
+    const ingest = spyOn(engine, "ingestToolResult");
+    const compilerMock = compileEngineWithMetrics as ReturnType<typeof mock>;
+    const previousCompiler = compilerMock.getMockImplementation()!;
+    compilerMock.mockImplementation(ceReal.compileEngineWithMetrics);
+    const tools = createSystemTools({ cwd, skills: [], skillRuntime: null, getCurrentTurn: () => session.getTurnCount() });
+    (createAllTools as ReturnType<typeof mock>).mockImplementationOnce(() => ({ read_file: tools.read_file }));
+    writeFileSync(join(cwd, "two.txt"), "alpha\nbeta\n");
+    writeFileSync(join(cwd, "big.txt"), Array.from({ length: 5000 }, (_, i) => `row ${i + 1}`).join("\n") + "\n");
+    const reads = [
+      { id: "whole", args: { path: "two.txt" } },
+      { id: "last-page", args: { path: "big.txt", offset: 4001 } },
+    ];
+    let requested = 0;
+    (piStream as ReturnType<typeof mock>).mockImplementation((req: StreamRequest) => {
+      requests.push(structuredClone(req.messages));
+      return (async function* () {
+        if (requested < reads.length) {
+          const step = reads[requested++]!;
+          const toolUse = { id: step.id, name: "read_file", args: step.args };
+          yield { type: "tool_call_end", toolCall: toolUse };
+          yield { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [toolUse] } };
+        } else {
+          yield { type: "text_delta", delta: "done" };
+          yield { type: "done", reason: "stop", message: { role: "assistant", content: "done" } };
+        }
+      })();
+    });
+    try {
+      await runTurn(session, "read the files", undefined, { sink: {} });
+      // A whole read of a trailing-newline file splits into one segment more than it has lines.
+      const whole = JSON.parse(requests[1]!.filter((m) => m.role === "tool_result").at(-1)!.result);
+      expect(whole.total_lines).toBe(2);
+      const wholeArtifact = engine.getArtifact(ingest.mock.results[0]!.value.artifactId as string)!;
+      expect(wholeArtifact.rawText).toBe("alpha\nbeta\n");
+      expect(wholeArtifact.sourceLineStart).toBe(1);
+      expect(wholeArtifact.sourceLineEnd).toBe(whole.total_lines);
+
+      // The last page ends on the file's trailing newline too.
+      const lastPage = JSON.parse(requests[2]!.filter((m) => m.role === "tool_result").at(-1)!.result);
+      expect(lastPage.total_lines).toBe(5000);
+      expect(lastPage.content.endsWith("\n")).toBe(true);
+      const pageArtifact = engine.getArtifact(ingest.mock.results[1]!.value.artifactId as string)!;
+      expect(pageArtifact.sourceLineStart).toBe(4001);
+      expect(pageArtifact.sourceLineEnd).toBe(lastPage.total_lines);
+    } finally {
+      compilerMock.mockImplementation(previousCompiler);
+      ingest.mockRestore();
+      engine.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the artifact range exact when the last returned line is blank", async () => {
+    const cacheDir = join(homedir(), ".cache");
+    mkdirSync(cacheDir, { recursive: true });
+    const cwd = mkdtempSync(join(cacheDir, "praana-engine-read-blank-"));
+    const config = makeConfig({ context_engine: { ...makeConfig().context_engine, enabled: true } });
+    const engine = ceReal.ContextEngine.open(":memory:", "read-blank-test", config.context_engine!);
+    const session = makeMockSession({ config, cwd, contextEngine: engine, scorecard: engine.scorecard });
+    const requests: ConversationMessage[][] = [];
+    const ingest = spyOn(engine, "ingestToolResult");
+    const compilerMock = compileEngineWithMetrics as ReturnType<typeof mock>;
+    const previousCompiler = compilerMock.getMockImplementation()!;
+    compilerMock.mockImplementation(ceReal.compileEngineWithMetrics);
+    const tools = createSystemTools({ cwd, skills: [], skillRuntime: null, getCurrentTurn: () => session.getTurnCount() });
+    const knowledge = createKnowledgeTools({
+      eventLog: session.eventLog,
+      contextEngine: engine,
+      skillScorecard: engine.scorecard,
+      getCurrentTurn: () => session.getTurnCount(),
+    });
+    (createAllTools as ReturnType<typeof mock>).mockImplementationOnce(() => ({
+      read_file: tools.read_file,
+      retrieve_artifact: knowledge.retrieve_artifact,
+    }));
+    // Line 2 is blank, so a limit-2 read of this file also ends with "\n" —
+    // indistinguishable from a read that stopped on the file-final newline.
+    writeFileSync(join(cwd, "blank.txt"), "a\n\nc\nd\n");
+    let requested = 0;
+    (piStream as ReturnType<typeof mock>).mockImplementation((req: StreamRequest) => {
+      requests.push(structuredClone(req.messages));
+      return (async function* () {
+        if (requested === 0) {
+          requested++;
+          const toolUse = { id: "read-blank", name: "read_file", args: { path: "blank.txt", limit: 2 } };
+          yield { type: "tool_call_end", toolCall: toolUse };
+          yield { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [toolUse] } };
+        } else if (requested === 1) {
+          requested++;
+          const id = ingest.mock.results[0]!.value.artifactId as string;
+          const toolUse = { id: "retrieve-blank", name: "retrieve_artifact", args: { id, lineStart: 2, lineEnd: 2 } };
+          yield { type: "tool_call_end", toolCall: toolUse };
+          yield { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [toolUse] } };
+        } else {
+          yield { type: "text_delta", delta: "done" };
+          yield { type: "done", reason: "stop", message: { role: "assistant", content: "done" } };
+        }
+      })();
+    });
+    try {
+      await runTurn(session, "read then retrieve", undefined, { sink: {} });
+      const readResult = JSON.parse(requests[1]!.filter((m) => m.role === "tool_result").at(-1)!.result);
+      expect(readResult.content).toBe("a\n");
+      // The tool reports the two lines it returned (the second one blank).
+      expect(readResult.returned_lines).toBe(2);
+      const artifact = engine.getArtifact(ingest.mock.results[0]!.value.artifactId as string)!;
+      expect(artifact.rawText).toBe("a\n");
+      expect(artifact.sourceLineStart).toBe(1);
+      expect(artifact.sourceLineEnd).toBe(2);
+      // ...so the blank last line can still be retrieved by its file line number.
+      const retrieveEvent = session.eventLog
+        .readAll()
+        .filter((ev: any) => ev.kind === "tool_result" && ev.payload.tool === "retrieve_artifact")
+        .at(-1)! as any;
+      const retrieved = retrieveEvent.payload.result;
+      expect(retrieved.ok).toBe(true);
+      expect(retrieved.id).toBe(artifact.id);
+      expect(retrieved.content).toBe("");
+      expect(retrieved.error).toBeUndefined();
+    } finally {
+      compilerMock.mockImplementation(previousCompiler);
+      ingest.mockRestore();
+      engine.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
 
   it("presents a failed engine-mode read_file as the error, not as an artifact card", async () => {
     const cacheDir = join(homedir(), ".cache");

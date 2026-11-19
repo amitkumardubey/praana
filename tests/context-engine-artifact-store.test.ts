@@ -626,11 +626,142 @@ describe("context-engine artifact store", () => {
       expect(cols).toContain("fidelity");
       expect(cols).toContain("source_line_start");
       expect(cols).toContain("source_line_end");
+      expect(cols).toContain("source_total_lines");
+      expect(cols).toContain("source_capped");
+      expect(cols).toContain("source_long_lines_cut");
       expect(cols).toContain("prompt_tokens");
       expect(cols).toContain("retention_reason");
       migrated.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("carries total_lines, returned range, and next offset on cards, listFileReads, and retrieve (#811)", () => {
+    store = ArtifactStore.open(":memory:", "sess-read-cap", TEST_CONFIG);
+    const page1 = Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join("\n");
+    const ingested = store.ingestToolResult({
+      sourceTool: "read_file",
+      command: "/proj/src/big.ts",
+      rawText: page1,
+      createdTurn: 1,
+      sourceLineStart: 1,
+      sourceLineEnd: 10,
+      sourceTotalLines: 50,
+      sourceCapped: true,
+      requestStart: 1,
+      requestEnd: 10,
+      requestUnbounded: false,
+    });
+
+    expect(ingested.promptText).toContain(
+      "lines 1-10 of 50; truncated; call read_file with offset=11 for the next part",
+    );
+
+    const [listed] = store.listFileReads();
+    expect(listed).toEqual({
+      absPath: "/proj/src/big.ts",
+      artifactId: ingested.artifactId!,
+      createdTurn: 1,
+      sourceLineStart: 1,
+      sourceLineEnd: 10,
+      sourceTotalLines: 50,
+      sourceCapped: true,
+    });
+
+    const fullRetrieve = store.retrieve(ingested.artifactId!, 2);
+    expect(fullRetrieve).toEqual({
+      ok: true,
+      content: page1,
+      total_lines: 50,
+      line_start: 1,
+      line_end: 10,
+      truncated: true,
+      next_offset: 11,
+      note: "Returned lines 1-10 of 50; call read_file with offset=11 for the next part",
+    });
+
+    const slicedRetrieve = store.retrieve(ingested.artifactId!, 2, { lineStart: 3, lineEnd: 5 });
+    expect(slicedRetrieve).toEqual({
+      ok: true,
+      content: "line 3\nline 4\nline 5",
+      total_lines: 50,
+      line_start: 3,
+      line_end: 5,
+      truncated: true,
+      next_offset: 11,
+      note: "Returned lines 3-5 (artifact holds lines 1-10 of 50); call read_file with offset=11 for the next part",
+    });
+
+    const greppedRetrieve = store.retrieve(ingested.artifactId!, 2, { grep: "^line [24]$" });
+    expect(greppedRetrieve).toEqual({
+      ok: true,
+      content: "line 2\nline 4",
+      total_lines: 50,
+      line_start: 1,
+      line_end: 10,
+      truncated: true,
+      next_offset: 11,
+      note: "Filtered content from artifact holding lines 1-10 of 50; call read_file with offset=11 for the next part",
+    });
+
+    // An intentional limit (not capped) reports its range without claiming truncation or a next offset.
+    const limited = store.ingestToolResult({
+      sourceTool: "read_file",
+      command: "/proj/src/peek.ts",
+      rawText: page1,
+      createdTurn: 2,
+      sourceLineStart: 1,
+      sourceLineEnd: 10,
+      sourceTotalLines: 50,
+      sourceCapped: false,
+      requestStart: 1,
+      requestEnd: 10,
+      requestUnbounded: false,
+    });
+    expect(limited.promptText).toContain("lines 1-10 of 50 |");
+    expect(limited.promptText).not.toContain("truncated");
+    expect(limited.promptText).not.toContain("offset=");
+    const limitedRetrieve = store.retrieve(limited.artifactId!, 3);
+    expect(limitedRetrieve).toEqual({
+      ok: true,
+      content: page1,
+      total_lines: 50,
+      line_start: 1,
+      line_end: 10,
+      note: "Returned lines 1-10 of 50",
+    });
+
+    // A cut long line that reaches EOF still carries truncated and the edit warning.
+    const cutLine = store.ingestToolResult({
+      sourceTool: "read_file",
+      command: "/proj/src/minified.js",
+      rawText: `${"a".repeat(2000)} … [line truncated, 5000 chars]`,
+      createdTurn: 3,
+      sourceLineStart: 1,
+      sourceLineEnd: 1,
+      sourceTotalLines: 1,
+      sourceCapped: false,
+      sourceLongLinesCut: 1,
+      requestStart: 1,
+      requestEnd: 0,
+      requestUnbounded: true,
+    });
+    expect(cutLine.promptText).toContain("lines 1-1 of 1; truncated; 1 line cut at 2000 characters");
+    expect(cutLine.promptText).toContain("never copy cut text into oldText");
+    const cutRetrieve = store.retrieve(cutLine.artifactId!, 4);
+    expect(cutRetrieve).toEqual({
+      ok: true,
+      content: `${"a".repeat(2000)} … [line truncated, 5000 chars]`,
+      total_lines: 1,
+      line_start: 1,
+      line_end: 1,
+      truncated: true,
+      note:
+        "Returned lines 1-1 of 1; 1 line cut at 2000 characters; " +
+        "the rest of a cut line is not available through read_file, use the shell to read the rest of a cut line, " +
+        "and a cut line cannot be targeted by edit_file, so never copy cut text into oldText",
+    });
+    store.close();
   });
 });

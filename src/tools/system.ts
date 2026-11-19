@@ -67,7 +67,21 @@ export interface SystemToolContext {
   /** mtime from last successful read; used to detect external edits. */
   getReadPathMtime?: (absPath: string) => number | undefined;
   clearReadPath?: (absPath: string) => void;
+  /**
+   * Context window of the model running this turn, in tokens (#811). `read_file`
+   * sizes its per-call output cap from it; unknown means the fallback window.
+   */
+  getContextWindowTokens?: () => number | undefined;
 }
+
+/** Lines a single `read_file` call returns at most (#811). */
+export const MAX_READ_LINES = 2000;
+/** A returned line longer than this is cut, so a minified file cannot be one huge line (#811). */
+export const MAX_LINE_CHARS = 2000;
+/** Share of the model's context window one `read_file` call may spend in estimated tokens (#811). */
+const READ_TOKEN_WINDOW_RATIO = 0.25;
+/** Window assumed when the model's context window is unknown (#811): 25% of 100k = 25k tokens. */
+const FALLBACK_CONTEXT_WINDOW_TOKENS = 100_000;
 
 export interface ShellRunOptions {
   command: string;
@@ -309,6 +323,123 @@ export async function executeShellCommand(
   });
 }
 
+export interface CappedReadResult {
+  ok: true;
+  /** Pure file lines; engine mode stores this verbatim as the lossless artifact. */
+  content: string;
+  /** Line count of the whole file (see the line model in the body). */
+  total_lines: number;
+  /**
+   * File lines actually present in `content`, 0 when the result is empty.
+   *
+   * This is the only exact answer: `content` alone cannot tell a read whose last
+   * returned line is blank (so it ends with `\n`) from the re-attached
+   * file-final newline, and the artifact line range depends on it (#811).
+   */
+  returned_lines: number;
+  /** Present only when the cap cut lines or long lines were cut. */
+  truncated?: true;
+  /** How to read the next part (never part of `content`). */
+  note?: string;
+}
+
+/**
+ * Cut a line longer than MAX_LINE_CHARS and mark it.
+ *
+ * A UTF-16 surrogate pair must not be split, so when the last kept code unit is
+ * a high surrogate (the first half of a pair such as an emoji) it is dropped.
+ */
+function cutLongLine(line: string): string {
+  let end = MAX_LINE_CHARS;
+  const last = line.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+  return `${line.slice(0, end)} … [line truncated, ${line.length} chars]`;
+}
+
+/**
+ * Build the `read_file` result for `content`, capped per call (#811).
+ *
+ * Line model: `content.split("\n")` is the paging space that `offset`/`limit`
+ * index into, but the empty segment a trailing newline leaves behind is dropped,
+ * so `total_lines` and `note` report the real line count instead of a phantom
+ * extra line. The trailing newline is re-attached when the read reaches the last
+ * line, which keeps a whole read byte-identical to the older `lines.join("\n")`
+ * result. `truncated` means the per-call cap cut content, not a `limit` that the
+ * model asked for.
+ */
+export function buildCappedReadResult(
+  content: string,
+  opts: { offset?: number; limit?: number; contextWindowTokens?: number },
+): CappedReadResult {
+  const fileLines = content === "" ? [] : content.split("\n");
+  const endsWithNewline = content.length > 0 && content.endsWith("\n");
+  if (endsWithNewline) fileLines.pop();
+  const totalLines = fileLines.length;
+  const startIndex = Math.max(0, (opts.offset ?? 1) - 1);
+
+  // An explicit `limit` bounds the read. The per-call cap below is applied while
+  // lines are considered, so a line past the cap is never cut, measured or
+  // counted — a file whose long line lies past the cap must not claim it cut one.
+  const available = Math.max(
+    0,
+    opts.limit !== undefined
+      ? Math.min(opts.limit, fileLines.length - startIndex)
+      : fileLines.length - startIndex,
+  );
+
+  // The per-call cap: the smaller of MAX_READ_LINES and a quarter of the model's
+  // context window in estimated tokens. Always keep at least one line, even when
+  // that single line alone exceeds the token limit.
+  const contextWindowTokens = opts.contextWindowTokens ?? FALLBACK_CONTEXT_WINDOW_TOKENS;
+  const tokenLimit = Math.floor(contextWindowTokens * READ_TOKEN_WINDOW_RATIO);
+  const selected: string[] = [];
+  let longLinesCut = 0;
+  let tokens = 0;
+  for (let index = startIndex; index < fileLines.length && selected.length < available; index++) {
+    if (selected.length >= MAX_READ_LINES) break;
+    const rawLine = fileLines[index]!;
+    // Cut before estimating, so the token cap measures what is returned.
+    const isLong = rawLine.length > MAX_LINE_CHARS;
+    const line = isLong ? cutLongLine(rawLine) : rawLine;
+    const lineTokens = estimateTokens(line) + (selected.length > 0 ? 1 : 0); // 1 ≈ separator newline
+    if (selected.length > 0 && tokens + lineTokens > tokenLimit) break;
+    tokens += lineTokens;
+    selected.push(line);
+    if (isLong) longLinesCut++;
+  }
+  const capCut = selected.length < available;
+
+  const reachedEnd = startIndex + selected.length >= fileLines.length;
+  let outContent = selected.join("\n");
+  if (endsWithNewline && selected.length > 0 && reachedEnd) outContent += "\n";
+
+  const result: CappedReadResult = {
+    ok: true,
+    content: outContent,
+    total_lines: totalLines,
+    returned_lines: selected.length,
+  };
+  if (capCut || longLinesCut > 0) {
+    const first = startIndex + 1;
+    const last = startIndex + selected.length;
+    const parts = [`Returned lines ${first}-${last} of ${totalLines}`];
+    if (longLinesCut > 0) {
+      parts.push(
+        `${longLinesCut} line${longLinesCut === 1 ? "" : "s"} cut at ${MAX_LINE_CHARS} characters; ` +
+          "the rest of a cut line is not available through read_file, use the shell to read the rest of a cut line, " +
+          "and a cut line cannot be targeted by edit_file, so never copy cut text into oldText",
+      );
+    }
+    if (capCut) parts.push(`call read_file with offset=${last + 1} for the next part`);
+    result.truncated = true;
+    result.note = parts.join("; ");
+  } else if (selected.length === 0 && startIndex > 0) {
+    // Not an error, but an empty result on its own reads like a bug to the model.
+    result.note = `offset ${opts.offset} is past the end of the file (total_lines ${totalLines})`;
+  }
+  return result;
+}
+
 export function createSystemTools(ctx: SystemToolContext) {
   const {
     cwd,
@@ -325,6 +456,7 @@ export function createSystemTools(ctx: SystemToolContext) {
     getCurrentTurn,
     getReadPathMtime,
     clearReadPath,
+    getContextWindowTokens,
   } = ctx;
 
   const resolvePath = (p: string): string => {
@@ -397,7 +529,10 @@ export function createSystemTools(ctx: SystemToolContext) {
     read_file: defineTool({
       description:
         "Read contents of a file. Supports optional offset and limit for partial reads. " +
-        "Re-reading a file always returns its current contents.",
+        "Re-reading a file always returns its current contents. " +
+        "Large files are returned in parts: when the result has `truncated: true`, read the " +
+        "`note` and call again with the `offset` it names to get the next part. `total_lines` " +
+        "is the line count of the whole file and `returned_lines` the number of lines in this result.",
       parameters: z.object({
         path: z.string().describe("File path (relative to working dir or absolute)"),
         offset: z
@@ -425,17 +560,17 @@ export function createSystemTools(ctx: SystemToolContext) {
           const priorMtime = getReadPathMtime?.(absPath);
           const unchanged = priorMtime !== undefined && priorMtime === mtimeMs;
           const content = readFileSync(absPath, "utf-8");
-          let lines = content.split("\n");
+          const capped = buildCappedReadResult(content, {
+            offset,
+            limit,
+            contextWindowTokens: getContextWindowTokens?.(),
+          });
 
-          if (offset !== undefined) {
-            lines = lines.slice(offset - 1);
-          }
-          if (limit !== undefined) {
-            lines = lines.slice(0, limit);
-          }
-
-          onScorecardFileRead?.(absPath, mtimeMs, unchanged);
-          return { ok: true, content: lines.join("\n") };
+          // A page of a capped read is not a repeat read: following the note into
+          // the next part must not look like re-reading the same content (#811).
+          const isRepeatRead = unchanged && (offset === undefined || offset === 1);
+          onScorecardFileRead?.(absPath, mtimeMs, isRepeatRead);
+          return capped;
         } catch (err: any) {
           return { ok: false, error: err?.message ?? "Failed to read file" };
         }
