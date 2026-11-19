@@ -309,7 +309,7 @@ Defined in `src/tools/` using Zod 4 schemas and converted to JSON Schema (draft-
 
 ### System Tools (`src/tools/system.ts`)
 - `shell(command, timeout?)` — executes a bash command with timeout (default: 30s); optional sandbox allowlist via `[shell]`
-- `read_file(path, offset?, limit?)` — reads a file with optional positive-integer pagination limits
+- `read_file(path, offset?, limit?)` — reads a file with optional positive-integer pagination limits; each call is capped at the smaller of 2,000 lines and a quarter of the model's context window in estimated tokens, long lines are cut at 2,000 characters, and the result always carries `total_lines`, `returned_lines` (the number of lines in this result) plus `truncated`/`note` with the `offset` for the next part when anything was cut
 - `read_and_summarize(path)` — structured file overview (size, line count, head/tail preview)
 - `write_file(path, content)` — writes or overwrites a file (creates parent directories)
 - `edit_file(path, oldText, newText)` — replaces text based on exact, unique matching (optional diff preview)
@@ -417,6 +417,8 @@ One row per session in the context-engine SQLite DB. No text content is stored �
 ### Repeat reads (issues #545, #799)
 
 `read_file` always returns the requested contents from disk, including a repeat read of an unchanged file (issue #799 removed the artifact-card interceptor). The scorecard still counts the repeat: the read index records the path and its mtime for the running session (it is not restored on resume, so the first re-read after a resume is not counted) and is invalidated on any write/edit. In engine mode the compiled prompt includes a **"Files Read This Session"** index (`path → artifact_id`) so the agent can optionally use `retrieve_artifact(id)` instead of re-reading.
+
+Each call is capped (issue #811): at most `MAX_READ_LINES` (2,000) lines and at most a quarter of the model's context window in `estimateTokens` units (`src/token-estimate.ts`; 100k-token fallback window when the window is unknown), with at least one line always returned. A single line longer than `MAX_LINE_CHARS` (2,000 characters) is cut with a `… [line truncated, N chars]` marker, so a minified file cannot become one huge line. An explicit `limit` is applied first and then capped the same way. The result always carries `total_lines` and `returned_lines` (the number of file lines in `content`, 0 for an empty result); when the cap cut lines or a long line was cut it also carries `truncated: true` and a `note` naming the 1-indexed lines returned and, when lines remain, the `offset` that reads the next part. `content` stays pure file lines — no note text — and the artifact range comes from `returned_lines`, so `sourceLineStart`/`sourceLineEnd` stay exact even when the last returned line is blank. In engine mode `source_total_lines` is stored alongside the line range and carried onto the verbatim turn reference, the artifact card, the files-read index line, and `retrieve_artifact`, so later turns still see `total_lines`, the returned range, and the next `offset`. The window reaches the tool through `getContextWindowTokens`, wired in `runTurn`; there is no config key. Binary-file refusal and a per-turn history budget are not part of this (the latter belongs to mid-turn compaction).
 
 ### Resume hardening (issues #523, #546)
 

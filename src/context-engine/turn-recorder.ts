@@ -61,6 +61,11 @@ export class TurnRecorder {
     result: unknown;
     isError: boolean;
     artifactId?: string;
+    sourceLineStart?: number;
+    sourceLineEnd?: number;
+    sourceTotalLines?: number;
+    sourceCapped?: boolean;
+    sourceLongLinesCut?: number;
   }): void {
     this.toolCalls.push({
       tool: input.tool,
@@ -68,6 +73,13 @@ export class TurnRecorder {
       resultArtifactId: input.artifactId,
       isError: input.isError,
       resultText: truncateResultText(input.result),
+      ...(input.sourceLineStart !== undefined ? { sourceLineStart: input.sourceLineStart } : {}),
+      ...(input.sourceLineEnd !== undefined ? { sourceLineEnd: input.sourceLineEnd } : {}),
+      ...(input.sourceTotalLines !== undefined ? { sourceTotalLines: input.sourceTotalLines } : {}),
+      ...(input.sourceCapped ? { sourceCapped: true } : {}),
+      ...(input.sourceLongLinesCut && input.sourceLongLinesCut > 0
+        ? { sourceLongLinesCut: input.sourceLongLinesCut }
+        : {}),
     });
 
     if (input.artifactId) this.artifactIds.add(input.artifactId);

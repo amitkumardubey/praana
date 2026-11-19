@@ -8,6 +8,7 @@ import { MEMORY_POLICY } from "./file-memory/index.js";
 import { formatLocalDate } from "./local-date.js";
 import { buildSharedAgentPolicy, trimSectionToTokenBudget, trimAgentsContext } from "./prompt/frame.js";
 import { buildCrossSessionMemory, buildNativeStatusSection } from "./prompt/snapshot.js";
+import { formatReadFileRangeSummary } from "./context-engine/summarize.js";
 
 export interface CompileInput {
   stateGraph: StateGraph;
@@ -272,6 +273,11 @@ export interface FileReadIndexEntry {
   absPath: string;
   artifactId: string;
   createdTurn: number;
+  sourceLineStart?: number;
+  sourceLineEnd?: number;
+  sourceTotalLines?: number;
+  sourceCapped?: boolean;
+  sourceLongLinesCut?: number;
 }
 
 /**
@@ -307,7 +313,12 @@ export function buildFilesReadIndexSection(
   ];
   for (const r of shown) {
     const rel = r.absPath.startsWith(cwd + "/") ? r.absPath.slice(cwd.length + 1) : r.absPath;
-    lines.push(`- ${rel} (turn ${r.createdTurn}, \`${r.artifactId}\`)`);
+    const rangeSummary = formatReadFileRangeSummary(r);
+    lines.push(
+      rangeSummary
+        ? `- ${rel} (turn ${r.createdTurn}, \`${r.artifactId}\`, ${rangeSummary})`
+        : `- ${rel} (turn ${r.createdTurn}, \`${r.artifactId}\`)`,
+    );
   }
   const hidden = sorted.length - shown.length;
   if (hidden > 0) {
@@ -322,7 +333,7 @@ export function buildFilesReadIndexSection(
 export function buildSystemFrame(
   cwd: string,
   sessionId: string,
-  toolSchemas: string[],
+  _toolSchemas: string[],
   stateSummary?: string,
   agentsContext?: string | null,
   resumeNote?: string,

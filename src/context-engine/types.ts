@@ -41,6 +41,12 @@ export interface ContextArtifact {
   sourceLineStart?: number;
   /** Last original-file line held by this artifact (1-based), if it is a source read. */
   sourceLineEnd?: number;
+  /** Total line count of the original file at read time, if it is a source read (#811). */
+  sourceTotalLines?: number;
+  /** True when the per-call cap stopped the read before all requested lines were returned (#811). */
+  sourceCapped?: boolean;
+  /** Count of returned lines cut at MAX_LINE_CHARS (#811). */
+  sourceLongLinesCut?: number;
   /** Exact request key used for cache lookups: "path#start#end" for bounded, "path#start#0" for unbounded. */
   requestKey?: string;
   /** Whether the original request was unbounded (read to EOF). */
@@ -62,6 +68,12 @@ export interface IngestToolResultInput {
   /** Original-file line range covered by the read (read_file only). */
   sourceLineStart?: number;
   sourceLineEnd?: number;
+  /** Total line count of the original file (read_file only, #811). */
+  sourceTotalLines?: number;
+  /** True when the per-call cap stopped the read before all requested lines were returned (read_file only, #811). */
+  sourceCapped?: boolean;
+  /** Count of returned lines cut at MAX_LINE_CHARS (read_file only, #811). */
+  sourceLongLinesCut?: number;
   /** Requested line range for cache key identity (read_file only). */
   requestStart?: number;
   requestEnd?: number;
@@ -83,6 +95,21 @@ export interface RetrieveArtifactOptions {
   jsonPath?: string;
 }
 
+export interface RetrieveArtifactSuccess {
+  ok: true;
+  content: string;
+  total_lines?: number;
+  line_start?: number;
+  line_end?: number;
+  truncated?: true;
+  next_offset?: number;
+  note?: string;
+}
+
+export type RetrieveArtifactResult =
+  | RetrieveArtifactSuccess
+  | { ok: false; error: string };
+
 export interface ToolCallRecord {
   tool: string;
   args: Record<string, unknown>;
@@ -90,6 +117,12 @@ export interface ToolCallRecord {
   isError: boolean;
   /** Truncated tool result text for deterministic activity rules (full text in artifact store) */
   resultText?: string;
+  /** Stored line range for a read_file tool call (#811). */
+  sourceLineStart?: number;
+  sourceLineEnd?: number;
+  sourceTotalLines?: number;
+  sourceCapped?: boolean;
+  sourceLongLinesCut?: number;
 }
 
 export interface TurnDigestDecision {

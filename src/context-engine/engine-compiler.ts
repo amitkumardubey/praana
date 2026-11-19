@@ -20,9 +20,13 @@ import {
 import type { CheckpointSectionBudgets } from "./checkpoint.js";
 import { effectiveTokens } from "./density.js";
 import type { SectionDensityKind } from "./density.js";
-import { buildArtifactCard } from "./summarize.js";
+import {
+  buildArtifactCard,
+  estimateTokens,
+  formatReadFileRangeSummary,
+  type ArtifactCardRange,
+} from "./summarize.js";
 import { getAppLogger } from "../logger.js";
-import { estimateTokens } from "./summarize.js";
 import {
   rankContextUnits,
   recencyScore,
@@ -96,6 +100,12 @@ export interface EngineCompileInput extends CompileInput {
    * or when the artifact is not found.
    */
   artifactTokens?: (artifactId: string) => number | undefined;
+  /**
+   * Optional resolver for a `read_file` artifact's stored line range and
+   * total file lines (#811). Used by verbatim turn references and scored
+   * artifact cards so later turns still show when a read was capped.
+   */
+  artifactRange?: (artifactId: string) => ArtifactCardRange | undefined;
 }
 
 export interface EngineCompileResult {
@@ -120,7 +130,10 @@ function estTokens(text: string): number {
   return estimateTokens(text);
 }
 
-function renderVerbatimTurn(record: TurnRecord): string {
+function renderVerbatimTurn(
+  record: TurnRecord,
+  artifactRange?: (artifactId: string) => ArtifactCardRange | undefined,
+): string {
   const lines = [
     `### Turn ${record.turn}`,
     `User: ${record.userMessage}`,
@@ -129,7 +142,15 @@ function renderVerbatimTurn(record: TurnRecord): string {
   for (const tc of record.toolCalls) {
     lines.push(`Tool call: ${tc.tool}(${JSON.stringify(tc.args)})`);
     if (tc.resultArtifactId) {
-      lines.push(`Result: [artifact: ${tc.resultArtifactId}]`);
+      const rangeSummary = formatReadFileRangeSummary(
+        artifactRange?.(tc.resultArtifactId) ??
+          (tc.tool === "read_file" ? tc : undefined),
+      );
+      lines.push(
+        rangeSummary
+          ? `Result: [artifact: ${tc.resultArtifactId}] (${rangeSummary})`
+          : `Result: [artifact: ${tc.resultArtifactId}]`,
+      );
     } else if (tc.resultText) {
       lines.push(`Result: ${tc.resultText}`);
     }
@@ -160,6 +181,7 @@ function buildArtifactUnit(
   tc: TurnRecord["toolCalls"][number],
   turn: number,
   artifactTokens?: (artifactId: string) => number | undefined,
+  artifactRange?: (artifactId: string) => ArtifactCardRange | undefined,
 ): ContextUnit | null {
   if (!tc.resultArtifactId) return null;
   const command =
@@ -173,11 +195,16 @@ function buildArtifactUnit(
   const rawTokens =
     artifactTokens?.(tc.resultArtifactId) ??
     unitTokens(tc.resultText?.slice(0, 600) ?? "(stored artifact)");
+  const range =
+    tc.tool === "read_file"
+      ? artifactRange?.(tc.resultArtifactId) ?? tc
+      : undefined;
   const content = buildArtifactCard(
     tc.resultArtifactId,
     tc.tool,
     command,
     rawTokens,
+    range,
   );
   return {
     id: tc.resultArtifactId,
@@ -197,6 +224,7 @@ function buildScoredUnits(
   activityEntries: ActivityEntry[],
   pressureMode: PressureMode,
   artifactTokens?: (artifactId: string) => number | undefined,
+  artifactRange?: (artifactId: string) => ArtifactCardRange | undefined,
 ): ContextUnit[] {
   const units: ContextUnit[] = [];
 
@@ -208,7 +236,7 @@ function buildScoredUnits(
       // everything else is dropped or already covered by the verbatim section.
       if (age === 0) {
         for (const tc of record.toolCalls) {
-          const unit = buildArtifactUnit(tc, record.turn, artifactTokens);
+          const unit = buildArtifactUnit(tc, record.turn, artifactTokens, artifactRange);
           if (unit) units.push(unit);
         }
       }
@@ -238,7 +266,7 @@ function buildScoredUnits(
     }
 
     for (const tc of record.toolCalls) {
-      const unit = buildArtifactUnit(tc, record.turn, artifactTokens);
+      const unit = buildArtifactUnit(tc, record.turn, artifactTokens, artifactRange);
       if (unit) units.push(unit);
     }
   }
@@ -264,6 +292,7 @@ export function buildVerbatimSection(
   records: TurnRecord[],
   currentTurn: number,
   tokenCap = BAND_VERBATIM_TOKENS,
+  artifactRange?: (artifactId: string) => ArtifactCardRange | undefined,
 ): { text: string; tokens: number; truncated: boolean } {
   const recent = records
     .filter((r) => currentTurn - r.turn <= 2 && currentTurn - r.turn >= 0)
@@ -278,7 +307,7 @@ export function buildVerbatimSection(
   // discarded everything except the current turn.
   let kept = [...recent];
   while (kept.length > 1) {
-    const body = kept.map(renderVerbatimTurn).join("\n\n");
+    const body = kept.map((r) => renderVerbatimTurn(r, artifactRange)).join("\n\n");
     if (estTokens(body) <= tokenCap) {
       const text = ["# Recent Turns (verbatim)", "", body].join("\n");
       return { text, tokens: estTokens(text), truncated: kept.length < recent.length };
@@ -288,7 +317,7 @@ export function buildVerbatimSection(
 
   // Even a single turn may exceed the cap; truncate from the front, keeping
   // the tail (latest assistant message and tool results are most important).
-  let body = renderVerbatimTurn(kept[0]);
+  let body = renderVerbatimTurn(kept[0], artifactRange);
   let singleTruncated = false;
   if (estTokens(body) > tokenCap) {
     singleTruncated = true;
@@ -553,6 +582,7 @@ async function compileEnginePass(
     activityEntries,
     checkpointPressureMode,
     input.artifactTokens,
+    input.artifactRange,
   );
 
   const weights = input.engineConfig.scoring;
@@ -721,7 +751,12 @@ function buildCompilePassPrecomputed(
   const agentHintsTokens = agentHints ? estTokens(agentHints) : 0;
   const filesReadIndex = input.filesReadIndex?.trim() ?? "";
   const filesReadIndexTokens = filesReadIndex ? estTokens(filesReadIndex) : 0;
-  const verbatim = buildVerbatimSection(input.turnRecords, input.currentTurn, verbatimTokenCap);
+  const verbatim = buildVerbatimSection(
+    input.turnRecords,
+    input.currentTurn,
+    verbatimTokenCap,
+    input.artifactRange,
+  );
   return {
     systemFrame,
     systemFrameTokens: estTokens(systemFrame),
