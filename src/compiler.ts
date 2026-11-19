@@ -316,6 +316,8 @@ export interface FileReadIndexEntry {
   sourceLineStart?: number;
   sourceLineEnd?: number;
   sourceTotalLines?: number;
+  sourceCapped?: boolean;
+  sourceLongLinesCut?: number;
 }
 
 /**
@@ -371,7 +373,7 @@ export function buildFilesReadIndexSection(
 export function buildSystemFrame(
   cwd: string,
   sessionId: string,
-  toolSchemas: string[],
+  _toolSchemas: string[],
   stateSummary?: string,
   agentsContext?: string | null,
   resumeNote?: string,

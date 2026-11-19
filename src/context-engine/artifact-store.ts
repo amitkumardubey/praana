@@ -19,6 +19,7 @@ import {
 import {
   buildArtifactCard,
   estimateTokens,
+  formatLongLinesCutWarning,
 } from "./summarize.js";
 import type { ContextEngineConfig } from "../types.js";
 import type {
@@ -122,23 +123,33 @@ function sliceLosslessReadLines(
   return { ok: true, content: sliceByLines(artifact.rawText, relStart, relEnd) };
 }
 
-function formatReadFileRetrievalNote(
-  lineStart: number,
-  lineEnd: number,
-  fileStart: number,
-  fileEnd: number,
-  totalLines: number,
-): string | undefined {
+function formatReadFileRetrievalNote(opts: {
+  lineStart: number;
+  lineEnd: number;
+  fileStart: number;
+  fileEnd: number;
+  totalLines: number;
+  capped: boolean;
+  longLinesCut: number;
+  filtered: boolean;
+}): string | undefined {
+  const { lineStart, lineEnd, fileStart, fileEnd, totalLines, capped, longLinesCut, filtered } = opts;
   const sliced = lineStart !== fileStart || lineEnd !== fileEnd;
-  if (fileEnd < totalLines) {
-    return sliced
-      ? `Returned lines ${lineStart}-${lineEnd} (artifact holds lines ${fileStart}-${fileEnd} of ${totalLines}; call read_file with offset=${fileEnd + 1} for the next part)`
-      : `Returned lines ${fileStart}-${fileEnd} of ${totalLines}; call read_file with offset=${fileEnd + 1} for the next part`;
+  const parts: string[] = [];
+  if (filtered) {
+    parts.push(
+      sliced
+        ? `Filtered content from lines ${lineStart}-${lineEnd} (artifact holds lines ${fileStart}-${fileEnd} of ${totalLines})`
+        : `Filtered content from artifact holding lines ${fileStart}-${fileEnd} of ${totalLines}`,
+    );
+  } else if (sliced) {
+    parts.push(`Returned lines ${lineStart}-${lineEnd} (artifact holds lines ${fileStart}-${fileEnd} of ${totalLines})`);
+  } else if (capped || longLinesCut > 0 || fileStart > 1 || fileEnd < totalLines) {
+    parts.push(`Returned lines ${fileStart}-${fileEnd} of ${totalLines}`);
   }
-  if (lineStart === 1 && lineEnd === totalLines) return undefined;
-  return sliced
-    ? `Returned lines ${lineStart}-${lineEnd} (artifact holds lines ${fileStart}-${fileEnd} of ${totalLines})`
-    : `Returned lines ${lineStart}-${lineEnd} of ${totalLines}`;
+  if (longLinesCut > 0) parts.push(formatLongLinesCutWarning(longLinesCut));
+  if (capped) parts.push(`call read_file with offset=${fileEnd + 1} for the next part`);
+  return parts.length > 0 ? parts.join("; ") : undefined;
 }
 
 function buildReadFileRetrievalResult(
@@ -164,7 +175,19 @@ function buildReadFileRetrievalResult(
   }
   const lineStart = options?.lineStart ?? fileStart;
   const lineEnd = options?.lineEnd ?? fileEnd;
-  const note = formatReadFileRetrievalNote(lineStart, lineEnd, fileStart, fileEnd, totalLines);
+  const capped = Boolean(artifact.sourceCapped) && fileEnd < totalLines;
+  const longLinesCut = artifact.sourceLongLinesCut ?? 0;
+  const filtered = Boolean(options?.grep || options?.jsonPath);
+  const note = formatReadFileRetrievalNote({
+    lineStart,
+    lineEnd,
+    fileStart,
+    fileEnd,
+    totalLines,
+    capped,
+    longLinesCut,
+    filtered,
+  });
   const res: RetrieveArtifactResult = {
     ok: true,
     content,
@@ -172,10 +195,8 @@ function buildReadFileRetrievalResult(
     line_start: lineStart,
     line_end: lineEnd,
   };
-  if (fileEnd < totalLines) {
-    res.truncated = true;
-    res.next_offset = fileEnd + 1;
-  }
+  if (capped || longLinesCut > 0) res.truncated = true;
+  if (capped) res.next_offset = fileEnd + 1;
   if (note) res.note = note;
   return res;
 }
@@ -317,6 +338,8 @@ export class ArtifactStore {
       ? (input.sourceLineEnd ?? (sourceLineStart! + Math.max(0, sourceLineCount - 1)))
       : undefined;
     const sourceTotalLines: number | undefined = isReadFile ? input.sourceTotalLines : undefined;
+    const sourceCapped: boolean | undefined = isReadFile ? input.sourceCapped : undefined;
+    const sourceLongLinesCut: number | undefined = isReadFile ? input.sourceLongLinesCut : undefined;
 
     const hash = sha256(input.rawText);
 
@@ -336,6 +359,8 @@ export class ArtifactStore {
             sourceLineStart: sourceLineStart ?? existing.sourceLineStart,
             sourceLineEnd: sourceLineEnd ?? existing.sourceLineEnd,
             sourceTotalLines: sourceTotalLines ?? existing.sourceTotalLines,
+            sourceCapped: sourceCapped ?? existing.sourceCapped,
+            sourceLongLinesCut: sourceLongLinesCut ?? existing.sourceLongLinesCut,
           };
           const promptText = buildArtifactCard(
             existing.id,
@@ -374,6 +399,8 @@ export class ArtifactStore {
           sourceLineStart: sourceLineStart ?? existing.sourceLineStart,
           sourceLineEnd: sourceLineEnd ?? existing.sourceLineEnd,
           sourceTotalLines: sourceTotalLines ?? existing.sourceTotalLines,
+          sourceCapped: sourceCapped ?? existing.sourceCapped,
+          sourceLongLinesCut: sourceLongLinesCut ?? existing.sourceLongLinesCut,
         };
         const promptText = buildArtifactCard(
           existing.id,
@@ -489,6 +516,8 @@ export class ArtifactStore {
       sourceLineStart,
       sourceLineEnd,
       sourceTotalLines,
+      sourceCapped,
+      sourceLongLinesCut,
       promptTokens: 0,
       retentionReason: isReadFile ? "session-source" : "ttl",
     };
@@ -507,7 +536,15 @@ export class ArtifactStore {
       artifact.sourceTool,
       artifact.command,
       artifact.rawTokens,
-      isReadFile ? { sourceLineStart, sourceLineEnd, sourceTotalLines } : undefined,
+      isReadFile
+        ? {
+            sourceLineStart,
+            sourceLineEnd,
+            sourceTotalLines,
+            sourceCapped,
+            sourceLongLinesCut,
+          }
+        : undefined,
     );
     artifact.promptTokens = estimateTokens(card);
 
@@ -597,6 +634,8 @@ export class ArtifactStore {
     sourceLineStart?: number;
     sourceLineEnd?: number;
     sourceTotalLines?: number;
+    sourceCapped?: boolean;
+    sourceLongLinesCut?: number;
   }[] {
     // Latest read first. Order by read sequence, not created_turn: a reused older
     // artifact (content A -> B -> A) is the latest read although it was created first.
@@ -610,6 +649,10 @@ export class ArtifactStore {
         ...(art.sourceLineStart !== undefined ? { sourceLineStart: art.sourceLineStart } : {}),
         ...(art.sourceLineEnd !== undefined ? { sourceLineEnd: art.sourceLineEnd } : {}),
         ...(art.sourceTotalLines !== undefined ? { sourceTotalLines: art.sourceTotalLines } : {}),
+        ...(art.sourceCapped ? { sourceCapped: true } : {}),
+        ...(art.sourceLongLinesCut && art.sourceLongLinesCut > 0
+          ? { sourceLongLinesCut: art.sourceLongLinesCut }
+          : {}),
       }));
   }
 

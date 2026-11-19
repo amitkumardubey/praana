@@ -5,6 +5,18 @@ export interface ArtifactCardRange {
   sourceLineStart?: number;
   sourceLineEnd?: number;
   sourceTotalLines?: number;
+  sourceCapped?: boolean;
+  sourceLongLinesCut?: number;
+}
+
+const MAX_READ_LINE_CHARS = 2000;
+
+export function formatLongLinesCutWarning(longLinesCut: number): string {
+  return (
+    `${longLinesCut} line${longLinesCut === 1 ? "" : "s"} cut at ${MAX_READ_LINE_CHARS} characters; ` +
+    "the rest of a cut line is not available through read_file, use the shell to read the rest of a cut line, " +
+    "and a cut line cannot be targeted by edit_file, so never copy cut text into oldText"
+  );
 }
 
 /**
@@ -26,10 +38,13 @@ export function formatReadFileRangeSummary(
     return `offset ${start} is past the end of the file (total_lines ${total})`;
   }
   const end = range.sourceLineEnd ?? start;
-  if (end < total) {
-    return `lines ${start}-${end} of ${total}; truncated; call read_file with offset=${end + 1} for the next part`;
-  }
-  return `lines ${start}-${end} of ${total}`;
+  const capped = Boolean(range.sourceCapped) && end < total;
+  const longLinesCut = range.sourceLongLinesCut ?? 0;
+  const parts = [`lines ${start}-${end} of ${total}`];
+  if (capped || longLinesCut > 0) parts.push("truncated");
+  if (longLinesCut > 0) parts.push(formatLongLinesCutWarning(longLinesCut));
+  if (capped) parts.push(`call read_file with offset=${end + 1} for the next part`);
+  return parts.join("; ");
 }
 
 /**

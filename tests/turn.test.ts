@@ -1297,6 +1297,11 @@ describe("runTurn", () => {
         for (const id of ids) expect(nextPrompt).toContain(`[artifact: ${id}]`);
         for (const content of scenario.contents) expect(nextPrompt).not.toContain(content.split("\n")[0]!);
         expect(nextPrompt).not.toContain("requested second");
+        if (scenario.name === "ranged read") {
+          expect(nextPrompt).toContain("lines 2-3 of 4)");
+          expect(nextPrompt).not.toContain("truncated");
+          expect(nextPrompt).not.toContain("offset=4");
+        }
 
         engine.ingestToolResult({ sourceTool: "shell", rawText: "output\n".repeat(1000), createdTurn: 2 });
         expect(engine.scorecard.getCounters().artifactCardsProduced).toBe(1);
@@ -1493,8 +1498,98 @@ describe("runTurn", () => {
       expect(entry?.sourceLineStart).toBe(1);
       expect(entry?.sourceLineEnd).toBe(47);
       expect(entry?.sourceTotalLines).toBe(200);
+      expect(entry?.sourceCapped).toBe(true);
     } finally {
       compilerMock.mockImplementation(previousCompiler);
+      engine.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("carries the cut-line edit warning onto later-turn cards and retrieve_artifact when the slice reaches EOF", async () => {
+    const cacheDir = join(homedir(), ".cache");
+    mkdirSync(cacheDir, { recursive: true });
+    const cwd = mkdtempSync(join(cacheDir, "praana-engine-read-cutline-"));
+    const config = makeConfig({ context_engine: { ...makeConfig().context_engine, enabled: true } });
+    const engine = ceReal.ContextEngine.open(":memory:", "read-cutline-test", config.context_engine!);
+    const session = makeMockSession({ config, cwd, contextEngine: engine, scorecard: engine.scorecard });
+    const requests: ConversationMessage[][] = [];
+    const prompts: string[] = [];
+    const ingest = spyOn(engine, "ingestToolResult");
+    const compilerMock = compileEngineWithMetrics as ReturnType<typeof mock>;
+    const previousCompiler = compilerMock.getMockImplementation()!;
+    compilerMock.mockImplementation(ceReal.compileEngineWithMetrics);
+    const createToolsMock = createAllTools as ReturnType<typeof mock>;
+    const previousCreateAllTools = createToolsMock.getMockImplementation()!;
+    const knowledge = createKnowledgeTools({
+      eventLog: session.eventLog,
+      contextEngine: engine,
+      skillScorecard: engine.scorecard,
+      getCurrentTurn: () => session.getTurnCount(),
+    });
+    createToolsMock.mockImplementation((ctx) => ({
+      read_file: createSystemTools(ctx).read_file,
+      retrieve_artifact: knowledge.retrieve_artifact,
+    }));
+    writeFileSync(join(cwd, "minified.js"), `${"q".repeat(5000)}\n`);
+    let step = 0;
+    let cutArtifactId = "";
+    (piStream as ReturnType<typeof mock>).mockImplementation((req: StreamRequest) => {
+      requests.push(structuredClone(req.messages));
+      prompts.push(req.systemPrompt ?? "");
+      return (async function* () {
+        const current = step++;
+        if (current === 0) {
+          const toolUse = { id: "read-min", name: "read_file", args: { path: "minified.js" } };
+          yield { type: "tool_call_end", toolCall: toolUse };
+          yield { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [toolUse] } };
+        } else if (current === 2) {
+          const toolUse = { id: "retrieve-min", name: "retrieve_artifact", args: { id: cutArtifactId } };
+          yield { type: "tool_call_end", toolCall: toolUse };
+          yield { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [toolUse] } };
+        } else {
+          yield { type: "text_delta", delta: "done" };
+          yield { type: "done", reason: "stop", message: { role: "assistant", content: "done" } };
+        }
+      })();
+    });
+    try {
+      await runTurn(session, "read minified.js", undefined, { sink: {} });
+      cutArtifactId = ingest.mock.results[0]!.value.artifactId as string;
+      const art = engine.getArtifact(cutArtifactId)!;
+      expect(art.sourceLineStart).toBe(1);
+      expect(art.sourceLineEnd).toBe(1);
+      expect(art.sourceTotalLines).toBe(1);
+      expect(art.sourceCapped).toBe(false);
+      expect(art.sourceLongLinesCut).toBe(1);
+
+      await runTurn(session, "inspect minified.js", undefined, { sink: {} });
+      const turn2Prompt = prompts[2]!;
+      expect(turn2Prompt).toContain(
+        `- minified.js (turn 0, \`${cutArtifactId}\`, lines 1-1 of 1; truncated; 1 line cut at 2000 characters; the rest of a cut line is not available through read_file, use the shell to read the rest of a cut line, and a cut line cannot be targeted by edit_file, so never copy cut text into oldText)`,
+      );
+      expect(turn2Prompt).toContain(
+        `Result: [artifact: ${cutArtifactId}] (lines 1-1 of 1; truncated; 1 line cut at 2000 characters; the rest of a cut line is not available through read_file, use the shell to read the rest of a cut line, and a cut line cannot be targeted by edit_file, so never copy cut text into oldText)`,
+      );
+      const retrieveMsg = JSON.parse(
+        requests[3]!.filter((m) => m.role === "tool_result").at(-1)!.result,
+      );
+      expect(retrieveMsg.truncated).toBe(true);
+      expect(retrieveMsg.next_offset).toBeUndefined();
+      expect(retrieveMsg.note).toContain("1 line cut at 2000 characters");
+      expect(retrieveMsg.note).toContain("never copy cut text into oldText");
+
+      await runTurn(session, "turn 3", undefined, { sink: {} });
+      await runTurn(session, "turn 4", undefined, { sink: {} });
+      await runTurn(session, "turn 5", undefined, { sink: {} });
+      const scoredPrompt = prompts.at(-1)!;
+      expect(scoredPrompt).toContain(
+        `[artifact: ${cutArtifactId} | read_file: minified.js | lines 1-1 of 1; truncated; 1 line cut at 2000 characters; the rest of a cut line is not available through read_file, use the shell to read the rest of a cut line, and a cut line cannot be targeted by edit_file, so never copy cut text into oldText |`,
+      );
+    } finally {
+      createToolsMock.mockImplementation(previousCreateAllTools);
+      compilerMock.mockImplementation(previousCompiler);
+      ingest.mockRestore();
       engine.close();
       rmSync(cwd, { recursive: true, force: true });
     }

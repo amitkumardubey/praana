@@ -881,6 +881,8 @@ export async function runTurn(
               sourceLineStart: art.sourceLineStart,
               sourceLineEnd: art.sourceLineEnd,
               sourceTotalLines: art.sourceTotalLines,
+              sourceCapped: art.sourceCapped,
+              sourceLongLinesCut: art.sourceLongLinesCut,
             }
           : undefined;
       },
@@ -1739,6 +1741,8 @@ export async function runTurn(
         let sourceLineStart: number | undefined;
         let sourceLineEnd: number | undefined;
         let sourceTotalLines: number | undefined;
+        let sourceCapped: boolean | undefined;
+        let sourceLongLinesCut: number | undefined;
         const isRetrievalResult =
           tc.toolName === "retrieve_artifact" &&
           !isError &&
@@ -1809,10 +1813,34 @@ export async function runTurn(
               : ingestContent.split("\n").length;
             // sourceLineEnd reflects what was actually read, not the requested limit.
             sourceLineEnd = sourceLineStart + Math.max(0, outputLines - 1);
+            // Distinguish a per-call cap and cut long lines from an intentional limit (#811).
+            const startIndex = Math.max(0, sourceLineStart - 1);
+            const available =
+              sourceTotalLines !== undefined
+                ? Math.max(
+                    0,
+                    limit !== undefined
+                      ? Math.min(limit, sourceTotalLines - startIndex)
+                      : sourceTotalLines - startIndex,
+                  )
+                : undefined;
+            sourceCapped = available !== undefined && outputLines < available;
+            const resultNote =
+              typeof result === "object" &&
+              result !== null &&
+              (result as { truncated?: unknown }).truncated === true &&
+              typeof (result as { note?: unknown }).note === "string"
+                ? (result as { note: string }).note
+                : undefined;
+            const cutMatch = resultNote
+              ? /\b(\d+) lines? cut at \d+ characters\b/.exec(resultNote)
+              : null;
+            if (cutMatch?.[1]) {
+              sourceLongLinesCut = Number(cutMatch[1]);
+            }
             // A read stopped by the per-call cap before EOF is bounded to the returned
             // slice, not an unbounded whole-file artifact (#811).
-            const cappedBeforeEof =
-              sourceTotalLines !== undefined && sourceLineEnd < sourceTotalLines;
+            const cappedBeforeEof = Boolean(sourceCapped);
             requestStart = sourceLineStart;
             requestEnd = cappedBeforeEof
               ? sourceLineEnd
@@ -1831,6 +1859,8 @@ export async function runTurn(
             sourceLineStart,
             sourceLineEnd,
             sourceTotalLines,
+            sourceCapped,
+            sourceLongLinesCut,
             requestStart,
             requestEnd,
             requestUnbounded,
@@ -1870,6 +1900,8 @@ export async function runTurn(
           sourceLineStart,
           sourceLineEnd,
           sourceTotalLines,
+          sourceCapped,
+          sourceLongLinesCut,
         });
 
         await canonicalWriter.result(canonicalTurnId ?? null, tc.toolCallId, tc.toolName, promptResultText, isError);

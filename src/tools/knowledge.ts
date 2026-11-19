@@ -149,6 +149,8 @@ export function createKnowledgeTools(ctx: KnowledgeToolContext) {
                       sourceLineStart: art.sourceLineStart,
                       sourceLineEnd: art.sourceLineEnd,
                       sourceTotalLines: art.sourceTotalLines,
+                      sourceCapped: art.sourceCapped,
+                      sourceLongLinesCut: art.sourceLongLinesCut,
                     },
                   ),
                   warning,

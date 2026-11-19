@@ -549,6 +549,25 @@ describe('Compiler', () => {
             sourceLineStart: 2001,
             sourceLineEnd: 4000,
             sourceTotalLines: 5000,
+            sourceCapped: true,
+          },
+          {
+            absPath: '/proj/src/peek.ts',
+            artifactId: 'art_peek',
+            createdTurn: 3,
+            sourceLineStart: 1,
+            sourceLineEnd: 50,
+            sourceTotalLines: 5000,
+            sourceCapped: false,
+          },
+          {
+            absPath: '/proj/src/minified.js',
+            artifactId: 'art_min',
+            createdTurn: 5,
+            sourceLineStart: 1,
+            sourceLineEnd: 1,
+            sourceTotalLines: 1,
+            sourceLongLinesCut: 1,
           },
           {
             absPath: '/proj/src/small.ts',
@@ -564,6 +583,12 @@ describe('Compiler', () => {
 
       expect(section).toContain(
         '- src/big.ts (turn 4, `art_page2`, lines 2001-4000 of 5000; truncated; call read_file with offset=4001 for the next part)',
+      );
+      // Intentional limit: shows the returned range without claiming truncation or a next offset.
+      expect(section).toContain('- src/peek.ts (turn 3, `art_peek`, lines 1-50 of 5000)');
+      // Cut long line at EOF: keeps the edit warning.
+      expect(section).toContain(
+        '- src/minified.js (turn 5, `art_min`, lines 1-1 of 1; truncated; 1 line cut at 2000 characters; the rest of a cut line is not available through read_file, use the shell to read the rest of a cut line, and a cut line cannot be targeted by edit_file, so never copy cut text into oldText)',
       );
       expect(section).toContain('- src/small.ts (turn 2, `art_whole`, lines 1-42 of 42)');
       expect(section).not.toContain('retrieve_artifact');

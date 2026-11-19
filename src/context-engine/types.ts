@@ -43,6 +43,10 @@ export interface ContextArtifact {
   sourceLineEnd?: number;
   /** Total line count of the original file at read time, if it is a source read (#811). */
   sourceTotalLines?: number;
+  /** True when the per-call cap stopped the read before all requested lines were returned (#811). */
+  sourceCapped?: boolean;
+  /** Count of returned lines cut at MAX_LINE_CHARS (#811). */
+  sourceLongLinesCut?: number;
   /** Exact request key used for cache lookups: "path#start#end" for bounded, "path#start#0" for unbounded. */
   requestKey?: string;
   /** Whether the original request was unbounded (read to EOF). */
@@ -66,6 +70,10 @@ export interface IngestToolResultInput {
   sourceLineEnd?: number;
   /** Total line count of the original file (read_file only, #811). */
   sourceTotalLines?: number;
+  /** True when the per-call cap stopped the read before all requested lines were returned (read_file only, #811). */
+  sourceCapped?: boolean;
+  /** Count of returned lines cut at MAX_LINE_CHARS (read_file only, #811). */
+  sourceLongLinesCut?: number;
   /** Requested line range for cache key identity (read_file only). */
   requestStart?: number;
   requestEnd?: number;
@@ -113,6 +121,8 @@ export interface ToolCallRecord {
   sourceLineStart?: number;
   sourceLineEnd?: number;
   sourceTotalLines?: number;
+  sourceCapped?: boolean;
+  sourceLongLinesCut?: number;
 }
 
 export interface TurnDigestDecision {
