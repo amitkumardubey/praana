@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS context_artifacts (
   fidelity            TEXT NOT NULL DEFAULT 'summarizable',
   source_line_start   INTEGER,
   source_line_end     INTEGER,
+  source_total_lines  INTEGER,
   prompt_tokens       INTEGER NOT NULL DEFAULT 0,
   retention_reason    TEXT NOT NULL DEFAULT 'ttl'
 );
@@ -205,6 +206,7 @@ const ARTIFACT_FIDELITY_COLUMNS: Array<{ name: string; ddl: string }> = [
   { name: "fidelity", ddl: "TEXT NOT NULL DEFAULT 'summarizable'" },
   { name: "source_line_start", ddl: "INTEGER" },
   { name: "source_line_end", ddl: "INTEGER" },
+  { name: "source_total_lines", ddl: "INTEGER" },
   { name: "prompt_tokens", ddl: "INTEGER NOT NULL DEFAULT 0" },
   { name: "retention_reason", ddl: "TEXT NOT NULL DEFAULT 'ttl'" },
   { name: "request_key", ddl: "TEXT" },
@@ -275,6 +277,7 @@ interface ArtifactRow {
   fidelity: string | null;
   source_line_start: number | null;
   source_line_end: number | null;
+  source_total_lines: number | null;
   prompt_tokens: number | null;
   retention_reason: string | null;
   request_key: string | null;
@@ -299,6 +302,7 @@ function rowToArtifact(row: ArtifactRow): ContextArtifact {
     fidelity: row.fidelity === "lossless" ? "lossless" : "summarizable",
     sourceLineStart: row.source_line_start ?? undefined,
     sourceLineEnd: row.source_line_end ?? undefined,
+    sourceTotalLines: row.source_total_lines ?? undefined,
     promptTokens: row.prompt_tokens ?? 0,
     retentionReason: row.retention_reason ?? "ttl",
     requestKey: row.request_key ?? undefined,
@@ -343,13 +347,13 @@ export function insertArtifact(
       id, sha256, session_id, source_tool, command, created_turn,
       raw_tokens, raw_text, summary, content_type,
       last_accessed_turn, access_count, created_at,
-      fidelity, source_line_start, source_line_end, prompt_tokens, retention_reason,
+      fidelity, source_line_start, source_line_end, source_total_lines, prompt_tokens, retention_reason,
       request_key, request_unbounded, read_order
     ) VALUES (
       $id, $sha256, $sessionId, $sourceTool, $command, $createdTurn,
       $rawTokens, $rawText, $summary, $contentType,
       $lastAccessedTurn, $accessCount, $createdAt,
-      $fidelity, $sourceLineStart, $sourceLineEnd, $promptTokens, $retentionReason,
+      $fidelity, $sourceLineStart, $sourceLineEnd, $sourceTotalLines, $promptTokens, $retentionReason,
       $requestKey, $requestUnbounded,
       (SELECT COALESCE(MAX(read_order), 0) + 1 FROM context_artifacts WHERE session_id = $sessionId)
     )`,
@@ -370,6 +374,7 @@ export function insertArtifact(
     $fidelity: artifact.fidelity,
     $sourceLineStart: artifact.sourceLineStart ?? null,
     $sourceLineEnd: artifact.sourceLineEnd ?? null,
+    $sourceTotalLines: artifact.sourceTotalLines ?? null,
     $promptTokens: artifact.promptTokens,
     $retentionReason: artifact.retentionReason,
     $requestKey: artifact.requestKey ?? null,
@@ -378,18 +383,40 @@ export function insertArtifact(
 }
 
 /**
- * Mark a read_file artifact as the latest read in its session. Unlike
+ * Mark a read_file artifact as the latest read in its session, refreshing its
+ * line-range metadata if the file's total line count changed. Unlike
  * last_accessed_turn this is bumped only by reads, not by retrieve_artifact,
  * and it is a sequence, so reads within one turn still order.
  */
-export function markArtifactRead(db: Database, sessionId: string, id: string): void {
+export function markArtifactRead(
+  db: Database,
+  sessionId: string,
+  id: string,
+  meta?: {
+    sourceLineStart?: number;
+    sourceLineEnd?: number;
+    sourceTotalLines?: number;
+    promptTokens?: number;
+  },
+): void {
   db.query(
     `UPDATE context_artifacts
      SET read_order = (
        SELECT COALESCE(MAX(read_order), 0) + 1 FROM context_artifacts WHERE session_id = $sessionId
-     )
+     ),
+     source_line_start = COALESCE($sourceLineStart, source_line_start),
+     source_line_end = COALESCE($sourceLineEnd, source_line_end),
+     source_total_lines = COALESCE($sourceTotalLines, source_total_lines),
+     prompt_tokens = COALESCE($promptTokens, prompt_tokens)
      WHERE id = $id AND session_id = $sessionId`,
-  ).run({ $id: id, $sessionId: sessionId });
+  ).run({
+    $id: id,
+    $sessionId: sessionId,
+    $sourceLineStart: meta?.sourceLineStart ?? null,
+    $sourceLineEnd: meta?.sourceLineEnd ?? null,
+    $sourceTotalLines: meta?.sourceTotalLines ?? null,
+    $promptTokens: meta?.promptTokens ?? null,
+  });
 }
 
 export function touchArtifactAccess(

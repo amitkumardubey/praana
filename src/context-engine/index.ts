@@ -27,6 +27,7 @@ import type {
   IngestToolResultInput,
   IngestToolResultOutput,
   RetrieveArtifactOptions,
+  RetrieveArtifactResult,
   SessionCheckpoint,
   StateSnapshot,
   TurnDigest,
@@ -42,6 +43,9 @@ export type {
   ContentType,
   ContextArtifact,
   OpenError,
+  RetrieveArtifactOptions,
+  RetrieveArtifactResult,
+  RetrieveArtifactSuccess,
   ToolCallRecord,
   SessionCheckpoint,
   TurnDigest,
@@ -156,7 +160,7 @@ export class ContextEngine {
   readonly checkpoint: CheckpointStore | null;
   readonly telemetry: TelemetryRecorder;
   readonly scorecard: ScorecardTracker;
-  private readonly config: ContextEngineConfig;
+  private readonly _config: ContextEngineConfig;
 
   private constructor(
     store: ArtifactStore,
@@ -173,7 +177,7 @@ export class ContextEngine {
     this.checkpoint = checkpoint;
     this.telemetry = telemetry;
     this.scorecard = scorecard;
-    this.config = config;
+    this._config = config;
   }
 
   static open(
@@ -413,7 +417,7 @@ export class ContextEngine {
     id: string,
     currentTurn: number,
     options?: RetrieveArtifactOptions,
-  ): { ok: true; content: string } | { ok: false; error: string } {
+  ): RetrieveArtifactResult {
     const result = this.store.retrieve(id, currentTurn, options);
     if (result.ok) {
       this.telemetry.recordArtifactAccess(id, "retrieved", currentTurn);

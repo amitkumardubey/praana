@@ -538,5 +538,35 @@ describe('Compiler', () => {
       const section = buildFilesReadIndexSection(reads, '/proj');
       expect(section).toContain('… and 1 more read this session.');
     });
+
+    it('renders returned range, total_lines, and next offset when present on file reads', () => {
+      const section = buildFilesReadIndexSection(
+        [
+          {
+            absPath: '/proj/src/big.ts',
+            artifactId: 'art_page2',
+            createdTurn: 4,
+            sourceLineStart: 2001,
+            sourceLineEnd: 4000,
+            sourceTotalLines: 5000,
+          },
+          {
+            absPath: '/proj/src/small.ts',
+            artifactId: 'art_whole',
+            createdTurn: 2,
+            sourceLineStart: 1,
+            sourceLineEnd: 42,
+            sourceTotalLines: 42,
+          },
+        ],
+        '/proj',
+      );
+
+      expect(section).toContain(
+        '- src/big.ts (turn 4, `art_page2`, lines 2001-4000 of 5000; truncated; call read_file with offset=4001 for the next part)',
+      );
+      expect(section).toContain('- src/small.ts (turn 2, `art_whole`, lines 1-42 of 42)');
+      expect(section).not.toContain('retrieve_artifact');
+    });
   });
 });

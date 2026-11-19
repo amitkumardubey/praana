@@ -1,6 +1,37 @@
 import type { ContentType } from "./types.js";
 export { estimateTokens } from "../token-estimate.js";
 
+export interface ArtifactCardRange {
+  sourceLineStart?: number;
+  sourceLineEnd?: number;
+  sourceTotalLines?: number;
+}
+
+/**
+ * Format the line range and continuation hint for a `read_file` artifact (#811).
+ *
+ * Returns `undefined` when `sourceTotalLines` is unknown so legacy rows and
+ * direct 4-argument `buildArtifactCard` callers keep their exact wording.
+ */
+export function formatReadFileRangeSummary(
+  range?: ArtifactCardRange,
+): string | undefined {
+  if (!range || range.sourceTotalLines === undefined) return undefined;
+  const total = range.sourceTotalLines;
+  if (total === 0) {
+    return "0 of 0 lines (total_lines 0)";
+  }
+  const start = range.sourceLineStart ?? 1;
+  if (start > total) {
+    return `offset ${start} is past the end of the file (total_lines ${total})`;
+  }
+  const end = range.sourceLineEnd ?? start;
+  if (end < total) {
+    return `lines ${start}-${end} of ${total}; truncated; call read_file with offset=${end + 1} for the next part`;
+  }
+  return `lines ${start}-${end} of ${total}`;
+}
+
 /**
  * Build a compact artifact card for the LLM prompt.
  * Default is a tiny stub — full bytes are retrievable on demand via
@@ -11,9 +42,12 @@ export function buildArtifactCard(
   sourceTool: string,
   command: string | undefined,
   rawTokens: number,
+  range?: ArtifactCardRange,
 ): string {
   const label = command ? `${sourceTool}: ${command}` : sourceTool;
-  return `[artifact: ${artifactId} | ${label} | ${rawTokens.toLocaleString()} tokens raw]\nRetrieve: retrieve_artifact("${artifactId}")`;
+  const rangeSummary = sourceTool === "read_file" ? formatReadFileRangeSummary(range) : undefined;
+  const middle = rangeSummary ? `${label} | ${rangeSummary}` : label;
+  return `[artifact: ${artifactId} | ${middle} | ${rawTokens.toLocaleString()} tokens raw]\nRetrieve: retrieve_artifact("${artifactId}")`;
 }
 
 /**

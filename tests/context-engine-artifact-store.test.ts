@@ -626,11 +626,68 @@ describe("context-engine artifact store", () => {
       expect(cols).toContain("fidelity");
       expect(cols).toContain("source_line_start");
       expect(cols).toContain("source_line_end");
+      expect(cols).toContain("source_total_lines");
       expect(cols).toContain("prompt_tokens");
       expect(cols).toContain("retention_reason");
       migrated.close();
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  it("carries total_lines, returned range, and next offset on cards, listFileReads, and retrieve (#811)", () => {
+    store = ArtifactStore.open(":memory:", "sess-read-cap", TEST_CONFIG);
+    const page1 = Array.from({ length: 10 }, (_, i) => `line ${i + 1}`).join("\n");
+    const ingested = store.ingestToolResult({
+      sourceTool: "read_file",
+      command: "/proj/src/big.ts",
+      rawText: page1,
+      createdTurn: 1,
+      sourceLineStart: 1,
+      sourceLineEnd: 10,
+      sourceTotalLines: 50,
+      requestStart: 1,
+      requestEnd: 10,
+      requestUnbounded: false,
+    });
+
+    expect(ingested.promptText).toContain(
+      "lines 1-10 of 50; truncated; call read_file with offset=11 for the next part",
+    );
+
+    const [listed] = store.listFileReads();
+    expect(listed).toEqual({
+      absPath: "/proj/src/big.ts",
+      artifactId: ingested.artifactId!,
+      createdTurn: 1,
+      sourceLineStart: 1,
+      sourceLineEnd: 10,
+      sourceTotalLines: 50,
+    });
+
+    const fullRetrieve = store.retrieve(ingested.artifactId!, 2);
+    expect(fullRetrieve).toEqual({
+      ok: true,
+      content: page1,
+      total_lines: 50,
+      line_start: 1,
+      line_end: 10,
+      truncated: true,
+      next_offset: 11,
+      note: "Returned lines 1-10 of 50; call read_file with offset=11 for the next part",
+    });
+
+    const slicedRetrieve = store.retrieve(ingested.artifactId!, 2, { lineStart: 3, lineEnd: 5 });
+    expect(slicedRetrieve).toEqual({
+      ok: true,
+      content: "line 3\nline 4\nline 5",
+      total_lines: 50,
+      line_start: 3,
+      line_end: 5,
+      truncated: true,
+      next_offset: 11,
+      note: "Returned lines 3-5 (artifact holds lines 1-10 of 50; call read_file with offset=11 for the next part)",
+    });
+    store.close();
   });
 });

@@ -343,6 +343,7 @@ function makeMockSession(overrides?: Partial<Record<string, any>>) {
     getOutputTokens() { return this._outputTokens; },
     ensureModelContextWindow: mock(async () => 128_000),
     getContextWindowTokens: mock(() => 128_000),
+    trackScorecardFileRead: mock(),
     getEffectiveProvider() {
       return this.config.llm.provider;
     },
@@ -1317,21 +1318,43 @@ describe("runTurn", () => {
     const engine = ceReal.ContextEngine.open(":memory:", "read-cap-test", config.context_engine!);
     const session = makeMockSession({ config, cwd, contextEngine: engine, scorecard: engine.scorecard });
     const requests: ConversationMessage[][] = [];
+    const prompts: string[] = [];
     const shown: string[] = [];
     const ingest = spyOn(engine, "ingestToolResult");
     const compilerMock = compileEngineWithMetrics as ReturnType<typeof mock>;
     const previousCompiler = compilerMock.getMockImplementation()!;
     compilerMock.mockImplementation(ceReal.compileEngineWithMetrics);
-    const tools = createSystemTools({ cwd, skills: [], skillRuntime: null, getCurrentTurn: () => session.getTurnCount() });
-    (createAllTools as ReturnType<typeof mock>).mockImplementationOnce(() => ({ read_file: tools.read_file }));
+    const createToolsMock = createAllTools as ReturnType<typeof mock>;
+    const previousCreateAllTools = createToolsMock.getMockImplementation()!;
+    const knowledge = createKnowledgeTools({
+      eventLog: session.eventLog,
+      contextEngine: engine,
+      skillScorecard: engine.scorecard,
+      getCurrentTurn: () => session.getTurnCount(),
+    });
+    createToolsMock.mockImplementation((ctx) => ({
+      read_file: createSystemTools(ctx).read_file,
+      retrieve_artifact: knowledge.retrieve_artifact,
+    }));
     const lines = Array.from({ length: 3000 }, (_, i) => `row ${i + 1}`);
     writeFileSync(join(cwd, "big.txt"), lines.join("\n") + "\n");
-    let reads = 0;
+    let step = 0;
+    let cappedArtifactId = "";
     (piStream as ReturnType<typeof mock>).mockImplementation((req: StreamRequest) => {
       requests.push(structuredClone(req.messages));
+      prompts.push(req.systemPrompt ?? "");
       return (async function* () {
-        if (reads++ === 0) {
+        const current = step++;
+        if (current === 0) {
           const toolUse = { id: "read-cap", name: "read_file", args: { path: "big.txt" } };
+          yield { type: "tool_call_end", toolCall: toolUse };
+          yield { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [toolUse] } };
+        } else if (current === 2) {
+          const toolUse = { id: "retrieve-cap", name: "retrieve_artifact", args: { id: cappedArtifactId } };
+          yield { type: "tool_call_end", toolCall: toolUse };
+          yield { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [toolUse] } };
+        } else if (current === 7) {
+          const toolUse = { id: "read-page2", name: "read_file", args: { path: "big.txt", offset: 2001 } };
           yield { type: "tool_call_end", toolCall: toolUse };
           yield { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [toolUse] } };
         } else {
@@ -1355,13 +1378,123 @@ describe("runTurn", () => {
       expect(shown[0]).toBe(text);
       // `content` stays pure file lines, so the lossless artifact keeps an exact range.
       const artifactId = ingest.mock.results[0]!.value.artifactId as string;
+      cappedArtifactId = artifactId;
       const artifact = engine.getArtifact(artifactId)!;
       expect(artifact.rawText).toBe(payload.content);
       expect(artifact.sourceLineStart).toBe(1);
       expect(artifact.sourceLineEnd).toBe(2000);
+      expect(artifact.sourceTotalLines).toBe(3000);
+      expect(artifact.requestUnbounded).toBe(false);
+
+      // Next turn: verbatim turn reference, files-read index, and retrieve_artifact
+      // all carry the returned range, total_lines, and the next offset (#811).
+      await runTurn(session, "inspect the stored artifact", undefined, { sink: {} });
+      const turn2Prompt = prompts[2]!;
+      expect(turn2Prompt).toContain(
+        `- big.txt (turn 0, \`${artifactId}\`, lines 1-2000 of 3000; truncated; call read_file with offset=2001 for the next part)`,
+      );
+      expect(turn2Prompt).toContain(
+        `Result: [artifact: ${artifactId}] (lines 1-2000 of 3000; truncated; call read_file with offset=2001 for the next part)`,
+      );
+      const retrieveMsg = JSON.parse(
+        requests[3]!.filter((m) => m.role === "tool_result").at(-1)!.result,
+      );
+      expect(retrieveMsg.content).toBe(payload.content);
+      expect(retrieveMsg.total_lines).toBe(3000);
+      expect(retrieveMsg.line_start).toBe(1);
+      expect(retrieveMsg.line_end).toBe(2000);
+      expect(retrieveMsg.truncated).toBe(true);
+      expect(retrieveMsg.next_offset).toBe(2001);
+      expect(retrieveMsg.note).toContain("Returned lines 1-2000 of 3000");
+      expect(retrieveMsg.note).toContain("offset=2001");
+
+      // Once the read ages into the scored section (age >= 3), its artifact card
+      // also carries the range, total_lines, and next offset.
+      await runTurn(session, "turn 3", undefined, { sink: {} });
+      await runTurn(session, "turn 4", undefined, { sink: {} });
+      await runTurn(session, "turn 5", undefined, { sink: {} });
+      const scoredPrompt = prompts.at(-1)!;
+      expect(scoredPrompt).toContain(
+        `[artifact: ${artifactId} | read_file: big.txt | lines 1-2000 of 3000; truncated; call read_file with offset=2001 for the next part |`,
+      );
+
+      // Paging to the second part replaces the files-read entry with the new page's range.
+      await runTurn(session, "read the second page", undefined, { sink: {} });
+      const page2ArtifactId = ingest.mock.results[1]!.value.artifactId as string;
+      await runTurn(session, "after page 2", undefined, { sink: {} });
+      const afterPage2Prompt = prompts.at(-1)!;
+      expect(afterPage2Prompt).toContain(
+        `- big.txt (turn 5, \`${page2ArtifactId}\`, lines 2001-3000 of 3000)`,
+      );
+      expect(afterPage2Prompt).toContain(
+        `Result: [artifact: ${page2ArtifactId}] (lines 2001-3000 of 3000)`,
+      );
     } finally {
+      createToolsMock.mockImplementation(previousCreateAllTools);
       compilerMock.mockImplementation(previousCompiler);
       ingest.mockRestore();
+      engine.close();
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("wires the model context window from runTurn into read_file's token cap", async () => {
+    const cacheDir = join(homedir(), ".cache");
+    mkdirSync(cacheDir, { recursive: true });
+    const cwd = mkdtempSync(join(cacheDir, "praana-engine-read-window-"));
+    const config = makeConfig({ context_engine: { ...makeConfig().context_engine, enabled: true } });
+    const engine = ceReal.ContextEngine.open(":memory:", "read-window-test", config.context_engine!);
+    const session = makeMockSession({
+      config,
+      cwd,
+      contextEngine: engine,
+      scorecard: engine.scorecard,
+      // 4,000-token window -> 1,000-token per-call cap (47 lines of 80 chars).
+      ensureModelContextWindow: mock(async () => 4000),
+    });
+    const requests: ConversationMessage[][] = [];
+    const compilerMock = compileEngineWithMetrics as ReturnType<typeof mock>;
+    const previousCompiler = compilerMock.getMockImplementation()!;
+    compilerMock.mockImplementation(ceReal.compileEngineWithMetrics);
+    // Forward the ToolRegistryContext built inside runTurn so getContextWindowTokens is exercised.
+    (createAllTools as ReturnType<typeof mock>).mockImplementationOnce((ctx) => ({
+      read_file: createSystemTools(ctx).read_file,
+    }));
+    // 200 lines is well under MAX_READ_LINES (2,000), so only the window cap can cut it.
+    writeFileSync(
+      join(cwd, "windowed.txt"),
+      Array.from({ length: 200 }, () => "x".repeat(80)).join("\n") + "\n",
+    );
+    let reads = 0;
+    (piStream as ReturnType<typeof mock>).mockImplementation((req: StreamRequest) => {
+      requests.push(structuredClone(req.messages));
+      return (async function* () {
+        if (reads++ === 0) {
+          const toolUse = { id: "read-win", name: "read_file", args: { path: "windowed.txt" } };
+          yield { type: "tool_call_end", toolCall: toolUse };
+          yield { type: "done", reason: "tool_use", message: { role: "assistant", content: "", toolCalls: [toolUse] } };
+        } else {
+          yield { type: "text_delta", delta: "done" };
+          yield { type: "done", reason: "stop", message: { role: "assistant", content: "done" } };
+        }
+      })();
+    });
+    try {
+      await runTurn(session, "read windowed.txt", undefined, { sink: {} });
+      const payload = JSON.parse(
+        requests[1]!.filter((m) => m.role === "tool_result").at(-1)!.result,
+      );
+      expect(payload.truncated).toBe(true);
+      expect(payload.returned_lines).toBe(47);
+      expect(payload.total_lines).toBe(200);
+      expect(payload.note).toContain("Returned lines 1-47 of 200");
+      expect(payload.note).toContain("offset=48");
+      const [entry] = engine.store.listFileReads();
+      expect(entry?.sourceLineStart).toBe(1);
+      expect(entry?.sourceLineEnd).toBe(47);
+      expect(entry?.sourceTotalLines).toBe(200);
+    } finally {
+      compilerMock.mockImplementation(previousCompiler);
       engine.close();
       rmSync(cwd, { recursive: true, force: true });
     }

@@ -872,6 +872,18 @@ export async function runTurn(
       filesReadIndex,
       artifactTokens: (id) =>
         session.contextEngine?.store.getArtifact(id)?.rawTokens,
+      artifactRange: (id) => {
+        const art =
+          session.contextEngine?.getArtifact?.(id) ??
+          session.contextEngine?.store?.getArtifact?.(id);
+        return art && art.sourceTool === "read_file"
+          ? {
+              sourceLineStart: art.sourceLineStart,
+              sourceLineEnd: art.sourceLineEnd,
+              sourceTotalLines: art.sourceTotalLines,
+            }
+          : undefined;
+      },
     });
     compiledPrompt = engineResult.prompt;
     promptMetrics = {
@@ -1724,6 +1736,9 @@ export async function runTurn(
 
         let promptResultText = toolResultRawText(result);
         let artifactId: string | undefined;
+        let sourceLineStart: number | undefined;
+        let sourceLineEnd: number | undefined;
+        let sourceTotalLines: number | undefined;
         const isRetrievalResult =
           tc.toolName === "retrieve_artifact" &&
           !isError &&
@@ -1739,10 +1754,15 @@ export async function runTurn(
           // Never re-ingest retrievals as source artifacts. ArtifactStore.retrieve()
           // already touches access; touching here would double-count retrievals.
           artifactId = retrievalArtifactId;
+          const hasRetrievalMeta =
+            typeof (result as { total_lines?: unknown }).total_lines === "number" ||
+            typeof (result as { note?: unknown }).note === "string";
           promptResultText =
-            typeof (result as { content?: unknown }).content === "string"
-              ? (result as { content: string }).content
-              : promptResultText;
+            hasRetrievalMeta
+              ? toolResultRawText(result)
+              : typeof (result as { content?: unknown }).content === "string"
+                ? (result as { content: string }).content
+                : promptResultText;
           const toolTokens = estimateDisplayTokens(promptResultText);
           turnHistoryTokens += toolTokens;
           s.onContextHistoryDelta?.({
@@ -1758,8 +1778,6 @@ export async function runTurn(
           // For read_file, store the raw content and original line range for
           // lossless retrieval. For other tools, promptResultText is the raw result.
           let ingestContent = promptResultText;
-          let sourceLineStart: number | undefined;
-          let sourceLineEnd: number | undefined;
           let requestStart: number | undefined;
           let requestEnd: number | undefined;
           let requestUnbounded: boolean | undefined;
@@ -1774,6 +1792,12 @@ export async function runTurn(
             const offset = args.offset;
             const limit = args.limit;
             sourceLineStart = offset ?? 1;
+            const totalLines = typeof result === "object" && result !== null
+              ? (result as { total_lines?: unknown }).total_lines
+              : undefined;
+            if (typeof totalLines === "number") {
+              sourceTotalLines = totalLines;
+            }
             // Ask the tool how many lines it actually returned. A read whose last
             // returned line is blank also ends with "\n", so the content alone
             // cannot tell it from the re-attached file-final newline (#811).
@@ -1785,11 +1809,17 @@ export async function runTurn(
               : ingestContent.split("\n").length;
             // sourceLineEnd reflects what was actually read, not the requested limit.
             sourceLineEnd = sourceLineStart + Math.max(0, outputLines - 1);
-            // requestStart/requestEnd preserve the original request for cache key identity.
-            // This ensures that a repeat of the same request (even at EOF) hits the cache.
+            // A read stopped by the per-call cap before EOF is bounded to the returned
+            // slice, not an unbounded whole-file artifact (#811).
+            const cappedBeforeEof =
+              sourceTotalLines !== undefined && sourceLineEnd < sourceTotalLines;
             requestStart = sourceLineStart;
-            requestEnd = limit !== undefined ? sourceLineStart + limit - 1 : 0;
-            requestUnbounded = limit === undefined;
+            requestEnd = cappedBeforeEof
+              ? sourceLineEnd
+              : limit !== undefined
+                ? sourceLineStart + limit - 1
+                : 0;
+            requestUnbounded = limit === undefined && !cappedBeforeEof;
           }
           // A failed read ({ ok: false, error }) must reach the model as the error, not as a card.
           const showReadContents = tc.toolName === "read_file";
@@ -1800,6 +1830,7 @@ export async function runTurn(
             createdTurn: session.getTurnCount(),
             sourceLineStart,
             sourceLineEnd,
+            sourceTotalLines,
             requestStart,
             requestEnd,
             requestUnbounded,
@@ -1836,6 +1867,9 @@ export async function runTurn(
           result,
           isError,
           artifactId,
+          sourceLineStart,
+          sourceLineEnd,
+          sourceTotalLines,
         });
 
         await canonicalWriter.result(canonicalTurnId ?? null, tc.toolCallId, tc.toolName, promptResultText, isError);
