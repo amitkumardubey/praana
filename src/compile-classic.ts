@@ -5,7 +5,7 @@ import { formatLocalDate } from "./local-date.js";
 import { estimateTokens as estTokens } from "./token-estimate.js";
 import { APP_VERSION } from "./app-banner.js";
 import type { NativeAddonStatus } from "./native/index.js";
-import { buildSharedAgentPolicy } from "./compiler.js";
+import { buildSharedAgentPolicy } from "./prompt/frame.js";
 import { eventsAfterResetBoundary } from "./event-log.js";
 import { renderCircuitNotes } from "./circuit/loop-gate.js";
 import { MEMORY_POLICY } from "./file-memory/index.js";

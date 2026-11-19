@@ -8,9 +8,8 @@ import {
   buildPeripheralStubs,
   buildSystemFrame,
   buildStateSummary,
-  trimAgentsContext,
-  trimSectionToTokenBudget,
 } from "../compiler.js";
+import { trimAgentsContext, trimSectionToTokenBudget } from "../prompt/frame.js";
 import {
   estimateCheckpointEffectiveTokens,
   renderCheckpoint,
