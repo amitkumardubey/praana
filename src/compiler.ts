@@ -7,6 +7,7 @@ import type { NativeAddonStatus } from "./native/index.js";
 import { MEMORY_POLICY } from "./file-memory/index.js";
 import { formatLocalDate } from "./local-date.js";
 import { buildSharedAgentPolicy, trimSectionToTokenBudget, trimAgentsContext } from "./prompt/frame.js";
+import { buildCrossSessionMemory, buildNativeStatusSection } from "./prompt/snapshot.js";
 
 export interface CompileInput {
   stateGraph: StateGraph;
@@ -350,18 +351,8 @@ export function buildSystemFrame(
     lines.push("", "## Resume Scope", "", resumeNote);
   }
 
-  if (nativeStatus && nativeStatus.kind !== "available") {
-    const detail =
-      nativeStatus.kind === "disabled"
-        ? "disabled via config"
-        : `unavailable: ${nativeStatus.reason}`;
-    lines.push(
-      "",
-      "## Native Addon",
-      "",
-      `Tree-sitter code-intel addon ${detail} — code_parse/code_symbols/code_imports/code_definition/code_references will soft-fail. Prefer search_code or find_files for code exploration.`,
-    );
-  }
+  const nativeSection = buildNativeStatusSection(nativeStatus);
+  if (nativeSection) lines.push("", nativeSection);
 
   lines.push("", ...buildSharedAgentPolicy(memoryEnabled));
 
@@ -399,16 +390,6 @@ export function buildSystemFrame(
     "See the Active State and Peripheral Memory sections below for your current working memory.",
   );
 
-  return lines.join("\n");
-}
-
-export function buildCrossSessionMemory(digest: string, recallEnabled = false): string {
-  // The trust caveat lives in the store's INDEX_PREFACE, which already opens the
-  // digest text; repeating it here would double the caveat in a compiled prompt.
-  const lines = ["# Cross-Session Memory", "", digest, ""];
-  if (recallEnabled) {
-    lines.push('Use recall({ query: "..." }) to search file memories, or recall({ name: "..." }) to read one in full.');
-  }
   return lines.join("\n");
 }
 

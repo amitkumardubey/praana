@@ -1,6 +1,6 @@
 import type { Event } from "./types.js";
 import type { CompileMetrics } from "./compiler.js";
-import { buildCrossSessionMemory } from "./compiler.js";
+import { buildCrossSessionMemory } from "./prompt/snapshot.js";
 import { formatLocalDate } from "./local-date.js";
 import { estimateTokens as estTokens } from "./token-estimate.js";
 import { APP_VERSION } from "./app-banner.js";
