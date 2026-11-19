@@ -26,6 +26,20 @@ const noReasoningWithToolsPatterns = [/^gpt-6\.1-/i];
 export class OpenAICompatibleDriver implements LlmDriver {
   readonly protocol: string = "openai-compatible";
 
+  /**
+   * The cap goes in `max_tokens`, or the field named by `compat.maxTokensField`
+   * (for example `max_completion_tokens`); the value is the same either way.
+   * Null when `maxTokens` is not configured, in which case no field is sent.
+   * The Azure driver inherits this.
+   */
+  effectiveMaxTokens(req: StreamRequest): number | null {
+    return req.maxTokens ?? null;
+  }
+
+  effectiveMaxTokensUpperBound(req: StreamRequest): number | null {
+    return this.effectiveMaxTokens(req);
+  }
+
   async *stream(req: StreamRequest, auth: ResolvedAuth): AsyncIterable<StreamEvent> {
     const baseUrl = req.baseUrl || auth.baseUrl || "https://api.openai.com/v1";
     const endpoint =

@@ -72,6 +72,15 @@ function bedrockStreamException(
 export class BedrockDriver implements LlmDriver {
   readonly protocol = "bedrock-converse-stream";
 
+  /** `inferenceConfig.maxTokens` is sent only when configured; otherwise null (no cap). */
+  effectiveMaxTokens(req: StreamRequest): number | null {
+    return req.maxTokens ?? null;
+  }
+
+  effectiveMaxTokensUpperBound(req: StreamRequest): number | null {
+    return this.effectiveMaxTokens(req);
+  }
+
   async *stream(req: StreamRequest, auth: ResolvedAuth): AsyncIterable<StreamEvent> {
     const region =
       req.region ||

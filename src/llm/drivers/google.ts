@@ -29,6 +29,15 @@ import {
 export class GoogleDriver implements LlmDriver {
   readonly protocol = "google-generative-ai";
 
+  /** `generationConfig.maxOutputTokens` is sent only when configured; otherwise null (no cap). */
+  effectiveMaxTokens(req: StreamRequest): number | null {
+    return req.maxTokens ?? null;
+  }
+
+  effectiveMaxTokensUpperBound(req: StreamRequest): number | null {
+    return this.effectiveMaxTokens(req);
+  }
+
   async *stream(req: StreamRequest, auth: ResolvedAuth): AsyncIterable<StreamEvent> {
     const isVertex = req.provider === "vertex";
     let endpoint: string;

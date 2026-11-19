@@ -9,6 +9,9 @@ import { joinUrl } from "../url.js";
 export class AzureDriver extends OpenAICompatibleDriver {
   override readonly protocol: string = "azure";
 
+  // effectiveMaxTokens and effectiveMaxTokensUpperBound are inherited: the
+  // request is forwarded to the OpenAI-compatible builder with maxTokens intact.
+
   override async *stream(req: StreamRequest, auth: ResolvedAuth): AsyncIterable<StreamEvent> {
     const apiVersion = process.env.AZURE_OPENAI_API_VERSION || "2024-02-15-preview";
     const resourceName = process.env.AZURE_OPENAI_RESOURCE_NAME;

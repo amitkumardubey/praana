@@ -38,8 +38,38 @@ function anthropicThinkingMode(modelId: string): ThinkingMode {
   return match && Number(match[1]) >= 5 ? "adaptive" : "budget";
 }
 
+const DEFAULT_MAX_TOKENS = 8192;
+
+function anthropicThinkingBudget(reasoningEffort: StreamRequest["reasoningEffort"]): number {
+  return reasoningEffort === "high" ? 8192 : reasoningEffort === "medium" ? 4096 : 2048;
+}
+
 export class AnthropicDriver implements LlmDriver {
   readonly protocol = "anthropic-messages";
+
+  /**
+   * Always a number: `max_tokens` is required on this API and defaults to 8192.
+   * With thinking on, adaptive mode keeps the configured cap and budget mode
+   * raises it to at least the thinking budget plus 4096. The mode is the one
+   * learned for this model from an earlier retry, else the model-id default.
+   * Mirrors the body built in `stream`.
+   */
+  effectiveMaxTokens(req: StreamRequest): number {
+    const maxTokens = req.maxTokens ?? DEFAULT_MAX_TOKENS;
+    if (!req.reasoningEffort || req.reasoningEffort === "off") return maxTokens;
+    const mode = learnedThinkingModes.get(req.model) ?? anthropicThinkingMode(req.model);
+    return mode === "adaptive" ? maxTokens : Math.max(maxTokens, anthropicThinkingBudget(req.reasoningEffort) + 4096);
+  }
+
+  /**
+   * A 400 about the thinking mode flips adaptive and budget once, which can
+   * change the cap, so with thinking on this is the larger of the two modes.
+   */
+  effectiveMaxTokensUpperBound(req: StreamRequest): number {
+    const maxTokens = req.maxTokens ?? DEFAULT_MAX_TOKENS;
+    if (!req.reasoningEffort || req.reasoningEffort === "off") return maxTokens;
+    return Math.max(maxTokens, anthropicThinkingBudget(req.reasoningEffort) + 4096);
+  }
 
   async *stream(req: StreamRequest, auth: ResolvedAuth): AsyncIterable<StreamEvent> {
     const baseUrl = req.baseUrl || auth.baseUrl || "https://api.anthropic.com";
